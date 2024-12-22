@@ -1,8 +1,10 @@
 package qouteall.imm_ptl.core.render;
 
 import com.mojang.blaze3d.shaders.Program;
+import com.mojang.logging.LogUtils;
 import me.shedaniel.cloth.clothconfig.shadowed.org.yaml.snakeyaml.Yaml;
 import org.jetbrains.annotations.Nullable;
+import org.slf4j.Logger;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.McHelper;
 import qouteall.q_misc_util.Helper;
@@ -10,12 +12,10 @@ import qouteall.q_misc_util.Helper;
 import java.util.List;
 import java.util.Set;
 
-// change the shader code to add clipping mechanism
-// 2 ways of clipping:
-// 1. vertex shader clipping(requires GL3)
-// 2. fragment shader clipping
 public class ShaderCodeTransformation {
-    public enum ShaderType {
+    private static final Logger LOGGER = LogUtils.getLogger();
+
+    public static enum ShaderType {
         vs, fs
     }
     
@@ -62,16 +62,16 @@ public class ShaderCodeTransformation {
             
             configs = configsObj.configs;
             
-            Helper.log("Loaded Shader Code Transformation");
+            LOGGER.info("Loaded Shader Code Transformation");
         }
         else {
-            Helper.log("Shader Transformation Disabled");
+            LOGGER.info("Shader Transformation Disabled");
         }
     }
     
     public static String transform(Program.Type type, String shaderId, String inputCode) {
         if (configs == null) {
-            Helper.log("Shader Transform Skipping " + shaderId);
+            LOGGER.info("Shader Transform Skipping {}", shaderId);
             return inputCode;
         }
         
@@ -89,7 +89,7 @@ public class ShaderCodeTransformation {
         }
         
         if (selected.debugOutput) {
-            Helper.log("Shader Transformed " + shaderId + "\n" + result);
+            LOGGER.info("Shader Transformed {}\n{}", shaderId, result);
         }
         
         return result;
@@ -105,7 +105,7 @@ public class ShaderCodeTransformation {
     
     public static boolean shouldAddUniform(String shaderName) {
         if (configs == null) {
-            Helper.log("Shader Transform Skipping " + shaderName);
+            LOGGER.info("Shader Transform Skipping {} in shouldAddUniform", shaderName);
             return false;
         }
         

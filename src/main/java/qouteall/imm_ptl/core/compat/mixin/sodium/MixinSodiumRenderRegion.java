@@ -3,6 +3,7 @@ package qouteall.imm_ptl.core.compat.mixin.sodium;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.caffeinemc.mods.sodium.client.render.chunk.RenderSection;
 import net.caffeinemc.mods.sodium.client.render.chunk.lists.ChunkRenderList;
+import net.caffeinemc.mods.sodium.client.render.chunk.lists.SortedRenderLists;
 import net.caffeinemc.mods.sodium.client.render.chunk.region.RenderRegion;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Final;
@@ -12,8 +13,6 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.q_misc_util.Helper;
-
-import static net.caffeinemc.mods.sodium.client.render.chunk.lists.SortedRenderLists.Builder;
 
 @Mixin(value = RenderRegion.class, remap = false)
 public class MixinSodiumRenderRegion {
@@ -32,7 +31,7 @@ public class MixinSodiumRenderRegion {
      * 3. render transparent things
      * When rendering the world in portal (to-same-world portal),
      * the frame counter increases, then in
-     * {@link Builder#add(RenderSection)} it will reset the ChunkRenderList,
+     * {@link SortedRenderLists.Builder#add(RenderSection)} it will reset the ChunkRenderList,
      * which makes upcoming transparent block rendering in outer world to break.
      * So use separate ChunkRenderList for each portal rendering layer.
      */

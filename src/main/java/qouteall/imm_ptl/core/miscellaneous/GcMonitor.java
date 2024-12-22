@@ -112,7 +112,7 @@ public class GcMonitor {
         
         double timeFromLongPause = System.nanoTime() - lastLongPauseTime;
         
-        if (PortalDebugCommands.toMiB(freeMemory) < 300 && timeFromLongPause < Helper.secondToNano(2)) {
+        if (PortalDebugCommands.toMiB(maxMemory - usedMemory) < 300 && timeFromLongPause < Helper.secondToNano(2)) {
             if (memoryNotEnough) {
                 // show message the second time
                 

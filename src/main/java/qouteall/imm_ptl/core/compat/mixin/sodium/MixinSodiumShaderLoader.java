@@ -26,7 +26,7 @@ public abstract class MixinSodiumShaderLoader {
     private static String wrapGetShaderSource(
         ResourceLocation name,
         Operation<String> operation,
-        @Local ShaderType shaderType
+        @Local(argsOnly = true) ShaderType shaderType
     ) {
         String shaderSource = operation.call(name);
         shaderSource = ShaderCodeTransformation.transform(

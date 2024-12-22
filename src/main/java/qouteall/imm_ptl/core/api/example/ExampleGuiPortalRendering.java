@@ -184,12 +184,12 @@ public class ExampleGuiPortalRendering {
             // Draw the framebuffer
             int h = minecraft.getWindow().getHeight();
             int w = minecraft.getWindow().getWidth();
-            MyRenderHelper.drawFramebuffer(
+            MyRenderHelper.drawFramebufferWithBounds(
                 frameBuffer,
                 true, // enable alpha blend
                 false, // don't modify alpha
-                w * 0.2f, w * 0.8f,
-                h * 0.2f, h * 0.8f
+                (int) (w * 0.2f), (int) (w * 0.8f),
+                (int) (h * 0.2f), (int) (h * 0.8f)
             );
             
             guiGraphics.drawCenteredString(

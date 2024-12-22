@@ -71,7 +71,7 @@ public class PacketRedirection {
     public static <T> T withForceRedirectAndGet(ServerLevel world, Supplier<T> func) {
         if (((IEWorld) world).portal_getThread() != Thread.currentThread()) {
             LOGGER.error(
-                "It's possible that a mod is trying to handle packet in networking thread instead of server thread. This is not thread safe and can cause rare bugs! (ImmPtl is just doing checking, it's not an issue of ImmPtl)",
+                "It's possible that a mod is trying to handle packet in networking thread instead of server thread. This is not thread safe and can cause rare bugs! (ImmPtl is just doing checking, it's not an issue of iPortal)",
                 new Throwable()
             );
         }

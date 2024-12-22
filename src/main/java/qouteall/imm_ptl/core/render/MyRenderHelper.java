@@ -16,6 +16,7 @@ import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.server.packs.resources.ResourceProvider;
+import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 import org.apache.commons.lang3.Validate;
 import org.joml.Matrix4f;
@@ -271,31 +272,55 @@ public class MyRenderHelper {
         boolean doUseAlphaBlend,
         boolean doEnableModifyAlpha
     ) {
-        float right = (float) textureProvider.viewWidth;
-        float up = (float) textureProvider.viewHeight;
-        float left = 0;
-        float bottom = 0;
+        int x = 0;
+        int y = 0;
         
         int viewportWidth = textureProvider.viewWidth;
         int viewportHeight = textureProvider.viewHeight;
         
-        drawFramebufferWithViewport(
+        drawFramebufferWithCoordinatesAndDimensions(
             textureProvider, doUseAlphaBlend, doEnableModifyAlpha,
-            left, right, bottom, up,
-            viewportWidth, viewportHeight
+            x, y, viewportWidth, viewportHeight
+        );
+    }
+
+    public static void drawFramebuffer(
+            RenderTarget textureProvider, boolean doUseAlphaBlend, boolean doEnableModifyAlpha,
+            float xMin, float xMax, float yMin, float yMax
+    ) {
+        drawFramebufferWithCoordinatesAndDimensions(
+                textureProvider,
+                doUseAlphaBlend, doEnableModifyAlpha,
+                0, 0,
+                client.getWindow().getWidth(),
+                client.getWindow().getHeight()
+        );
+    }
+
+    public static void drawFramebufferWithViewport(
+            RenderTarget textureProvider, boolean doUseAlphaBlend, boolean doEnableModifyAlpha,
+            float left, float right, float bottom, float up,
+            int viewportWidth, int viewportHeight
+    ) {
+        drawFramebufferWithCoordinatesAndDimensions(
+                textureProvider,
+                doUseAlphaBlend, doEnableModifyAlpha,
+                0, 0,
+                viewportWidth, viewportHeight
         );
     }
     
-    public static void drawFramebuffer(
+    public static void drawFramebufferWithBounds(
         RenderTarget textureProvider, boolean doUseAlphaBlend, boolean doEnableModifyAlpha,
-        float xMin, float xMax, float yMin, float yMax
+        int xMin, int xMax, int yMin, int yMax
     ) {
-        drawFramebufferWithViewport(
+
+        drawFramebufferWithCoordinatesAndDimensions(
             textureProvider,
             doUseAlphaBlend, doEnableModifyAlpha,
-            xMin, xMax, yMin, yMax,
-            client.getWindow().getWidth(),
-            client.getWindow().getHeight()
+            xMin, yMin,
+            Mth.abs(xMax - xMin),
+            Mth.abs(yMax - yMin)
         );
     }
     
@@ -303,16 +328,15 @@ public class MyRenderHelper {
      * {@link RenderTarget#blitToScreen(int, int)}
      */
     @IPVanillaCopy
-    public static void drawFramebufferWithViewport(
+    public static void drawFramebufferWithCoordinatesAndDimensions(
         RenderTarget textureProvider, boolean doUseAlphaBlend, boolean doEnableModifyAlpha,
-        float left, float right, float bottom, float up,
-        int viewportWidth, int viewportHeight
+        int x, int y, int viewportWidth, int viewportHeight
     ) {
         CHelper.checkGlError();
-        
-        GlStateManager._disableDepthTest();
-        GlStateManager._depthMask(false);
-        GlStateManager._viewport(0, 0, viewportWidth, viewportHeight);
+
+        RenderSystem.disableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.viewport(x, textureProvider.viewHeight - viewportHeight - y, viewportWidth, viewportHeight);
         
         if (doUseAlphaBlend) {
             RenderSystem.enableBlend();
@@ -336,10 +360,10 @@ public class MyRenderHelper {
         }
         
         if (doEnableModifyAlpha) {
-            GlStateManager._colorMask(true, true, true, true);
+            RenderSystem.colorMask(true, true, true, true);
         }
         else {
-            GlStateManager._colorMask(true, true, true, false);
+            RenderSystem.colorMask(true, true, true, false);
         }
         
         ShaderInstance shader = doUseAlphaBlend ?
@@ -356,9 +380,9 @@ public class MyRenderHelper {
         bufferBuilder.addVertex(0.0f, 1.0f, 0.0f);
         BufferUploader.draw(bufferBuilder.buildOrThrow());
         shader.clear();
-        
-        GlStateManager._depthMask(true);
-        GlStateManager._colorMask(true, true, true, true);
+
+        RenderSystem.depthMask(true);
+        RenderSystem.colorMask(true, true, true, true);
         
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
