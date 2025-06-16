@@ -17,6 +17,7 @@ import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.neoforged.neoforge.event.EventHooks;
 import org.apache.commons.lang3.Validate;
 import org.apache.commons.lang3.mutable.MutableInt;
 import org.slf4j.Logger;
@@ -204,6 +205,7 @@ public class PlayerChunkLoading {
 //                onSendPacket(serverGamePacketListenerImpl, levelChunk);
             }
         );
+        EventHooks.fireChunkSent(serverGamePacketListenerImpl.getPlayer(), levelChunk, serverLevel);
     }
     
 //    /**

@@ -18,6 +18,7 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.EventHooks;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -259,6 +260,7 @@ public class ImmPtlChunkTracking {
 
                     if (shouldRemove) {
                         if (record.isLoadedToPlayer) {
+                            EventHooks.fireChunkUnWatch(player, new ChunkPos(record.chunkPos), player.getServer().getLevel(record.dimension));
                             player.connection.send(
                                     PacketRedirection.createRedirectedMessage(
                                             player.getServer(),

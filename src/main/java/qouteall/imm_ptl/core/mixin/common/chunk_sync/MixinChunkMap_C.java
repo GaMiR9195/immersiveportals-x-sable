@@ -1,6 +1,7 @@
 package qouteall.imm_ptl.core.mixin.common.chunk_sync;
 
 import net.minecraft.server.level.*;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -12,6 +13,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
 import qouteall.imm_ptl.core.chunk_loading.PlayerChunkLoading;
 import qouteall.imm_ptl.core.ducks.IEChunkMap;
+
+import java.util.List;
 
 @Mixin(value = ChunkMap.class, priority = 1100)
 public abstract class MixinChunkMap_C implements IEChunkMap {
@@ -71,5 +74,14 @@ public abstract class MixinChunkMap_C implements IEChunkMap {
     @Overwrite
     private void onChunkReadyToSend(LevelChunk chunk) {
         ImmPtlChunkTracking.onChunkProvidedDeferred(chunk);
+    }
+
+    /**
+     * @author Nick1st
+     * @reason otherwise, an empty list will always be returned here
+     */
+    @Overwrite
+    public List<ServerPlayer> getPlayers(ChunkPos pos, boolean boundaryOnly) {
+        return ImmPtlChunkTracking.getPlayersViewingChunk(level.dimension(), pos.x, pos.z, boundaryOnly);
     }
 }
