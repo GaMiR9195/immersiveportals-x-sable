@@ -7,6 +7,13 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 ## [Unreleased Changes]
 None currently
 
+## [6.0.7] - 2025-06-18
+
+### Fixed
+
+- Oritech animations not displaying ([#13](https://github.com/iPortalTeam/ImmersivePortalsModForNeo/issues/13)).
+- ComputerCraft monitors not displaying anything ([#31](https://github.com/iPortalTeam/ImmersivePortalsModForNeo/issues/31)).
+
 ## [6.0.6] - 2024-12-22
 
 ### Updated
@@ -30,7 +37,8 @@ None currently
 - Iris compatibility is not fully functional
 - Crash with SecurityCraft
 
-[Unreleased Changes]: https://github.com/iPortalTeam/ImmersivePortalsModForNeo/compare/v6.0.6...HEAD
+[Unreleased Changes]: https://github.com/iPortalTeam/ImmersivePortalsModForNeo/compare/v6.0.7...HEAD
+[6.0.7]: https://github.com/iPortalTeam/ImmersivePortalsModForNeo/releases/tag/v6.0.7
 [6.0.6]: https://github.com/iPortalTeam/ImmersivePortalsModForNeo/releases/tag/v6.0.6
 [6.0.3]: https://github.com/iPortalTeam/ImmersivePortalsModForNeo/releases/tag/v6.0.3
 

@@ -32,6 +32,16 @@ repositories {
             includeGroup "maven.modrinth"
         }
     }
+    exclusiveContent {
+        forRepository {
+            maven {
+                url "https://cursemaven.com"
+            }
+        }
+        filter {
+            includeGroup "curse.maven"
+        }
+    }
     maven {
         name "tterrag maven"
         url "https://maven.tterrag.com/"
@@ -123,7 +133,7 @@ dependencies {
     /*implementation "maven.modrinth:embeddium:Na1PoLYF"
     compileOnly "maven.modrinth:oculus:1.20.1-1.6.15a"*/
 
-    implementation "maven.modrinth:sodium:mc1.21.1-0.6.5-neoforge"
+    implementation "maven.modrinth:sodium:mc1.21.1-0.6.13-neoforge"
     implementation "maven.modrinth:iris:1.8.1+1.21.1-neoforge"
 
     implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
@@ -132,6 +142,25 @@ dependencies {
     // The Aether
     implementation "maven.modrinth:owo-lib:0.12.15-beta.12+1.21"
     implementation "maven.modrinth:aether:1.21.1-1.5.1-beta.4-neoforge"
+
+//    // Confluence: Otherworld
+//    implementation "maven.modrinth:confluence:1.1.3"
+//    implementation "maven.modrinth:curios:9.5.1+1.21.1"
+
+//    // Camol
+//    implementation "curse.maven:camol-1214396:6337020"
+
+    // Oritech
+    implementation "maven.modrinth:oritech:0.16.2"
+    implementation "maven.modrinth:architectury-api:13.0.8+neoforge"
+    implementation "maven.modrinth:geckolib:DTo3uxPN"
+    implementation "maven.modrinth:stitch:4.0.1"
+
+    // Create
+    implementation "maven.modrinth:create:1.21.1-6.0.6"
+
+    // Mekanism
+    implementation "maven.modrinth:mekanism:10.7.14.79"
 }
 
 tasks.named('build').configure { dependsOn('jarJar') }
