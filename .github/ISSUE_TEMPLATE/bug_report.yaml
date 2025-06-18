@@ -1,5 +1,6 @@
 name: Issue Report
 description: File an issue report
+labels: bug,needs-triage
 body:
   - type: dropdown
     id: is_compat
