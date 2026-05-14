@@ -154,10 +154,18 @@ dependencies {
     implementation "maven.modrinth:oritech:0.16.2"
     implementation "maven.modrinth:architectury-api:13.0.8+neoforge"
     implementation "maven.modrinth:geckolib:DTo3uxPN"
-    implementation "maven.modrinth:stitch:4.0.1"
+    // stitch:4.0.1 no longer exists on Modrinth maven (404). Unused in IP src - commenting out.
+    // implementation "maven.modrinth:stitch:4.0.1"
 
-    // Create
-    implementation "maven.modrinth:create:1.21.1-6.0.6"
+    // Create (bumped from 6.0.6 to 6.0.10 to match Sable's pin)
+    implementation "maven.modrinth:create:UjX6dr61"
+
+    // Create Aeronautics (bundled jar; brings its own deps via JarInJar)
+    runtimeOnly "maven.modrinth:create-aeronautics:YhZLrAFC"
+
+    // Sable - local build from ../sable-src; needed at compile time so IP's
+    // mixin compat patches can target Sable classes/methods.
+    implementation files("deps/sable-neoforge-1.21.1-1.2.2.jar")
 
     // Mekanism
     implementation "maven.modrinth:mekanism:10.7.14.79"
