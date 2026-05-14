@@ -84,27 +84,20 @@ public abstract class MixinTrackedEntity implements IETrackedEntity {
         );
     }
     
-    /**
-     * @author qouteall
-     * @reason managed by ImmPtl
-     * In vanilla, entity tracking updates when
-     * - {@link ChunkMap#move(ServerPlayer)}
-     *   When the player moves, the entities in curr dim except that player updates to that player,
-     *   and that player updates to all player in that dimension
-     */
-    @Overwrite
-    public void updatePlayer(ServerPlayer player) {
-        // nothing
-    }
-    
-    /**
-     * @author qouteall
-     * @reason managed by ImmPtl
-     */
-    @Overwrite
-    public void updatePlayers(List<ServerPlayer> list) {
-        // nothing
-    }
+    // NOTE: Removed empty @Overwrite of updatePlayer(ServerPlayer) and updatePlayers(List<ServerPlayer>).
+    // They conflicted with Sable's @Redirect on Entity.position() inside vanilla updatePlayer
+    // (both at default priority 1000 -> InvalidInjectionException during mixin apply phase, server
+    // crash on world load when Sable + IP are both present).
+    //
+    // Safe to remove: IP already routes around these in MixinChunkMap_E:
+    //   - @Inject HEAD on ChunkMap.tick() with ci.cancel() kills the vanilla per-tick tracker loop.
+    //   - @Redirect on ChunkMap.addEntity reroutes the updatePlayers call to ip_updateEntityTrackingStatus.
+    // And the @Redirects above on broadcast/broadcastAndSend wrap any packet sends through
+    // PacketRedirection.withForceRedirect regardless of caller, preserving dimension routing.
+    //
+    // Net effect: vanilla updatePlayer is dead code in IP env; restoring its body lets Sable's
+    // @Redirect bind successfully without any functional change to IP's entity tracking, which still
+    // runs entirely through ip_updateEntityTrackingStatus (called from EntitySync.update()).
     
     @Override
     public Entity ip_getEntity() {
