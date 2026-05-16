@@ -13,6 +13,8 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -80,14 +82,42 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
     @Unique
     private static final CountDownInt IMM_PTL_LOG_COUNTER = new CountDownInt(20);
     
-    @Redirect(
+    // Originally a @Redirect of Entity.collide(Vec3) inside Entity.move(MoverType,Vec3).
+    // Converted to @WrapOperation so this coexists with Sable's @Redirect at
+    // sable.mixins.json:entity.entity_sublevel_collision.EntityMixin (priority 1100) targeting
+    // the same INVOKE.
+    //
+    // With two @Redirects at unequal priority, Sable's wins and IP's is skipped; IP's default
+    // require=1 then trips an InjectionError at mixin apply time and the server refuses to boot
+    // (this was conflict #1 of 5 in the audit at audit/phase4_classified.md).
+    //
+    // @WrapOperation chains via MixinExtras instead: when we delegate via
+    //   original.call(entity, attemptedMove)
+    // the underlying INVOKE routes into Sable's @Redirect, which does sub-level-aware collision
+    // followed by vanilla Entity.collide(...) and returns the merged motion. So Sable's full
+    // collision behavior is preserved for the non-portal path. When IP handles cross-portal
+    // collision itself, Sable's path is intentionally bypassed -- an entity actually traversing
+    // a portal should not have sub-level block-collision applied to it.
+    //
+    // TODO(sable-transit): This is also the natural integration point for sub-level traversal
+    // through portals. Pseudocode for the future expansion:
+    //
+    //     if (entity instanceof KinematicContraption kc && isCrossingPortalThisTick(self)) {
+    //         return handleSubLevelTransit(kc, attemptedMove);  // detect + trigger + suppress
+    //     }
+    //
+    // would go above the IPGlobal.crossPortalCollision branch. Detection here (per-collision-
+    // step, accurate to the bytecode INVOKE site) replaces the bridge mod's per-10-tick
+    // polling scan in XDimTransit, which had a cooldown-cycling duplication bug. See
+    // audit/phase4_classified.md row 4 and the conversation around XDimTransit's failures.
+    @WrapOperation(
         method = "Lnet/minecraft/world/entity/Entity;move(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V",
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/world/entity/Entity;collide(Lnet/minecraft/world/phys/Vec3;)Lnet/minecraft/world/phys/Vec3;"
         )
     )
-    private Vec3 redirectHandleCollisions(Entity entity, Vec3 attemptedMove) {
+    private Vec3 redirectHandleCollisions(Entity entity, Vec3 attemptedMove, Operation<Vec3> original) {
         if (!IPGlobal.enableServerCollision) {
             if (!entity.level().isClientSide()) {
                 if (entity instanceof Player) {
@@ -98,7 +128,7 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
                 }
             }
         }
-        
+
         if (attemptedMove.lengthSqr() > 60 * 60) {
             // avoid loading too many chunks in collision calculation and lag the server
             if (IMM_PTL_LOG_COUNTER.tryDecrement()) {
@@ -108,22 +138,25 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
                     new Throwable()
                 );
             }
-            
+
             return Vec3.ZERO;
         }
-        
+
         if (!IPGlobal.crossPortalCollision
             || ip_portalCollisionHandler == null
             || !ip_portalCollisionHandler.hasCollisionEntry()
         ) {
-            Vec3 normalCollisionResult = collide(attemptedMove);
+            // Was: collide(attemptedMove) -- the @Shadow virtual call, which bypassed any
+            // other mixins at this call site. Now delegates through the operation chain so
+            // Sable's sub-level-aware @Redirect (and any future co-applied wrappers) still run.
+            Vec3 normalCollisionResult = (Vec3) original.call(entity, attemptedMove);
             return normalCollisionResult;
         }
-        
+
         Vec3 result = ip_portalCollisionHandler.handleCollision(
             (Entity) (Object) this, attemptedMove
         );
-        
+
         if (result.lengthSqr() > 20 * 20) {
             if (IMM_PTL_LOG_COUNTER.tryDecrement()) {
                 LOGGER.error(
@@ -133,7 +166,7 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
             }
             return Vec3.ZERO;
         }
-        
+
         return result;
     }
     
