@@ -5,7 +5,7 @@
   "compatibilityLevel": "JAVA_17",
   "mixins": [
     "SableSubLevelGetterBridgeMixin",
-    "debug.SableTrackingDebugMixin"
+    "SableStartTrackingDedupeMixin"
   ],
   "injectors": {
     "defaultRequire": 0

@@ -173,6 +173,12 @@ dependencies {
     //     META-INF/jarjar/sable-companion-common-1.21.1-1.6.0.jar -d deps/
     implementation files("deps/sable-neoforge-1.21.1-1.2.2.jar")
     implementation files("deps/sable-companion-common-1.21.1-1.6.0.jar")
+    // Veil - Sable's networking framework. Its PacketContext type appears in Sable's
+    // packet handler signatures, so we need it on the compile classpath when mixing
+    // into those handlers. Veil ships inside Sable's JarJar at runtime; extracted once via:
+    //   unzip -j deps/sable-neoforge-1.21.1-1.2.2.jar \
+    //     META-INF/jarjar/veil-neoforge-1.21.1-4.0.1.jar -d deps/
+    implementation files("deps/veil-neoforge-1.21.1-4.0.1.jar")
 
     // Mekanism
     implementation "maven.modrinth:mekanism:10.7.14.79"
