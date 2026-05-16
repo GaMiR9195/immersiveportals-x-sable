@@ -1,5 +1,6 @@
 package qouteall.imm_ptl.core.mixin.client.render;
 
+import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.sugar.Local;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.platform.Lighting;
@@ -22,9 +23,11 @@ import net.minecraft.client.renderer.ViewArea;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
+import ipl.sable.SableBridge;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.apache.commons.lang3.Validate;
@@ -556,22 +559,44 @@ public abstract class MixinLevelRenderer implements IEWorldRenderer {
     }
     
     /**
-     * when rendering portal, it won't call {@link ViewArea#repositionCamera(double, double)}
-     * So {@link ViewArea#getRenderSectionAt} will return incorrect result
+     * When rendering a portal, vanilla won't call {@link ViewArea#repositionCamera(double, double)},
+     * so {@link ViewArea#getRenderSectionAt} returns an incorrect result; IP uses its own
+     * {@link ImmPtlViewArea} during portal rendering and consults that instead.
+     *
+     * <p>Originally @Inject HEAD cancellable. Conflict #4 of 5 in audit/phase4_classified.md:
+     * Sable's sublevel_render/impl/sodium/LevelRendererMixin (p=1002) @Overwrites this method
+     * in Sodium environments to return sub-level renderData status (for plot chunks) or
+     * sodiumRenderer.isSectionReady (otherwise). With the @Overwrite, IP's @Inject HEAD anchor
+     * is erased and IP's require=1 trips InjectionError at apply.
+     *
+     * <p>Replaced with MixinExtras @ModifyReturnValue. The handler runs on every RETURN
+     * instruction of whichever variant of the method ends up applied at runtime -- including
+     * the synthetic return emitted by Sable's vanilla-variant @Inject HEAD cancellable, and
+     * including the explicit returns inside Sable's sodium-variant @Overwrite body. Layering:
+     * <ul>
+     *   <li>Sodium present + plot chunk: Sable's @Overwrite returns sub-level data. IP's
+     *       Sodium-presence guard short-circuits, value passes through unchanged.</li>
+     *   <li>Sodium present + non-plot: Sable returns sodiumRenderer answer. IP guard
+     *       short-circuits, value passes through.</li>
+     *   <li>No Sodium + plot chunk: Sable @Inject cancels with sub-level data. IP's
+     *       isPlotChunk guard short-circuits so Sable's value wins (without the guard, IP
+     *       would override portal-rendering with ip_isChunkCompiled, masking sub-level
+     *       data).</li>
+     *   <li>No Sodium + non-plot + portal rendering + ImmPtlViewArea: IP's intended override
+     *       fires (ip_isChunkCompiled), preserving upstream behavior.</li>
+     *   <li>Otherwise: vanilla / Sable's pass-through.</li>
+     * </ul>
+     *
+     * <p>With Sable absent, SableBridge.isPlotChunk returns false unconditionally, collapsing
+     * the layering to upstream IP's exact behavior.
      */
-    @Inject(
-        method = "isSectionCompiled",
-        at = @At("HEAD"),
-        cancellable = true
-    )
-    private void onIsChunkCompiled(BlockPos blockPos, CallbackInfoReturnable<Boolean> cir) {
-        if (PortalRendering.isRendering()) {
-            if (!SodiumInterface.invoker.isSodiumPresent()) {
-                if (viewArea instanceof ImmPtlViewArea immPtlViewArea) {
-                    cir.setReturnValue(ip_isChunkCompiled(immPtlViewArea, blockPos));
-                }
-            }
-        }
+    @ModifyReturnValue(method = "isSectionCompiled", at = @At("RETURN"))
+    private boolean ip_overridePortalSectionCompiled(boolean originalResult, BlockPos blockPos) {
+        if (!PortalRendering.isRendering()) return originalResult;
+        if (SodiumInterface.invoker.isSodiumPresent()) return originalResult;
+        if (!(viewArea instanceof ImmPtlViewArea immPtlViewArea)) return originalResult;
+        if (SableBridge.isPlotChunk(level, new ChunkPos(blockPos))) return originalResult;
+        return ip_isChunkCompiled(immPtlViewArea, blockPos);
     }
     
     private boolean ip_isChunkCompiled(ImmPtlViewArea immPtlViewArea, BlockPos blockPos) {
