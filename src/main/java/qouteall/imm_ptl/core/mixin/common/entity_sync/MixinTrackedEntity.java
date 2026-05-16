@@ -13,7 +13,9 @@ import net.minecraft.world.entity.Entity;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.*;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
 import qouteall.imm_ptl.core.ducks.IEChunkMap;
 import qouteall.imm_ptl.core.ducks.IEEntityTrackerEntry;
@@ -84,20 +86,41 @@ public abstract class MixinTrackedEntity implements IETrackedEntity {
         );
     }
     
-    // NOTE: Removed empty @Overwrite of updatePlayer(ServerPlayer) and updatePlayers(List<ServerPlayer>).
-    // They conflicted with Sable's @Redirect on Entity.position() inside vanilla updatePlayer
-    // (both at default priority 1000 -> InvalidInjectionException during mixin apply phase, server
-    // crash on world load when Sable + IP are both present).
+    // IP manages entity tracking exclusively via ip_updateEntityTrackingStatus() (below),
+    // called per-tick from qouteall.imm_ptl.core.chunk_loading.EntitySync.update(server).
+    // Vanilla's updatePlayer/updatePlayers MUST NOT run alongside it -- their distance-based
+    // add/remove of `seenBy` competes with IP's portal-aware tracking and produces per-chunk-
+    // boundary Add/Remove packet ping-pong on the client (visible as F3 entity-count flicker
+    // and intermittent entity rendering).
     //
-    // Safe to remove: IP already routes around these in MixinChunkMap_E:
-    //   - @Inject HEAD on ChunkMap.tick() with ci.cancel() kills the vanilla per-tick tracker loop.
-    //   - @Redirect on ChunkMap.addEntity reroutes the updatePlayers call to ip_updateEntityTrackingStatus.
-    // And the @Redirects above on broadcast/broadcastAndSend wrap any packet sends through
-    // PacketRedirection.withForceRedirect regardless of caller, preserving dimension routing.
+    // The vanilla per-tick tracker loop is cancelled in MixinChunkMap_E. But ChunkMap.move(
+    // ServerPlayer) -- fired every time a player crosses a chunk boundary -- ALSO iterates
+    // every tracked entity and calls tracker.updatePlayer(player). That second call site is
+    // not intercepted in MixinChunkMap_E and remains active.
     //
-    // Net effect: vanilla updatePlayer is dead code in IP env; restoring its body lets Sable's
-    // @Redirect bind successfully without any functional change to IP's entity tracking, which still
-    // runs entirely through ip_updateEntityTrackingStatus (called from EntitySync.update()).
+    // Originally IP handled this with @Overwrite(updatePlayer) + @Overwrite(updatePlayers) to
+    // empty bodies, making the move() call a no-op. Sable's
+    // dev.ryanhcode.sable.mixin.entity.entity_tracking.TrackedEntityMixin has a @Redirect on
+    // the Entity.position() INVOKE inside the vanilla updatePlayer body; with IP's @Overwrite
+    // to empty body, the INVOKE doesn't exist and Sable's require=1 trips InjectionError at
+    // apply phase -> server refuses to boot when Sable+IP are both present.
+    //
+    // Resolution: @Inject HEAD cancellable instead of @Overwrite. The vanilla body remains in
+    // bytecode (so Sable's @Redirect can bind successfully -- bind is what counts toward
+    // require, not execution), but IP's @Inject cancels at HEAD before vanilla's distance
+    // logic runs. Net behavior matches the original @Overwrite exactly; Sable's @Redirect
+    // is technically bound but never fires because vanilla's body never executes.
+    @Inject(method = "updatePlayer(Lnet/minecraft/server/level/ServerPlayer;)V",
+            at = @At("HEAD"), cancellable = true)
+    private void ip_cancelUpdatePlayer(ServerPlayer player, CallbackInfo ci) {
+        ci.cancel();
+    }
+
+    @Inject(method = "updatePlayers(Ljava/util/List;)V",
+            at = @At("HEAD"), cancellable = true)
+    private void ip_cancelUpdatePlayers(List<ServerPlayer> list, CallbackInfo ci) {
+        ci.cancel();
+    }
     
     @Override
     public Entity ip_getEntity() {
