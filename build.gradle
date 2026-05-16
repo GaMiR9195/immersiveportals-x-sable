@@ -165,7 +165,14 @@ dependencies {
 
     // Sable - local build from ../sable-src; needed at compile time so IP's
     // mixin compat patches can target Sable classes/methods.
+    // The companion jar ships inside Sable's JarJar at runtime, but we need it on the
+    // compile classpath separately because Sable's API surface returns companion types
+    // (SubLevel.boundingBox() returns BoundingBox3dc, logicalPose() returns Pose3d, etc).
+    // Extracted once via:
+    //   unzip -j deps/sable-neoforge-1.21.1-1.2.2.jar \
+    //     META-INF/jarjar/sable-companion-common-1.21.1-1.6.0.jar -d deps/
     implementation files("deps/sable-neoforge-1.21.1-1.2.2.jar")
+    implementation files("deps/sable-companion-common-1.21.1-1.6.0.jar")
 
     // Mekanism
     implementation "maven.modrinth:mekanism:10.7.14.79"

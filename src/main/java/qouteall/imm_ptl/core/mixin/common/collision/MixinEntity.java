@@ -13,8 +13,10 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
+import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import ipl.sable.SableBridge;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -246,29 +248,62 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
         }
     }
     
-    // fix climbing onto ladder cross portal
-    @Inject(method = "getInBlockState", at = @At("HEAD"), cancellable = true)
-    private void onGetInBlockState(CallbackInfoReturnable<BlockState> cir) {
+    // Was: @Inject HEAD cancellable on getInBlockState, returning early when an entity under
+    // an upward-facing portal should report the across-portal block (e.g. ladder cross-portal).
+    //
+    // Conflict #2 of 5 in audit/phase4_classified.md: Sable's
+    // entity.entity_sublevel_collision.EntityMixin (priority 1100) @Overwrites this method to
+    // also walk intersecting sub-levels on the source side. With an @Overwrite from Sable and
+    // an @Inject HEAD cancellable from IP, IP's injection can't bind (Sable erases the HEAD
+    // anchor) and IP's default require=1 fails -> InjectionError, no boot.
+    //
+    // Converted to @ModifyReturnValue. This binds to the method's RETURN sites, which survive
+    // Sable's overwrite (Sable's body still has a return statement). The layering is now:
+    //   1. Sable's @Overwrite computes the in-block-state, consulting source-side sub-levels.
+    //   2. Our @ModifyReturnValue runs on the way out. If the entity is colliding with an
+    //      upward-facing portal AND a non-air block exists at the portal-transformed position
+    //      in the destination world -- either as a natural block or inside a destination-side
+    //      sub-level -- we override Sable's result with that destination block.
+    //   3. Otherwise Sable's answer passes through unchanged.
+    //
+    // Behavioral expansion over the original IP: this also handles "ladder lives on an
+    // airship in the destination dim" via SableBridge.lookupNonAirSubLevelBlockAt, which
+    // mirrors Sable's source-side sub-level walk on the destination side. With Sable absent
+    // the call is a no-op (returns null), restoring exact upstream IP behavior.
+    @ModifyReturnValue(method = "getInBlockState", at = @At("RETURN"))
+    private BlockState ip_overrideForUpwardPortalCrossing(BlockState sableResult) {
         Portal collidingPortal = ((IEEntity) this).ip_getCollidingPortal();
-        Entity this_ = (Entity) (Object) this;
-        if (collidingPortal != null) {
-            if (collidingPortal.getNormal().y > 0) {
-                BlockPos remoteLandingPos = BlockPos.containing(
-                    collidingPortal.transformPoint(this_.position())
-                );
-                
-                Level destinationWorld = collidingPortal.getDestinationWorld();
-                
-                if (destinationWorld.hasChunkAt(remoteLandingPos)) {
-                    BlockState result = destinationWorld.getBlockState(remoteLandingPos);
-                    
-                    if (!result.isAir()) {
-                        cir.setReturnValue(result);
-                        cir.cancel();
-                    }
-                }
-            }
+        if (collidingPortal == null) {
+            return sableResult;
         }
+        if (collidingPortal.getNormal().y <= 0) {
+            // only upward-facing portals get the cross-portal block lookup
+            return sableResult;
+        }
+
+        Entity self = (Entity) (Object) this;
+        Vec3 remoteWorldPos = collidingPortal.transformPoint(self.position());
+        BlockPos remoteLandingPos = BlockPos.containing(remoteWorldPos);
+        Level destinationWorld = collidingPortal.getDestinationWorld();
+
+        if (!destinationWorld.hasChunkAt(remoteLandingPos)) {
+            return sableResult;
+        }
+
+        // (1) Try the destination world's natural block (upstream IP behavior).
+        BlockState naturalDestState = destinationWorld.getBlockState(remoteLandingPos);
+        if (!naturalDestState.isAir()) {
+            return naturalDestState;
+        }
+
+        // (2) Try destination-side sub-levels via Sable's API. No-op (returns null) when Sable
+        //     isn't loaded. Symmetric to Sable's source-side getInBlockState pattern.
+        BlockState subLevelDestState = SableBridge.lookupNonAirSubLevelBlockAt(destinationWorld, remoteWorldPos);
+        if (subLevelDestState != null) {
+            return subLevelDestState;
+        }
+
+        return sableResult;
     }
     
 //    // IDEA's conditional breakpoint hurts performance
