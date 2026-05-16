@@ -1,9 +1,11 @@
 package ipl.sable;
 
 import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3d;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -36,5 +38,10 @@ final class SableImpl {
             }
         }
         return null;
+    }
+
+    static boolean isPlotChunk(Level world, ChunkPos chunkPos) {
+        SubLevelContainer container = SubLevelContainer.getContainer(world);
+        return container != null && container.inBounds(chunkPos);
     }
 }

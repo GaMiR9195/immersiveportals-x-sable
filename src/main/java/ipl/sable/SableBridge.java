@@ -1,6 +1,7 @@
 package ipl.sable;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -66,5 +67,25 @@ public final class SableBridge {
     public static BlockState lookupNonAirSubLevelBlockAt(Level world, Vec3 worldPos) {
         if (!PRESENT) return null;
         return SableImpl.lookupNonAirSubLevelBlockAt(world, worldPos);
+    }
+
+    /**
+     * Tests whether {@code chunkPos} is inside the sub-level plot grid for {@code world}.
+     *
+     * <p>Sable allocates sub-levels far out in chunk coordinates (default origin around
+     * {@code (10000, 10000)} chunks, ~160k blocks out). A chunk whose coordinates fall
+     * inside that plot grid contains a sub-level's internal block storage; a chunk outside
+     * is a normal world chunk.
+     *
+     * <p>Used by IP's {@code ChunkMap.getPlayers} replacement to route plot chunks to
+     * Sable's sub-level-tracker lookup and leave normal chunks to IP's portal-aware
+     * chunk tracking.
+     *
+     * @return {@code true} if the chunk is in Sable's plot grid; {@code false} if Sable is
+     *         absent, the level has no plot container, or the chunk is in normal world space.
+     */
+    public static boolean isPlotChunk(Level world, ChunkPos chunkPos) {
+        if (!PRESENT) return false;
+        return SableImpl.isPlotChunk(world, chunkPos);
     }
 }
