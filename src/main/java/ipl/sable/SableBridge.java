@@ -88,4 +88,31 @@ public final class SableBridge {
         if (!PRESENT) return false;
         return SableImpl.isPlotChunk(world, chunkPos);
     }
+
+    /**
+     * Computes squared distance from {@code playerPos} to {@code (x, y, z)} accounting for
+     * sub-level offsets, mirroring Sable's own {@code ActiveSableCompanion.distanceSquaredWithSubLevels}
+     * semantics: if the player is on a sub-level or {@code (x, y, z)} is at a plot coordinate
+     * that has a corresponding visible world coordinate, the visible position is used in the
+     * distance calculation.
+     *
+     * <p>With Sable absent, falls back to plain Euclidean squared distance from
+     * {@code playerPos} to {@code (x, y, z)} -- the vanilla broadcast distance metric.
+     *
+     * <p>Used by IP's {@code PlayerList.broadcast} replacement to deliver position-radius
+     * packets (e.g. sound events) to players standing on airships, whose visible position is
+     * far from the plot coordinate where the sound originated but whose perceived distance
+     * should be computed against the visible airship location.
+     */
+    public static double distanceSquaredWithSubLevels(
+        Level level, Vec3 playerPos, double x, double y, double z
+    ) {
+        if (!PRESENT) {
+            double dx = playerPos.x - x;
+            double dy = playerPos.y - y;
+            double dz = playerPos.z - z;
+            return dx * dx + dy * dy + dz * dz;
+        }
+        return SableImpl.distanceSquaredWithSubLevels(level, playerPos, x, y, z);
+    }
 }

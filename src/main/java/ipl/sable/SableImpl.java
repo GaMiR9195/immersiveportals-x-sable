@@ -44,4 +44,10 @@ final class SableImpl {
         SubLevelContainer container = SubLevelContainer.getContainer(world);
         return container != null && container.inBounds(chunkPos);
     }
+
+    static double distanceSquaredWithSubLevels(
+        Level level, Vec3 playerPos, double x, double y, double z
+    ) {
+        return Sable.HELPER.distanceSquaredWithSubLevels(level, playerPos, x, y, z);
+    }
 }
