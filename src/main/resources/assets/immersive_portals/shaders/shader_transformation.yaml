@@ -91,6 +91,18 @@ configs:
       - terrain_solid
       - terrain_cutout
       - terrain_translucent
+      # Entity shaders. The user's IPL-SHADER-DUMP from a shaderpack run confirmed
+      # entities_* use the exact same Iris-rewritten attribute layout as terrain_*:
+      # iris_Position + iris_ChunkOffset, iris_ModelViewMat, gbufferModelViewInverse.
+      # So the same chain `gbufferModelViewInverse * iris_ModelViewMat * vec4(iris_Position
+      # + iris_ChunkOffset, 1.0)` produces camera-relative world coords for entity
+      # vertices (the per-entity model translation gets folded into iris_ChunkOffset).
+      # Adding them here fixes IP's slot 0 clip (iportal_ClippingEquation) for block
+      # entities through portal-through views -- the previously-unclipped chest case --
+      # plus our slot 1 for any sub-level block entities we'll bracket separately.
+      - entities_solid
+      - entities_cutout
+      - entities_translucent
     transformations:
       - pattern: |-
           void ( )*main( )*\(( )*( )*\)( )*(
