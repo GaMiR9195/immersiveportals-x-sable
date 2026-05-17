@@ -74,24 +74,39 @@ public class ShaderCodeTransformation {
             LOGGER.info("Shader Transform Skipping {}", shaderId);
             return inputCode;
         }
-        
+
+        // IPL diagnostic: dump full shader source for any shader matching a watchlist
+        // so we can see what attribute / uniform names it uses. Set via
+        // -Dipl.sable.clip.dumpShaders=terrain_solid,terrain_cutout etc. (comma-separated).
+        // No transformation is applied -- this is read-only inspection.
+        String dumpList = System.getProperty("ipl.sable.clip.dumpShaders", "");
+        if (!dumpList.isEmpty()) {
+            for (String wanted : dumpList.split(",")) {
+                if (wanted.trim().equals(shaderId)) {
+                    LOGGER.info("[IPL-SHADER-DUMP] type={} id={}\n----- BEGIN -----\n{}\n----- END -----",
+                        type, shaderId, inputCode);
+                    break;
+                }
+            }
+        }
+
         Config selected = getConfig(type, shaderId);
-        
+
         if (selected == null) {
             return inputCode;
         }
-        
+
         String result = inputCode;
-        
+
         for (TransformationEntry entry : selected.transformations) {
             String replacement = String.join("\n", entry.replacement);
             result = result.replaceAll(entry.pattern, replacement);
         }
-        
+
         if (selected.debugOutput) {
             LOGGER.info("Shader Transformed {}\n{}", shaderId, result);
         }
-        
+
         return result;
     }
     

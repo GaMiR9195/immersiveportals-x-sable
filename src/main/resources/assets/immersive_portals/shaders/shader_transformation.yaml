@@ -7,18 +7,13 @@ configs:
       - rendertype_cutout
       - rendertype_cutout_mipped
       - rendertype_translucent
-      # Sable's vanilla-dispatcher chunk shaders. Same attribute layout as
-      # vanilla terrain (Position attribute, ChunkOffset uniform) -- Sable's
-      # VanillaChunkedSubLevelRenderData.renderChunkedSubLevel sets MODEL_VIEW_MATRIX
-      # and CHUNK_OFFSET uniforms directly on these shaders, confirming the
-      # drop-in compat. ipl/sable/render/SubLevelClipUniformPatcher rewrites
-      # the equation per sub-level (R^-1 * normal) so the discard math works
-      # in Sable's inverse-rotated plot space.
-      - terrain_solid
-      - terrain_cutout
-      - terrain_translucent
-      - shadow_terrain_cutout
-      - shadow_translucent
+      # NOTE: previous attempt to add Sable's 'terrain_solid' etc. shaders here
+      # caused an Iris shader compile error: "undefined variable Position".
+      # Those shaders use Iris/Veil attribute conventions, not vanilla's
+      # `in vec3 Position`. They need a separate transformation entry below
+      # that targets their actual attribute layout, but we don't yet know
+      # what that layout is. Reverted to keep the world functional while we
+      # find the correct injection pattern.
     transformations:
       - pattern: |-
           void ( )*main( )*\(( )*( )*\)( )*(
