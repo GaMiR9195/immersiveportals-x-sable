@@ -7,6 +7,8 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import net.minecraft.client.renderer.ShaderInstance;
 import org.joml.Quaterniondc;
 import org.joml.Vector3d;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.ducks.IEShader;
 import qouteall.imm_ptl.core.render.FrontClipping;
 
@@ -47,6 +49,19 @@ import qouteall.imm_ptl.core.render.FrontClipping;
  */
 public final class SubLevelClipUniformPatcher {
 
+    private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-clip-patch");
+    private static volatile long lastReportNanos = 0L;
+
+    /**
+     * When set to "true" via -Dipl.sable.clip.forceAll=true on the JVM cmdline, override the
+     * equation with (0, 0, 0, -1) -- which forces every fragment past the discard to
+     * evaluate to -1, clipping all geometry. Used as a diagnostic: if airship still
+     * renders with this set, the uniform isn't reaching the shader at all (rather than
+     * the math being wrong).
+     */
+    private static final boolean FORCE_CLIP_ALL =
+        Boolean.getBoolean("ipl.sable.clip.forceAll");
+
     private SubLevelClipUniformPatcher() {}
 
     /**
@@ -80,12 +95,20 @@ public final class SubLevelClipUniformPatcher {
         // c is preserved because the matrix Sable uses has no translation;
         // translation is encoded in ChunkOffset which is on the position side of
         // the dot product, not the equation side.
-        uniform.set(
-            (float) shaderNormal.x,
-            (float) shaderNormal.y,
-            (float) shaderNormal.z,
-            (float) worldEq[3]
-        );
+        float nx, ny, nz, cw;
+        if (FORCE_CLIP_ALL) {
+            // Diagnostic mode: force every vertex to evaluate to -1, clipping all
+            // geometry. If the airship STILL renders with this active, the uniform
+            // isn't reaching the GPU at all.
+            nx = 0f; ny = 0f; nz = 0f; cw = -1f;
+        } else {
+            nx = (float) shaderNormal.x;
+            ny = (float) shaderNormal.y;
+            nz = (float) shaderNormal.z;
+            cw = (float) worldEq[3];
+        }
+
+        uniform.set(nx, ny, nz, cw);
 
         // Explicit upload. IP's standard FrontClipping.updateClippingEquationUniformForCurrentShader
         // only calls set() and relies on the surrounding render path to flush uniforms via
@@ -96,6 +119,20 @@ public final class SubLevelClipUniformPatcher {
         // during the prior shader apply via IP's setShader hook). Forcing the upload here
         // makes the discard actually fire against our equation.
         uniform.upload();
+
+        // Diagnostic: every 5s, log the values we're pushing so we can sanity-check
+        // that the equation looks reasonable and the shader has the uniform.
+        long now = System.nanoTime();
+        if (now - lastReportNanos >= 5_000_000_000L) {
+            lastReportNanos = now;
+            LOG.info("[IPL-CLIP-PATCH] shader={} forceAll={} worldEq=({},{},{},{}) -> shaderEq=({},{},{},{}) orientation=({},{},{},{})",
+                shader.getName(),
+                FORCE_CLIP_ALL,
+                worldEq[0], worldEq[1], worldEq[2], worldEq[3],
+                nx, ny, nz, cw,
+                orientation.x(), orientation.y(), orientation.z(), orientation.w()
+            );
+        }
     }
 
     /**
