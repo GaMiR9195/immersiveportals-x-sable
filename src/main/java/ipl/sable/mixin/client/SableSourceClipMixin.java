@@ -4,6 +4,7 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
 import ipl.sable.render.SourceClipDiag;
 import ipl.sable.render.SourceClipPortalFinder;
+import ipl.sable.render.SubLevelClipUniformPatcher;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
 import org.joml.Matrix4f;
@@ -102,10 +103,18 @@ public abstract class SableSourceClipMixin {
 
         // Install. setupInnerClipping computes the equation in camera-relative space
         // and enables GL_CLIP_PLANE0; updateClippingEquationUniformForCurrentShader
-        // pushes the equation into the shader uniform that the transformed shader
-        // reads to discard fragments.
+        // pushes the world-space equation into the shader uniform.
         FrontClipping.setupInnerClipping(decision.plane(), modelView, 0);
         FrontClipping.updateClippingEquationUniformForCurrentShader(false);
+
+        // Then overwrite the uniform with the per-sub-level transformed equation.
+        // Sable's MODEL_VIEW_MATRIX is a pure rotation by the sub-level's
+        // orientation; Position + ChunkOffset is in inverse-rotated plot space.
+        // The shader's discard runs against that pre-rotation position, so the
+        // world-space equation IP installed wouldn't apply -- this rewrite makes
+        // it apply correctly per sub-level.
+        SubLevelClipUniformPatcher.patchForSubLevel(getSubLevel());
+
         this.ipl$installedClipThisCall = true;
         SourceClipDiag.onVanillaCall(true);
     }
