@@ -14,6 +14,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import qouteall.imm_ptl.core.render.FrontClipping;
 
 /**
  * Sodium parity for {@link SableSourceClipMixin}: when Sodium is loaded, Sable
@@ -71,7 +72,11 @@ public abstract class SableSourceClipSodiumMixin {
     private void ipl$teardownClipPlane(CallbackInfo ci) {
         if (!this.ipl$installedClipThisCall) return;
         this.ipl$installedClipThisCall = false;
-        GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
+        // Mirror SableSourceClipMixin: only disable slot 1 if IP isn't using it
+        // for portal-through. See that mixin for the full rationale.
+        if (!FrontClipping.isClippingEnabled) {
+            GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
+        }
         SubLevelClipUniformPatcher.clearAndUpload();
     }
 }

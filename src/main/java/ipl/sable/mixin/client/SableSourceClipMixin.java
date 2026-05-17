@@ -17,6 +17,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import qouteall.imm_ptl.core.render.FrontClipping;
 
 /**
  * Phase 3a: source-side render clipping for Sable sub-levels straddling a portal.
@@ -122,10 +123,18 @@ public abstract class SableSourceClipMixin {
         if (!this.ipl$installedClipThisCall) return;
         this.ipl$installedClipThisCall = false;
 
-        // Tear down: disable GL_CLIP_DISTANCE1 and zero our uniform so subsequent
-        // draws (other sub-levels, vanilla terrain after our render, entities)
-        // aren't accidentally clipped by the equation we installed.
-        GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
+        // If IP's portal-through clipping is active, leave GL_CLIP_DISTANCE1
+        // enabled -- IplShaderClipMirrorMixin is responsible for keeping slot 1
+        // populated from IP's equation during that whole pass, and the next
+        // shader switch will refresh our uniform from IP's state. Disabling here
+        // would kill clipping for the rest of the portal-through render.
+        //
+        // Otherwise (main render of source dim, no portal-through), we owned the
+        // GL_CLIP_DISTANCE1 enable and need to clear it so subsequent non-Sable
+        // draws aren't clipped by stale state.
+        if (!FrontClipping.isClippingEnabled) {
+            GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
+        }
         SubLevelClipUniformPatcher.clearAndUpload();
     }
 }

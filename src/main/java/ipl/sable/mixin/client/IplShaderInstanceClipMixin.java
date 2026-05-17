@@ -12,9 +12,9 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import qouteall.imm_ptl.core.render.ShaderCodeTransformation;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * Registers our own per-sub-level clip uniform on each {@link ShaderInstance}.
@@ -52,6 +52,28 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
     @Nullable
     private Uniform ipl$subLevelClipEquation;
 
+    /**
+     * Set of shader names whose GLSL source actually gets {@code ipl_subLevelClipEquation}
+     * declared by our transformation entry. Must stay in sync with the affectedShaders
+     * list in our {@code shader_transformation.yaml} entry that injects our slot-1
+     * uniform + write.
+     *
+     * <p>We can't reuse IP's {@code ShaderCodeTransformation.shouldAddUniform(name)} as
+     * a filter here -- that returns true for any shader in any of IP's entries, including
+     * IP-only entries whose GLSL doesn't declare our uniform. Registering a Java-side
+     * {@code Uniform} on those shaders would log "Shader X could not find uniform
+     * named ipl_subLevelClipEquation" warnings on every compile.
+     */
+    @Unique
+    private static final Set<String> IPL$AFFECTED_SHADERS = Set.of(
+        "terrain_solid",
+        "terrain_cutout",
+        "terrain_translucent",
+        "entities_solid",
+        "entities_cutout",
+        "entities_translucent"
+    );
+
     @Inject(
         method = "Lnet/minecraft/client/renderer/ShaderInstance;updateLocations()V",
         at = @At("HEAD")
@@ -59,11 +81,7 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
     private void ipl$onLoadReferences(CallbackInfo ci) {
         Shader self = (Shader) (Object) this;
 
-        // shouldAddUniform consults the same affectedShaders list that drives the
-        // shader-source transformation. If the transformation didn't inject a
-        // reference to ipl_subLevelClipEquation, we shouldn't register a Java-side
-        // Uniform for it -- the compile lookup would fail.
-        if (ShaderCodeTransformation.shouldAddUniform(name)) {
+        if (IPL$AFFECTED_SHADERS.contains(name)) {
             // type=7 (UT_FLOAT4), count=4 -- matches IP's Uniform configuration for
             // its own clipping equation uniform, which has the same vec4 layout.
             ipl$subLevelClipEquation = new Uniform(

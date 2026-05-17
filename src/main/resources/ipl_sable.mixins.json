@@ -21,7 +21,8 @@
     "client.SableAltContainerTickMixin",
     "client.SableSourceClipMixin",
     "client.SableSourceClipSodiumMixin",
-    "client.IplShaderInstanceClipMixin"
+    "client.IplShaderInstanceClipMixin",
+    "client.IplShaderClipMirrorMixin"
   ],
   "injectors": {
     "defaultRequire": 0
