@@ -6,6 +6,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.my_util.Plane;
 
@@ -52,6 +53,14 @@ public final class SourceClipPortalFinder {
         AABB box = sub.boundingBox().toMojang();
         Vec3 center = box.getCenter();
 
+        // Camera position drives the normal orientation so that "kept side of plane"
+        // is always the camera side. Without this, walking around to the back of a
+        // portal would still keep the original "+portal.getNormal()" side -- which
+        // is now the FAR-from-camera side, exactly backwards. Result: sub-level
+        // geometry the user expects to be hidden (behind the portal frame, with the
+        // mirror visible through) stays rendered.
+        Vec3 cameraPos = CHelper.getCurrentCameraPos();
+
         Portal best = null;
         double bestDistSq = Double.MAX_VALUE;
         Plane bestPlane = null;
@@ -70,11 +79,23 @@ public final class SourceClipPortalFinder {
             // plane; if signs differ, the box crosses the plane.
             if (!boxStraddlesPlane(box, origin, normal)) continue;
 
+            // Orient normal toward camera. If the camera is on the negative side of
+            // the natural portal normal, flip so the kept half-space always contains
+            // the camera. Geometry on the far side of the plane (which from the
+            // camera's POV would render "through" the portal frame, where the mirror
+            // takes over visually) gets discarded regardless of which face of the
+            // portal the user is looking at.
+            double cameraSide =
+                (cameraPos.x - origin.x) * normal.x +
+                (cameraPos.y - origin.y) * normal.y +
+                (cameraPos.z - origin.z) * normal.z;
+            Vec3 orientedNormal = cameraSide < 0 ? normal.scale(-1.0) : normal;
+
             double distSq = origin.distanceToSqr(center);
             if (distSq < bestDistSq) {
                 bestDistSq = distSq;
                 best = portal;
-                bestPlane = new Plane(origin, normal);
+                bestPlane = new Plane(origin, orientedNormal);
             }
         }
 
