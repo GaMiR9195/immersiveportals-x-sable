@@ -1,11 +1,13 @@
 package ipl.sable.mixin.client;
 
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
-import ipl.sable.IplSableLog;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.level.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -55,6 +57,9 @@ import qouteall.imm_ptl.core.ClientWorldLoader;
 @Mixin(Minecraft.class)
 public abstract class SableAltContainerTickMixin {
 
+    @Unique
+    private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-sable");
+
     @Inject(method = "tick", at = @At("TAIL"))
     private void ipl$tickAltSableContainers(CallbackInfo ci) {
         Minecraft mc = (Minecraft) (Object) this;
@@ -62,28 +67,17 @@ public abstract class SableAltContainerTickMixin {
         if (current == null) return;
         if (!ClientWorldLoader.getIsInitialized()) return;
 
-        int tickedCount = 0;
         try {
             for (ClientLevel alt : ClientWorldLoader.getClientWorlds()) {
                 if (alt == current) continue;
                 SubLevelContainer container = SubLevelContainer.getContainer((Level) alt);
                 if (container == null) continue;
                 container.tick();
-                tickedCount++;
             }
         } catch (Throwable t) {
-            IplSableLog.VEIL_CTX.warn("[IPL-SABLE-ALT-TICK] alt container tick failed", t);
-        }
-
-        // Log infrequently when actually ticking something so we can see this hook in action
-        // during cross-dim view. Sampled to avoid log flood.
-        if (tickedCount > 0 && (mc.gameRenderer != null) && (System.nanoTime() & 0x3FFFFFFFL) < 50_000_000L) {
-            // ~1.5% sample rate based on nanoTime LSBs -- cheap to filter
-            IplSableLog.VEIL_CTX.info(
-                "[IPL-SABLE-ALT-TICK] ticked {} alt sub-level container(s) (current dim={})",
-                tickedCount,
-                current.dimension().location()
-            );
+            // Don't let a single dim's tick failure kill the whole render loop. Log at warn
+            // so we notice if it starts spamming.
+            IPL$LOG.warn("[IPL-SABLE] alt container tick failed", t);
         }
     }
 }

@@ -15,8 +15,6 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
 import org.joml.Vector3dc;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
@@ -149,12 +147,6 @@ public abstract class SableCrossDimTrackingMixin {
     @Unique
     private final Set<UUID> ipl$crossDimViewerUnion = new HashSet<>();
 
-    @Unique
-    private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-sable-cross-dim");
-
-    @Unique
-    private long ipl$logTickCounter = 0;
-
     // ------------------------------------------------------------------------
     // 1. Compute cross-dim viewer sets at tick HEAD
     // ------------------------------------------------------------------------
@@ -187,18 +179,6 @@ public abstract class SableCrossDimTrackingMixin {
             if (crossDim != null) {
                 ipl$crossDimViewersBySubLevel.put(subLevel.getUniqueId(), crossDim);
             }
-        }
-
-        // Log every 20th tick or whenever the cross-dim union is non-empty (rare/interesting).
-        long c = ipl$logTickCounter++;
-        if (!ipl$crossDimViewerUnion.isEmpty() || (c % 20) == 0) {
-            IPL$LOG.info(
-                "[IPL-SABLE-CD] tick#{} dim={} crossDimUnion={} subLevelMap={}",
-                c,
-                level.dimension().location(),
-                ipl$crossDimViewerUnion,
-                ipl$crossDimViewersBySubLevel
-            );
         }
     }
 
@@ -247,9 +227,7 @@ public abstract class SableCrossDimTrackingMixin {
         Player p = original.call(lvl, uuid);
         if (p != null) return p;
         if (ipl$crossDimViewerUnion.contains(uuid)) {
-            Player crossDim = lvl.getServer().getPlayerList().getPlayer(uuid);
-            IPL$LOG.info("[IPL-SABLE-CD] sendMovementUpdates resolved cross-dim player uuid={} -> {}  lvl={}", uuid, crossDim, lvl.dimension().location());
-            return crossDim;
+            return lvl.getServer().getPlayerList().getPlayer(uuid);
         }
         return null;
     }
@@ -329,9 +307,6 @@ public abstract class SableCrossDimTrackingMixin {
         )
     )
     private void ipl$wrapBoundsUpdatesInRedirect(SubLevelTrackingSystem self, SubLevelContainer container) {
-        if (!ipl$crossDimViewerUnion.isEmpty()) {
-            IPL$LOG.info("[IPL-SABLE-CD] @Redirect bounds wrap firing  dim={}  crossDim={}", level.dimension().location(), ipl$crossDimViewerUnion);
-        }
         PacketRedirection.withForceRedirect(level, () -> sendBoundsUpdates(container));
     }
 
@@ -343,9 +318,6 @@ public abstract class SableCrossDimTrackingMixin {
         )
     )
     private void ipl$wrapMovementUpdatesInRedirect(SubLevelTrackingSystem self, SubLevelContainer container) {
-        if (!ipl$crossDimViewerUnion.isEmpty()) {
-            IPL$LOG.info("[IPL-SABLE-CD] @Redirect movement wrap firing  dim={}  crossDim={}", level.dimension().location(), ipl$crossDimViewerUnion);
-        }
         PacketRedirection.withForceRedirect(level, () -> sendMovementUpdates(container));
     }
 
@@ -368,8 +340,6 @@ public abstract class SableCrossDimTrackingMixin {
     )
     private boolean ipl$forceCrossDimToTCP(SableUDPServer server, ServerPlayer player, Operation<Boolean> original) {
         if (player.serverLevel() != level) {
-            IPL$LOG.info("[IPL-SABLE-CD] forcing TCP for cross-dim player {} (in {} not {})",
-                player.getGameProfile().getName(), player.serverLevel().dimension().location(), level.dimension().location());
             return false;
         }
         return original.call(server, player);
