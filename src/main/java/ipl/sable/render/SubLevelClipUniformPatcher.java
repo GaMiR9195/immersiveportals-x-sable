@@ -62,6 +62,24 @@ public final class SubLevelClipUniformPatcher {
     private static final boolean FORCE_CLIP_ALL =
         Boolean.getBoolean("ipl.sable.clip.forceAll");
 
+    static {
+        // Emit at class init so users can confirm the JVM property took effect.
+        LOG.info("[IPL-CLIP-PATCH] static init: FORCE_CLIP_ALL={}", FORCE_CLIP_ALL);
+    }
+
+    private static volatile long lastEarlyReturnNanos = 0L;
+    private static volatile String lastEarlyReturnReason = "";
+
+    private static void logEarlyReturn(String reason) {
+        // De-dupe by reason text so a different early-return path isn't suppressed.
+        long now = System.nanoTime();
+        if (!reason.equals(lastEarlyReturnReason) || now - lastEarlyReturnNanos >= 5_000_000_000L) {
+            lastEarlyReturnReason = reason;
+            lastEarlyReturnNanos = now;
+            LOG.warn("[IPL-CLIP-PATCH] early return: {}", reason);
+        }
+    }
+
     private SubLevelClipUniformPatcher() {}
 
     /**
@@ -73,12 +91,22 @@ public final class SubLevelClipUniformPatcher {
      */
     public static void patchForSubLevel(ClientSubLevel sub) {
         double[] worldEq = FrontClipping.getActiveClipPlaneEquationBeforeModelView();
-        if (worldEq == null) return;
+        if (worldEq == null) {
+            logEarlyReturn("worldEq null");
+            return;
+        }
 
         ShaderInstance shader = RenderSystem.getShader();
-        if (shader == null) return;
+        if (shader == null) {
+            logEarlyReturn("RenderSystem.getShader() null");
+            return;
+        }
         Uniform uniform = ((IEShader) shader).ip_getClippingEquationUniform();
-        if (uniform == null) return;
+        if (uniform == null) {
+            logEarlyReturn("shader '" + shader.getName() + "' has no iportal_ClippingEquation uniform "
+                + "(IP's MixinShaderInstance didn't add it -- check ShaderCodeTransformation affectedShaders list)");
+            return;
+        }
 
         Pose3dc pose = sub.renderPose();
         Quaterniondc orientation = pose.orientation();
