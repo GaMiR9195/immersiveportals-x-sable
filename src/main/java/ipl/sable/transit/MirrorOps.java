@@ -105,6 +105,26 @@ public final class MirrorOps {
             source.getLevel(), destLevel
         );
 
+        // Build the mass tracker from the now-populated plot. For non-kinematic
+        // sub-levels this is done as part of pipeline.add() during normal physics
+        // enrollment -- but our mixin cancels that enrollment for kinematic mirrors,
+        // so we have to call buildMassTracker explicitly. Otherwise, the very next
+        // SubLevelContainer.processSubLevelRemovals() (called as part of every
+        // tick()) NPEs on getMassTracker().isInvalid().
+        try {
+            mirror.buildMassTracker();
+        } catch (Throwable t) {
+            LOG.error("[IPL-MIRROR] buildMassTracker failed for mirror={}", mirrorUuid, t);
+            // Roll back so we don't leave a half-initialized mirror that'll NPE
+            // on the next processSubLevelRemovals.
+            try {
+                destContainer.removeSubLevel(mirror, SubLevelRemovalReason.REMOVED);
+            } catch (Throwable t2) {
+                LOG.error("[IPL-MIRROR] rollback removal also failed", t2);
+            }
+            return null;
+        }
+
         // Register the mirror.
         MirrorRegistry.put(new MirrorRegistry.MirrorEntry(
             sourceUuid, portalUuid, mirrorUuid,
