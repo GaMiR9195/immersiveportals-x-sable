@@ -63,6 +63,22 @@ public final class SableTransitController {
      */
     private static final Map<UUID, Long> lastTransitTick = new HashMap<>();
 
+    /**
+     * Per-(source, portal) mirror operation cooldown in server ticks. After a mirror
+     * spawn OR despawn for a pair, ignore further spawn/sync conditions for that pair
+     * for this many ticks. Prevents rapid respawn churn if something causes the
+     * mirror to repeatedly fail sync (e.g., Sable invalidates the mass tracker
+     * mid-tick, leaving us with a dead mirror and no valid registry entry).
+     *
+     * <p>Shorter than the transit cooldown (10 ticks vs 40) because mirrors are
+     * transient by nature -- they spawn and despawn on approach/disengage. A pair
+     * that's been mirror-cycled within the last half-second is suspicious and
+     * deserves a breather.
+     */
+    private static final long MIRROR_COOLDOWN_TICKS = 10L;
+
+    private static final Map<MirrorRegistry.MirrorKey, Long> lastMirrorOpTick = new HashMap<>();
+
     private SableTransitController() {}
 
     /**
@@ -133,6 +149,22 @@ public final class SableTransitController {
                     MirrorRegistry.MirrorKey key = new MirrorRegistry.MirrorKey(
                         airship.getUniqueId(), portalUuid
                     );
+
+                    // Cooldown check on the (source, portal) pair. If we just spawned
+                    // or despawned a mirror for this pair, give it a few ticks before
+                    // doing anything. Prevents rapid respawn churn -> wasted CPU +
+                    // possible visual artifacts.
+                    Long lastOp = lastMirrorOpTick.get(key);
+                    if (lastOp != null && (nowTick - lastOp) < MIRROR_COOLDOWN_TICKS) {
+                        // Still in cooldown. If a mirror exists in the registry, count
+                        // it as "seen" so the despawn-pass below doesn't kill it. If
+                        // not, just skip.
+                        if (MirrorRegistry.get(airship.getUniqueId(), portalUuid) != null) {
+                            seenMirrors.add(key);
+                        }
+                        continue;
+                    }
+
                     MirrorRegistry.MirrorEntry entry = MirrorRegistry.get(
                         airship.getUniqueId(), portalUuid
                     );
@@ -142,6 +174,7 @@ public final class SableTransitController {
                             ServerSubLevel spawned = MirrorOps.spawnMirror(airship, portal);
                             if (spawned != null) {
                                 seenMirrors.add(key);
+                                lastMirrorOpTick.put(key, nowTick);
                             }
                         } else {
                             // Existing mirror -- sync its pose from source via portal transform.
@@ -149,15 +182,23 @@ public final class SableTransitController {
                             if (ok) {
                                 seenMirrors.add(key);
                             } else {
-                                // Sync failed (dest dim unloaded? mirror removed externally?).
-                                // Drop the registry entry; will despawn on next tick if it still
-                                // exists in dest container.
-                                MirrorRegistry.remove(airship.getUniqueId(), portalUuid);
+                                // Sync failed (mirror gone from dest container, dest dim
+                                // unloaded, etc.). Run a proper despawn -- removes from
+                                // registry AND emits the wrapped removeSubLevel so any
+                                // client-side stale mirror gets cleaned up. Without this,
+                                // we leave an orphaned mirror in the dest container that
+                                // eventually gets auto-removed by Sable's
+                                // processSubLevelRemovals (invalid mass tracker) which
+                                // calls destroyAllBlocks -- dropping items.
+                                MirrorOps.despawnMirror(entry, level.getServer());
+                                lastMirrorOpTick.put(key, nowTick);
                             }
                         }
                     } catch (Throwable t) {
                         LOG.error("[IPL-MIRROR] uncaught exception handling mirror for {}/{}",
                             airship.getUniqueId(), portalUuid, t);
+                        // Even on uncaught failure, set cooldown to prevent log spam.
+                        lastMirrorOpTick.put(key, nowTick);
                     }
                 }
             }
@@ -173,6 +214,17 @@ public final class SableTransitController {
             );
             if (!seenMirrors.contains(key)) {
                 MirrorOps.despawnMirror(entry, level.getServer());
+                lastMirrorOpTick.put(key, nowTick);
+            }
+        }
+
+        // Prune mirror-cooldown map: drop entries older than the cooldown window so
+        // the map stays bounded.
+        var mirrorCdIter = lastMirrorOpTick.entrySet().iterator();
+        while (mirrorCdIter.hasNext()) {
+            var e = mirrorCdIter.next();
+            if ((nowTick - e.getValue()) >= MIRROR_COOLDOWN_TICKS) {
+                mirrorCdIter.remove();
             }
         }
 
