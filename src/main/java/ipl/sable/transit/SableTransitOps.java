@@ -12,11 +12,13 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
@@ -24,9 +26,11 @@ import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
 import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.BitSet;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -142,8 +146,15 @@ public final class SableTransitOps {
         //     vanilla NPEs in SectionOcclusionGraph.
         applyMappedVelocity(dest, destContainer, sourceLinVel, sourceAngVel, portal);
 
-        // 6. Commit-3 placeholder: teleport riders.
-        teleportRidersStub(source, portal, destLevel);
+        // 6. Teleport riders. Find entities standing on the airship (bbox-overlap in
+        //    source dim) and send them to dest dim at portal-mapped positions. Note
+        //    this runs *before* source removal so the rider's source-dim physics still
+        //    sees solid blocks under them during the teleport handoff -- avoids a
+        //    brief "falling through a vanished airship" frame.
+        int ridersTeleported = teleportRiders(source, portal, destLevel);
+        if (ridersTeleported > 0) {
+            LOG.info("[IPL-TRANSIT] teleported {} rider(s)  uuid={}", ridersTeleported, uuid);
+        }
 
         // 7. Remove source. This fires SubLevelObserver.onSubLevelRemoved synchronously;
         //    SubLevelTrackingSystem emits a StopTracking to all source-dim trackers.
@@ -398,13 +409,67 @@ public final class SableTransitOps {
     }
 
     /**
-     * Commit 3 will implement rider teleport via
-     * {@code ServerTeleportationManager.teleportEntityGeneral}. For Commit 1, this
-     * is a no-op stub. Riders standing on the airship during a transit will be
-     * left in source dim, which is fine for the Commit 1 validation scenario
-     * (we'll fly the airship through unmanned).
+     * Teleport entities standing on the airship to the dest dim at portal-mapped
+     * positions. Returns the number successfully teleported.
+     *
+     * <p>Detection: any entity whose world-AABB overlaps the airship's world-AABB
+     * (inflated by a small amount to catch entities standing on the top edge of the
+     * deck). Iterates source dim entities only.
+     *
+     * <p>Excluded:
+     * <ul>
+     *   <li>{@link Portal} entities (we don't want to teleport portals).</li>
+     *   <li>Passengers (entities with a non-null vehicle). Per Phase 0 decision,
+     *       mounted-seat riders are deferred -- they'll end up dismounted in source
+     *       dim when the source sub-level is removed below. Phase 2 or 3 will add
+     *       proper seat-correspondence handling.</li>
+     *   <li>Already-removed entities.</li>
+     * </ul>
+     *
+     * <p>Position mapping uses {@link Portal#transformPoint}. Velocity is mapped via
+     * {@link Portal#transformLocalVec} (rotation + scale, no translation -- correct
+     * for direction vectors) and applied post-teleport via {@code setDeltaMovement}.
+     *
+     * <p>Order: called BEFORE source sub-level removal so the rider's source-dim
+     * physics still sees solid blocks under them during the teleport handoff. The
+     * destination already has copied blocks at this point so the rider lands on a
+     * solid airship in dest dim.
      */
-    private static void teleportRidersStub(ServerSubLevel source, Portal portal, ServerLevel destLevel) {
-        // Intentionally empty for Commit 1.
+    private static int teleportRiders(ServerSubLevel source, Portal portal, ServerLevel destLevel) {
+        AABB airshipBbox = source.boundingBox().toMojang();
+        // Inflate slightly to catch entities standing on the top edge of the deck.
+        AABB queryBbox = airshipBbox.inflate(0.5);
+
+        ServerLevel sourceLevel = source.getLevel();
+        List<Entity> entities = sourceLevel.getEntitiesOfClass(Entity.class, queryBbox);
+
+        int teleported = 0;
+        for (Entity entity : entities) {
+            if (entity instanceof Portal) continue;
+            if (entity.isRemoved()) continue;
+            if (entity.getVehicle() != null) continue;
+
+            Vec3 mappedPos = portal.transformPoint(entity.position());
+            Vec3 mappedDelta = portal.transformLocalVec(entity.getDeltaMovement());
+
+            try {
+                Entity result = ServerTeleportationManager.teleportEntityGeneral(
+                    entity, mappedPos, destLevel
+                );
+                // teleportEntityGeneral creates a NEW entity in the dest dim for
+                // non-players (changeEntityDimension copies + removes), so apply the
+                // mapped velocity to the returned entity, not the original.
+                if (result != null && !result.isRemoved()) {
+                    result.setDeltaMovement(mappedDelta);
+                }
+                teleported++;
+            } catch (Throwable t) {
+                LOG.warn(
+                    "[IPL-TRANSIT] failed to teleport entity {} during transit of {}",
+                    entity, source.getUniqueId(), t
+                );
+            }
+        }
+        return teleported;
     }
 }
