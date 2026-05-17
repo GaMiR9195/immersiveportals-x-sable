@@ -733,3 +733,184 @@ own renderSectionLayer. ~1 mixin, ~20 lines of code.
 
 **The design is complete.** Next session: synthesis, mixin surface count,
 implementation phase plan for Phase 1 atomic teleport MVP.
+
+---
+
+## Phase 0 synthesis — concrete plan for Phase 1
+
+### What we know now (combining sessions 1-4)
+
+**Sable side:**
+- `SubLevelContainer.allocateSubLevel(uuid, x, z, pose)` creates a sub-level
+  with our chosen UUID. Auto-cascades through observers: physics enroll,
+  tracking add, Aero attach (via `BalloonMap.BalloonSubLevelObserver`).
+- `container.removeSubLevel(subLevel, REMOVED)` symmetric for cleanup.
+- `LevelPlot.newEmptyChunk(ChunkPos)` allocates a plot chunk. Once allocated,
+  vanilla `LevelChunk.setBlockState(...)` writes blocks; Sable's mixin on that
+  fires `handleBlockChange` which cascades to mass tracker, heatmap, floating
+  block controller, and Aero's `BalloonMap.updateNearbyBalloons`.
+- `BlockEntity` copy is plain Minecraft API: save source BE NBT, create new BE
+  via `BlockEntity.loadStatic(pos, state, nbt, registries)`, set on dest chunk.
+- Each `ServerSubLevel` already exposes `logicalPose()` (mutable Pose3d), so
+  setting the dest pose at allocate-time is straightforward.
+
+**Aero side:**
+- Nothing to do. Block-change cascade handles balloon attachment automatically.
+
+**IP side:**
+- `Portal extends Entity` so `level.getEntitiesOfClass(Portal.class, bbox, filter)`
+  enumerates portals near a sub-level.
+- `portal.transformPoint(Vec3)` maps positions; `portal.getRotationD()` for
+  rotation composition; `portal.getDestDim()` for target dim.
+- `ServerTeleportationManager.teleportEntityGeneral(entity, mappedPos, destLevel)`
+  for moving riders (players + mobs standing on the airship).
+- Portal-view rendering already clips Sable's sub-levels for free (Sable's
+  TAIL inject into vanilla `renderSectionLayer` inherits IP's clip uniform).
+
+### Phase 1 mixin surface estimate
+
+**Zero new mixins.** The entire Phase 1 implementation lives in plain helper
+classes invoked from per-tick code. Per-tick code itself can either:
+
+- (a) Live in a new class wired up via `Aeronautics.init`-style entry point —
+  but we don't have one of those for our compat layer; or
+- (b) Hook off one of our existing mixins. The natural fit is **adding a TAIL
+  inject to `ServerLevel.tick`** (we already mixin ServerLevel adjacent code in
+  `sable$tickPlotContainer` per Sable's pattern) or piggybacking on
+  `SubLevelContainer.tick` TAIL inject (`SableCrossDimTrackingMixin` already
+  has injects on `SubLevelTrackingSystem.tick`).
+
+The cleanest option: **add a tiny new mixin** `SableSubLevelTransitMixin` that
+injects at TAIL of `ServerSubLevelContainer.tick` (after physics, after pose
+sync, before next tick). Calls into our controller class. That's ~10 lines of
+mixin code plus the helper class.
+
+### Phase 1 file layout
+
+```
+src/main/java/ipl/sable/transit/
+  ├── SableTransitController.java   — per-tick scanner + transit dispatcher
+  ├── SableTransitOps.java          — static transit primitives:
+  │                                    * computeMappedPose(sourceSL, portal)
+  │                                    * spawnDestSubLevel(uuid, destLevel, pose)
+  │                                    * copyPlotBlocks(srcPlot, destPlot)
+  │                                    * teleportRiders(sourceSL, portal, destLevel)
+  │                                    * removeSubLevel(sourceSL)
+  └── PortalCrossingDetector.java   — geometric check: did airship center
+                                       cross portal plane this tick?
+
+src/main/java/ipl/sable/mixin/
+  └── SableSubLevelTransitMixin.java — @Inject TAIL on ServerSubLevelContainer.tick
+                                       to invoke SableTransitController.tick()
+```
+
+### Implementation order (4 commits)
+
+**Commit 1: Lifecycle plumbing (no block copy yet)**
+- Create `SableTransitController`, `PortalCrossingDetector`, `SableTransitOps`
+  (stub copy).
+- Add mixin to invoke controller each tick.
+- On detected portal crossing:
+  1. Allocate empty dest sub-level (no blocks).
+  2. Remove source sub-level.
+  3. Don't bother teleporting riders yet (they'd land in empty space).
+- Test: spawn an airship, push it through a portal slowly. Source-dim airship
+  should disappear when its center crosses the portal plane. Dest-dim should
+  show a registered sub-level (verifiable via debug or `/sable` commands) but
+  empty plot. Confirm no crashes, no errors, clean tracking transitions.
+
+**Commit 2: Block copy**
+- Implement `SableTransitOps.copyPlotBlocks` properly. For each loaded
+  `PlotChunkHolder` in source plot:
+  - `destPlot.newEmptyChunk(localChunkPos)` to allocate corresponding chunk
+  - Iterate non-air block positions in source chunk
+  - For each pos: get state + BE NBT (if any), write to dest chunk via
+    `setBlockState` + `setBlockEntity`
+- Sable's `handleBlockChange` cascade should fire automatically for each set,
+  rebuilding mass tracker, heatmap, Aero balloon, etc. on dest side.
+- Test: airship transit now produces a fully-formed airship in dest dim.
+  Expected: Aero's balloon system rebuilds; airship has correct lift; physics
+  resumes from the mapped pose.
+
+**Commit 3: Rider teleport**
+- Implement `SableTransitOps.teleportRiders`. Find entities whose bounding
+  box overlaps the airship's bounding box. For each, compute mapped position
+  via `portal.transformPoint(rider.position())`. Call
+  `ServerTeleportationManager.teleportEntityGeneral`.
+- Test: stand on airship, push through portal, end up on the dest airship
+  at correct relative offset. (Mounted seat passengers excluded per Phase 0
+  decision — they'll be left behind in source dim for v1.)
+
+**Commit 4: Hardening + cleanup**
+- Crossing detection robustness: hysteresis to prevent ping-pong if airship
+  parks near the portal plane.
+- UUID collision check: what if dest dim's container already has an
+  airship with the same UUID? (Shouldn't happen but graceful failure.)
+- Plot allocation: if dest container's plot grid is full, transit gracefully
+  fails (airship stays in source dim).
+- Logging at INFO level for transit events.
+
+### Crossing detection design (PortalCrossingDetector)
+
+```java
+public static boolean didCrossThisTick(ServerSubLevel airship, Portal portal) {
+    Vec3 thisTickCenter = vec3From(airship.logicalPose().position());
+    Vec3 lastTickCenter = vec3From(airship.lastPose().position());
+
+    Plane portalPlane = new Plane(portal.getOriginPos(), portal.getNormal());
+    double thisSide = portalPlane.getDistanceTo(thisTickCenter);
+    double lastSide = portalPlane.getDistanceTo(lastTickCenter);
+
+    // Sign change indicates crossing
+    return (thisSide >= 0) != (lastSide >= 0)
+        && portalContainsPointInPlane(portal, thisTickCenter);  // within portal bounds
+}
+```
+
+The "within portal bounds" check is necessary because the portal plane is
+unbounded but the portal entity has a finite shape. IP's `PortalShape` /
+`portalArea` are the relevant queries. Probably leverage IP's existing
+collision logic.
+
+### Validation plan for Phase 1
+
+1. Spawn an Aero airship in overworld.
+2. Place an IP nether portal.
+3. Hover-fly the airship slowly toward the portal.
+4. When the airship's center crosses the portal plane:
+   - Source-dim view: airship disappears.
+   - Players standing on deck: teleported to nether at correct positions.
+   - Dest-dim view: airship reappears in nether with full block structure,
+     mapped pose, working lift.
+5. (Stretch) drive airship back through; reversible transit.
+6. No crashes. No "ghost" sub-levels left behind. No "Plot already exists"
+   errors from the dedupe mixin (transit should be clean enough not to trip
+   it).
+
+### Known limitations for Phase 1 (document in code)
+
+- **Instant teleport, visually jarring.** Airship pops between dims. Half the
+  airship may "vanish into the portal" if longer than the portal can swallow
+  in one tick. The mirror approach (Phase 2) fixes this.
+- **Mounted passengers left behind.** Players in Create Aero seats stay in
+  source dim sitting on a now-gone seat entity. Will manifest as the player
+  falling, or being booted from the now-empty seat. Phase 2/3 fixes.
+- **Mid-transit modifications discarded.** If a player breaks a block on the
+  airship in the middle of the same tick the airship transits, the change
+  could be lost. Acceptable for v1.
+- **Plot grid full.** If dest dim has all plot slots occupied, transit fails
+  silently (airship stays in source). Logged at WARN.
+
+### Session 5 takeaway: ready to ship Phase 1
+
+The design fully covers Phase 1. We have:
+- A concrete file layout (4 new Java files, 1 small mixin)
+- A 4-commit implementation order, each independently testable
+- A validation plan with a known-good repro scenario
+- A list of acknowledged limitations to document inline
+
+Phase 2 (kinematic mirror with handoff) and Phase 3 (true straddling with
+clip plane) are mapped out in detail through the prior sessions; we can pick
+those up after Phase 1 ships and we've validated the foundation.
+
+Let's start writing Phase 1.
