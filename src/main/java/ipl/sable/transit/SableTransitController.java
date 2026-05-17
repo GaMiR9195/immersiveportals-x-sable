@@ -3,8 +3,11 @@ package ipl.sable.transit;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -139,12 +142,21 @@ public final class SableTransitController {
                 }
             }
 
+            // Deduplicate portals by destination dim before spawning mirrors.
+            // IP creates pairs of portals per frame -- a "main" Portal plus an
+            // "intrinsic_diligent" companion, both isTeleportable=true, both
+            // pointing to the same destDim. Without dedup we spawn one mirror per
+            // companion entity, which shows up to the player as two visually
+            // identical airships hovering side-by-side ("ghost copies"). Pick the
+            // single portal closest to the airship per dest dim.
+            List<Portal> nearbyDedup = pickClosestPortalPerDestDim(nearby, airship);
+
             // Mirror lifecycle: for each nearby portal NOT in a crossing state this
             // tick, spawn-or-sync the mirror for that (source, portal) pair. (If we
             // just queued a crossing transit, skip mirror handling -- the transit
             // executor will despawn the mirror as part of handoff.)
             if (!candidateAddedForAirship) {
-                for (Portal portal : nearby) {
+                for (Portal portal : nearbyDedup) {
                     UUID portalUuid = portal.getUUID();
                     MirrorRegistry.MirrorKey key = new MirrorRegistry.MirrorKey(
                         airship.getUniqueId(), portalUuid
@@ -256,6 +268,48 @@ public final class SableTransitController {
                 lastTransitTick.put(uuid, nowTick);
             }
         }
+    }
+
+    /**
+     * Group nearby portals by their destination dimension and keep, per group,
+     * only the portal whose origin is closest to the airship's AABB center.
+     *
+     * <p>Rationale: IP can spawn multiple {@link Portal} entities for a single
+     * physical portal frame -- a "main" portal and one or more
+     * {@code intrinsic_diligent_nether_portal} companions. All of them pass the
+     * {@link Portal#isTeleportable} filter and all point to the same dest dim,
+     * so the unfiltered {@code nearby} list double-counts. Spawning a mirror
+     * per entity would show the player two (or more) visually-identical mirror
+     * airships, indistinguishable to anyone not reading server logs.
+     *
+     * <p>For our purposes one mirror per destination dim is the right
+     * semantics -- the user just wants to preview "where they'd end up." We
+     * pick the geometrically-closest portal because that's the one whose
+     * portal-mapped pose will be most visually accurate as the airship
+     * approaches (the duplicates point through near-identical frames so the
+     * picked one and the discarded one would produce nearly the same mirror
+     * pose anyway; using "closest" gives a stable, well-defined choice).
+     */
+    private static List<Portal> pickClosestPortalPerDestDim(List<Portal> portals, ServerSubLevel airship) {
+        if (portals.size() <= 1) return portals;
+
+        Vec3 airshipCenter = airship.boundingBox().toMojang().getCenter();
+
+        // ResourceKey<Level> is a value type -- safe to use as a map key.
+        Map<ResourceKey<Level>, Portal> bestPerDest = new HashMap<>(4);
+        Map<ResourceKey<Level>, Double> bestDistSqPerDest = new HashMap<>(4);
+
+        for (Portal portal : portals) {
+            ResourceKey<Level> destDim = portal.getDestDim();
+            double distSq = portal.getOriginPos().distanceToSqr(airshipCenter);
+            Double current = bestDistSqPerDest.get(destDim);
+            if (current == null || distSq < current) {
+                bestPerDest.put(destDim, portal);
+                bestDistSqPerDest.put(destDim, distSq);
+            }
+        }
+
+        return new ArrayList<>(bestPerDest.values());
     }
 
     private static void pruneCooldownMap(long nowTick) {
