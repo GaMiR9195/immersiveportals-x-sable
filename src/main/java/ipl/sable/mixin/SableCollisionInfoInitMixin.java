@@ -1,5 +1,7 @@
 package ipl.sable.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.MoverType;
@@ -103,5 +105,51 @@ public abstract class SableCollisionInfoInitMixin {
         }
 
         return movement;
+    }
+
+    /**
+     * Last-resort safeguard for the same bug. Even with non-zero movement (where the
+     * bump above doesn't trigger and vanilla DOES call collide), the user has hit
+     * cases where {@code sable$collisionInfo} is still null at the wrap site -- for
+     * example, a freshly-teleported ItemEntity in a real chunk with non-zero momentum
+     * crashed in this path. The exact reason {@code SubLevelEntityCollision.collide}
+     * doesn't populate the field isn't clear without reading deeper into Sable's
+     * collision pipeline.
+     *
+     * <p>We register a {@code @WrapOperation} on the same {@code setOnGroundWithMovement}
+     * invoke site Sable's mixin targets. Our mixin is at priority 900 vs. Sable's 1100;
+     * in Mixin's convention <i>lower number = higher priority = applied first</i>, so
+     * our wrap is the outermost at runtime. We get to inspect {@code sable$collisionInfo}
+     * before deciding whether to delegate to Sable's wrap (via {@code Operation.call})
+     * or bypass it (call the original method directly).
+     *
+     * <p>When we bypass, the entity loses Sable's sub-level-aware {@code onGround} /
+     * {@code horizontalCollision} update for that one tick. Vanilla's plain
+     * {@code setOnGroundWithMovement} runs with the args computed by vanilla
+     * {@code move}. For entities not in contact with a sub-level (the case where this
+     * path actually matters), that's correct anyway.
+     */
+    @WrapOperation(
+        method = "move(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/Entity;setOnGroundWithMovement(ZLnet/minecraft/world/phys/Vec3;)V"
+        ),
+        require = 0  // best-effort
+    )
+    private void ipl$safeguardSableWrapAgainstNullCollisionInfo(
+        Entity instance, boolean onGround, Vec3 collided, Operation<Void> original
+    ) {
+        if (instance instanceof EntityMovementExtension ext
+            && ext.sable$getCollisionInfo() == null) {
+            // Sable's wrap inside this Operation chain would NPE on its first line
+            // (reading sable$collisionInfo.horizontalCollision). Skip the chain entirely
+            // and call vanilla's setOnGroundWithMovement directly with the args we
+            // were handed.
+            instance.setOnGroundWithMovement(onGround, collided);
+            return;
+        }
+        // Normal path: let Sable's wrap (and any other wraps in the chain) do their work.
+        original.call(instance, onGround, collided);
     }
 }
