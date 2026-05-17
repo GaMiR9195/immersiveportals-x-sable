@@ -4,14 +4,21 @@ import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
 import dev.ryanhcode.sable.sublevel.plot.ServerLevelPlot;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
+import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
-import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -112,8 +119,12 @@ public final class SableTransitOps {
             return false;
         }
 
-        // 5. Commit-2 placeholder: copy blocks.
-        copyPlotBlocksStub(source.getPlot(), dest.getPlot());
+        // 5. Copy blocks plot -> plot. Sable's handleBlockChange cascade fires on
+        //    each setBlockState, rebuilding mass tracker, heatmap, floating-block
+        //    state, and Aero's per-block-position state (balloons etc.) on dest.
+        int blocksCopied = copyPlotBlocks(source.getPlot(), dest.getPlot(),
+            source.getLevel(), destLevel);
+        LOG.info("[IPL-TRANSIT] copied {} blocks  uuid={}", blocksCopied, uuid);
 
         // 6. Commit-3 placeholder: teleport riders.
         teleportRidersStub(source, portal, destLevel);
@@ -195,13 +206,137 @@ public final class SableTransitOps {
     // -------------------------------------------------------------------------
 
     /**
-     * Commit 2 will implement plot-to-plot block copy. For Commit 1, this is a
-     * no-op stub so we can validate the lifecycle plumbing in isolation: dest
-     * sub-level will be allocated with an empty plot and players in dest dim will
-     * see an empty sub-level (visible via debug commands but not visually rendered).
+     * Copy every non-air block (plus its block-entity NBT) from {@code src} plot to
+     * {@code dst} plot. Returns the count of blocks copied.
+     *
+     * <p>Critically: each {@code chunk.setBlockState(...)} call cascades through
+     * Sable's {@code SableCommonEvents.handleBlockChange} which:
+     * <ul>
+     *   <li>Updates the dest plot's mass tracker, heatmap, floating-block state.</li>
+     *   <li>Fires Aero's {@code BalloonMap.updateNearbyBalloons} on each block change,
+     *       rebuilding the dest-dim balloon (Aero hot-air-balloon controller) as the
+     *       blocks land.</li>
+     * </ul>
+     * That cascade is the load-bearing piece: it's why we don't need to do any
+     * Sable-specific or Aero-specific state copy — block placement triggers it.
+     *
+     * <p>Y-range handling: if the dest dimension has a smaller build height than the
+     * source dim's blocks (e.g., overworld -> nether for an airship above Y=128),
+     * out-of-range blocks are skipped with a warning. Phase 4 will reject the transit
+     * entirely if too much of the airship would be clipped — for now, a partial copy
+     * is better than a hard fail and matches what a player would expect from a
+     * "low ceiling" portal interaction.
      */
-    private static void copyPlotBlocksStub(ServerLevelPlot src, ServerLevelPlot dst) {
-        // Intentionally empty for Commit 1.
+    private static int copyPlotBlocks(
+        ServerLevelPlot src, ServerLevelPlot dst,
+        ServerLevel srcLevel, ServerLevel dstLevel
+    ) {
+        int blocksCopied = 0;
+        int blocksSkippedOutOfYRange = 0;
+
+        int dstMinY = dstLevel.getMinBuildHeight();
+        int dstMaxY = dstLevel.getMaxBuildHeight();
+
+        for (PlotChunkHolder srcHolder : src.getLoadedChunks()) {
+            LevelChunk srcChunk = srcHolder.getChunk();
+            ChunkPos srcChunkPos = srcChunk.getPos();
+
+            // The block layout is plot-local. We want the same local layout in dst,
+            // so translate the chunk position through plot coordinate spaces.
+            ChunkPos localChunkPos = src.toLocal(srcChunkPos);
+            ChunkPos dstChunkPos = dst.toGlobal(localChunkPos);
+
+            // Ensure the dst plot has a chunk allocated at the corresponding position.
+            if (dst.getChunkHolder(localChunkPos) == null) {
+                dst.newEmptyChunk(dstChunkPos);
+            }
+            LevelChunk dstChunk = dst.getChunk(localChunkPos);
+            if (dstChunk == null) {
+                LOG.warn("[IPL-TRANSIT] dst chunk alloc failed at local {}", localChunkPos);
+                continue;
+            }
+
+            // The block X/Z within a chunk is independent of which global chunk it
+            // is. So we can iterate by section and local (lx, ly, lz) and add the
+            // src/dst chunk's min-block offset for each side.
+            LevelChunkSection[] sections = srcChunk.getSections();
+            int sectionsCount = srcChunk.getSectionsCount();
+            for (int sectionIdx = 0; sectionIdx < sectionsCount; sectionIdx++) {
+                LevelChunkSection section = sections[sectionIdx];
+                if (section == null || section.hasOnlyAir()) continue;
+
+                int sectionY = srcChunk.getSectionYFromSectionIndex(sectionIdx);
+                int sectionBaseY = sectionY << 4;
+
+                for (int ly = 0; ly < 16; ly++) {
+                    int worldY = sectionBaseY + ly;
+                    if (worldY < dstMinY || worldY >= dstMaxY) {
+                        // Skip blocks outside dest dim's vertical range. Count for log.
+                        for (int lx = 0; lx < 16; lx++) {
+                            for (int lz = 0; lz < 16; lz++) {
+                                if (!section.getBlockState(lx, ly, lz).isAir()) {
+                                    blocksSkippedOutOfYRange++;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    for (int lx = 0; lx < 16; lx++) {
+                        for (int lz = 0; lz < 16; lz++) {
+                            BlockState state = section.getBlockState(lx, ly, lz);
+                            if (state.isAir()) continue;
+
+                            BlockPos srcWorldPos = new BlockPos(
+                                srcChunkPos.getMinBlockX() + lx,
+                                worldY,
+                                srcChunkPos.getMinBlockZ() + lz
+                            );
+                            BlockPos dstWorldPos = new BlockPos(
+                                dstChunkPos.getMinBlockX() + lx,
+                                worldY,
+                                dstChunkPos.getMinBlockZ() + lz
+                            );
+
+                            // Save BE NBT before setting state (which can destroy
+                            // the source BE during the cascade).
+                            BlockEntity srcBE = srcChunk.getBlockEntity(srcWorldPos);
+                            CompoundTag beTag = null;
+                            if (srcBE != null) {
+                                beTag = srcBE.saveWithFullMetadata(srcLevel.registryAccess());
+                                beTag.putInt("x", dstWorldPos.getX());
+                                beTag.putInt("y", dstWorldPos.getY());
+                                beTag.putInt("z", dstWorldPos.getZ());
+                            }
+
+                            // setBlockState(pos, state, isMoving) -- isMoving=true tells
+                            // vanilla "skip neighbour-update side effects." Matches
+                            // SubLevelAssemblyHelper.moveBlocks convention.
+                            dstChunk.setBlockState(dstWorldPos, state, true);
+                            blocksCopied++;
+
+                            // Restore BE state on dest, if any.
+                            if (beTag != null) {
+                                BlockEntity dstBE = dstChunk.getBlockEntity(dstWorldPos);
+                                if (dstBE != null) {
+                                    dstBE.loadWithComponents(beTag, dstLevel.registryAccess());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (blocksSkippedOutOfYRange > 0) {
+            LOG.warn(
+                "[IPL-TRANSIT] {} blocks skipped because they fell outside dest dim {} Y range [{}, {})",
+                blocksSkippedOutOfYRange,
+                dstLevel.dimension().location(),
+                dstMinY, dstMaxY
+            );
+        }
+
+        return blocksCopied;
     }
 
     /**
