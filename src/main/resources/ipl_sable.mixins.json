@@ -6,7 +6,8 @@
   "mixins": [
     "SableSubLevelGetterBridgeMixin",
     "SableStartTrackingDedupeMixin",
-    "SableCrossDimTrackingMixin"
+    "SableCrossDimTrackingMixin",
+    "SableSubLevelTransitMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
