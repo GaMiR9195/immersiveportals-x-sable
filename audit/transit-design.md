@@ -622,3 +622,114 @@ question is how to plumb that into Sable's sub-level renderer — **Session 4**.
 Next: **Area F — Sable client renderer.** This will determine the shader/clip
 integration strategy and complete the design picture before we synthesize the
 Phase 1 implementation plan.
+
+---
+
+## Area F — Sable client renderer
+
+### Findings (session 4, `sable-src/common/.../sublevel/render/`)
+
+**Renderer architecture:** Sable picks a `SubLevelRenderDispatcher` based on
+loaded mods (`SubLevelRenderer.SelectedRenderer`):
+
+- `VANILLA` — used when Sodium is NOT present. `VanillaSubLevelRenderDispatcher`.
+- `SODIUM_REACHAROUND` — used when Sodium is present.
+  `ReachAroundSubLevelRenderDispatcher` extends the vanilla one but inherits
+  `renderSectionLayer` from it (only overrides chunk-baking machinery).
+
+**Both dispatchers ultimately use vanilla `ShaderInstance`** — even in
+Sodium-loaded environments, Sable "reaches around" Sodium and uses vanilla
+`SectionRenderDispatcher` for sub-level chunk baking + vanilla
+`renderSectionLayer` for the draw pass. Confirmed via
+`ReachAroundSubLevelRenderDispatcher extends VanillaSubLevelRenderDispatcher`
+(no `renderSectionLayer` override).
+
+**How Sable's renderer gets called from vanilla `LevelRenderer`:**
+
+Sable mixins `net.minecraft.client.renderer.LevelRenderer.renderSectionLayer`
+at TAIL (see `sable/mixin/sublevel_render/impl/vanilla/LevelRendererMixin.java`):
+```java
+@Inject(method = "renderSectionLayer", at = @At("TAIL"))
+private void afterRenderSectionLayer(...) {
+    SubLevelRenderDispatcher.get().renderSectionLayer(
+        sublevels, renderType, shader, x, y, z, modelView, projection, partialTicks
+    );
+}
+```
+
+This is the critical insight: **Sable runs at TAIL of vanilla's
+`renderSectionLayer`** — same render type, same shader, same camera state.
+
+### Why IP's existing clip plane already applies for free
+
+IP's `FrontClipping.updateClippingEquationUniformForCurrentShader(...)` is invoked
+during `LevelRenderer.renderSectionLayer` (via IP's own `MixinLevelRenderer`
+that does the portal-view chunk clipping). By the time Sable's TAIL inject fires,
+the shader's `ip_clipping` uniform is already set with the active portal's clip
+equation.
+
+Sable's sub-level chunks go through the same shader binding because:
+1. Same `ShaderInstance shader` is passed through to Sable's dispatcher
+2. Sub-level vertex positions in shader are in world-space minus camera
+3. IP's clip equation is in world-space-minus-camera (per `FrontClipping
+   .getClipEquationInner`)
+
+**Net result: portal-view clipping of Sable sub-levels should already work** —
+when a player looks through a portal, the sub-level on the other side gets clipped
+to the portal plane via IP's existing shader uniform. We just need to verify
+empirically; the architecture says it should be free.
+
+This downgrades Area E's open question dramatically. The "Sable doesn't
+participate in IP clipping" concern was overstated.
+
+### For Phase 3+ straddling (regime A in Area E)
+
+When a sub-level straddles a portal *outside* of a portal-view render (i.e., we
+want to clip the airship when looking at it directly, because half of it is past
+the portal plane and the mirror is rendering the other half in dest dim), we need
+a way to push our own clip plane that's NOT tied to portal-view rendering.
+
+**Approach (deferred to Phase 3 implementation):** mixin
+`VanillaSubLevelRenderDispatcher.renderSectionLayer` at HEAD to check if any
+of the sublevels being rendered are in transit (have an associated portal in
+our `IplTransitRegistry`). If yes, push the clip plane via
+`FrontClipping.setupInnerClipping(transitPlane, modelView, 0)` + update uniform
+on the bound shader. At TAIL, restore (push/pop semantics or `disableClipping`).
+
+That mixin would target Sable's dispatcher, which sits inside *our* mixin layer
+(we already mixin Sable from `ipl_sable.mixins.json`). Low-risk approach.
+
+### Block entity rendering and other passes
+
+Sable also renders block entities on sub-levels via `renderBlockEntities` and
+single-block sub-levels via `renderAfterSections`. Both go through vanilla
+shaders/render machinery. Same clip-plane-for-free reasoning applies.
+
+For Phase 3+ straddling, we'd want the same clip-plane push for these passes.
+Easy enough — same dispatcher, same TAIL/HEAD point.
+
+### Open (Area F)
+
+- **Empirical verification**: build Phase 1, look at an airship through a portal,
+  confirm the sub-level renders correctly clipped on the source side of the
+  portal view. (Phase 1 itself doesn't need clipping, but cross-dim viewing
+  already works in production so we can verify clipping works there.)
+- **Iris / shader-mod compatibility**: when Iris is loaded with shader packs,
+  the shader path can change. IP has Iris integration in
+  `compat/iris/`. Sable also has Iris-aware code in `mixin/render/iris/`.
+  Probably fine but worth a spot-check.
+- **`FancySubLevelRenderDispatcher`** — listed in the render package but not
+  picked by `SelectedRenderer`. Probably experimental / legacy. Ignore for now.
+
+### Session 4 takeaways
+
+The Sable renderer doesn't need any new mixin surface for Phase 1 or even
+Phase 2. Portal-view clipping is already wired by inheriting the bound shader
+state from vanilla `LevelRenderer.renderSectionLayer` (TAIL inject).
+
+Phase 3 straddling will need one new mixin on Sable's dispatcher to push a
+per-sub-level clip plane (via `FrontClipping.setupInnerClipping`) around its
+own renderSectionLayer. ~1 mixin, ~20 lines of code.
+
+**The design is complete.** Next session: synthesis, mixin surface count,
+implementation phase plan for Phase 1 atomic teleport MVP.
