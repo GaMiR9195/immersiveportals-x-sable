@@ -3,7 +3,7 @@ package ipl.sable.mixin;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
-import ipl.sable.mixin.iface.IplKinematicSubLevelHolder;
+import ipl.sable.iface.IplKinematicSubLevelHolder;
 import ipl.sable.transit.IplMirrorIncomingTracker;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;

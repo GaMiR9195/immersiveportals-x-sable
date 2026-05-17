@@ -1,4 +1,4 @@
-package ipl.sable.mixin.iface;
+package ipl.sable.iface;
 
 /**
  * Duck interface added to {@code dev.ryanhcode.sable.sublevel.ServerSubLevel} via

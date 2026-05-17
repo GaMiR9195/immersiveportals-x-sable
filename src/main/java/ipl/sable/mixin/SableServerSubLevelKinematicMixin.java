@@ -1,7 +1,7 @@
 package ipl.sable.mixin;
 
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
-import ipl.sable.mixin.iface.IplKinematicSubLevelHolder;
+import ipl.sable.iface.IplKinematicSubLevelHolder;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Unique;

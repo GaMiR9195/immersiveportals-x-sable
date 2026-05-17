@@ -92,7 +92,7 @@ public final class SableTransitController {
 
             // Skip airships that are themselves kinematic mirrors. Mirrors don't
             // initiate transits; they're driven by their source.
-            if (airship instanceof ipl.sable.mixin.iface.IplKinematicSubLevelHolder kh
+            if (airship instanceof ipl.sable.iface.IplKinematicSubLevelHolder kh
                 && kh.ipl$isKinematicMirror()) {
                 continue;
             }
