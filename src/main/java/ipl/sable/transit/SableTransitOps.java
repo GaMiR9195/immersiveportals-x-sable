@@ -256,7 +256,14 @@ public final class SableTransitOps {
      * <p>Sable's container has its own {@code getFirstEmptyPlot} but it's private.
      * The pieces we need ({@code getOccupancy}, {@code getLogSideLength},
      * {@code getIndex}) are public, so we just replicate the algorithm.
+     *
+     * <p>Exposed package-private via {@link #findFirstEmptyPlotForMirror} for
+     * {@code MirrorOps} to reuse.
      */
+    static int @Nullable [] findFirstEmptyPlotForMirror(SubLevelContainer container) {
+        return findFirstEmptyPlot(container);
+    }
+
     private static int @Nullable [] findFirstEmptyPlot(SubLevelContainer container) {
         int sideLength = 1 << container.getLogSideLength();
         BitSet occupancy = container.getOccupancy();
@@ -296,6 +303,14 @@ public final class SableTransitOps {
      * is better than a hard fail and matches what a player would expect from a
      * "low ceiling" portal interaction.
      */
+    /** Exposed package-private wrapper so {@code MirrorOps} can call into the block-copy logic. */
+    static int copyPlotBlocksPublic(
+        ServerLevelPlot src, ServerLevelPlot dst,
+        ServerLevel srcLevel, ServerLevel dstLevel
+    ) {
+        return copyPlotBlocks(src, dst, srcLevel, dstLevel);
+    }
+
     private static int copyPlotBlocks(
         ServerLevelPlot src, ServerLevelPlot dst,
         ServerLevel srcLevel, ServerLevel dstLevel

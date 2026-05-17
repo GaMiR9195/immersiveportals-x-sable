@@ -78,12 +78,24 @@ public final class SableTransitController {
         // Keeps the map bounded even after server uptime grows.
         pruneCooldownMap(nowTick);
 
-        // Collect candidates first so we don't mutate the iterator while iterating
+        // Track which (sourceUuid, portalUuid) pairs are still active mirrors this
+        // tick -- so we can despawn any mirror whose source is no longer in the
+        // approach zone after we finish the iteration.
+        java.util.Set<MirrorRegistry.MirrorKey> seenMirrors = new java.util.HashSet<>();
+
+        // Collect transit candidates first so we don't mutate iterators while iterating
         // (transit will call container.removeSubLevel which mutates allSubLevels).
         List<TransitCandidate> candidates = null;
         for (SubLevel subLevel : container.getAllSubLevels()) {
             if (!(subLevel instanceof ServerSubLevel airship)) continue;
             if (airship.isRemoved()) continue;
+
+            // Skip airships that are themselves kinematic mirrors. Mirrors don't
+            // initiate transits; they're driven by their source.
+            if (airship instanceof ipl.sable.mixin.iface.IplKinematicSubLevelHolder kh
+                && kh.ipl$isKinematicMirror()) {
+                continue;
+            }
 
             // Cooldown check: skip airships that just transited.
             Long lastTick = lastTransitTick.get(airship.getUniqueId());
@@ -99,15 +111,68 @@ public final class SableTransitController {
                 Portal::isTeleportable
             );
 
+            boolean candidateAddedForAirship = false;
             for (Portal portal : nearby) {
                 if (PortalCrossingDetector.didCrossThisTick(airship, portal)) {
                     if (candidates == null) candidates = new ArrayList<>(1);
                     candidates.add(new TransitCandidate(airship, portal));
+                    candidateAddedForAirship = true;
                     // Only fire one transit per airship per tick -- if the airship
                     // overlaps multiple portals, we pick the first crossing detected.
-                    // (Multi-portal overlap is rare; refinement is Phase 4 polish.)
                     break;
                 }
+            }
+
+            // Mirror lifecycle: for each nearby portal NOT in a crossing state this
+            // tick, spawn-or-sync the mirror for that (source, portal) pair. (If we
+            // just queued a crossing transit, skip mirror handling -- the transit
+            // executor will despawn the mirror as part of handoff.)
+            if (!candidateAddedForAirship) {
+                for (Portal portal : nearby) {
+                    UUID portalUuid = portal.getUUID();
+                    MirrorRegistry.MirrorKey key = new MirrorRegistry.MirrorKey(
+                        airship.getUniqueId(), portalUuid
+                    );
+                    MirrorRegistry.MirrorEntry entry = MirrorRegistry.get(
+                        airship.getUniqueId(), portalUuid
+                    );
+                    try {
+                        if (entry == null) {
+                            // First time approach -- spawn a mirror in the dest dim.
+                            ServerSubLevel spawned = MirrorOps.spawnMirror(airship, portal);
+                            if (spawned != null) {
+                                seenMirrors.add(key);
+                            }
+                        } else {
+                            // Existing mirror -- sync its pose from source via portal transform.
+                            boolean ok = MirrorOps.syncMirrorPose(airship, portal, entry);
+                            if (ok) {
+                                seenMirrors.add(key);
+                            } else {
+                                // Sync failed (dest dim unloaded? mirror removed externally?).
+                                // Drop the registry entry; will despawn on next tick if it still
+                                // exists in dest container.
+                                MirrorRegistry.remove(airship.getUniqueId(), portalUuid);
+                            }
+                        }
+                    } catch (Throwable t) {
+                        LOG.error("[IPL-MIRROR] uncaught exception handling mirror for {}/{}",
+                            airship.getUniqueId(), portalUuid, t);
+                    }
+                }
+            }
+        }
+
+        // Despawn mirrors whose source is no longer in any portal's approach zone.
+        // Iterate a snapshot so we can remove during the loop.
+        for (MirrorRegistry.MirrorEntry entry : new ArrayList<>(MirrorRegistry.all())) {
+            // Only consider mirrors whose source is in THIS dim (the container we're ticking).
+            if (!entry.sourceDim().equals(container.getLevel().dimension())) continue;
+            MirrorRegistry.MirrorKey key = new MirrorRegistry.MirrorKey(
+                entry.sourceUuid(), entry.portalUuid()
+            );
+            if (!seenMirrors.contains(key)) {
+                MirrorOps.despawnMirror(entry, level.getServer());
             }
         }
 
@@ -116,6 +181,17 @@ public final class SableTransitController {
         for (TransitCandidate c : candidates) {
             UUID uuid = c.airship.getUniqueId();
             try {
+                // Before atomic teleport, despawn any mirror for this (source, portal)
+                // pair so we don't end up with mirror + new dest sub-level coexisting.
+                // Phase 2 C2 will replace this with proper handoff (mirror promoted in
+                // place); for now we're degrading to Phase 1 at the moment of crossing.
+                MirrorRegistry.MirrorEntry mirrorEntry = MirrorRegistry.get(
+                    uuid, c.portal.getUUID()
+                );
+                if (mirrorEntry != null) {
+                    MirrorOps.despawnMirror(mirrorEntry, level.getServer());
+                }
+
                 boolean transited = SableTransitOps.executeTransit(c.airship, c.portal);
                 if (transited) {
                     lastTransitTick.put(uuid, nowTick);

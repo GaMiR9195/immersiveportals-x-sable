@@ -8,7 +8,10 @@
     "SableStartTrackingDedupeMixin",
     "SableCrossDimTrackingMixin",
     "SableSubLevelTransitMixin",
-    "SableCollisionInfoInitMixin"
+    "SableCollisionInfoInitMixin",
+    "SableServerSubLevelKinematicMixin",
+    "SableMirrorPhysicsOptOutMixin",
+    "SableMirrorPerSubLevelPhysicsOptOutMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
