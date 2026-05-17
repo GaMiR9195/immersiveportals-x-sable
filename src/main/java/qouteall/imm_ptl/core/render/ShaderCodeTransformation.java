@@ -78,12 +78,13 @@ public class ShaderCodeTransformation {
         // IPL diagnostic: dump full shader source for any shader matching a watchlist
         // so we can see what attribute / uniform names it uses. Set via
         // -Dipl.sable.clip.dumpShaders=terrain_solid,terrain_cutout etc. (comma-separated).
-        // No transformation is applied -- this is read-only inspection.
         String dumpList = System.getProperty("ipl.sable.clip.dumpShaders", "");
+        boolean shouldDump = false;
         if (!dumpList.isEmpty()) {
             for (String wanted : dumpList.split(",")) {
                 if (wanted.trim().equals(shaderId)) {
-                    LOGGER.info("[IPL-SHADER-DUMP] type={} id={}\n----- BEGIN -----\n{}\n----- END -----",
+                    shouldDump = true;
+                    LOGGER.info("[IPL-SHADER-DUMP-INPUT] type={} id={}\n----- BEGIN INPUT -----\n{}\n----- END INPUT -----",
                         type, shaderId, inputCode);
                     break;
                 }
@@ -93,6 +94,10 @@ public class ShaderCodeTransformation {
         Config selected = getConfig(type, shaderId);
 
         if (selected == null) {
+            if (shouldDump) {
+                LOGGER.info("[IPL-SHADER-DUMP-NOMATCH] type={} id={} -- no matching config, source returned unchanged",
+                    type, shaderId);
+            }
             return inputCode;
         }
 
@@ -100,7 +105,22 @@ public class ShaderCodeTransformation {
 
         for (TransformationEntry entry : selected.transformations) {
             String replacement = String.join("\n", entry.replacement);
+            String before = result;
             result = result.replaceAll(entry.pattern, replacement);
+            if (shouldDump) {
+                boolean matched = !before.equals(result);
+                LOGGER.info("[IPL-SHADER-DUMP-STEP] type={} id={} pattern matched={} (pattern={})",
+                    type, shaderId, matched, entry.pattern.replace("\n", "\\n"));
+            }
+        }
+
+        if (shouldDump) {
+            // ALSO dump the post-transformation source so we can verify the uniform /
+            // discard logic actually got injected. Critical when GL warnings show that
+            // a uniform "could not be found" in the compiled program -- distinguishes
+            // "transformation never ran" from "transformation ran but dead-code-stripped".
+            LOGGER.info("[IPL-SHADER-DUMP-OUTPUT] type={} id={}\n----- BEGIN OUTPUT -----\n{}\n----- END OUTPUT -----",
+                type, shaderId, result);
         }
 
         if (selected.debugOutput) {
