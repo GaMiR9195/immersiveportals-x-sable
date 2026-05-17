@@ -2,6 +2,7 @@ package ipl.sable.mixin.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
+import ipl.sable.render.SourceClipDiag;
 import ipl.sable.render.SourceClipPortalFinder;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
@@ -83,12 +84,21 @@ public abstract class SableSourceClipMixin {
 
         // Don't trample IP's clipping if it's already in use (portal-through render,
         // or any other IP-driven clipped pass).
-        if (PortalRendering.isRendering()) return;
-        if (FrontClipping.isClippingEnabled) return;
+        if (PortalRendering.isRendering()) {
+            SourceClipDiag.onVanillaCall(false);
+            return;
+        }
+        if (FrontClipping.isClippingEnabled) {
+            SourceClipDiag.onVanillaCall(false);
+            return;
+        }
 
         SourceClipPortalFinder.ClipDecision decision =
             SourceClipPortalFinder.findStraddlingPortalPlane(getSubLevel());
-        if (decision == null) return;
+        if (decision == null) {
+            SourceClipDiag.onVanillaCall(false);
+            return;
+        }
 
         // Install. setupInnerClipping computes the equation in camera-relative space
         // and enables GL_CLIP_PLANE0; updateClippingEquationUniformForCurrentShader
@@ -97,6 +107,7 @@ public abstract class SableSourceClipMixin {
         FrontClipping.setupInnerClipping(decision.plane(), modelView, 0);
         FrontClipping.updateClippingEquationUniformForCurrentShader(false);
         this.ipl$installedClipThisCall = true;
+        SourceClipDiag.onVanillaCall(true);
     }
 
     @Inject(
