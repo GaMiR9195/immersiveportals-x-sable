@@ -9,6 +9,9 @@
     "SableCrossDimTrackingMixin",
     "debug.SableTrackingDiagnosticMixin"
   ],
+  "client": [
+    "client.SableContainerClientRedirectMixin"
+  ],
   "injectors": {
     "defaultRequire": 0
   }
