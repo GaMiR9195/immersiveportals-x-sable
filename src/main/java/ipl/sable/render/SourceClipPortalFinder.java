@@ -1,6 +1,7 @@
 package ipl.sable.render;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import ipl.sable.transit.MirrorRegistry;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
@@ -8,6 +9,8 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.my_util.Plane;
+
+import java.util.UUID;
 
 /**
  * Finds, for a given client-side sub-level being rendered, the portal whose plane
@@ -99,6 +102,34 @@ public final class SourceClipPortalFinder {
                 (center.z - origin.z) * portalNormal.z;
             Vec3 orientedNormal = centerDot < 0 ? portalNormal.scale(-1.0) : portalNormal;
 
+            // Mirror-specific adjustment. IP's portal mapping rotates the airship's
+            // local frame by 180° around the portal axis when transforming source ->
+            // dest, so the mirror's center ends up on the *opposite* side of the
+            // dest-dim portal from where we semantically want kept. Concretely:
+            //
+            //   - Source airship straddling source portal: its center is on the
+            //     source side, which is also where its visible (un-clipped) body
+            //     should be. The center-toward orientation above is correct.
+            //
+            //   - Mirror straddling dest portal: its center is the source center
+            //     mapped through the 180° rotation, which puts the center on the
+            //     side that visually corresponds to "where the source airship's
+            //     dest-side parts continue" -- i.e., the side that SHOULD be
+            //     kept-visible (the part you see through the portal frame as the
+            //     airship enters the dest dim). User reported the kept side
+            //     swapping when entering the nether; this flip restores the
+            //     intended invariant "kept half is the source-dim airship's side."
+            //
+            // Detection: in singleplayer the integrated server's MirrorRegistry
+            // is in the same JVM as our client mixin, so we can do a read-only
+            // lookup by sub-level UUID. Concurrent modifications on the server
+            // thread are tolerable -- worst case we miss a transition tick and
+            // pick the wrong orientation for one frame. For multiplayer we'd need
+            // a sync packet; deferred until needed.
+            if (isKnownMirror(sub.getUniqueId())) {
+                orientedNormal = orientedNormal.scale(-1.0);
+            }
+
             double distSq = origin.distanceToSqr(center);
             if (distSq < bestDistSq) {
                 bestDistSq = distSq;
@@ -108,6 +139,23 @@ public final class SourceClipPortalFinder {
         }
 
         return best == null ? null : new ClipDecision(best, bestPlane);
+    }
+
+    /**
+     * Singleplayer-only mirror detection: is {@code subLevelId} registered as a
+     * kinematic mirror's UUID in the server-side {@link MirrorRegistry}? Returns
+     * false on any throwable so multiplayer / dedicated-server setups (where the
+     * registry isn't in this JVM) fall through to "treat as source airship".
+     */
+    private static boolean isKnownMirror(UUID subLevelId) {
+        try {
+            for (MirrorRegistry.MirrorEntry entry : MirrorRegistry.all()) {
+                if (entry.mirrorUuid().equals(subLevelId)) return true;
+            }
+        } catch (Throwable t) {
+            // Registry unavailable or concurrent modification -- fall through.
+        }
+        return false;
     }
 
     /**
