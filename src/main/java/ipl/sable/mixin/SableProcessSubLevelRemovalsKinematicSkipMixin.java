@@ -7,6 +7,8 @@ import dev.ryanhcode.sable.api.physics.mass.MassData;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import ipl.sable.iface.IplKinematicSubLevelHolder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
@@ -49,6 +51,19 @@ import org.spongepowered.asm.mixin.injection.At;
 @Mixin(value = SubLevelContainer.class, remap = false)
 public abstract class SableProcessSubLevelRemovalsKinematicSkipMixin {
 
+    private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-mirror-skip");
+
+    // Static accumulators so the wrap log doesn't fire on every isInvalid call (~20Hz
+    // per sub-level). We summarise once per second of activity:
+    // - mirrorChecks: how many times we saw a kinematic mirror and forced false
+    // - normalChecks: how many times we passed through to Sable's original logic
+    @org.spongepowered.asm.mixin.Unique
+    private static long ipl$mirrorChecks = 0;
+    @org.spongepowered.asm.mixin.Unique
+    private static long ipl$normalChecks = 0;
+    @org.spongepowered.asm.mixin.Unique
+    private static long ipl$lastReportNanos = 0L;
+
     @WrapOperation(
         method = "processSubLevelRemovals",
         at = @At(
@@ -63,8 +78,30 @@ public abstract class SableProcessSubLevelRemovalsKinematicSkipMixin {
         Operation<Boolean> original,
         @Local ServerSubLevel iterationSubLevel
     ) {
-        if (iterationSubLevel instanceof IplKinematicSubLevelHolder holder
-            && holder.ipl$isKinematicMirror()) {
+        boolean isKinematic = iterationSubLevel instanceof IplKinematicSubLevelHolder holder
+            && holder.ipl$isKinematicMirror();
+
+        if (isKinematic) {
+            ipl$mirrorChecks++;
+        } else {
+            ipl$normalChecks++;
+        }
+
+        // Periodic summary: every 5 seconds of wall clock, emit one log line. This
+        // gives us proof the wrap is actually firing in the user's runtime, and
+        // tells us roughly how many kinematic mirrors are surviving auto-removal
+        // per tick.
+        long now = System.nanoTime();
+        if (ipl$lastReportNanos == 0L) ipl$lastReportNanos = now;
+        if (now - ipl$lastReportNanos >= 5_000_000_000L) {
+            LOG.info("[IPL-MIRROR-SKIP] WrapOperation firing -- last 5s: mirrorChecks={} normalChecks={}",
+                ipl$mirrorChecks, ipl$normalChecks);
+            ipl$mirrorChecks = 0;
+            ipl$normalChecks = 0;
+            ipl$lastReportNanos = now;
+        }
+
+        if (isKinematic) {
             // Pretend the mass tracker is valid. Skips both the destroyAllBlocks
             // call (no fountain) and the markRemoved call (mirror persists). Our
             // controller is the only thing that should be removing kinematic

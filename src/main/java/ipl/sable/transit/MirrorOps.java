@@ -168,22 +168,56 @@ public final class MirrorOps {
      */
     public static boolean syncMirrorPose(ServerSubLevel source, Portal portal, MirrorRegistry.MirrorEntry entry) {
         MinecraftServer server = source.getLevel().getServer();
-        if (server == null) return false;
-
-        ServerLevel destLevel = server.getLevel(entry.destDim());
-        if (destLevel == null) return false;
-
-        ServerSubLevelContainer destContainer = SubLevelContainer.getContainer(destLevel);
-        if (destContainer == null) return false;
-
-        var subLevel = destContainer.getSubLevel(entry.mirrorUuid());
-        if (!(subLevel instanceof ServerSubLevel mirror) || mirror.isRemoved()) {
+        if (server == null) {
+            LOG.warn("[IPL-MIRROR-DIAG] sync fail (server null) mirror={}", entry.mirrorUuid());
             return false;
         }
 
+        ServerLevel destLevel = server.getLevel(entry.destDim());
+        if (destLevel == null) {
+            LOG.warn("[IPL-MIRROR-DIAG] sync fail (destLevel null) mirror={} destDim={}",
+                entry.mirrorUuid(), entry.destDim().location());
+            return false;
+        }
+
+        ServerSubLevelContainer destContainer = SubLevelContainer.getContainer(destLevel);
+        if (destContainer == null) {
+            LOG.warn("[IPL-MIRROR-DIAG] sync fail (destContainer null) mirror={} destDim={}",
+                entry.mirrorUuid(), entry.destDim().location());
+            return false;
+        }
+
+        var subLevel = destContainer.getSubLevel(entry.mirrorUuid());
+        if (subLevel == null) {
+            LOG.warn("[IPL-MIRROR-DIAG] sync fail (getSubLevel null) mirror={} destDim={} -- "
+                + "mirror is gone from dest container; Sable removed it via some path",
+                entry.mirrorUuid(), entry.destDim().location());
+            return false;
+        }
+        if (!(subLevel instanceof ServerSubLevel mirror)) {
+            LOG.warn("[IPL-MIRROR-DIAG] sync fail (not ServerSubLevel: {}) mirror={}",
+                subLevel.getClass().getName(), entry.mirrorUuid());
+            return false;
+        }
+        if (mirror.isRemoved()) {
+            LOG.warn("[IPL-MIRROR-DIAG] sync fail (mirror.isRemoved=true) mirror={} -- "
+                + "still in container but marked removed; something called markRemoved on it",
+                entry.mirrorUuid());
+            return false;
+        }
+
+        // Wrap the pose update + pipeline teleport in PacketRedirection so any
+        // movement / tracking packets emitted by Sable's observers as a result of
+        // logicalPose.set get tagged with the dest dim. Without this, players
+        // currently in the source dim looking through the portal would receive the
+        // movement packet in their CURRENT dim's client container -- which doesn't
+        // know about the mirror -- and the mirror would appear "stuck" while new
+        // client-side phantoms accumulate.
         Pose3d newPose = SableTransitOps.computeMappedPose(source.logicalPose(), portal);
-        mirror.logicalPose().set(newPose);
-        pinPipelinePose(destContainer, mirror, newPose);
+        qouteall.imm_ptl.core.network.PacketRedirection.withForceRedirect(destLevel, () -> {
+            mirror.logicalPose().set(newPose);
+            pinPipelinePose(destContainer, mirror, newPose);
+        });
         return true;
     }
 
