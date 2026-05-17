@@ -11,7 +11,8 @@
     "SableCollisionInfoInitMixin",
     "SableServerSubLevelKinematicMixin",
     "SableMirrorPhysicsOptOutMixin",
-    "SableProcessSubLevelRemovalsKinematicSkipMixin"
+    "SableProcessSubLevelRemovalsKinematicSkipMixin",
+    "SableMirrorRemovalGuardMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",

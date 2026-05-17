@@ -248,9 +248,17 @@ public final class MirrorOps {
         // trigger "Plot already exists" on the client.
         ServerSubLevel finalSubLevel = (ServerSubLevel) subLevel;
         try {
-            PacketRedirection.withForceRedirect(destLevel, () -> {
-                destContainer.removeSubLevel(finalSubLevel, SubLevelRemovalReason.REMOVED);
-            });
+            // Set the authorisation flag so SableMirrorRemovalGuardMixin lets the
+            // removeSubLevel call through. Clear it in finally so a thrown exception
+            // doesn't leave the flag stuck and allow subsequent unauthorised removals.
+            MirrorRemovalGuard.inAuthorizedRemoval = true;
+            try {
+                PacketRedirection.withForceRedirect(destLevel, () -> {
+                    destContainer.removeSubLevel(finalSubLevel, SubLevelRemovalReason.REMOVED);
+                });
+            } finally {
+                MirrorRemovalGuard.inAuthorizedRemoval = false;
+            }
             LOG.info("[IPL-MIRROR] despawned mirror={} source={}",
                 entry.mirrorUuid(), entry.sourceUuid());
         } catch (Throwable t) {
