@@ -6,12 +6,17 @@ import ipl.sable.duck.IplSubLevelClipShader;
 import net.minecraft.client.renderer.ShaderInstance;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL30;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.render.FrontClipping;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 
 /**
@@ -61,6 +66,20 @@ import java.util.function.Supplier;
 @Mixin(value = RenderSystem.class, remap = false)
 public class IplShaderClipMirrorMixin {
 
+    @Unique
+    private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-sable-clip-discover");
+
+    /**
+     * Names of shaders we've already logged "discover" info for. Used to ensure
+     * each distinct shader name surfaces in the log at most once per session,
+     * regardless of how many times {@code setShader} fires for it during portal
+     * rendering. Vital because {@code setShader} fires per-draw and would spam
+     * the log otherwise.
+     */
+    @Unique
+    private static final ConcurrentMap<String, Boolean> IPL$DISCOVERED_SHADERS =
+        new ConcurrentHashMap<>();
+
     @Inject(
         method = "Lcom/mojang/blaze3d/systems/RenderSystem;setShader(Ljava/util/function/Supplier;)V",
         at = @At("RETURN")
@@ -70,12 +89,6 @@ public class IplShaderClipMirrorMixin {
         CallbackInfo ci
     ) {
         if (!FrontClipping.isClippingEnabled) {
-            // IP isn't asking for clipping right now. Don't write our uniform here
-            // -- leaving it at whatever the last setter (zero from clearAndUpload,
-            // or our per-sub-level equation from the patcher) put there. The
-            // gl_ClipDistance[1] write in our shaders will still happen on every
-            // vertex; if GL_CLIP_DISTANCE1 is enabled, it'll use whatever value
-            // is currently on the GPU.
             return;
         }
 
@@ -85,7 +98,37 @@ public class IplShaderClipMirrorMixin {
         ShaderInstance shader = RenderSystem.getShader();
         if (shader == null) return;
 
+        // Discovery diagnostic: the user has reported certain block entities
+        // (chest mesh, enchanting-table book, banners, etc.) leaking through the
+        // portal even with entities_* added to our affected-shaders list. The
+        // likely cause is that those block entities don't use the shaders we
+        // think they do under Iris -- they may bind a different named shader
+        // (e.g. a baked-layer shader, a special entity shader variant, or
+        // something Sodium-specific).
+        //
+        // This log fires the FIRST time each distinct shader name is bound while
+        // FrontClipping.isClippingEnabled (i.e. while we're in a portal-through
+        // render). It records both the shader name and whether our slot-1 uniform
+        // is registered on that shader. After running a scene where the leaky
+        // BEs are visible through a portal, the log will contain every shader
+        // bound during that portal-through pass. The leaky ones are the entries
+        // where hasUniform=false -- those are the names we need to add to our
+        // YAML affected-shaders list.
+        String name = shader.getName();
         Uniform uniform = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform();
+        boolean hasUniform = uniform != null;
+        if (IPL$DISCOVERED_SHADERS.putIfAbsent(name, Boolean.TRUE) == null) {
+            IPL$LOG.info(
+                "[IPL-CLIP-DISCOVER] shader='{}' hasUniform={}{}",
+                name,
+                hasUniform,
+                hasUniform
+                    ? ""
+                    : "  ← shader bound during portal-through but our slot-1 uniform is NOT registered; "
+                      + "add this name to the affectedShaders list in shader_transformation.yaml"
+            );
+        }
+
         if (uniform == null) return;
 
         uniform.set(
@@ -96,11 +139,6 @@ public class IplShaderClipMirrorMixin {
         );
         uniform.upload();
 
-        // Mirror IP's GL_CLIP_PLANE0 enable: ensure GL_CLIP_DISTANCE1 is also on
-        // so the hardware respects our gl_ClipDistance[1] writes. We avoid
-        // disabling here since SableSourceClipMixin manages its own enable for
-        // per-sub-level clipping during the main render where IP's slot 0 isn't
-        // active.
         GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
     }
 }
