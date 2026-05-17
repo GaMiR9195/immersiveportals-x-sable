@@ -10,7 +10,7 @@
     "debug.SableTrackingDiagnosticMixin"
   ],
   "client": [
-    "client.SableContainerClientRedirectMixin"
+    "client.VeilPacketContextLevelMixin"
   ],
   "injectors": {
     "defaultRequire": 0
