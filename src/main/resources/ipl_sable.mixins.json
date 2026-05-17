@@ -6,6 +6,7 @@
   "mixins": [
     "SableSubLevelGetterBridgeMixin",
     "SableStartTrackingDedupeMixin",
+    "SableCrossDimTrackingMixin",
     "debug.SableTrackingDiagnosticMixin"
   ],
   "injectors": {
