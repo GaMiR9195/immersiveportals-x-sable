@@ -10,7 +10,11 @@ import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * Per-tick orchestrator: scans every {@link ServerSubLevel} in a
@@ -36,6 +40,29 @@ public final class SableTransitController {
     /** Inflation amount when querying for nearby portals -- how close before we consider one. */
     private static final double PORTAL_QUERY_INFLATION = 4.0;
 
+    /**
+     * Per-airship cooldown in server ticks. After a transit fires for an airship UUID,
+     * we ignore further transit conditions for that UUID for this many ticks. Prevents
+     * rapid-fire oscillation if velocity transfer doesn't fully push the airship past
+     * the portal plane, or if some other edge case causes the airship to drift back.
+     *
+     * <p>2 seconds (40 ticks) is well over the time it'd take for any reasonable airship
+     * velocity to clear a portal volume, and short enough that intentional repeated
+     * passes (e.g., player flying the airship through a portal multiple times) still
+     * feel responsive.
+     */
+    private static final long TRANSIT_COOLDOWN_TICKS = 40L;
+
+    /**
+     * Last server tick at which a transit fired for a given airship UUID. Used to
+     * enforce the cooldown above. Entries are pruned lazily when they age out.
+     *
+     * <p>This is per-process, not per-dim, because UUIDs are unique and an airship
+     * coming back through a portal (returning to source dim) is exactly the case we
+     * want to ratelimit.
+     */
+    private static final Map<UUID, Long> lastTransitTick = new HashMap<>();
+
     private SableTransitController() {}
 
     /**
@@ -45,6 +72,11 @@ public final class SableTransitController {
     public static void onContainerTick(ServerSubLevelContainer container) {
         ServerLevel level = (ServerLevel) container.getLevel();
         if (level == null) return;
+        long nowTick = level.getGameTime();
+
+        // Lazy prune of the cooldown map: drop entries older than the cooldown window.
+        // Keeps the map bounded even after server uptime grows.
+        pruneCooldownMap(nowTick);
 
         // Collect candidates first so we don't mutate the iterator while iterating
         // (transit will call container.removeSubLevel which mutates allSubLevels).
@@ -52,6 +84,12 @@ public final class SableTransitController {
         for (SubLevel subLevel : container.getAllSubLevels()) {
             if (!(subLevel instanceof ServerSubLevel airship)) continue;
             if (airship.isRemoved()) continue;
+
+            // Cooldown check: skip airships that just transited.
+            Long lastTick = lastTransitTick.get(airship.getUniqueId());
+            if (lastTick != null && (nowTick - lastTick) < TRANSIT_COOLDOWN_TICKS) {
+                continue;
+            }
 
             // Convert Sable's BoundingBox3d to MC AABB for the portal query.
             AABB airshipAabb = airship.boundingBox().toMojang().inflate(PORTAL_QUERY_INFLATION);
@@ -76,11 +114,28 @@ public final class SableTransitController {
         if (candidates == null) return;
 
         for (TransitCandidate c : candidates) {
+            UUID uuid = c.airship.getUniqueId();
             try {
-                SableTransitOps.executeTransit(c.airship, c.portal);
+                boolean transited = SableTransitOps.executeTransit(c.airship, c.portal);
+                if (transited) {
+                    lastTransitTick.put(uuid, nowTick);
+                }
             } catch (Throwable t) {
                 LOG.error("[IPL-TRANSIT] uncaught exception executing transit for uuid={}",
-                    c.airship.getUniqueId(), t);
+                    uuid, t);
+                // Even on failure, set cooldown -- prevents the same failing transit
+                // from retrying every tick and flooding logs.
+                lastTransitTick.put(uuid, nowTick);
+            }
+        }
+    }
+
+    private static void pruneCooldownMap(long nowTick) {
+        Iterator<Map.Entry<UUID, Long>> iter = lastTransitTick.entrySet().iterator();
+        while (iter.hasNext()) {
+            Map.Entry<UUID, Long> e = iter.next();
+            if ((nowTick - e.getValue()) >= TRANSIT_COOLDOWN_TICKS) {
+                iter.remove();
             }
         }
     }

@@ -1,5 +1,6 @@
 package ipl.sable.transit;
 
+import dev.ryanhcode.sable.api.physics.PhysicsPipeline;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
@@ -19,6 +20,7 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
+import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -110,6 +112,12 @@ public final class SableTransitOps {
             plotXZ[0], plotXZ[1],
             destPose.position().x(), destPose.position().y(), destPose.position().z());
 
+        // Capture source velocity BEFORE allocating dest (which would briefly leave
+        // both sub-levels alive and could affect timing) and definitely before removing
+        // source. Velocities are in world space.
+        Vector3d sourceLinVel = new Vector3d(source.latestLinearVelocity);
+        Vector3d sourceAngVel = new Vector3d(source.latestAngularVelocity);
+
         // 4. Allocate dest sub-level.
         ServerSubLevel dest;
         try {
@@ -125,6 +133,14 @@ public final class SableTransitOps {
         int blocksCopied = copyPlotBlocks(source.getPlot(), dest.getPlot(),
             source.getLevel(), destLevel);
         LOG.info("[IPL-TRANSIT] copied {} blocks  uuid={}", blocksCopied, uuid);
+
+        // 5b. Transfer velocity. Rotate source-dim world velocity vectors through the
+        //     portal's rotation to get dest-dim world velocities, then apply via the
+        //     dest physics pipeline. Without this, the airship arrives stationary,
+        //     gravity pulls it back into the portal plane, and we re-transit -- causing
+        //     the rapid oscillation that stresses the client renderer to the point of
+        //     vanilla NPEs in SectionOcclusionGraph.
+        applyMappedVelocity(dest, destContainer, sourceLinVel, sourceAngVel, portal);
 
         // 6. Commit-3 placeholder: teleport riders.
         teleportRidersStub(source, portal, destLevel);
@@ -178,6 +194,48 @@ public final class SableTransitOps {
         // Scale is also pose-local; copy.
         destPose.scale().set(sourcePose.scale());
         return destPose;
+    }
+
+    /**
+     * Rotate the source's world-space linear + angular velocity through the portal's
+     * rotation and inject into the dest's physics body.
+     *
+     * <p>Portal rotation is a "world frame" rotation: a vector expressed in source-dim
+     * world coordinates can be transformed to dest-dim world coordinates by applying
+     * the portal's rotation quaternion. {@code portal.transformLocalVec} does exactly
+     * this for direction vectors (no translation involved), which is what we want for
+     * velocities.
+     *
+     * <p>The dest sub-level was just allocated and added to the pipeline at rest
+     * (zero velocity), so {@code addLinearAndAngularVelocity} effectively *sets* the
+     * velocity rather than incrementing it.
+     */
+    private static void applyMappedVelocity(
+        ServerSubLevel dest,
+        ServerSubLevelContainer destContainer,
+        Vector3d sourceLinVel,
+        Vector3d sourceAngVel,
+        Portal portal
+    ) {
+        // Skip if essentially stationary (avoids float drift becoming kicks).
+        if (sourceLinVel.lengthSquared() < 1e-8 && sourceAngVel.lengthSquared() < 1e-8) {
+            return;
+        }
+
+        Vec3 lin = new Vec3(sourceLinVel.x, sourceLinVel.y, sourceLinVel.z);
+        Vec3 ang = new Vec3(sourceAngVel.x, sourceAngVel.y, sourceAngVel.z);
+
+        // transformLocalVec applies the portal's rotation+scale (no translation), which
+        // is the correct treatment for a world-space velocity vector.
+        Vec3 destLin = portal.transformLocalVec(lin);
+        Vec3 destAng = portal.transformLocalVec(ang);
+
+        PhysicsPipeline pipeline = destContainer.physicsSystem().getPipeline();
+        pipeline.addLinearAndAngularVelocity(
+            dest,
+            new Vector3d(destLin.x, destLin.y, destLin.z),
+            new Vector3d(destAng.x, destAng.y, destAng.z)
+        );
     }
 
     /**
