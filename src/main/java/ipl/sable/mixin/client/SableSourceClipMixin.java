@@ -134,8 +134,13 @@ public abstract class SableSourceClipMixin {
         this.ipl$installedClipThisCall = false;
 
         // Disable GL state + zero out the shader uniform so subsequent draws (other
-        // sub-levels, the rest of the level, entities) aren't accidentally clipped.
+        // sub-levels, the rest of the level, entities) aren't accidentally clipped
+        // by the per-sub-level equation we installed.
         FrontClipping.disableClipping();
         FrontClipping.unsetClippingUniform();
+        // Explicit upload of the cleared uniform -- mirror of the explicit upload
+        // in patchForSubLevel, for the same reason: IP's unset only does CPU set(),
+        // and Sable doesn't re-apply the shader before the next draw.
+        SubLevelClipUniformPatcher.clearAndUpload();
     }
 }

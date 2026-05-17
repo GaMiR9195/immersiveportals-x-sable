@@ -86,5 +86,30 @@ public final class SubLevelClipUniformPatcher {
             (float) shaderNormal.z,
             (float) worldEq[3]
         );
+
+        // Explicit upload. IP's standard FrontClipping.updateClippingEquationUniformForCurrentShader
+        // only calls set() and relies on the surrounding render path to flush uniforms via
+        // shader.apply(). Sable's renderChunkedSubLevel doesn't re-apply the shader after
+        // our HEAD inject -- it sets and uploads only MODEL_VIEW_MATRIX and per-section
+        // CHUNK_OFFSET. So without this explicit upload, our changed equation lives in CPU
+        // memory while the GPU keeps using whatever was last uploaded (typically zero, set
+        // during the prior shader apply via IP's setShader hook). Forcing the upload here
+        // makes the discard actually fire against our equation.
+        uniform.upload();
+    }
+
+    /**
+     * Restore the uniform to "no clipping" and push to the GPU. Used by mixin RETURN
+     * paths so subsequent draws (vanilla terrain after our sub-level render) don't
+     * inherit our plot-space equation, which would clip them at meaningless
+     * coordinates (~10,000-block-offset planes).
+     */
+    public static void clearAndUpload() {
+        ShaderInstance shader = RenderSystem.getShader();
+        if (shader == null) return;
+        Uniform uniform = ((IEShader) shader).ip_getClippingEquationUniform();
+        if (uniform == null) return;
+        uniform.set(0f, 0f, 0f, 1f);
+        uniform.upload();
     }
 }
