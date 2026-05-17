@@ -2,13 +2,11 @@ package ipl.sable.mixin.client;
 
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import foundry.veil.api.network.handler.PacketContext;
+import ipl.sable.IplSableLog;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.level.Level;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
-import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 
@@ -58,8 +56,10 @@ import qouteall.imm_ptl.core.ClientWorldLoader;
 @Mixin(value = PacketContext.class, remap = false)
 public interface VeilPacketContextLevelMixin {
 
-    @Unique
-    Logger IPL$LOG = LoggerFactory.getLogger("ipl-sable-veil-ctx");
+    // NB: cannot declare a static logger field here. Mixin's interface-mixin processor
+    // rejects any non-shadow field on an interface mixin
+    // (`InvalidInterfaceMixinException: ... contains a non-shadow field`). The logger
+    // lives in ipl.sable.IplSableLog instead -- a plain holder class.
 
     @ModifyReturnValue(method = "level", at = @At("RETURN"), remap = false, require = 1)
     default Level ipl$redirectLevelDuringIpSwap(Level original) {
@@ -70,7 +70,7 @@ public interface VeilPacketContextLevelMixin {
         if (mcLevel == null || mcLevel == original) {
             return original;
         }
-        IPL$LOG.info(
+        IplSableLog.VEIL_CTX.info(
             "[IPL-SABLE-VEIL] PacketContext.level() redirected {} -> {} (IP swap active)",
             original.dimension().location(),
             mcLevel.dimension().location()
