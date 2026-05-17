@@ -12,6 +12,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qouteall.imm_ptl.core.network.PacketRedirection;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.UUID;
@@ -84,13 +85,27 @@ public final class MirrorOps {
         // Allocate the mirror with normal enrollment. Sable's pipeline.add fires its
         // mass-tracker build as part of enrollment, and the downstream handleBlockChange
         // cascade we trigger during block copy depends on the mass tracker existing.
+        //
+        // Wrap in withForceRedirect so any packets emitted by the tracking system's
+        // observer fire (StartTracking via the additionQueue, etc.) get routed to the
+        // dest dim's client container even for cross-dim viewers (players in source
+        // dim looking through the portal). Without this, the initial StartTracking
+        // packet lands in the wrong client container and the mirror is invisible.
         ServerSubLevel mirror;
         try {
-            mirror = (ServerSubLevel) destContainer.allocateSubLevel(
-                mirrorUuid, plotXZ[0], plotXZ[1], mirrorPose
-            );
+            mirror = PacketRedirection.withForceRedirectAndGet(destLevel, () -> {
+                return (ServerSubLevel) destContainer.allocateSubLevel(
+                    mirrorUuid, plotXZ[0], plotXZ[1], mirrorPose
+                );
+            });
         } catch (Throwable t) {
             LOG.error("[IPL-MIRROR] failed to allocate mirror for source {}", sourceUuid, t);
+            return null;
+        }
+        if (mirror == null) {
+            // Shouldn't happen unless allocateSubLevel returned null instead of throwing,
+            // but be defensive.
+            LOG.error("[IPL-MIRROR] mirror allocation returned null for source {}", sourceUuid);
             return null;
         }
 
@@ -110,6 +125,19 @@ public final class MirrorOps {
             source.getPlot(), mirror.getPlot(),
             source.getLevel(), destLevel
         );
+
+        // Rebuild the mass tracker now that the plot is fully populated. pipeline.add
+        // initially built it from an empty plot bbox; the incremental updates via
+        // handleBlockChange may not fully grow the tracker's internal structures
+        // past the original (empty) bounds. A fresh rebuild from the populated plot
+        // bbox produces a correct tracker that won't be flagged as invalid by
+        // processSubLevelRemovals on the next tick.
+        try {
+            mirror.buildMassTracker();
+        } catch (Throwable t) {
+            LOG.warn("[IPL-MIRROR] post-copy buildMassTracker failed for {}", mirrorUuid, t);
+            // Continue: pipeline.add's initial tracker is still in place.
+        }
 
         // Pin the pipeline body's pose to our mapped pose now that blocks are in
         // (mass tracker fully populated). Subsequent syncMirrorPose calls will keep
@@ -176,8 +204,19 @@ public final class MirrorOps {
         var subLevel = destContainer.getSubLevel(entry.mirrorUuid());
         if (subLevel == null) return;
 
+        // Wrap removeSubLevel in withForceRedirect so Sable's observer chain (which
+        // includes SubLevelTrackingSystem.onSubLevelRemoved -> sendRemoval to tracking
+        // players) emits StopTracking packets tagged with the dest dim. Without this,
+        // cross-dim viewers (players in source dim looking through the portal) receive
+        // the StopTracking in their CURRENT dim's container -- which doesn't have the
+        // mirror -- so the client's dest-dim container retains a stale copy. Over
+        // repeated spawn/despawn cycles, stale mirrors accumulate and eventually
+        // trigger "Plot already exists" on the client.
+        ServerSubLevel finalSubLevel = (ServerSubLevel) subLevel;
         try {
-            destContainer.removeSubLevel(subLevel, SubLevelRemovalReason.REMOVED);
+            PacketRedirection.withForceRedirect(destLevel, () -> {
+                destContainer.removeSubLevel(finalSubLevel, SubLevelRemovalReason.REMOVED);
+            });
             LOG.info("[IPL-MIRROR] despawned mirror={} source={}",
                 entry.mirrorUuid(), entry.sourceUuid());
         } catch (Throwable t) {
