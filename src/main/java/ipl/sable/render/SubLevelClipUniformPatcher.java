@@ -65,17 +65,24 @@ public final class SubLevelClipUniformPatcher {
         LOG.info("[IPL-CLIP-PATCH] static init: FORCE_CLIP_ALL={}", FORCE_CLIP_ALL);
     }
 
-    private static volatile long lastEarlyReturnNanos = 0L;
-    private static volatile String lastEarlyReturnReason = "";
+    // Per-reason last-log-time. The previous "last reason" string approach
+    // suppressed only CONSECUTIVE identical reasons -- with multiple alternating
+    // shader names per frame (shadow_terrain_cutout, shadow_translucent,
+    // empty-name, etc.) every call fired a WARN, flooding the log at thousands
+    // of lines per second. In a singleplayer setup that starves the server
+    // thread the same way the early per-call removal-guard log did. Use a
+    // per-reason map so each distinct reason only logs once per 5s.
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> earlyReturnLastLogNanos =
+        new java.util.concurrent.ConcurrentHashMap<>();
 
     private static void logEarlyReturn(String reason) {
-        // De-dupe by reason text so a different early-return path isn't suppressed.
         long now = System.nanoTime();
-        if (!reason.equals(lastEarlyReturnReason) || now - lastEarlyReturnNanos >= 5_000_000_000L) {
-            lastEarlyReturnReason = reason;
-            lastEarlyReturnNanos = now;
-            LOG.warn("[IPL-CLIP-PATCH] early return: {}", reason);
+        Long last = earlyReturnLastLogNanos.get(reason);
+        if (last != null && now - last < 5_000_000_000L) {
+            return; // recently logged for this reason; skip
         }
+        earlyReturnLastLogNanos.put(reason, now);
+        LOG.warn("[IPL-CLIP-PATCH] early return: {}", reason);
     }
 
     private SubLevelClipUniformPatcher() {}
@@ -101,8 +108,17 @@ public final class SubLevelClipUniformPatcher {
         }
         Uniform uniform = ((IEShader) shader).ip_getClippingEquationUniform();
         if (uniform == null) {
-            logEarlyReturn("shader '" + shader.getName() + "' has no iportal_ClippingEquation uniform "
-                + "(IP's MixinShaderInstance didn't add it -- check ShaderCodeTransformation affectedShaders list)");
+            // Silent skip for known shaders that we don't yet transform: shadow
+            // shaders + empty-name passes (Veil/Sodium internal blits etc.). They
+            // fire every frame; logging them spams the server thread. Real
+            // unexpected misses still get logged below.
+            String name = shader.getName();
+            if (!name.isEmpty()
+                && !name.startsWith("shadow_")
+                && !name.equals("particle")
+                && !name.startsWith("rendertype_")) {
+                logEarlyReturn("shader '" + name + "' has no iportal_ClippingEquation uniform");
+            }
             return;
         }
 
