@@ -22,7 +22,9 @@
     "client.SableSourceClipMixin",
     "client.SableSourceClipSodiumMixin",
     "client.IplShaderInstanceClipMixin",
-    "client.IplShaderClipMirrorMixin"
+    "client.IplShaderClipMirrorMixin",
+    "client.IplFrontClippingStateMirrorMixin",
+    "client.SableSubLevelBlockEntityClipMixin"
   ],
   "injectors": {
     "defaultRequire": 0
