@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -50,6 +51,17 @@ public abstract class SableMirrorRemovalGuardMixin {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-mirror-guard");
 
+    // Aggregate counters: the previous version logged a stack trace per call,
+    // which fires thousands of times per millisecond when Sable's chunk-ticket
+    // manager unloads the mirror. That choked the server thread (entities froze
+    // in the user's last test) and dumped megabytes of log. Now we just count
+    // and emit a 5s summary -- enough to confirm we're still backstopping
+    // unexpected removals, cheap enough not to harm tick performance.
+    @Unique
+    private static long ipl$blockedCount = 0;
+    @Unique
+    private static long ipl$lastReportNanos = 0L;
+
     /**
      * Targets {@code removeSubLevel(int, int, SubLevelRemovalReason)} -- the
      * choke point both removeSubLevel overloads converge through.
@@ -84,21 +96,22 @@ public abstract class SableMirrorRemovalGuardMixin {
             return;
         }
 
-        // Unauthorized removal of a kinematic mirror. Log the caller so we can
-        // identify what path is killing it, then cancel.
-        Throwable trace = new Throwable("kinematic mirror removal blocked");
-        StringBuilder sb = new StringBuilder();
-        sb.append("[IPL-MIRROR-GUARD] BLOCKED unauthorized removeSubLevel for kinematic mirror uuid=")
-          .append(candidate.getUniqueId())
-          .append(" plot=(").append(x).append(",").append(z).append(")")
-          .append(" reason=").append(reason)
-          .append("\n  Caller stack (top 12 frames):");
-        StackTraceElement[] frames = trace.getStackTrace();
-        int limit = Math.min(frames.length, 12);
-        for (int i = 0; i < limit; i++) {
-            sb.append("\n    ").append(frames[i]);
+        // Unauthorized removal of a kinematic mirror -- silently cancel +
+        // increment counter. Periodic summary lets us see if/when this is
+        // backstopping anything (with the SkipMoveToUnloaded mixin in place,
+        // this counter should ideally stay at zero in steady state).
+        ipl$blockedCount++;
+        long now = System.nanoTime();
+        if (ipl$lastReportNanos == 0L) ipl$lastReportNanos = now;
+        if (now - ipl$lastReportNanos >= 5_000_000_000L) {
+            if (ipl$blockedCount > 0) {
+                LOG.warn("[IPL-MIRROR-GUARD] backstopped {} unauthorized removeSubLevel calls in last 5s "
+                    + "(reason of last: {} for uuid={})",
+                    ipl$blockedCount, reason, candidate.getUniqueId());
+            }
+            ipl$blockedCount = 0;
+            ipl$lastReportNanos = now;
         }
-        LOG.warn(sb.toString());
         ci.cancel();
     }
 }
