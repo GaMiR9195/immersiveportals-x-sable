@@ -10,7 +10,8 @@
     "debug.SableTrackingDiagnosticMixin"
   ],
   "client": [
-    "client.VeilPacketContextLevelMixin"
+    "client.VeilPacketContextLevelMixin",
+    "client.SableAltContainerTickMixin"
   ],
   "injectors": {
     "defaultRequire": 0
