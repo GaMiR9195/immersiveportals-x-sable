@@ -16,7 +16,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.render.FrontClipping;
-import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
 /**
  * Phase 3a: source-side render clipping for Sable sub-levels straddling a portal.
@@ -83,12 +82,18 @@ public abstract class SableSourceClipMixin {
     ) {
         this.ipl$installedClipThisCall = false;
 
-        // Don't trample IP's clipping if it's already in use (portal-through render,
-        // or any other IP-driven clipped pass).
-        if (PortalRendering.isRendering()) {
-            SourceClipDiag.onVanillaCall(false);
-            return;
-        }
+        // We DO run during PortalRendering.isRendering(). Previously we skipped
+        // there to "not trample IP's clipping" -- but the user reported the
+        // mirror visibly over-renders through the portal frame from the back
+        // side. Diagnosis: IP's clip equation is set CPU-side by its mixin
+        // before shader.apply(), so it reaches the GPU for vanilla terrain in
+        // the portal-through view. But Sable's sub-level draws inside that
+        // render don't re-apply the shader, so IP's mid-render set() never
+        // reaches the GPU before Sable's draw. Our patcher's explicit upload
+        // is the missing piece for the mirror too. With center-aware
+        // orientation in SourceClipPortalFinder, the equation we install is
+        // also correct for the mirror's geometry (the dest-dim portal naturally
+        // orients its normal toward the mirror's body in dest dim).
         if (FrontClipping.isClippingEnabled) {
             SourceClipDiag.onVanillaCall(false);
             return;
@@ -107,12 +112,14 @@ public abstract class SableSourceClipMixin {
         FrontClipping.setupInnerClipping(decision.plane(), modelView, 0);
         FrontClipping.updateClippingEquationUniformForCurrentShader(false);
 
-        // Then overwrite the uniform with the per-sub-level transformed equation.
-        // Sable's MODEL_VIEW_MATRIX is a pure rotation by the sub-level's
-        // orientation; Position + ChunkOffset is in inverse-rotated plot space.
-        // The shader's discard runs against that pre-rotation position, so the
-        // world-space equation IP installed wouldn't apply -- this rewrite makes
-        // it apply correctly per sub-level.
+        // Then upload via the patcher (it also de-dupes diagnostic logs).
+        // SubLevelClipUniformPatcher used to inverse-rotate the equation for
+        // Sable's plot-space shader, but now that the shader transformation
+        // uses post-modelview position (gbufferModelViewInverse * iris_ModelViewMat
+        // * ...), the equation goes through as world space and the patcher's
+        // role is just to upload IP's existing value to the GPU since Sable's
+        // render path doesn't re-apply the shader between IP's set and the
+        // actual draw.
         SubLevelClipUniformPatcher.patchForSubLevel(getSubLevel());
 
         this.ipl$installedClipThisCall = true;

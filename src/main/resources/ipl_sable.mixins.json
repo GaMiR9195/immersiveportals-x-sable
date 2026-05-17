@@ -13,7 +13,8 @@
     "SableMirrorPhysicsOptOutMixin",
     "SableProcessSubLevelRemovalsKinematicSkipMixin",
     "SableMirrorRemovalGuardMixin",
-    "SableMirrorSkipMoveToUnloadedMixin"
+    "SableMirrorSkipMoveToUnloadedMixin",
+    "IplServerHeartbeatMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",

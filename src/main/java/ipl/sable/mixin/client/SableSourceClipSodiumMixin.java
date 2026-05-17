@@ -13,7 +13,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.render.FrontClipping;
-import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
 /**
  * Sodium parity for {@link SableSourceClipMixin}: when Sodium is loaded, Sable
@@ -80,10 +79,10 @@ public abstract class SableSourceClipSodiumMixin {
     private void ipl$installClipPlaneIfStraddling(CallbackInfo ci) {
         this.ipl$installedClipThisCall = false;
 
-        if (PortalRendering.isRendering()) {
-            SourceClipDiag.onSodiumCall(false);
-            return;
-        }
+        // (See SableSourceClipMixin for why we no longer skip on
+        // PortalRendering.isRendering -- the mirror needs our patcher's
+        // upload step to fire so IP's clip equation actually reaches the GPU
+        // before Sable's draw under the portal-through render path.)
         if (FrontClipping.isClippingEnabled) {
             SourceClipDiag.onSodiumCall(false);
             return;

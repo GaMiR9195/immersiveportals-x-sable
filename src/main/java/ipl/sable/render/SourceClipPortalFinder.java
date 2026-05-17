@@ -64,36 +64,46 @@ public final class SourceClipPortalFinder {
             if (!portal.isTeleportable()) continue;
 
             Vec3 origin = portal.getOriginPos();
-            Vec3 normal = portal.getNormal();
+            Vec3 portalNormal = portal.getNormal();
 
             // Straddle check: compute signed distance from each AABB corner to the
             // plane; if signs differ, the box crosses the plane.
-            if (!boxStraddlesPlane(box, origin, normal)) continue;
+            if (!boxStraddlesPlane(box, origin, portalNormal)) continue;
 
-            // Use portal.getNormal() AS-IS. The kept half-space is always the
-            // source-side of the portal plane (the side where the source airship
-            // physically lives in source-dim coords), regardless of where the
-            // camera is. This is correct because portals are one-way views:
-            //   - Camera on the source side: kept = camera side. Airship visible
-            //     on source side, dest-side half culled (mirror takes over via
-            //     the portal-through view).
-            //   - Camera circled around to the back of the portal frame: kept =
-            //     far-from-camera side. Airship's dest-side half (which is now
-            //     on the camera side) is culled, so it doesn't show "through" the
-            //     back of the portal frame. The source-side half is still hidden
-            //     by the obsidian wall of the frame, so the airship effectively
-            //     vanishes from this angle (the desired one-way behavior).
-            // After the airship transits, it's a sub-level in the dest dim
-            // straddling the dest-dim portal. That portal's natural normal points
-            // outward from the dest face, which is again the correct "source-side"
-            // of its own plane for the post-transit airship -- no flip needed
-            // there either.
+            // Orient the normal so the kept half-space contains the sub-level's
+            // center.
+            //
+            // Why: IP creates TWO portal entities per physical frame -- one for
+            // each face, with opposite normals. The clip math is symmetric in
+            // *direction* but our finder previously picked whichever entity had
+            // the closer origin, so the chosen normal was non-deterministic with
+            // respect to the airship's approach direction. Result: entering from
+            // one side worked correctly, entering from the opposite side flipped
+            // the clip and made the airship's source-side half culled instead of
+            // the dest-side half.
+            //
+            // Anchoring on the sub-level center is correct because at any frame
+            // where we're rendering a *straddling* sub-level, the AABB centroid
+            // sits on the source side of the portal plane (transit fires the
+            // moment the centroid crosses, after which the sub-level is no longer
+            // in this dim). For mirrors in the dest dim, the same property holds
+            // -- the mirror's center is on the dest-side of its own portal,
+            // which is the side it should keep visible.
+            //
+            // This is NOT camera-aware; the previous attempt to do that was
+            // wrong because portals are one-way views, so the clipped side is a
+            // property of the portal/sub-level pair, not the camera position.
+            double centerDot =
+                (center.x - origin.x) * portalNormal.x +
+                (center.y - origin.y) * portalNormal.y +
+                (center.z - origin.z) * portalNormal.z;
+            Vec3 orientedNormal = centerDot < 0 ? portalNormal.scale(-1.0) : portalNormal;
 
             double distSq = origin.distanceToSqr(center);
             if (distSq < bestDistSq) {
                 bestDistSq = distSq;
                 best = portal;
-                bestPlane = new Plane(origin, normal);
+                bestPlane = new Plane(origin, orientedNormal);
             }
         }
 
