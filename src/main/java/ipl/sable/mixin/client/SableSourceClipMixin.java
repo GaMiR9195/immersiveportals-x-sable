@@ -8,6 +8,8 @@ import ipl.sable.render.SubLevelClipUniformPatcher;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
 import org.joml.Matrix4f;
+import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL30;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
@@ -15,7 +17,6 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import qouteall.imm_ptl.core.render.FrontClipping;
 
 /**
  * Phase 3a: source-side render clipping for Sable sub-levels straddling a portal.
@@ -82,23 +83,6 @@ public abstract class SableSourceClipMixin {
     ) {
         this.ipl$installedClipThisCall = false;
 
-        // We DO run during PortalRendering.isRendering(). Previously we skipped
-        // there to "not trample IP's clipping" -- but the user reported the
-        // mirror visibly over-renders through the portal frame from the back
-        // side. Diagnosis: IP's clip equation is set CPU-side by its mixin
-        // before shader.apply(), so it reaches the GPU for vanilla terrain in
-        // the portal-through view. But Sable's sub-level draws inside that
-        // render don't re-apply the shader, so IP's mid-render set() never
-        // reaches the GPU before Sable's draw. Our patcher's explicit upload
-        // is the missing piece for the mirror too. With center-aware
-        // orientation in SourceClipPortalFinder, the equation we install is
-        // also correct for the mirror's geometry (the dest-dim portal naturally
-        // orients its normal toward the mirror's body in dest dim).
-        if (FrontClipping.isClippingEnabled) {
-            SourceClipDiag.onVanillaCall(false);
-            return;
-        }
-
         SourceClipPortalFinder.ClipDecision decision =
             SourceClipPortalFinder.findStraddlingPortalPlane(getSubLevel());
         if (decision == null) {
@@ -106,21 +90,19 @@ public abstract class SableSourceClipMixin {
             return;
         }
 
-        // Install. setupInnerClipping computes the equation in camera-relative space
-        // and enables GL_CLIP_PLANE0; updateClippingEquationUniformForCurrentShader
-        // pushes the world-space equation into the shader uniform.
-        FrontClipping.setupInnerClipping(decision.plane(), modelView, 0);
-        FrontClipping.updateClippingEquationUniformForCurrentShader(false);
+        // Independent clip plane: write to our ipl_subLevelClipEquation uniform
+        // (gl_ClipDistance[1]), not IP's slot 0. That way our per-sub-level clip
+        // doesn't conflict with IP's own pipeline in scenarios where both want to
+        // be active (notably the portal-through render, where IP wants to clip
+        // the dest-dim view at the portal frame AND we additionally want to clip
+        // the mirror's near-portal half). Both planes evaluate per-vertex; a
+        // fragment is culled if either says so.
+        SubLevelClipUniformPatcher.patchForSubLevel(getSubLevel(), decision.plane());
 
-        // Then upload via the patcher (it also de-dupes diagnostic logs).
-        // SubLevelClipUniformPatcher used to inverse-rotate the equation for
-        // Sable's plot-space shader, but now that the shader transformation
-        // uses post-modelview position (gbufferModelViewInverse * iris_ModelViewMat
-        // * ...), the equation goes through as world space and the patcher's
-        // role is just to upload IP's existing value to the GPU since Sable's
-        // render path doesn't re-apply the shader between IP's set and the
-        // actual draw.
-        SubLevelClipUniformPatcher.patchForSubLevel(getSubLevel());
+        // Enable hardware respect for gl_ClipDistance[1] writes. GL_CLIP_DISTANCE1
+        // is 0x3001 in modern GL; some IDEs / compat shims expose it as
+        // GL30.GL_CLIP_DISTANCE1 or GL11.GL_CLIP_PLANE1 (same enum value).
+        GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
 
         this.ipl$installedClipThisCall = true;
         SourceClipDiag.onVanillaCall(true);
@@ -140,14 +122,10 @@ public abstract class SableSourceClipMixin {
         if (!this.ipl$installedClipThisCall) return;
         this.ipl$installedClipThisCall = false;
 
-        // Disable GL state + zero out the shader uniform so subsequent draws (other
-        // sub-levels, the rest of the level, entities) aren't accidentally clipped
-        // by the per-sub-level equation we installed.
-        FrontClipping.disableClipping();
-        FrontClipping.unsetClippingUniform();
-        // Explicit upload of the cleared uniform -- mirror of the explicit upload
-        // in patchForSubLevel, for the same reason: IP's unset only does CPU set(),
-        // and Sable doesn't re-apply the shader before the next draw.
+        // Tear down: disable GL_CLIP_DISTANCE1 and zero our uniform so subsequent
+        // draws (other sub-levels, vanilla terrain after our render, entities)
+        // aren't accidentally clipped by the equation we installed.
+        GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
         SubLevelClipUniformPatcher.clearAndUpload();
     }
 }

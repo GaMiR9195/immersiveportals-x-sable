@@ -97,11 +97,11 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
+          uniform vec4 ipl_subLevelClipEquation;
           void main() {
-              gl_ClipDistance[0] = dot(
-                  (gbufferModelViewInverse * iris_ModelViewMat * vec4(iris_Position + iris_ChunkOffset, 1.0)).xyz,
-                  iportal_ClippingEquation.xyz
-              ) + iportal_ClippingEquation.w;
+              vec3 _ipl_worldPos = (gbufferModelViewInverse * iris_ModelViewMat * vec4(iris_Position + iris_ChunkOffset, 1.0)).xyz;
+              gl_ClipDistance[0] = dot(_ipl_worldPos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
+              gl_ClipDistance[1] = dot(_ipl_worldPos, ipl_subLevelClipEquation.xyz) + ipl_subLevelClipEquation.w;
     debugOutput: false
   - comment: For sodium
     type: vs

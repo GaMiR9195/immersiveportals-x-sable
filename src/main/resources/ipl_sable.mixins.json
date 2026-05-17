@@ -20,7 +20,8 @@
     "client.VeilPacketContextLevelMixin",
     "client.SableAltContainerTickMixin",
     "client.SableSourceClipMixin",
-    "client.SableSourceClipSodiumMixin"
+    "client.SableSourceClipSodiumMixin",
+    "client.IplShaderInstanceClipMixin"
   ],
   "injectors": {
     "defaultRequire": 0
