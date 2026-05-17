@@ -434,3 +434,191 @@ MVP design.
 
 Next session: **Area D — IP entity teleport and coord mapping; Area E — IP's
 portal-view chunk clipping** (mostly internal to our own repo).
+
+---
+
+## Area D — IP entity teleport + coord mapping
+
+### Findings (session 3, internal IP code at `src/main/java/qouteall/imm_ptl/core/`)
+
+**Portal class** (`portal/Portal.java`) is an `Entity` subclass with everything we
+need for coord mapping and lifecycle queries:
+
+| API | Signature | Use |
+|---|---|---|
+| `transformPoint` | `Vec3 → Vec3` | Maps source-world pos to dest-world pos |
+| `transformLocalVec` | `Vec3 → Vec3` | Local-frame vector transform (orient axes) |
+| `getRotation` | `() → DQuaternion?` | Rotation quaternion the portal applies (nullable) |
+| `getRotationD` | `() → DQuaternion` | Same but non-null wrapper |
+| `getDestDim` | `() → ResourceKey<Level>` | Destination dimension |
+| `getOriginPos` / `getDestPos` | `() → Vec3` | Geometric anchors |
+| `getNormal` | `() → Vec3` | Portal plane normal |
+| `getInnerClipping` | `() → Plane?` | Plane to clip against during portal-view render |
+| `axisW`, `axisH` | fields, `Vec3` | Portal plane basis |
+| `scaling` | field, `double` | Uniform scale for scale portals (usually 1) |
+
+**Portal enumeration** — `Portal extends Entity`, idiomatic query pattern lifted
+from `ServerTeleportationManager.getEntitiesToTeleport`:
+```java
+List<Portal> nearby = level.getEntitiesOfClass(
+    Portal.class,
+    airshipWorldBoundingBox.inflate(approachThreshold),
+    p -> p.isTeleportable()
+);
+```
+
+**Entity teleport machinery** (`ServerTeleportationManager`):
+- `teleportEntityGeneral(Entity, Vec3 targetPos, ServerLevel targetWorld)` —
+  main public API. Players go through `forceTeleportPlayer`, others through
+  `teleportRegularEntityTo`.
+- `teleportRegularEntityTo(E, ResourceKey<Level>, Vec3)` — same-dim move or
+  cross-dim `changeEntityDimension`.
+- A sub-level is **not an `Entity`** so none of these apply directly to it — but
+  the *coord mapping* on Portal is reusable, and `teleportEntityGeneral` is
+  exactly what we want for moving riders/passengers when the airship transits.
+
+### Phase 1 (atomic) sub-level transit procedure
+
+Putting Sessions 1+2+3 together:
+
+```
+1. Per server tick, scan each ServerSubLevel against nearby portals:
+   List<Portal> nearby = sourceLevel.getEntitiesOfClass(
+       Portal.class, airship.globalBoundingBox.inflate(N), Portal::isTeleportable
+   );
+   For each portal whose plane the airship's center crosses since last tick:
+
+2. Compute mapped pose:
+   Vec3 sourcePos = airship.logicalPose().position();
+   Vec3 destPos = portal.transformPoint(sourcePos);
+   Quaterniond destOrient = composeWithPortalRotation(
+       airship.logicalPose().orientation(),
+       portal.getRotationD()
+   );
+
+3. Resolve destination level + container:
+   ServerLevel destLevel = server.getLevel(portal.getDestDim());
+   ServerSubLevelContainer destContainer = SubLevelContainer.getContainer(destLevel);
+
+4. Find a free plot in destContainer + allocate dest sub-level:
+   ServerSubLevel dest = (ServerSubLevel) destContainer.allocateSubLevel(
+       airship.getUniqueId(),  // reuse source UUID for atomic teleport
+       plotPos.x, plotPos.y, destPose
+   );
+
+5. Copy blocks plot → plot via Sable block-setting API.
+   handleBlockChange auto-fires on each set, cascading to:
+     - Sable mass tracker / heatmap / floating-block controller
+     - Aero balloon updates via BalloonMap.updateNearbyBalloons
+
+6. Teleport entities standing on/inside the airship to dest dim via
+   ServerTeleportationManager.teleportEntityGeneral.
+
+7. Remove source: sourceContainer.removeSubLevel(airship, REMOVED).
+```
+
+**UUID handling decision** for atomic teleport: reuse source UUID in dest.
+Sable's `allocateSubLevel(uuid, ...)` accepts an explicit UUID — clean
+identity continuity for clients. (The mirror UUID question from Phase 0 is for
+Phase 2+ where source and mirror coexist.)
+
+### Open (Area D)
+
+- **`DQuaternion` ↔ `org.joml.Quaterniond` conversion** — Sable uses JOML, IP
+  uses `DQuaternion`. Need to find/build a converter. Likely just constructing
+  `new Quaterniond(dq.x, dq.y, dq.z, dq.w)`.
+- **Rotation composition order** — `portalRot * airshipRot` (apply airship
+  first, then portal) per standard convention. Verify empirically.
+- **When in the tick to fire transit** — probably TAIL of source dim's
+  `SubLevelContainer.tick()` after physics has completed. Pick a clean phase
+  so we don't mid-step.
+- **Passenger handling** — per Phase 0 decision, mounted-passenger handling
+  deferred. Phase 1 leaves Aero-seat passengers behind in source dim. Document.
+
+---
+
+## Area E — IP portal-view chunk clipping
+
+### Findings
+
+IP implements a plane-based clip mechanism for terrain rendering during portal
+view, with two paths:
+
+1. **GL fixed-function clip plane** — `GL11.glEnable(GL_CLIP_PLANE0)` with plane
+   equation. Toggled by `FrontClipping.enableClipping()` / `disableClipping()`.
+   Configurable via `IPGlobal.enableClippingMechanism`.
+2. **Shader uniform** — `IEShader.ip_getClippingEquationUniform()` exposes a
+   `Uniform` (Vec4 `(a, b, c, d)` for `a*x + b*y + c*z + d > 0` keeps fragment).
+   Every shader IP patches has this uniform. Updated by
+   `FrontClipping.updateClippingEquationUniformForCurrentShader(boolean)` during
+   render passes.
+
+**API surface**:
+
+| API | Use |
+|---|---|
+| `Plane(Vec3 pos, Vec3 normal)` (record in q_misc_util) | Plane representation |
+| `PortalRendering.getActiveClippingPlane() → Plane?` | Current rendering clip (or null) |
+| `Portal.getInnerClipping() → Plane?` | Portal's "inside" clip plane |
+| `FrontClipping.setupInnerClipping(Plane, modelView, adjustment)` | Sets clip for inner render |
+| `FrontClipping.updateClippingEquationUniformForCurrentShader(boolean)` | Pushes equation to active shader |
+
+### Implications for sub-level transit
+
+Two regimes where Sable's sub-level renderer needs to participate in IP's clipping:
+
+**Regime A** (Phase 3+, straddling): user is in source dim looking at an airship
+that's partially past the portal plane. IP's portal-view clipping is *not*
+active (we're not rendering through a portal). We need a new per-sub-level
+clip-plane mechanism — the airship's "transit context" tells the renderer
+which portal plane to clip against.
+
+**Regime B** (already shipped behavior, build `5d26789`): looking through the
+portal at a source-dim airship from dest dim. IP's `getActiveClippingPlane()` is
+already set. Currently Sable's sub-level renderer ignores it and draws the
+entire sub-level. With cross-dim retention working (the current production
+state) and atomic teleport in Phase 1, this is OK as long as no airship is
+*also* straddling the portal at the same time. Once Phase 2+ allows
+straddling, Sable must clip in Regime B too.
+
+Both regimes need the same Sable-side capability: **apply a clip plane during
+sub-level render**. The clip-plane *source* differs (active IP plane vs
+per-sub-level override) but the *mechanism* is shared.
+
+### Approach options for getting clipping into Sable's renderer
+
+1. **Hardware GL clip plane** (`GL_CLIP_PLANE0`). Works regardless of shader.
+   Set up via `FrontClipping.setupInnerClipping(...)` before Sable renders, unset
+   after. Simplest but compatibility concerns on non-fixed-pipeline configs
+   (Sodium / Iris on certain backends).
+2. **Inject IP's clip uniform into Sable's shaders.** Mixin on Sable's shader
+   compilation to add the `ip_clipping` uniform + GLSL snippet. Most invasive.
+3. **Sable-side per-sub-level clip API.** Add a clip plane field on
+   `ClientSubLevel`, render with that clip if set. Lightest impact on IP,
+   requires understanding Sable's render pipeline (Session 4).
+
+### Open (Area E)
+
+- **Does GL hardware clipping work on all targets** (Mac Metal-translated GL,
+  Sodium renderer pass)? `IPCGlobal.useFrontClipping` is the IP flag for
+  enabling/disabling.
+- **Sable's shader landscape** — entirely Session 4's domain. Custom shaders for
+  sub-level chunk rendering? Water occlusion? Entity rendering inside sub-level?
+- **Phase 1 doesn't need clipping** — atomic teleport never has the airship
+  straddling. Clip work is Phase 2+ scope.
+
+### Session 3 takeaways
+
+For Phase 1 MVP, **IP gives us everything we need**:
+- Coord mapping via `portal.transformPoint(...)` and `getRotationD()`
+- Portal enumeration via `level.getEntitiesOfClass(Portal.class, ...)`
+- Destination dim via `portal.getDestDim()`
+- Entity teleport for riders via existing `teleportEntityGeneral`
+
+For Phase 2+ (straddling + render clipping), IP gives us the `Plane`
+representation and clipping infrastructure (GL + shader uniform). The remaining
+question is how to plumb that into Sable's sub-level renderer — **Session 4**.
+
+Next: **Area F — Sable client renderer.** This will determine the shader/clip
+integration strategy and complete the design picture before we synthesize the
+Phase 1 implementation plan.
