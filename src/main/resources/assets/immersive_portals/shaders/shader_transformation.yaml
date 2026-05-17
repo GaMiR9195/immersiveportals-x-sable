@@ -19,6 +19,7 @@ configs:
           void ( )*main( )*\(( )*( )*\)( )*(
           )*\{
         replacement: |-
+          out float gl_ClipDistance[1];
           uniform vec4 iportal_ClippingEquation;
           void main() {
               gl_ClipDistance[0] = dot(Position.xyz + ChunkOffset, iportal_ClippingEquation.xyz) +
@@ -45,9 +46,10 @@ configs:
           void ( )*main( )*\(( )*( )*\)( )*(
           )*\{
         replacement: |-
+          out float gl_ClipDistance[1];
           uniform vec4 iportal_ClippingEquation;
           void main() {
-              gl_ClipDistance[0] = dot(Position.xyz, iportal_ClippingEquation.xyz) + 
+              gl_ClipDistance[0] = dot(Position.xyz, iportal_ClippingEquation.xyz) +
                   iportal_ClippingEquation.w;
     debugOutput: false
   - comment: For iris+sodium
