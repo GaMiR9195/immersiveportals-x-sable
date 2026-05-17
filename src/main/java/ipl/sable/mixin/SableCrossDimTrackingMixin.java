@@ -190,9 +190,13 @@ public abstract class SableCrossDimTrackingMixin {
         method = "tick",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/Player;"
+            // NB: bytecode return descriptor is Lnet/minecraft/world/entity/player/Player;
+            // (the class lives in the `player` subpackage, not entity directly). Got this
+            // wrong on the first pass which caused require=0 to silently no-op the wrap.
+            // Tightened to require=1 to make any future descriptor drift fail loudly.
+            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"
         ),
-        require = 0
+        require = 1
     )
     private Player ipl$resolveCrossDimInTick(ServerLevel lvl, UUID uuid, Operation<Player> original) {
         Player p = original.call(lvl, uuid);
@@ -214,9 +218,10 @@ public abstract class SableCrossDimTrackingMixin {
         method = "sendMovementUpdates",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/Player;"
+            // Same descriptor fix as above: return type is .../entity/player/Player not .../entity/Player.
+            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"
         ),
-        require = 0
+        require = 1
     )
     private Player ipl$resolveCrossDimInMovement(ServerLevel lvl, UUID uuid, Operation<Player> original) {
         Player p = original.call(lvl, uuid);
