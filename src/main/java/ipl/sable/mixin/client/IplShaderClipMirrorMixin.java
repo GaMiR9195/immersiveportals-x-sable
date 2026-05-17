@@ -137,7 +137,15 @@ public class IplShaderClipMirrorMixin {
             (float) worldEq[2],
             (float) worldEq[3]
         );
-        uniform.upload();
+        // NOTE: do NOT call upload() here. setShader's RETURN fires before
+        // glUseProgram (apply() does that), so calling upload() now errors out
+        // with "No active program" -- and worse, Uniform.upload() clears the
+        // dirty flag even on GL error, so the subsequent apply() would skip
+        // re-upload thinking the value is already on the GPU. Leaving as set()
+        // only means the next apply() will pick up the dirty flag and push our
+        // value correctly. The natural apply()-driven flow handles this for
+        // both terrain (renderSectionLayer) and BE / entity (BufferSource flush
+        // -> drawWithShader -> apply).
 
         GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
     }

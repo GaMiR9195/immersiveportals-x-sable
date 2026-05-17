@@ -197,15 +197,17 @@ public class FrontClipping {
             else {
                 clippingEquationUniform.set(0f, 0f, 0f, 1f);
             }
-            // Explicit upload. Without this, the set() above only marks the uniform
-            // dirty on CPU; the GPU value doesn't change until a subsequent
-            // shader.apply() call flushes it. For terrain rendering MC calls apply()
-            // before each renderSectionLayer chunk pass, so the set lands in time.
-            // But for block-entity / entity render passes (which bind shaders via
-            // RenderSystem.setShader and then draw without a full apply in between),
-            // the CPU set never reaches the GPU before the draw -- so BEs render
-            // with whatever the GPU last had, often zero, often unclipped.
-            clippingEquationUniform.upload();
+            // NOTE: do NOT call upload() here. set() marks the Uniform dirty; the
+            // next ShaderInstance.apply() will pick it up and push to the GPU. An
+            // explicit upload() called from RenderSystem.setShader's RETURN inject
+            // hits the GL state "no active program" because setShader() only stores
+            // the supplier -- glUseProgram is called later inside apply(). Worse,
+            // Uniform.upload() always clears the dirty flag, even on GL error, so
+            // a forced early upload prevents the natural apply()-driven upload
+            // from re-uploading. The original IP design (set() only) relies on
+            // apply() being called between bind and draw -- which IS the case for
+            // both terrain (LevelRenderer.renderSectionLayer) and BE/entity passes
+            // (BufferSource.endBatch -> VertexBuffer.drawWithShader -> apply).
         }
     }
     
