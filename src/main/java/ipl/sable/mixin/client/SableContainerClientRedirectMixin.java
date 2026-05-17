@@ -7,7 +7,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
-import qouteall.imm_ptl.core.network.PacketRedirectionClient;
+import qouteall.imm_ptl.core.ClientWorldLoader;
 
 /**
  * Route Sable's client-side {@code SubLevelContainer.getContainer(Level)} lookups to the
@@ -32,11 +32,25 @@ import qouteall.imm_ptl.core.network.PacketRedirectionClient;
  * container, doesn't find the sub-level, logs "Received a sub-level movement packet for a
  * non-existent sub-level", and the airship doesn't move.
  *
- * <p><b>The fix:</b> when {@link PacketRedirectionClient#getIsProcessingRedirectedMessage()}
- * is true, substitute the level argument to {@code getContainer} with
+ * <p><b>The fix:</b> when {@link ClientWorldLoader#getIsWorldSwitched()} is true,
+ * substitute the level argument to {@code getContainer} with
  * {@code Minecraft.getInstance().level} -- which <i>is</i> the redirected dim during
- * {@code withSwitchedWorldFailSoft}. Outside redirected dispatch this is a no-op (the
- * check returns false, original argument passes through).
+ * {@code withSwitchedWorldFailSoft} / {@code withSwitchedWorld}. Outside an IP-swap this
+ * is a no-op (flag is false, original argument passes through).
+ *
+ * <p><b>Why not {@code PacketRedirectionClient.getIsProcessingRedirectedMessage()}:</b>
+ * I tried that first. It doesn't work for the typical NeoForge custom-payload dispatch
+ * path because NeoForge defers the payload handler via {@code Minecraft.execute(...)}.
+ * IP's {@code MixinMinecraft_RedirectedPacket} wraps that deferred runnable so it
+ * re-enters {@code withSwitchedWorldFailSoft} when dequeued, but by the time the
+ * wrapped runnable actually runs, the outer {@code handleRedirectedPacket}'s
+ * {@code finally} block has already cleared the {@code clientTaskRedirection}
+ * thread-local. So inside Sable's payload handler,
+ * {@code getIsProcessingRedirectedMessage()} returns {@code false} even though
+ * {@code Minecraft.level} <i>is</i> swapped to the source dim. The
+ * {@code isWorldSwitched} flag, in contrast, is set inside {@code withSwitchedWorld}
+ * itself and stays true for the duration of the swap regardless of which thread-local
+ * happens to be live -- which is exactly what we need.
  *
  * <p><b>Why hook getContainer and not PacketContext.level():</b> a single hook on Sable's
  * container lookup covers every Sable packet handler that uses
@@ -61,9 +75,9 @@ public abstract class SableContainerClientRedirectMixin {
         require = 1
     )
     private static Level ipl$redirectLevelForCrossDim(Level level) {
-        if (PacketRedirectionClient.getIsProcessingRedirectedMessage()) {
+        if (ClientWorldLoader.getIsWorldSwitched()) {
             Level redirected = Minecraft.getInstance().level;
-            if (redirected != null) {
+            if (redirected != null && redirected != level) {
                 return redirected;
             }
         }
