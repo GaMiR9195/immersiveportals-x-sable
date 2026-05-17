@@ -5,8 +5,6 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import net.minecraft.client.renderer.ShaderInstance;
-import org.joml.Quaterniondc;
-import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.ducks.IEShader;
@@ -108,21 +106,18 @@ public final class SubLevelClipUniformPatcher {
             return;
         }
 
-        Pose3dc pose = sub.renderPose();
-        Quaterniondc orientation = pose.orientation();
+        // With the Iris-style shader transformation added in
+        // shader_transformation.yaml, the per-sub-level shader computes the
+        // discard against `gbufferModelViewInverse * iris_ModelViewMat *
+        // (iris_Position + iris_ChunkOffset)` -- i.e., world-space relative to
+        // camera. So the equation goes through as IP's world-space form
+        // without rotation. The reason we still need this patcher is that IP's
+        // `updateClippingEquationUniformForCurrentShader` only calls Uniform.set()
+        // and relies on `shader.apply()` to flush, which doesn't re-run between
+        // our mixin's HEAD inject and the actual draw inside renderChunkedSubLevel.
+        // So we set + upload here to force the world equation onto the GPU.
+        @SuppressWarnings("unused") Pose3dc pose = sub.renderPose();
 
-        // n_world (camera-relative in IP's storage convention)
-        Vector3d worldNormal = new Vector3d(worldEq[0], worldEq[1], worldEq[2]);
-
-        // Inverse-rotate into plot space: n_shader = R^-1 * n_world. Quaternion's
-        // transformInverse does exactly that for a unit quaternion (which Sable's
-        // orientations are -- they're rigid rotations on rigid bodies).
-        Vector3d shaderNormal = new Vector3d();
-        orientation.transformInverse(worldNormal, shaderNormal);
-
-        // c is preserved because the matrix Sable uses has no translation;
-        // translation is encoded in ChunkOffset which is on the position side of
-        // the dot product, not the equation side.
         float nx, ny, nz, cw;
         if (FORCE_CLIP_ALL) {
             // Diagnostic mode: force every vertex to evaluate to -1, clipping all
@@ -130,9 +125,9 @@ public final class SubLevelClipUniformPatcher {
             // isn't reaching the GPU at all.
             nx = 0f; ny = 0f; nz = 0f; cw = -1f;
         } else {
-            nx = (float) shaderNormal.x;
-            ny = (float) shaderNormal.y;
-            nz = (float) shaderNormal.z;
+            nx = (float) worldEq[0];
+            ny = (float) worldEq[1];
+            nz = (float) worldEq[2];
             cw = (float) worldEq[3];
         }
 
@@ -153,12 +148,11 @@ public final class SubLevelClipUniformPatcher {
         long now = System.nanoTime();
         if (now - lastReportNanos >= 5_000_000_000L) {
             lastReportNanos = now;
-            LOG.info("[IPL-CLIP-PATCH] shader={} forceAll={} worldEq=({},{},{},{}) -> shaderEq=({},{},{},{}) orientation=({},{},{},{})",
+            LOG.info("[IPL-CLIP-PATCH] shader={} forceAll={} worldEq=({},{},{},{}) wrote=({},{},{},{})",
                 shader.getName(),
                 FORCE_CLIP_ALL,
                 worldEq[0], worldEq[1], worldEq[2], worldEq[3],
-                nx, ny, nz, cw,
-                orientation.x(), orientation.y(), orientation.z(), orientation.w()
+                nx, ny, nz, cw
             );
         }
     }

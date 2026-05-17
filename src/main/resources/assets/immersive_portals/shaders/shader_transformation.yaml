@@ -70,6 +70,39 @@ configs:
           ) + iportal_ClippingEquation.w;
           }
     debugOutput: false
+  - comment: |-
+      For Iris's glsl-transformer-rewritten Sodium chunk shaders. When a player
+      has Iris + Sodium + a shaderpack loaded, the shaderpack's gbuffers_terrain
+      vertex source is passed through iris.glsl-transformer which rewrites all
+      attribute / uniform references with the `iris_` prefix. The runtime shader
+      ID is "terrain_solid" / "terrain_cutout" / "terrain_translucent" matching
+      Sodium's DefaultTerrainRenderPasses, but the source uses iris_Position /
+      iris_ChunkOffset / iris_ModelViewMat / gbufferModelViewInverse.
+
+      Computing the camera-relative world position via this path works for both
+      Sable sub-level rendering (where iris_ModelViewMat = frustum * R_subLevel
+      and iris_ChunkOffset bakes the subLevel translation pre-rotated) AND
+      vanilla terrain rendering -- in both cases the chain
+      `gbufferModelViewInverse * iris_ModelViewMat * (iris_Position + iris_ChunkOffset)`
+      produces world-space-relative-to-camera, which is what
+      iportal_ClippingEquation lives in.
+    type: vs
+    affectedShaders:
+      - terrain_solid
+      - terrain_cutout
+      - terrain_translucent
+    transformations:
+      - pattern: |-
+          void ( )*main( )*\(( )*( )*\)( )*(
+          )*\{
+        replacement: |-
+          uniform vec4 iportal_ClippingEquation;
+          void main() {
+              gl_ClipDistance[0] = dot(
+                  (gbufferModelViewInverse * iris_ModelViewMat * vec4(iris_Position + iris_ChunkOffset, 1.0)).xyz,
+                  iportal_ClippingEquation.xyz
+              ) + iportal_ClippingEquation.w;
+    debugOutput: false
   - comment: For sodium
     type: vs
     affectedShaders:
