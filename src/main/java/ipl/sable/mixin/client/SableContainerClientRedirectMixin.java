@@ -3,8 +3,11 @@ package ipl.sable.mixin.client;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.level.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import qouteall.imm_ptl.core.ClientWorldLoader;
@@ -67,6 +70,12 @@ import qouteall.imm_ptl.core.ClientWorldLoader;
 @Mixin(value = SubLevelContainer.class, remap = false)
 public abstract class SableContainerClientRedirectMixin {
 
+    @Unique
+    private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-sable-container-redirect");
+
+    @Unique
+    private static long ipl$logCounter = 0;
+
     @ModifyVariable(
         method = "getContainer(Lnet/minecraft/world/level/Level;)Ldev/ryanhcode/sable/api/sublevel/SubLevelContainer;",
         at = @At("HEAD"),
@@ -75,12 +84,31 @@ public abstract class SableContainerClientRedirectMixin {
         require = 1
     )
     private static Level ipl$redirectLevelForCrossDim(Level level) {
-        if (ClientWorldLoader.getIsWorldSwitched()) {
-            Level redirected = Minecraft.getInstance().level;
-            if (redirected != null && redirected != level) {
-                return redirected;
-            }
+        boolean isSwitched = ClientWorldLoader.getIsWorldSwitched();
+        Level mcLevel = Minecraft.getInstance().level;
+        Level result = level;
+        boolean substituted = false;
+
+        if (isSwitched && mcLevel != null && mcLevel != level) {
+            result = mcLevel;
+            substituted = true;
         }
-        return level;
+
+        // Log every 20th invocation to keep volume manageable while still showing the pattern.
+        // Always log when substitution actually fires (rare event, useful to capture exactly).
+        long c = ipl$logCounter++;
+        if (substituted || (c % 20) == 0) {
+            IPL$LOG.info(
+                "[IPL-SABLE-CONT] getContainer call#{} arg={} mcLevel={} isWorldSwitched={} substituted={} -> {}",
+                c,
+                level == null ? "null" : level.dimension().location(),
+                mcLevel == null ? "null" : mcLevel.dimension().location(),
+                isSwitched,
+                substituted,
+                result == null ? "null" : result.dimension().location()
+            );
+        }
+
+        return result;
     }
 }
