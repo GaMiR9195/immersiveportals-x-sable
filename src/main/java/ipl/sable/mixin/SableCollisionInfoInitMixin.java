@@ -72,12 +72,22 @@ public abstract class SableCollisionInfoInitMixin {
     private Vec3 ipl$bumpMovementToInitSableCollisionInfo(Vec3 movement) {
         Entity self = (Entity) (Object) this;
 
-        // Skip entities that can't trigger the bug:
-        // - noPhysics entities early-return from move() before reaching the wrap site.
-        // - Passengers are moved by their vehicle; their move() is rarely the path.
-        if (self.noPhysics || self.isPassenger()) {
+        // noPhysics entities early-return from move() before reaching the
+        // setOnGroundWithMovement wrap site, so they can't trigger the bug. Skip
+        // them to avoid an unnecessary 0.5mm drift on Pos.
+        if (self.noPhysics) {
             return movement;
         }
+
+        // NB: we do NOT skip passengers. Empirically, a passenger's move() can
+        // still reach setOnGroundWithMovement (LivingEntity.travel calls move
+        // regardless of vehicle state in some code paths). Confirmed via crash
+        // report 23:40:48: a pig riding a Create Aero seat that transited cross-dim
+        // (carried as a passenger of the seat entity by vanilla
+        // changeEntityDimension) ended up as a fresh Entity instance with
+        // sable$collisionInfo=null. Its idle tick NPE'd because this mixin's old
+        // isPassenger() check skipped it. Removing the skip; sub-mm drift on
+        // passenger entities is harmless.
 
         // If movement is non-trivial, vanilla will call collide() and Sable's
         // redirect fires naturally. No bump needed.
