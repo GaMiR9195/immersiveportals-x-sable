@@ -88,6 +88,19 @@ public class IPModEntryClient {
             Helper.log("Sodium is not present");
         }
         
+        // Sable-fork addition: when Veil is present, hook its preprocessor
+        // pipeline so that IP's iportal_ClippingEquation injection survives
+        // Veil's vanilla-shader recompile pass. Without this, Veil throws away
+        // the linked programs IP injected into and links replacement ones from
+        // un-injected source -- breaking clipping for every vanilla rendertype.
+        // See ipl.sable.render.IplVeilShaderPreProcessor javadoc for the full
+        // diagnosis. Guarded by ModList so the JVM doesn't try to verify the
+        // Veil-referencing class when Veil is absent.
+        if (ModList.get().isLoaded("veil")) {
+            Helper.log("Veil is present -- registering IPL clip preprocessor");
+            ipl.sable.render.IplVeilCompat.init(modEventBus);
+        }
+
         if (ModList.get().isLoaded("iris")) {
             Helper.log("Iris is present");
             IrisInterface.invoker = new IrisInterface.OnIrisPresent();

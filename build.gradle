@@ -179,6 +179,12 @@ dependencies {
     //   unzip -j deps/sable-neoforge-1.21.1-1.2.2.jar \
     //     META-INF/jarjar/veil-neoforge-1.21.1-4.0.1.jar -d deps/
     implementation files("deps/veil-neoforge-1.21.1-4.0.1.jar")
+    // glsl-processor - bundled inside Veil's JarJar; needed on the compile classpath so
+    // our Veil ShaderPreProcessor can reference GlslTree / GlslParser when modifying
+    // the AST Veil hands to preprocessors. Extracted once via:
+    //   unzip -j deps/veil-neoforge-1.21.1-4.0.1.jar \
+    //     META-INF/jarjar/glsl-processor-0.2.3.jar -d deps/
+    implementation files("deps/glsl-processor-0.2.3.jar")
 
     // Mekanism
     implementation "maven.modrinth:mekanism:10.7.14.79"

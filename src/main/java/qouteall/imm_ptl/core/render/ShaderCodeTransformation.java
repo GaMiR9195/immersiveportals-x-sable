@@ -52,16 +52,24 @@ public class ShaderCodeTransformation {
     private static List<Config> configs;
     
     public static void init() {
+        // Idempotent: tolerate being called from multiple init sites (the
+        // sable-fork IplVeilCompat path needs to force-init eagerly before
+        // Veil's vanilla-shader compile pass starts, since IP's own
+        // Minecraft.execute()-queued init runs *after* Veil has already
+        // compiled all 58 vanilla shaders without our injection).
+        if (configs != null) {
+            return;
+        }
         if (IPGlobal.enableClippingMechanism) {
             Yaml yaml = new Yaml();
-            
+
             String yamlStr = McHelper.readTextResource(McHelper.newResourceLocation(
                 "immersive_portals:shaders/shader_transformation.yaml"
             ));
             ConfigsObj configsObj = yaml.loadAs(yamlStr, ConfigsObj.class);
-            
+
             configs = configsObj.configs;
-            
+
             LOGGER.info("Loaded Shader Code Transformation");
         }
         else {
