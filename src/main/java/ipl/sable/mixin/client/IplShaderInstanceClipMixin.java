@@ -71,7 +71,42 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
         "terrain_translucent",
         "entities_solid",
         "entities_cutout",
-        "entities_translucent"
+        "entities_translucent",
+        // Iris-rewritten vanilla entity shader (no shaderpack). The YAML
+        // injection for this name declares `uniform vec4 ipl_subLevelClipEquation;`
+        // and writes gl_ClipDistance[1] -- so the Java-side Uniform needs
+        // to be registered too, otherwise Mojang's updateLocations won't
+        // find a backing Uniform object for it.
+        "block_entity_diffuse",
+        // Iris-rewritten moving-block / particle (Create cogs and animated
+        // mechanical visuals; particle effects under shader pack). YAML
+        // injects the slot-1 uniform decl for these; register the Java
+        // Uniform here so updateLocations resolves it.
+        "moving_block",
+        "particles",
+        // Veil-managed Simulated / Aeronautics block-entity sub-shaders.
+        // YAML injects the slot-1 uniform for these; register the Java
+        // Uniform here so updateLocations resolves it (avoids
+        // 'could not find uniform' warnings and gives our _glUseProgram
+        // write path a non-null location).
+        "simulated:end_sea",
+        "simulated:spread_end_sea",
+        "simulated:rope/rope",
+        "simulated:redstone_accumulator/diode",
+        "simulated:spring/spring",
+        "simulated:laser_pointer/lens",
+        "simulated:contraption_diagram/outline_diagram",
+        "simulated:laser/laser",
+        "aeronautics:levitite/levitite",
+        "aeronautics:burner_flame",
+        "aeronautics:hot_air_overlay",
+        "aeronautics:soft_light",
+        // Create / NeoForge / Veil entity-class shaders that also use the
+        // vanilla Position/ModelViewMat layout. Slot-1 Uniform registered
+        // here so updateLocations resolves it.
+        "glowing_shader",
+        "rendertype_entity_unlit_translucent",
+        "veil:necromancer/skinned_mesh"
     );
 
     @Inject(
