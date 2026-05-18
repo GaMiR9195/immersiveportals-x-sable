@@ -71,6 +71,37 @@ public final class SubLevelClipUniformPatcher {
         LOG.warn("[IPL-CLIP-PATCH] early return: {}", reason);
     }
 
+    /**
+     * Currently-active sub-level equation, mirrored as a (nx, ny, nz, w) float
+     * array. Set by {@link #patchForSubLevel} when a sub-level bracket starts
+     * and cleared by {@link #clearAndUpload} when it ends.
+     *
+     * <p>Read by {@code IplGlUseProgramProbeMixin} so that any shader bound
+     * during the sub-level body (cog moving_block, particle particles, etc.)
+     * also receives the per-sub-level equation on its
+     * {@code ipl_subLevelClipEquation} -- not the portal-clip-mirror equation
+     * we'd otherwise write for slot 1. Without this, the original
+     * {@code patchForSubLevel} write only reaches the shader that happens to
+     * be bound at the moment {@code ipl$withClip} runs (typically the chunked
+     * terrain shader); subsequent binds inside {@code body.run()} would
+     * silently get a stale or wrong-plane equation.
+     *
+     * <p>Static volatile rather than ThreadLocal because all GL state changes
+     * happen on the render thread; a single field is simpler and faster.
+     */
+    private static volatile float[] currentSubLevelEq = null;
+
+    /**
+     * Read the currently-active sub-level equation as a 4-float array, or
+     * {@code null} if no sub-level bracket is active. The
+     * {@link ipl.sable.mixin.client.IplGlUseProgramProbeMixin} consults this
+     * on every program bind so per-sub-level slot-1 propagates to all shaders
+     * bound during the sub-level render, not just the first one.
+     */
+    public static float[] getCurrentSubLevelEq() {
+        return currentSubLevelEq;
+    }
+
     private SubLevelClipUniformPatcher() {}
 
     /**
@@ -125,6 +156,14 @@ public final class SubLevelClipUniformPatcher {
         uniform.set(nx, ny, nz, cw);
         uniform.upload();
 
+        // Publish for subsequent program binds inside the same sub-level
+        // bracket -- IplGlUseProgramProbeMixin reads this on _glUseProgram
+        // HEAD so cog / particle / animated-BE shaders bound after the
+        // initial shader inherit the same sub-level equation. Without this,
+        // they'd silently fall back to the portal-clip mirror, producing
+        // the floating-sub-component bug.
+        currentSubLevelEq = new float[]{nx, ny, nz, cw};
+
         long now = System.nanoTime();
         if (now - lastReportNanos >= 5_000_000_000L) {
             lastReportNanos = now;
@@ -143,6 +182,11 @@ public final class SubLevelClipUniformPatcher {
      * terrain after our sub-level render) don't inherit a stale equation.
      */
     public static void clearAndUpload() {
+        // Clear the published equation first so subsequent program binds
+        // outside the sub-level bracket fall back to portal-mirror or
+        // no-clip writes in IplGlUseProgramProbeMixin.
+        currentSubLevelEq = null;
+
         ShaderInstance shader = RenderSystem.getShader();
         if (shader == null) return;
         Uniform uniform = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform();

@@ -25,7 +25,8 @@
     "client.IplShaderClipMirrorMixin",
     "client.IplFrontClippingStateMirrorMixin",
     "client.SableSubLevelBlockEntityClipMixin",
-    "client.IplFlywheelCompilationMixin"
+    "client.IplFlywheelCompilationMixin",
+    "client.IplGlUseProgramProbeMixin"
   ],
   "injectors": {
     "defaultRequire": 0
