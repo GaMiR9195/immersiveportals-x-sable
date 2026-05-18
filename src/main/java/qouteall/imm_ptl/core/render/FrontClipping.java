@@ -187,8 +187,17 @@ public class FrontClipping {
         Uniform clippingEquationUniform = ((IEShader) shader).ip_getClippingEquationUniform();
         if (clippingEquationUniform != null) {
             if (isClippingEnabled) {
-                double[] equation = activeClipPlaneEquationBeforeModelView;
-//                double[] equation = isRenderingEntities ? activeClipPlaneAfterModelView : activeClipPlaneEquationBeforeModelView;
+                // Sable-fork fix: re-enabled the eye-space vs world-space
+                // distinction. Vanilla entity / particle / portal_area GLSL
+                // (post-fix) does `dot((ModelViewMat * Position).xyz, eq)` --
+                // i.e. eye-space dot -- so it needs the eye-space equation
+                // (`activeClipPlaneAfterModelView`). Vanilla terrain does
+                // `dot(Position + ChunkOffset, eq)` in camera-relative world
+                // coords and needs the world equation. Caller decides via
+                // the `isRenderingEntities` flag.
+                double[] equation = isRenderingEntities
+                    ? activeClipPlaneAfterModelView
+                    : activeClipPlaneEquationBeforeModelView;
                 clippingEquationUniform.set(
                     (float) equation[0], (float) equation[1],
                     (float) equation[2], (float) equation[3]

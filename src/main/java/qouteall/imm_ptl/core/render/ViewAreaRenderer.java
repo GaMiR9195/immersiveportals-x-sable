@@ -87,7 +87,14 @@ public class ViewAreaRenderer {
         shader.MODEL_VIEW_MATRIX.set(modelViewMatrix);
         shader.PROJECTION_MATRIX.set(projectionMatrix);
         
-        FrontClipping.updateClippingEquationUniformForCurrentShader(false);
+        // Sable-fork fix: portal_area's GLSL injection (in
+        // shader_transformation.yaml) was changed to use the entity-style
+        // `dot((ModelViewMat * vec4(Position, 1)).xyz, eq)` form, so it needs
+        // the eye-space form of the equation. For portal_area's specific case
+        // both forms yield identical clip distances (its Position is already
+        // camera-relative-world and its ModelViewMat is a pure rotation), but
+        // passing `true` keeps the math consistent with the GLSL.
+        FrontClipping.updateClippingEquationUniformForCurrentShader(true);
         
         shader.apply();
         
