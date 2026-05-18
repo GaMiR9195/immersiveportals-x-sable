@@ -13,6 +13,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import qouteall.imm_ptl.core.ducks.IEShader;
 import qouteall.imm_ptl.core.render.FrontClipping;
 
 import java.util.concurrent.ConcurrentHashMap;
@@ -117,15 +118,25 @@ public class IplShaderClipMirrorMixin {
         String name = shader.getName();
         Uniform uniform = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform();
         boolean hasUniform = uniform != null;
+        // Also probe IP's slot-0 uniform on the just-bound shader. If slot 0 is
+        // present, IP's MixinRenderSystem_Clipping should have written the
+        // equation right before us. We can read the location to confirm whether
+        // glGetUniformLocation actually resolved it (location >= 0 means
+        // resolved; -1 means the uniform exists but the linker stripped it
+        // before location resolution). This is the key signal for the chest-leak
+        // diagnosis: if hasIPClip=true but IP's loc=-1, the slot-0 path is
+        // resolved-then-stale (Veil swapped the program after IP cached the
+        // location). If hasIPClip=false entirely, the shader was never wired.
+        Uniform ipClip = ((IEShader) shader).ip_getClippingEquationUniform();
+        int ipLoc = ipClip == null ? -2 : ipClip.getLocation();
         if (IPL$DISCOVERED_SHADERS.putIfAbsent(name, Boolean.TRUE) == null) {
             IPL$LOG.info(
-                "[IPL-CLIP-DISCOVER] shader='{}' hasUniform={}{}",
+                "[IPL-CLIP-DISCOVER] shader='{}' slot0(IP)={} slot0Loc={} slot1(IPL)={} eq=[{},{},{},{}]",
                 name,
-                hasUniform,
-                hasUniform
-                    ? ""
-                    : "  ← shader bound during portal-through but our slot-1 uniform is NOT registered; "
-                      + "add this name to the affectedShaders list in shader_transformation.yaml"
+                ipClip != null ? "PRESENT" : "ABSENT",
+                ipLoc,
+                hasUniform ? "PRESENT" : "ABSENT",
+                worldEq[0], worldEq[1], worldEq[2], worldEq[3]
             );
         }
 
