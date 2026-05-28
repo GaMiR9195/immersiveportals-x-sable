@@ -1,29 +1,42 @@
 ---
 configs:
-  - comment: For vanilla terrain rendering
+  - comment: |-
+      For vanilla terrain rendering. Slot 1 (ipl_subLevelClipEquation) added
+      so cogs and other sub-level block entities -- which bind these vanilla
+      rendertype shaders via vanilla BlockEntityRenderer inside
+      SableSubLevelBlockEntityClipMixin's bracket -- get clipped on the
+      sub-level plane. Without slot-1 here, the bracket enables
+      GL_CLIP_DISTANCE1 but the vertex shader never writes it, leaving the
+      rasterizer reading undefined and letting cog meshes leak.
+      Camera-relative-world space (Position.xyz + ChunkOffset) matches the
+      space SubLevelClipUniformPatcher publishes the equation in.
+      NOTE: previous attempt to add Sable's 'terrain_solid' etc. shaders here
+      caused an Iris shader compile error: "undefined variable Position".
+      Those shaders use Iris/Veil attribute conventions, not vanilla's
+      `in vec3 Position`. They need a separate transformation entry below
+      that targets their actual attribute layout, but we don't yet know
+      what that layout is. Reverted to keep the world functional while we
+      find the correct injection pattern.
     type: vs
     affectedShaders:
       - rendertype_solid
       - rendertype_cutout
       - rendertype_cutout_mipped
       - rendertype_translucent
-      # NOTE: previous attempt to add Sable's 'terrain_solid' etc. shaders here
-      # caused an Iris shader compile error: "undefined variable Position".
-      # Those shaders use Iris/Veil attribute conventions, not vanilla's
-      # `in vec3 Position`. They need a separate transformation entry below
-      # that targets their actual attribute layout, but we don't yet know
-      # what that layout is. Reverted to keep the world functional while we
-      # find the correct injection pattern.
     transformations:
       - pattern: |-
           void ( )*main( )*\(( )*( )*\)( )*(
           )*\{
         replacement: |-
-          out float gl_ClipDistance[1];
+          out float gl_ClipDistance[2];
           uniform vec4 iportal_ClippingEquation;
+          uniform vec4 ipl_subLevelClipEquation;
           void main() {
-              gl_ClipDistance[0] = dot(Position.xyz + ChunkOffset, iportal_ClippingEquation.xyz) +
+              vec3 _ipl_worldPos = Position.xyz + ChunkOffset;
+              gl_ClipDistance[0] = dot(_ipl_worldPos, iportal_ClippingEquation.xyz) +
                   iportal_ClippingEquation.w;
+              gl_ClipDistance[1] = dot(_ipl_worldPos, ipl_subLevelClipEquation.xyz) +
+                  ipl_subLevelClipEquation.w;
     debugOutput: false
   - comment: |-
       For portal area rendering and entity rendering and particle.
@@ -69,7 +82,20 @@ configs:
                   iportal_ClippingEquation.xyz
               ) + iportal_ClippingEquation.w;
     debugOutput: false
-  - comment: For iris+sodium
+  - comment: |-
+      For iris+sodium shaderpack-style terrain. Slot-1 added so cog block
+      bodies that get baked into Sodium chunk geometry (and therefore
+      rasterized through this program under shader pack) can clip on the
+      sub-level plane. The static-cog-body leak we chased through
+      cog_leak3..7 was on this exact program (RenderDoc EID 7122,
+      `iportal_ClippingEquation = (-0.263876, 0.426615, -0.865084,
+      -11.126332)` with `ipl_subLevelClipEquation = <ABSENT>`).
+      Same eye-space math pattern as the existing slot-0 write so we don't
+      change the working slot-0 behavior. The slot-1 uniform is harmless
+      for non-sub-level draws because `IplGlUseProgramProbeMixin` only
+      enables `GL_CLIP_DISTANCE1` when a sub-level bracket is active --
+      otherwise the rasterizer ignores `gl_ClipDistance[1]` writes
+      regardless of what's in the uniform.
     type: vs
     affectedShaders:
       - iris_gbuffers_terrain
@@ -80,13 +106,16 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
+          uniform vec4 ipl_subLevelClipEquation;
           void main() {
       - pattern: "\\}(?![\\S\\s]*\\})"
         # match the last } ([\S\s] matches any character). use the modelview-transformed coordinate
         replacement: |-
-          gl_ClipDistance[0] = dot(
-              (iris_ModelViewMatrix * getVertexPosition()).xyz, iportal_ClippingEquation.xyz
-          ) + iportal_ClippingEquation.w;
+          {
+              vec3 _ipl_eye = (iris_ModelViewMatrix * getVertexPosition()).xyz;
+              gl_ClipDistance[0] = dot(_ipl_eye, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
+              gl_ClipDistance[1] = dot(_ipl_eye, ipl_subLevelClipEquation.xyz) + ipl_subLevelClipEquation.w;
+          }
           }
     debugOutput: false
   - comment: |-
@@ -165,10 +194,8 @@ configs:
       # Iris-rewritten moving-block shader. Discovered via RenderDoc on a
       # Create cog visible through a portal -- API Inspector showed the
       # bound program as "Vanilla Shader Program moving_block:default" with
-      # iris_*-prefixed uniforms. Same vanilla-attribute / per-batch
-      # ModelViewMat layout as block_entity_diffuse, so the same eye-space
-      # injection works. Cogs and any Create moving-block visual go through
-      # this when shader pack is active.
+      # iris_*-prefixed uniforms. Cogs and any Create moving-block visual go
+      # through this when shader pack is active.
       - moving_block
       # Iris-rewritten particle shader. Plural form is Iris's rename of
       # vanilla `particle` (our YAML already covers the non-rewritten name
@@ -183,8 +210,24 @@ configs:
           uniform vec4 ipl_subLevelClipEquation;
           void main() {
               vec3 _ipl_eyePos = (iris_ModelViewMat * vec4(iris_Position, 1.0)).xyz;
+              // Slot 0 (IP portal clip): eye-space dot. IP writes the
+              // activeClipPlaneAfterModelView equation here (eye-space).
               gl_ClipDistance[0] = dot(_ipl_eyePos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
-              gl_ClipDistance[1] = dot(_ipl_eyePos, ipl_subLevelClipEquation.xyz) + ipl_subLevelClipEquation.w;
+              // Slot 1 (sub-level clip): recover camera-relative WORLD-space
+              // position via gbufferModelViewInverse, then dot against our
+              // world-space equation. The eye-space slot-1 path used here
+              // previously gave wrong-side clipping for Create cogs on
+              // assembled physics sub-levels because the cog's
+              // iris_ModelViewMat bakes in the per-sub-level transform on
+              // top of the camera view -- naive R_cam rotation of a
+              // world-space normal doesn't account for the sub-level
+              // transform, so the equation ends up at the wrong orientation.
+              // Recovering world-space inside the shader (same chain as the
+              // iris+sodium terrain entry uses) sidesteps the issue and
+              // matches what SubLevelClipUniformPatcher publishes via
+              // currentSubLevelEqWorld.
+              vec3 _ipl_worldRel = (gbufferModelViewInverse * vec4(_ipl_eyePos, 1.0)).xyz;
+              gl_ClipDistance[1] = dot(_ipl_worldRel, ipl_subLevelClipEquation.xyz) + ipl_subLevelClipEquation.w;
     debugOutput: false
   - comment: |-
       Veil-managed Simulated / Aeronautics block-entity shaders. These are

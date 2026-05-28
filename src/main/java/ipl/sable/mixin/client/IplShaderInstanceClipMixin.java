@@ -66,6 +66,16 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
      */
     @Unique
     private static final Set<String> IPL$AFFECTED_SHADERS = Set.of(
+        // Vanilla rendertypes (Sable-overridden in this fork). Sub-level
+        // block entities -- Create cogs via KineticBlockEntityRenderer chief
+        // among them -- bind these inside SableSubLevelBlockEntityClipMixin's
+        // bracket. YAML entry 1 injects gl_ClipDistance[1] writes; register
+        // the Java Uniform here so SubLevelClipUniformPatcher.patchForSubLevel
+        // resolves and uploads to it via the setShader path.
+        "rendertype_solid",
+        "rendertype_cutout",
+        "rendertype_cutout_mipped",
+        "rendertype_translucent",
         "terrain_solid",
         "terrain_cutout",
         "terrain_translucent",
@@ -123,6 +133,13 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
                 "ipl_subLevelClipEquation",
                 7, 4, self
             );
+            // Initialize to the no-clip identity (0,0,0,1) so the first frame --
+            // before any sub-level bracket has run -- evaluates
+            // dot(pos, (0,0,0)) + 1 = 1 > 0 = kept. Without this, the uniform
+            // starts at zero, the shader writes gl_ClipDistance[1] = 0, which
+            // is on the boundary and driver-dependent. Matches what
+            // SubLevelClipUniformPatcher.clearAndUpload restores on bracket exit.
+            ipl$subLevelClipEquation.set(0f, 0f, 0f, 1f);
             uniforms.add(ipl$subLevelClipEquation);
         }
     }

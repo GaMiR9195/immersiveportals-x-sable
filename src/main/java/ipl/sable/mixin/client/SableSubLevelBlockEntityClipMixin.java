@@ -109,7 +109,27 @@ public abstract class SableSubLevelBlockEntityClipMixin {
      * the sub-level isn't straddling any portal (no clip needed) so we don't pay
      * the cost on non-portal-adjacent sub-levels.
      */
+    /** Per-distinct-sub-level last-log-time, so high-FPS sessions don't spam. */
+    @org.spongepowered.asm.mixin.Unique
+    private static final java.util.concurrent.ConcurrentHashMap<java.util.UUID, Long> IPL$LAST_LOG_NS =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
+    @org.spongepowered.asm.mixin.Unique
+    private static final org.slf4j.Logger IPL$DIAG =
+        org.slf4j.LoggerFactory.getLogger("ipl-sable-be-coll");
+
     private static void ipl$withClip(ClientSubLevel sub, Runnable body) {
+        // DIAGNOSTIC: log per-sub-level, rate-limited to once / 5s, to confirm
+        // this wrap fires for cog scenes. If absent from latest.log during a
+        // cog repro, the wrap target doesn't match Sable's actual call site.
+        java.util.UUID id = sub != null ? sub.getUniqueId() : null;
+        long now = System.nanoTime();
+        Long last = id == null ? null : IPL$LAST_LOG_NS.get(id);
+        if (last == null || now - last > 5_000_000_000L) {
+            if (id != null) IPL$LAST_LOG_NS.put(id, now);
+            IPL$DIAG.info("[IPL-COLL-BRACKET-FIRED] sub={}", id);
+        }
+
         SourceClipPortalFinder.ClipDecision decision =
             SourceClipPortalFinder.findStraddlingPortalPlane(sub);
         if (decision == null) {
@@ -127,9 +147,11 @@ public abstract class SableSubLevelBlockEntityClipMixin {
         try {
             body.run();
         } finally {
-            if (!FrontClipping.isClippingEnabled) {
-                GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
-            }
+            // Always disable CD1 on bracket exit -- see SableSourceClipMixin's
+            // matching cleanup for the rationale. The prior FrontClipping
+            // conditional confused IP's slot-0 enable for our slot-1 and let
+            // stale sub-level equations leak into portal-through draws.
+            GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
             SubLevelClipUniformPatcher.clearAndUpload();
         }
     }

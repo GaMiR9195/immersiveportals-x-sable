@@ -33,6 +33,14 @@ allprojects {
             name "tterrag maven"
             url "https://maven.tterrag.com/"
         }
+        maven {
+            // For modern Flywheel (1.0.x dev.engine-room.* artifacts) -- same
+            // repo Sable uses to resolve `flywheel-neoforge-1.21.1`. Needed
+            // because IplFlywheelEmbeddedClipMixin uses direct class
+            // references to EmbeddedEnvironment and GlProgram.
+            name "NeoForged"
+            url "https://maven.neoforged.net/releases"
+        }
     }
 
     dependencies {
@@ -73,7 +81,14 @@ allprojects {
 
 //        implementation "io.github.llamalad7:mixinextras-neoforge:0.2.1" // Now already included with newest NEO
 
-        compileOnly "com.jozufozu.flywheel:flywheel-forge-1.20.1:1.0.0-beta-88" // No current version available yet
+        // Modern Flywheel for NeoForge 1.21.1, extracted from Create's JIJ
+        // (`META-INF/jarjar/flywheel-neoforge-1.21.1-1.0.6.jar` inside
+        // `create-1.21.1-6.0.10.jar`). Maven coords from NeoForged repo
+        // didn't yield the actual class jar reliably; this file reference
+        // is what Sable's sub-level Flywheel embeddings actually use at
+        // runtime, so we know the classes match. compileOnly because
+        // Flywheel JIJ'd by Create is what loads at runtime.
+        compileOnly files("libs/flywheel-neoforge-1.21.1-1.0.6.jar")
 
         implementation "maven.modrinth:pehkui:3.8.2+1.20.4-neoforge"// No current version available yet
     }

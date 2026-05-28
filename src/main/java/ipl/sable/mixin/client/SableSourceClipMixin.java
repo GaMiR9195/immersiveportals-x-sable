@@ -123,18 +123,21 @@ public abstract class SableSourceClipMixin {
         if (!this.ipl$installedClipThisCall) return;
         this.ipl$installedClipThisCall = false;
 
-        // If IP's portal-through clipping is active, leave GL_CLIP_DISTANCE1
-        // enabled -- IplShaderClipMirrorMixin is responsible for keeping slot 1
-        // populated from IP's equation during that whole pass, and the next
-        // shader switch will refresh our uniform from IP's state. Disabling here
-        // would kill clipping for the rest of the portal-through render.
+        // Always disable GL_CLIP_DISTANCE1 on bracket exit -- it's OUR slot,
+        // not IP's (IP uses CD0 for portal clip). The previous conditional
+        // "leave on if FrontClipping.isClippingEnabled" was a confusion
+        // between slot-0 and slot-1 enable states: FrontClipping is IP's
+        // CD0 plane, and tying our CD1 disable to it caused a regression
+        // where stale sub-level equations stayed live on programs bound
+        // during portal-through (notably iris_gbuffers_terrain rendering
+        // the nether terrain, which inherited the airship plane and
+        // visibly clipped on it).
         //
-        // Otherwise (main render of source dim, no portal-through), we owned the
-        // GL_CLIP_DISTANCE1 enable and need to clear it so subsequent non-Sable
-        // draws aren't clipped by stale state.
-        if (!FrontClipping.isClippingEnabled) {
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
-        }
+        // With CD1 unconditionally disabled on bracket exit, the bracket's
+        // enable is the SOLE source of "slot-1 active" GL state, and the
+        // IplGlUseProgramProbeMixin per-bind re-enable is gated on
+        // inSubLevelBracket so it only re-enables while a bracket is live.
+        GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
         SubLevelClipUniformPatcher.clearAndUpload();
     }
 }

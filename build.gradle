@@ -136,6 +136,12 @@ dependencies {
     implementation "maven.modrinth:sodium:mc1.21.1-0.6.13-neoforge"
     implementation "maven.modrinth:iris:1.8.1+1.21.1-neoforge"
 
+    // Modern Flywheel for NeoForge 1.21.1 -- extracted from Create's JIJ.
+    // Needed so IplFlywheelEmbeddedClipMixin can use direct class
+    // references to EmbeddedEnvironment + GlProgram. compileOnly because
+    // Flywheel is loaded at runtime via Create's JIJ already.
+    compileOnly files("libs/flywheel-neoforge-1.21.1-1.0.6.jar")
+
     implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
     implementation "maven.modrinth:pehkui:3.8.3+1.21-neoforge"
 

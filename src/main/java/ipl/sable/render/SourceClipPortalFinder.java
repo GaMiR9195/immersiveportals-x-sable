@@ -36,6 +36,18 @@ import java.util.UUID;
  */
 public final class SourceClipPortalFinder {
 
+    /**
+     * Lateral tolerance for the "is the airship in the portal opening" gate,
+     * as a fraction of the portal's half-dimension. The airship's AABB center
+     * must project within {@code halfDim * (1 + margin)} on both the width and
+     * height axes for clipping to engage. Tunable at runtime via
+     * {@code -Dipl.sable.clip.rectMargin} so the gate can be dialed without a
+     * rebuild. Default 0.15 (center must be within ~the opening, plus 15% slack
+     * at the edges to avoid flicker).
+     */
+    private static final double RECT_MARGIN_FACTOR =
+        Double.parseDouble(System.getProperty("ipl.sable.clip.rectMargin", "0.15"));
+
     private SourceClipPortalFinder() {}
 
     /**
@@ -58,6 +70,7 @@ public final class SourceClipPortalFinder {
         Portal best = null;
         double bestDistSq = Double.MAX_VALUE;
         Plane bestPlane = null;
+        boolean anyStraddle = false;
 
         // Iterate all client-side entities. Cheap enough for the small entity counts
         // typical in vanilla survival; if this shows up in profilers we can swap to
@@ -72,6 +85,21 @@ public final class SourceClipPortalFinder {
             // Straddle check: compute signed distance from each AABB corner to the
             // plane; if signs differ, the box crosses the plane.
             if (!boxStraddlesPlane(box, origin, portalNormal)) continue;
+
+            // Rectangle check: the plane is INFINITE but the portal is a
+            // FINITE rectangle. An airship that crosses the plane but sits
+            // off to the side (beyond the portal's width/height) must NOT
+            // be clipped. Project the AABB onto the portal's width (axisW)
+            // and height (axisH) axes and require overlap with the portal's
+            // [-width/2, width/2] x [-height/2, height/2] extent. Without
+            // this, clipping engaged whenever the airship was merely near
+            // the plane, even when nowhere near the actual portal opening.
+            if (!boxOverlapsPortalRect(box, origin, portal.getAxisW(), portal.getAxisH(),
+                    portal.getWidth(), portal.getHeight())) {
+                continue;
+            }
+
+            anyStraddle = true;
 
             // Orient the normal so the kept half-space contains the sub-level's
             // center.
@@ -138,7 +166,29 @@ public final class SourceClipPortalFinder {
             }
         }
 
-        return best == null ? null : new ClipDecision(best, bestPlane);
+        // Drop the contact cache if the sub-level no longer straddles ANY
+        // portal -- next contact starts fresh.
+        if (!anyStraddle) {
+            SubLevelPortalContactTracker.clearContact(sub.getUniqueId());
+            return null;
+        }
+
+        if (best == null) return null;
+
+        // Stabilize the chosen normal across the contact session: lock in
+        // whatever orientation we picked on first contact and reuse it on
+        // subsequent frames. This prevents AABB-center wobble (especially
+        // from airship rotation) from flipping the kept/culled halves
+        // partway through a transit. See SubLevelPortalContactTracker for
+        // rationale + lifecycle.
+        Vec3 stableNormal = SubLevelPortalContactTracker.recordContact(
+            sub.getUniqueId(), bestPlane.normal()
+        );
+        if (stableNormal != bestPlane.normal()) {
+            bestPlane = new Plane(bestPlane.pos(), stableNormal);
+        }
+
+        return new ClipDecision(best, bestPlane);
     }
 
     /**
@@ -156,6 +206,45 @@ public final class SourceClipPortalFinder {
             // Registry unavailable or concurrent modification -- fall through.
         }
         return false;
+    }
+
+    /**
+     * Is the airship's AABB center within the portal's finite rectangle
+     * (laterally), i.e. is the airship actually in the doorway?
+     *
+     * <p>Projects the vector from the portal origin (== rect center, by IP
+     * convention) to the AABB center onto the portal's width axis (axisW) and
+     * height axis (axisH). Requires both projections to fall within the rect's
+     * half-extent, expanded by {@link #RECT_MARGIN_FACTOR}.
+     *
+     * <p><b>Why center-based, not AABB-overlap:</b> the previous version used
+     * the airship's full AABB lateral extent as an overlap radius. For a large
+     * airship that radius is huge, so the test passed whenever the bounding box
+     * merely brushed the portal's lateral span -- clipping engaged when the
+     * airship was near the plane but laterally <em>beside</em> the opening, not
+     * passing through it. Anchoring on the center means the gate opens only when
+     * the airship's body is genuinely in the opening, which is the moment a
+     * single clip plane is the right tool. Trade-off: an airship much larger
+     * than the portal that transits off-center won't clip until its center
+     * reaches the opening; acceptable since Sable setups size the portal to the
+     * airship, and {@link #RECT_MARGIN_FACTOR} is tunable if it bites.
+     */
+    private static boolean boxOverlapsPortalRect(
+        AABB box, Vec3 origin, Vec3 axisW, Vec3 axisH, double width, double height
+    ) {
+        Vec3 center = box.getCenter();
+        Vec3 toCenter = center.subtract(origin);
+
+        double limitW = width * 0.5 * (1.0 + RECT_MARGIN_FACTOR);
+        double limitH = height * 0.5 * (1.0 + RECT_MARGIN_FACTOR);
+
+        double projW = toCenter.x * axisW.x + toCenter.y * axisW.y + toCenter.z * axisW.z;
+        if (Math.abs(projW) > limitW) return false;
+
+        double projH = toCenter.x * axisH.x + toCenter.y * axisH.y + toCenter.z * axisH.z;
+        if (Math.abs(projH) > limitH) return false;
+
+        return true;
     }
 
     /**

@@ -3,6 +3,7 @@ package ipl.sable.mixin.client;
 import com.mojang.blaze3d.platform.GlStateManager;
 import ipl.sable.render.IplClipEquationCache;
 import ipl.sable.render.IplProgramRegistry;
+import ipl.sable.render.IplSubLevelUniformRegistry;
 import ipl.sable.render.SubLevelClipUniformPatcher;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
@@ -113,6 +114,15 @@ public class IplGlUseProgramProbeMixin {
             locs = new int[]{iportalLoc, subLevelLoc};
             IPL$LOC_CACHE.put(program, locs);
 
+            // Register slot-1 carriers so SubLevelClipUniformPatcher.patchForSubLevel
+            // can spray the equation to all known programs at bracket entry,
+            // not just whatever shader is bound at that moment. Required for
+            // programs (like the Iris-rewritten moving_block cog shader) that
+            // were bound BEFORE the bracket started -- those never re-trigger
+            // _glUseProgram during the bracket so this mixin's per-bind write
+            // path doesn't reach them.
+            IplSubLevelUniformRegistry.register(program, subLevelLoc);
+
             // Only log programs that *could* be affected by IP's clip plane --
             // skip GUI / blit / etc. shaders that don't carry the uniform.
             if (iportalLoc >= 0 && IPL$LOGGED_PROGRAMS.putIfAbsent(program, Boolean.TRUE) == null) {
@@ -127,7 +137,7 @@ public class IplGlUseProgramProbeMixin {
         }
 
         // Determine if we should write the equation + re-enable the clip
-        // plane. Two cases qualify:
+        // plane. Three cases qualify:
         //   1. IP's bracket is currently active (isClippingEnabled = true).
         //      We refresh the cache from IP's live equations -- this is the
         //      normal path for terrain and any draw inside IP's bracket.
@@ -135,13 +145,24 @@ public class IplGlUseProgramProbeMixin {
         //      still true -- this is the Iris-gbuffer-after-bracket case
         //      where the chest's entity shader binds. Use the cached
         //      equation from when (1) was last true.
-        // Outside both cases, leave the program's uniform alone (stale value
-        // is harmless because we explicitly disable the plane below).
+        //   3. We're in a Sable sub-level BE bracket (currentSubLevelEq != null).
+        //      This fires in main-render-of-source-dim (looking AT a portal,
+        //      not through it) when SableSubLevelBlockEntityClipMixin wraps a
+        //      sub-level's BE render. patchForSubLevel only uploads slot-1 to
+        //      the shader bound at bracket entry (terrain_*); cogs and other
+        //      BE sub-meshes that rebind to rendertype_cutout_mipped et al
+        //      need this hook to fire so their slot-1 uniform also gets the
+        //      sub-level equation. RenderDoc capture confirmed slot-1 stayed
+        //      at the (0,0,0,1) init for cog draws without this branch -- so
+        //      `dot(pos,0)+1 = 1 > 0` always passed and cogs leaked through.
+        // Outside all three cases, leave the program's uniform alone (stale
+        // value is harmless because we explicitly disable the plane below).
         boolean haveActive = FrontClipping.isClippingEnabled;
         boolean inPortalRender = PortalRendering.isRendering();
+        boolean inSubLevelBracket = SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld() != null;
         if (haveActive) {
             IplClipEquationCache.refreshFromActive();
-        } else if (!inPortalRender) {
+        } else if (!inPortalRender && !inSubLevelBracket) {
             return;
         }
 
@@ -156,18 +177,22 @@ public class IplGlUseProgramProbeMixin {
         // active by the time any draw call follows.
         //
         // GL_CLIP_PLANE0 == GL_CLIP_DISTANCE0 (both are 0x3000) so this matches
-        // what FrontClipping.enableClipping does. Adding GL_CLIP_DISTANCE1 too
-        // since IplFrontClippingStateMirrorMixin mirrors the same state for
-        // our slot-1 uniform.
+        // what FrontClipping.enableClipping does.
         GL11.glEnable(GL11.GL_CLIP_PLANE0);
-        if (locs[1] >= 0) {
-            GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
-        }
 
-        int iportalLoc = locs[0];
-        if (iportalLoc < 0) {
-            // Linker stripped the uniform from this program. Nothing to do.
-            return;
+        // Slot 1 (GL_CLIP_DISTANCE1) MUST only be enabled when a sub-level
+        // bracket is active. Previously we re-enabled it on every bind that
+        // had a slot-1 uniform, which leaked CD1 enables into the
+        // portal-through nether-terrain render: those programs share
+        // iris_gbuffers_terrain with sub-level draws, so they have slot-1,
+        // and CD1 stayed on with a stale sub-level equation -> nether
+        // terrain visibly clipped on the airship plane (cog_leak attempt
+        // 8 regression). Gating on inSubLevelBracket keeps CD1 enabled
+        // only while a bracket is live; outside the bracket CD1 is off
+        // and slot-1 writes are rasterizer-ignored regardless of what's
+        // in the uniform.
+        if (locs[1] >= 0 && inSubLevelBracket) {
+            GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
         }
 
         // Pick the equation form that matches the GLSL injection for this
@@ -190,20 +215,28 @@ public class IplGlUseProgramProbeMixin {
                           : IplClipEquationCache.getEyeEq())
             : (haveActive ? FrontClipping.getActiveClipPlaneEquationBeforeModelView()
                           : IplClipEquationCache.getWorldEq());
-        if (eq == null) {
-            return;
-        }
 
+        // Slot 0 (portal clip): write only if the program carries the uniform
+        // AND we have an equation for it (we're in a portal context). In the
+        // sub-level-bracket-only case, eq is typically null (no portal context
+        // ever active this frame) -- skip the slot-0 write; the cached value
+        // on the program from the last portal-through is harmless because
+        // gl_ClipDistance[0] writes are ignored by the rasterizer when
+        // CLIP_DISTANCE0 is disabled.
+        //
         // glProgramUniform4f (GL 4.1+) writes to a specified program without
         // requiring it to be the currently bound program -- ideal for this
         // hook which fires at HEAD of _glUseProgram, before the bind actually
         // happens. Caller's GPU is GL 4.6 per earlier probe.
-        GL41.glProgramUniform4f(
-            program, iportalLoc,
-            (float) eq[0], (float) eq[1], (float) eq[2], (float) eq[3]
-        );
+        int iportalLoc = locs[0];
+        if (iportalLoc >= 0 && eq != null) {
+            GL41.glProgramUniform4f(
+                program, iportalLoc,
+                (float) eq[0], (float) eq[1], (float) eq[2], (float) eq[3]
+            );
+        }
 
-        // Sable-fork slot-1 fix: write ipl_subLevelClipEquation on programs
+        // Slot 1 (sub-level clip): write ipl_subLevelClipEquation on programs
         // that carry it. Priority order:
         //
         //   1. Active sub-level bracket -- use the sub-level's own equation
@@ -228,13 +261,21 @@ public class IplGlUseProgramProbeMixin {
         // (the portal plane instead of the sub-level plane).
         int subLevelLoc = locs[1];
         if (subLevelLoc >= 0) {
-            float[] subEq = SubLevelClipUniformPatcher.getCurrentSubLevelEq();
+            // Pick world or eye-space variant to match the shader's space.
+            // Same selector used for slot-0 above: entity-style shaders
+            // (block_entity_diffuse / moving_block / rendertype_entity_* /
+            // Veil-managed BE shaders) dot against eye-space positions, so
+            // they need eye-space equations; everything else (chunk
+            // terrain_*, vanilla rendertype_*) uses world-space.
+            float[] subEq = entityStyle
+                ? SubLevelClipUniformPatcher.getCurrentSubLevelEqEye()
+                : SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld();
             if (subEq != null) {
                 GL41.glProgramUniform4f(
                     program, subLevelLoc,
                     subEq[0], subEq[1], subEq[2], subEq[3]
                 );
-            } else {
+            } else if (eq != null) {
                 GL41.glProgramUniform4f(
                     program, subLevelLoc,
                     (float) eq[0], (float) eq[1], (float) eq[2], (float) eq[3]
