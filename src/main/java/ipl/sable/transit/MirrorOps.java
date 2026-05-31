@@ -1,12 +1,10 @@
 package ipl.sable.transit;
 
-import dev.ryanhcode.sable.api.physics.PhysicsPipeline;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
-import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
 import ipl.sable.iface.IplKinematicSubLevelHolder;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -91,13 +89,25 @@ public final class MirrorOps {
         // dest dim's client container even for cross-dim viewers (players in source
         // dim looking through the portal). Without this, the initial StartTracking
         // packet lands in the wrong client container and the mirror is invisible.
+        // Allocate WITHOUT physics enrollment. The allocation guard tells
+        // SableMirrorPhysicsSystemMixin.onSubLevelAdded (which fires synchronously
+        // inside allocateSubLevel, before we can set the per-instance kinematic
+        // flag) to skip pipeline.add -- so the mirror never gets a native rigid
+        // body -- while still building its mass tracker for the block-copy cascade
+        // below. The tracking-system observer still runs, so the mirror is rendered
+        // to clients normally.
         ServerSubLevel mirror;
         try {
-            mirror = PacketRedirection.withForceRedirectAndGet(destLevel, () -> {
-                return (ServerSubLevel) destContainer.allocateSubLevel(
-                    mirrorUuid, plotXZ[0], plotXZ[1], mirrorPose
-                );
-            });
+            MirrorAllocationGuard.allocatingMirror = true;
+            try {
+                mirror = PacketRedirection.withForceRedirectAndGet(destLevel, () -> {
+                    return (ServerSubLevel) destContainer.allocateSubLevel(
+                        mirrorUuid, plotXZ[0], plotXZ[1], mirrorPose
+                    );
+                });
+            } finally {
+                MirrorAllocationGuard.allocatingMirror = false;
+            }
         } catch (Throwable t) {
             LOG.error("[IPL-MIRROR] failed to allocate mirror for source {}", sourceUuid, t);
             return null;
@@ -109,40 +119,67 @@ public final class MirrorOps {
             return null;
         }
 
-        // Mark as kinematic AFTER enrollment. updatePose's HEAD-cancel mixin reads
-        // this flag to skip pose readback. Flag is checked again in syncMirrorPose
-        // and in the controller's mirror-skip filter.
+        // Mark as kinematic now that allocation is done. The allocation guard
+        // already kept it out of the pipeline; this per-instance flag is what every
+        // later check reads (updatePose skip, onSubLevelRemoved skip, the
+        // ownership-guard fallbacks, the controller's mirror-skip filter).
         if (mirror instanceof IplKinematicSubLevelHolder holder) {
             holder.ipl$setKinematicMirror(true);
+        }
+
+        // Tag the mirror in user_data with a persistent marker. The @Unique
+        // kinematic flag above is runtime-only -- it defaults to false on a
+        // fresh-from-disk load -- so we'd lose all "this is a mirror" identity
+        // if a mirror somehow got persisted. user_data DOES round-trip through
+        // Sable's serialise/deserialise, so a recovery mixin
+        // (SableSubLevelSerializerMirrorRecoveryMixin) can recognise a
+        // resurrected ghost on load and discard it before the controller
+        // iterates and cascades.
+        //
+        // Primary defence is SableHoldingChunkMapMirrorSaveSkipMixin filtering
+        // mirrors out of saveAll, so the tag should never actually be read.
+        // Belt-and-suspenders: legacy saves from before that filter landed
+        // (including the user's hang reproducer) still need the recovery path
+        // to clean up.
+        try {
+            net.minecraft.nbt.CompoundTag userData = mirror.getUserDataTag();
+            if (userData == null) {
+                userData = new net.minecraft.nbt.CompoundTag();
+                mirror.setUserDataTag(userData);
+            }
+            userData.putBoolean("ipl_mirror", true);
+        } catch (Throwable t) {
+            LOG.warn("[IPL-MIRROR] failed to tag mirror={} with ipl_mirror marker", mirrorUuid, t);
         }
 
         // Copy blocks from source plot to mirror plot. Same algorithm as Phase 1's
         // atomic teleport block copy. handleBlockChange fires for each setBlockState,
         // cascading through Sable mass/heatmap/floating-block updates and Aero balloon
-        // rebuild. Mass tracker is already built (via pipeline.add above) so this
-        // works without NPE.
+        // rebuild. The mass tracker was built in onSubLevelAdded (our enrollment-skip
+        // path) so getSelfMassTracker() works without NPE; the cascade's
+        // pipeline.onStatsChanged call no-ops via the ownership guard since the
+        // mirror has no native body.
         int blocksCopied = SableTransitOps.copyPlotBlocksPublic(
             source.getPlot(), mirror.getPlot(),
             source.getLevel(), destLevel
         );
 
-        // Rebuild the mass tracker now that the plot is fully populated. pipeline.add
-        // initially built it from an empty plot bbox; the incremental updates via
-        // handleBlockChange may not fully grow the tracker's internal structures
-        // past the original (empty) bounds. A fresh rebuild from the populated plot
-        // bbox produces a correct tracker that won't be flagged as invalid by
-        // processSubLevelRemovals on the next tick.
+        // Rebuild the mass tracker now that the plot is fully populated. The
+        // onSubLevelAdded path built it from an empty plot bbox; the incremental
+        // updates via handleBlockChange may not fully grow the tracker's internal
+        // structures past the original (empty) bounds. A fresh rebuild from the
+        // populated plot bbox produces a correct tracker that won't be flagged as
+        // invalid by processSubLevelRemovals on the next tick.
         try {
             mirror.buildMassTracker();
         } catch (Throwable t) {
             LOG.warn("[IPL-MIRROR] post-copy buildMassTracker failed for {}", mirrorUuid, t);
-            // Continue: pipeline.add's initial tracker is still in place.
+            // Continue: the onSubLevelAdded initial tracker is still in place.
         }
 
-        // Pin the pipeline body's pose to our mapped pose now that blocks are in
-        // (mass tracker fully populated). Subsequent syncMirrorPose calls will keep
-        // teleporting it back if simulation tries to drift it.
-        pinPipelinePose(destContainer, mirror, mirrorPose);
+        // No pipeline pose pinning: the mirror has no native rigid body, so there's
+        // nothing to drift. Its pose is driven purely by logicalPose, set here from
+        // the portal mapping and re-set each tick by syncMirrorPose.
 
         // Register the mirror.
         MirrorRegistry.put(new MirrorRegistry.MirrorEntry(
@@ -206,17 +243,20 @@ public final class MirrorOps {
             return false;
         }
 
-        // Wrap the pose update + pipeline teleport in PacketRedirection so any
-        // movement / tracking packets emitted by Sable's observers as a result of
-        // logicalPose.set get tagged with the dest dim. Without this, players
-        // currently in the source dim looking through the portal would receive the
-        // movement packet in their CURRENT dim's client container -- which doesn't
-        // know about the mirror -- and the mirror would appear "stuck" while new
-        // client-side phantoms accumulate.
+        // Wrap the pose update in PacketRedirection so any movement / tracking
+        // packets emitted by Sable's observers as a result of logicalPose.set get
+        // tagged with the dest dim. Without this, players currently in the source
+        // dim looking through the portal would receive the movement packet in their
+        // CURRENT dim's client container -- which doesn't know about the mirror --
+        // and the mirror would appear "stuck" while new client-side phantoms
+        // accumulate.
+        //
+        // No pipeline teleport: the mirror has no native rigid body (it's not
+        // enrolled in physics), so logicalPose IS the mirror's pose -- nothing to
+        // pin back.
         Pose3d newPose = SableTransitOps.computeMappedPose(source.logicalPose(), portal);
         qouteall.imm_ptl.core.network.PacketRedirection.withForceRedirect(destLevel, () -> {
             mirror.logicalPose().set(newPose);
-            pinPipelinePose(destContainer, mirror, newPose);
         });
         return true;
     }
@@ -267,23 +307,57 @@ public final class MirrorOps {
     }
 
     /**
-     * Teleport the mirror's body in the physics pipeline to the given pose. Called
-     * on spawn and on every {@link #syncMirrorPose} so the pipeline body never drifts
-     * away from our externally-controlled pose -- otherwise gravity and other
-     * accumulating forces would slowly nudge the pipeline body off, and any code
-     * that queries pipeline state directly would see the wrong location.
+     * Despawn a mirror that Sable's chunk-ticket manager is trying to unload
+     * (its dest chunk lost its ticket). Called from
+     * {@link ipl.sable.mixin.SableMirrorUnloadDespawnMixin} INSTEAD OF letting
+     * {@code moveToUnloaded} run.
+     *
+     * <p><b>Why despawn rather than cancel:</b> the previous approach cancelled
+     * {@code moveToUnloaded} at HEAD, but {@code PhysicsChunkTicketManager.update}'s
+     * sub-level loop assumes the call removed the sub-level from the container --
+     * it does {@code i--; continue} to re-scan the (assumed) shrunken list.
+     * Cancelling left the mirror in {@code getAllSubLevels()}, so the loop
+     * re-processed the same index forever: a silent infinite-loop server hang
+     * (watchdog 31May, stuck at {@code PhysicsChunkTicketManager.update:135}).
+     * Actually removing the mirror satisfies the loop's contract and breaks the
+     * hang. It also keeps the mirror OFF disk -- a plain container removal, not the
+     * holding-chunk serialize {@code moveToUnloaded} would have done (which routes
+     * through {@code attemptSaveHoldingChunk}, a path our
+     * {@code SubLevelStorageFile.write} chokepoint does NOT cover) -- and clears the
+     * registry so the controller spawns a fresh mirror on the next approach. Brief
+     * visual flicker on chunk-ticket flap is acceptable.
+     *
+     * <p>We hold the mirror {@code ServerSubLevel} and its level directly, so this
+     * needs no {@code MinecraftServer} lookup: drop the registry entry (if any),
+     * then remove from the dest container -- one uniform path for both registered
+     * and orphan kinematic mirrors.
      */
-    private static void pinPipelinePose(ServerSubLevelContainer destContainer, ServerSubLevel mirror, Pose3d pose) {
+    public static void despawnMirrorOnUnload(ServerSubLevel mirror) {
+        UUID mirrorUuid = mirror.getUniqueId();
+
+        MirrorRegistry.MirrorEntry entry = MirrorRegistry.getByMirrorUuid(mirrorUuid);
+        if (entry != null) {
+            MirrorRegistry.remove(entry.sourceUuid(), entry.portalUuid());
+        }
+
+        ServerLevel level = mirror.getLevel();
+        ServerSubLevelContainer container =
+            (ServerSubLevelContainer) SubLevelContainer.getContainer(level);
+        if (container == null) return;
+
+        // Authorize past SableMirrorRemovalGuardMixin; withForceRedirect tags the
+        // StopTracking with the dest dim for cross-dim viewers; plain removal (no
+        // holding-chunk serialize) keeps the mirror off disk.
+        MirrorRemovalGuard.inAuthorizedRemoval = true;
         try {
-            SubLevelPhysicsSystem physics = destContainer.physicsSystem();
-            if (physics == null) return;
-            PhysicsPipeline pipeline = physics.getPipeline();
-            if (pipeline == null) return;
-            pipeline.teleport(mirror, pose.position(), pose.orientation());
+            PacketRedirection.withForceRedirect(level, () ->
+                container.removeSubLevel(mirror, SubLevelRemovalReason.REMOVED));
+            LOG.info("[IPL-MIRROR] unload-despawned mirror={} (dest chunk lost ticket)", mirrorUuid);
         } catch (Throwable t) {
-            // Don't let pipeline issues kill mirror sync. Logged at debug; if it
-            // becomes a problem we'll surface it.
-            LOG.debug("[IPL-MIRROR] pipeline.teleport failed for mirror={}", mirror.getUniqueId(), t);
+            LOG.warn("[IPL-MIRROR] unload-despawn failed for mirror={}", mirrorUuid, t);
+        } finally {
+            MirrorRemovalGuard.inAuthorizedRemoval = false;
         }
     }
+
 }

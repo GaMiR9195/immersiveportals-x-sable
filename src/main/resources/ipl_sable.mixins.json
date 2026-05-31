@@ -10,11 +10,16 @@
     "SableSubLevelTransitMixin",
     "SableCollisionInfoInitMixin",
     "SableServerSubLevelKinematicMixin",
-    "SableMirrorPhysicsOptOutMixin",
+    "SableMirrorPhysicsSystemMixin",
+    "SableRapierPipelineOwnershipGuardMixin",
     "SableProcessSubLevelRemovalsKinematicSkipMixin",
     "SableMirrorRemovalGuardMixin",
-    "SableMirrorSkipMoveToUnloadedMixin",
-    "IplServerHeartbeatMixin"
+    "SableMirrorUnloadDespawnMixin",
+    "SableHoldingChunkMapMirrorSaveSkipMixin",
+    "SableSubLevelSerializerMirrorRecoveryMixin",
+    "SableSubLevelStorageFileMirrorSkipMixin",
+    "IplServerHeartbeatMixin",
+    "IplServerStopMirrorCleanupMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",

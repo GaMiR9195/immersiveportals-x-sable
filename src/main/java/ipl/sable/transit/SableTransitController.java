@@ -4,6 +4,7 @@ import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -85,6 +86,53 @@ public final class SableTransitController {
     private SableTransitController() {}
 
     /**
+     * Tear down all mirror state when the server is stopping. Despawns every
+     * registered mirror (removing it from its dest container so its plot chunks
+     * are freed) and clears all per-process static state.
+     *
+     * <p><b>Why this is needed -- two bugs it fixes:</b>
+     * <ul>
+     *   <li><b>Duplication on quit-to-title:</b> {@link MirrorRegistry} and the
+     *       cooldown maps are {@code static}. In singleplayer the same JVM hosts
+     *       successive integrated servers, so a mirror entry from session 1
+     *       survives into session 2; the controller then treats it as live and
+     *       spawns alongside it -> the "3 airships" the player counted.</li>
+     *   <li><b>Shutdown chunk-drain hang:</b> a mirror left in its dest container
+     *       at shutdown keeps its plot chunks occupied. {@code MinecraftServer.stopServer}'s
+     *       chunk drain ({@code ServerChunkCache.tick -> ChunkMap.processUnloads})
+     *       then spins waiting for those chunks to unload (watchdog 31May, stuck in
+     *       vanilla {@code processUnloads} with no mod frames). Despawning before
+     *       the drain frees them.</li>
+     * </ul>
+     *
+     * <p>Called from {@link ipl.sable.mixin.IplServerStopMirrorCleanupMixin} at the
+     * HEAD of {@code stopServer} -- before the final save and before the chunk drain.
+     * Per-mirror failures are swallowed so one bad despawn can't abort the rest of
+     * shutdown.
+     */
+    public static void onServerStopping(MinecraftServer server) {
+        List<MirrorRegistry.MirrorEntry> snapshot = new ArrayList<>(MirrorRegistry.all());
+        int despawned = 0;
+        for (MirrorRegistry.MirrorEntry entry : snapshot) {
+            try {
+                MirrorOps.despawnMirror(entry, server);
+                despawned++;
+            } catch (Throwable t) {
+                LOG.warn("[IPL-MIRROR] server-stop despawn failed for mirror={}", entry.mirrorUuid(), t);
+            }
+        }
+        // Belt-and-suspenders: despawnMirror already removes each entry, but clear
+        // the whole registry + cooldown maps so NOTHING carries into the next
+        // integrated server in this JVM.
+        MirrorRegistry.clear();
+        lastMirrorOpTick.clear();
+        lastTransitTick.clear();
+        if (despawned > 0 || !snapshot.isEmpty()) {
+            LOG.info("[IPL-MIRROR] server-stop cleanup: despawned {} mirror(s), cleared registry", despawned);
+        }
+    }
+
+    /**
      * Called once per server tick per dimension's container, at the TAIL of
      * {@code ServerSubLevelContainer.tick}.
      */
@@ -113,6 +161,17 @@ public final class SableTransitController {
             // initiate transits; they're driven by their source.
             if (airship instanceof ipl.sable.iface.IplKinematicSubLevelHolder kh
                 && kh.ipl$isKinematicMirror()) {
+                continue;
+            }
+
+            // Defensive skip: a sub-level tagged "ipl_mirror" in user_data is
+            // treated as a mirror regardless of the runtime @Unique kinematic
+            // flag (which doesn't survive serialisation). This catches any
+            // ghost mirror from a legacy save whose recovery mixin didn't
+            // fire on this run -- preventing the spawn-mirror-for-ghost
+            // cascade that produced the hang in the 29May log.
+            net.minecraft.nbt.CompoundTag userData = airship.getUserDataTag();
+            if (userData != null && userData.getBoolean("ipl_mirror")) {
                 continue;
             }
 

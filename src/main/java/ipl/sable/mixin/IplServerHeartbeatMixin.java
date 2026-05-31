@@ -48,6 +48,11 @@ public abstract class IplServerHeartbeatMixin {
 
     @Inject(method = "tickServer", at = @At("TAIL"))
     private void ipl$heartbeat(BooleanSupplier hasTimeLeft, CallbackInfo ci) {
+        // Feed the stall watchdog: records the server thread + a progress
+        // timestamp each completed tick. If a future tick hangs, the watchdog
+        // daemon dumps this thread's stuck stack (see IplServerWatchdog).
+        ipl.sable.IplServerWatchdog.onTick(Thread.currentThread());
+
         ipl$tickCount++;
         long now = System.nanoTime();
         if (ipl$lastReportNanos == 0L) {
