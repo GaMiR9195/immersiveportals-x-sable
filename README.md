@@ -1,22 +1,16 @@
-# Immersive Portals Mod
+# Immersive Portals × Sable Compatibility Fork
 
-It's a Minecraft mod that provides see-through portals and seamless teleportation. It also can create "Non-Euclidean" (Uneuclidean) space effect.
-
-![immptl.png](https://i.loli.net/2021/09/30/chHMG45dsnZNqep.png)
-
-[On CurseForge](https://www.curseforge.com/minecraft/mc-mods/immersive-portals-mod)     [On Modrinth](https://modrinth.com/mod/immersiveportals)     [Website](https://qouteall.fun/immptl/)
-
-This mod changes a lot of underlying Minecraft mechanics. This mod allows the client to load multiple dimensions at the same time and synchronize remote world information(blocks/entities) to client. It can render portal-in-portals. The portal rendering is roughly compatible with some versions of Sodium and Iris. The portal can transform player scale and gravity direction.  [Implementation Details](https://qouteall.fun/immptl/wiki/Implementation-Details)
-
-(This is the Fabric version of Immersive Portals. [The Forge version](https://github.com/iPortalTeam/ImmersivePortalsModForNeo))
-
----
-
-# Sable Compatibility Fork
-
-This fork adds compatibility between Immersive Portals and the
+**Platform: NeoForge 1.21.1.** This is a fork of
+[Immersive Portals](https://github.com/iPortalTeam/ImmersivePortalsModForNeo)
+that adds compatibility with the
 [Sable](https://github.com/ryanhcode/sable) physics/sub-level mod, letting
-airships and other physics-assembled sub-levels interact with portals.
+airships and other physics-assembled sub-levels interact with portals — clip
+correctly at portal frames and travel between dimensions.
+
+It is **not** a general-purpose Immersive Portals release: it targets the
+Sable + Create stack on NeoForge 1.21.1 and carries experimental gameplay code
+(see [Known Limitations](#known-limitations)). For vanilla portal use, prefer
+the upstream releases linked at the bottom of this file.
 
 ## Approach
 
@@ -68,6 +62,19 @@ Contributions and bug reports are welcome — the gameplay logic lives under
 
 ---
 
+## About Immersive Portals
+
+Immersive Portals provides see-through portals and seamless teleportation, and
+can create "Non-Euclidean" space effects. It lets the client load multiple
+dimensions at once and synchronize remote world information (blocks/entities)
+to the client, render portals-in-portals, and transform player scale and
+gravity direction. Portal rendering is roughly compatible with some versions of
+Sodium and Iris. [Implementation Details](https://qouteall.fun/immptl/wiki/Implementation-Details)
+
+![immptl.png](https://i.loli.net/2021/09/30/chHMG45dsnZNqep.png)
+
+Upstream Immersive Portals: [On CurseForge](https://www.curseforge.com/minecraft/mc-mods/immersive-portals-mod) · [On Modrinth](https://modrinth.com/mod/immersiveportals) · [Website](https://qouteall.fun/immptl/) · [NeoForge source](https://github.com/iPortalTeam/ImmersivePortalsModForNeo)
+
 ## API
 
 This mod also provides some API for:
@@ -80,8 +87,13 @@ This mod also provides some API for:
 
 [API description](https://qouteall.fun/immptl/wiki/API-for-Other-Mods.html).
 
-## How to run this code
-https://fabricmc.net/wiki/tutorial:setup
+## Building
+
+This fork builds against NeoForge 1.21.1. Run `./gradlew build`; the mod jar is
+written to `build/libs/`. Note that the Flywheel compile dependency is supplied
+as a local file under `libs/` (extracted from Create's bundled jar) and is
+gitignored, so a fresh clone needs that jar dropped in before `compileJava` will
+succeed.
 
 ## Other
 
