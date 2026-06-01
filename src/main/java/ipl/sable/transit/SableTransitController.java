@@ -193,6 +193,18 @@ public final class SableTransitController {
                 continue;
             }
 
+            // Self-heal stale physics-actor registrations. After a transit the dest chunk's
+            // block entities can be recreated by a chunk reprocess that doesn't re-fire
+            // plot.onBlockChange, leaving Sable's actor registry pointing at the old,
+            // orphaned BE (frozen rotationSpeed -> dead propeller/wheel-drive). This rebinds
+            // any stale actor to the live chunk BE. No-op (pure identity checks) for healthy
+            // airships, so it's safe to run every tick for every real sub-level.
+            int rebound = SableTransitOps.resyncStaleActors(airship);
+            if (rebound > 0) {
+                LOG.info("[IPL-TRANSIT] rebound {} stale physics actor(s) to live block "
+                    + "entities for uuid={}", rebound, airship.getUniqueId());
+            }
+
             // Cooldown check: skip airships that just transited.
             Long lastTick = lastTransitTick.get(airship.getUniqueId());
             if (lastTick != null && (nowTick - lastTick) < TRANSIT_COOLDOWN_TICKS) {

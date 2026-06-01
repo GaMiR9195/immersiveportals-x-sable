@@ -177,6 +177,60 @@ public final class SableTransitOps {
     }
 
     /**
+     * Rebind any STALE physics-actor registrations on {@code sub} to the live block
+     * entity currently in the chunk.
+     *
+     * <p><b>The bug this fixes (proven by the actor-diag {@code same=false}):</b> after a
+     * transit, the dest chunk's block entities get RECREATED (a new object at the same pos)
+     * by a chunk reprocess that does not re-fire {@code plot.onBlockChange}. Sable's actor
+     * registry ({@code blockEntityActors}, a {@code pos -> BlockEntity} map) is populated at
+     * copy time and keeps pointing at the OLD, now-orphaned block entity. The physics loop
+     * iterates {@code getBlockEntityActors()} and ticks that stale object -- whose
+     * {@code rotationSpeed} is frozen at 0 because it isn't the one in the world that ticks
+     * -- so propellers read {@code active=false} and apply no thrust, even though the live
+     * chunk BE is on a healthy kinetic network ({@code getSpeed()=40}). A never-transited
+     * airship is unaffected (its actors were registered at assembly and never swapped),
+     * which is why this only bit re-transited airships.
+     *
+     * <p>The fix: {@code plot.onBlockChange(pos, state)} re-reads {@code level.getBlockEntity}
+     * and re-{@code put}s the live BE into the registry (idempotent). We only call it for
+     * positions where the registered actor object differs from the live chunk BE, so for a
+     * healthy airship this is a pure no-op (just identity comparisons) and is safe to run
+     * every tick for every sub-level -- making it self-healing against any future swap
+     * (e.g. a hold/unhold cycle when a player flies away and back), not just the transit.
+     *
+     * @return the number of stale actors rebound this call (0 = nothing was stale).
+     */
+    public static int resyncStaleActors(ServerSubLevel sub) {
+        if (sub.isRemoved()) return 0;
+        ServerLevelPlot plot = sub.getPlot();
+        ServerLevel level = sub.getLevel();
+        java.util.List<BlockPos> stale = null;
+        for (var actor : plot.getBlockEntityActors()) {
+            if (!(actor instanceof BlockEntity actorBe)) continue;
+            BlockPos pos = actorBe.getBlockPos();
+            BlockEntity chunkBe = level.getBlockEntity(pos);
+            // Only treat as stale if the chunk currently holds a DIFFERENT (non-null) BE.
+            // A transiently-null lookup (chunk momentarily unavailable) must NOT cause us
+            // to evict a valid actor.
+            if (chunkBe != null && chunkBe != actorBe) {
+                if (stale == null) stale = new java.util.ArrayList<>(4);
+                stale.add(pos);
+            }
+        }
+        if (stale == null) return 0;
+        for (BlockPos pos : stale) {
+            try {
+                plot.onBlockChange(pos, level.getBlockState(pos));
+            } catch (Throwable t) {
+                LOG.warn("[IPL-TRANSIT] failed to rebind stale actor at {} for {}",
+                    pos, sub.getUniqueId(), t);
+            }
+        }
+        return stale.size();
+    }
+
+    /**
      * Maps a sub-level's source-dim pose to the destination-dim pose via the portal's
      * transformation.
      *
@@ -321,6 +375,38 @@ public final class SableTransitOps {
         int dstMinY = dstLevel.getMinBuildHeight();
         int dstMaxY = dstLevel.getMaxBuildHeight();
 
+        // Accumulate every placed block so we can run a SECOND notify pass after
+        // all placement, exactly as Sable's own SubLevelAssemblyHelper.moveBlocks
+        // does. The placement above uses setBlockState(isMoving=true), which skips
+        // neighbour updates; Create relies on those updates to (re)connect kinetic
+        // networks (wheels, propellers). Placing without notifying leaves the
+        // copied actors registered-but-disconnected -> they tick but read zero
+        // kinetic speed -> no thrust. Doing notify in a second pass (not inline)
+        // matches moveBlocks and ensures all blocks exist before neighbours fire.
+        record Placed(BlockPos pos, LevelChunk chunk, BlockState state) {}
+        java.util.List<Placed> placed = new java.util.ArrayList<>();
+
+        // Suppress onPlace during the bulk placement, exactly as
+        // SubLevelAssemblyHelper.moveBlocks does via setIgnoreOnPlace
+        // (NeoForge: Level.captureBlockSnapshots = true gates the onPlace /
+        // BE / neighbour side-effects in LevelChunk.setBlockState).
+        //
+        // WHY THIS IS LOAD-BEARING for Create kinetics: without it, every
+        // setBlockState fires onPlace on a HALF-BUILT structure, and BEFORE
+        // loadWithComponents restores the block entity's kinetic NBT. Create's
+        // KineticBlockEntity then attaches to a partial/empty rotation network
+        // (some neighbours not placed yet) and caches that broken state; the
+        // later markAndNotifyBlock neighbour-notify pass does NOT repair it, so
+        // getSpeed() stays 0 -> BasePropellerBlockEntity.rotationSpeed decays to
+        // 0 -> isActive() false -> no thrust. Suppressing onPlace here, then
+        // notifying once the whole structure exists (second pass below), lets
+        // each KineticBlockEntity rebuild its network cleanly on first tick --
+        // the same clean path a world reload takes (which is exactly why a
+        // reload fixes dead propellers/wheels). This mirrors moveBlocks: both
+        // working paths (assembly + load) avoid premature onPlace; the old copy
+        // was the only path that fired it.
+        dev.ryanhcode.sable.platform.SableAssemblyPlatform.INSTANCE.setIgnoreOnPlace(dstLevel, true);
+        try {
         for (PlotChunkHolder srcHolder : src.getLoadedChunks()) {
             LevelChunk srcChunk = srcHolder.getChunk();
             ChunkPos srcChunkPos = srcChunk.getPos();
@@ -394,11 +480,18 @@ public final class SableTransitOps {
 
                             // setBlockState(pos, state, isMoving) -- isMoving=true tells
                             // vanilla "skip neighbour-update side effects." Matches
-                            // SubLevelAssemblyHelper.moveBlocks convention.
+                            // SubLevelAssemblyHelper.moveBlocks convention. The skipped
+                            // neighbour updates are issued in the second pass below.
                             dstChunk.setBlockState(dstWorldPos, state, true);
                             blocksCopied++;
+                            placed.add(new Placed(dstWorldPos, dstChunk, state));
 
                             // Restore BE state on dest, if any.
+                            //
+                            // NOTE: Sable's LevelChunkMixin already fires
+                            // plot.onBlockChange on the setBlockState RETURN above
+                            // (registering actors / lift-providers / reaction wheels),
+                            // so we do NOT call onBlockChange ourselves here.
                             if (beTag != null) {
                                 BlockEntity dstBE = dstChunk.getBlockEntity(dstWorldPos);
                                 if (dstBE != null) {
@@ -408,6 +501,71 @@ public final class SableTransitOps {
                         }
                     }
                 }
+            }
+        }
+        } finally {
+            // Always re-enable onPlace, even if a setBlockState above threw.
+            // Leaving captureBlockSnapshots=true on the dest level would
+            // silently swallow onPlace/neighbour updates for ALL future block
+            // changes in that dimension -- a nasty latent corruption. moveBlocks
+            // relies on per-block try/catch for this; we use try/finally so the
+            // flag is guaranteed cleared. The markAndNotifyBlock pass below
+            // intentionally runs with onPlace RE-ENABLED and the structure whole.
+            dev.ryanhcode.sable.platform.SableAssemblyPlatform.INSTANCE.setIgnoreOnPlace(dstLevel, false);
+        }
+
+        // SECOND PASS: notify neighbours for every placed block, mirroring
+        // SubLevelAssemblyHelper.moveBlocks' second loop. This issues the
+        // sendBlockUpdated / blockUpdated / updateNeighbourShapes cascade that the
+        // isMoving=true placement skipped -- the cascade Create uses to (re)connect
+        // kinetic networks. Without it, copied wheels/propellers tick but read zero
+        // kinetic speed (no thrust), intermittently depending on whether some other
+        // incidental block update happened to trigger Create's rescan. Done as a
+        // separate pass so ALL blocks exist before any neighbour update fires
+        // (a block updating mid-copy would see half-placed neighbours).
+        // Flags 3 (BLOCK_UPDATE | NOTIFY_NEIGHBORS) + recursionLeft 512 match
+        // moveBlocks exactly.
+        for (Placed p : placed) {
+            try {
+                dev.ryanhcode.sable.api.SubLevelAssemblyHelper.markAndNotifyBlock(
+                    dstLevel, p.pos(), p.chunk(),
+                    net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(),
+                    p.state(), 3, 512
+                );
+            } catch (Throwable t) {
+                LOG.warn("[IPL-TRANSIT] markAndNotifyBlock failed at {} -- kinetic reconnect "
+                    + "may be incomplete for this block", p.pos(), t);
+            }
+        }
+
+        // THIRD PASS: register block-entity tickers + start ticking each dest chunk,
+        // exactly as the world-LOAD path does (ServerLevelPlot.load lines 551-552:
+        // chunk.registerAllBlockEntitiesAfterLevelLoad(); level.startTickingChunk(chunk)).
+        //
+        // WHY THIS IS THE ACTUAL FIX (proven by the T+25 actor-diag): after a transit the
+        // copied propeller has getSpeed()=40, hasNetwork=true, hasSource=true -- the Create
+        // kinetic network IS reconnected (RotationPropagator wires it up during placement,
+        // without needing the BE's own tick). But the propeller reports active=false /
+        // thrust=0 because its rotationSpeed field, updated ONLY inside
+        // BasePropellerBlockEntity.tick() via updateRotationSpeed(), never advances --
+        // i.e. the block entity's tick() is not running on the dest. The chunk was created
+        // empty (newEmptyChunk -> addChunkHolder calls registerAllBlockEntitiesAfterLevelLoad
+        // on a chunk with NO block entities yet), and the BEs we then setBlockState in never
+        // got entered into the level's block-entity tick loop. A world reload fixes it
+        // precisely because load re-runs registerAllBlockEntitiesAfterLevelLoad AFTER the
+        // BEs exist, then startTickingChunk. We replicate that here. Idempotent:
+        // registerAllBlockEntitiesAfterLevelLoad rebinds tickers via tickersInLevel.compute
+        // keyed by pos, so re-running it over already-present BEs is safe.
+        java.util.Set<LevelChunk> tickChunks =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (Placed p : placed) tickChunks.add(p.chunk());
+        for (LevelChunk ch : tickChunks) {
+            try {
+                ch.registerAllBlockEntitiesAfterLevelLoad();
+                dstLevel.startTickingChunk(ch);
+            } catch (Throwable t) {
+                LOG.warn("[IPL-TRANSIT] failed to (re)register block-entity tickers for dest "
+                    + "chunk {} -- copied machinery may not tick", ch.getPos(), t);
             }
         }
 
