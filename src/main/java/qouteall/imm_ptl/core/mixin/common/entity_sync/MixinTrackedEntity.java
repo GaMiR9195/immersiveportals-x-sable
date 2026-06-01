@@ -140,10 +140,25 @@ public abstract class MixinTrackedEntity implements IETrackedEntity {
     public void ip_updateEntityTrackingStatus() {
         IEChunkMap chunkMap = (IEChunkMap)
             ((ServerLevel) entity.level()).getChunkSource().chunkMap;
-        
+
+        // Sable compat: for a sub-level entity (e.g. a Create seat on an airship),
+        // the watch-record lookup must use the VISIBLE chunk -- where players
+        // actually are relative to the airship -- not the raw ~20M-block plot
+        // chunk, where no player ever has a watch record. Route through the
+        // effective-tracking-chunk seam (SableBridge). Without this, seenBy stays
+        // empty and the entity is tracked to nobody (the seat's SetPassengers
+        // never reaches the riding player). No-op when Sable is absent.
+        long remappedChunk = ipl.sable.SableBridge.effectiveTrackingChunkPos(entity);
+        int trackChunkX = remappedChunk != ipl.sable.SableBridge.NO_REMAP
+            ? net.minecraft.world.level.ChunkPos.getX(remappedChunk)
+            : entity.chunkPosition().x;
+        int trackChunkZ = remappedChunk != ipl.sable.SableBridge.NO_REMAP
+            ? net.minecraft.world.level.ChunkPos.getZ(remappedChunk)
+            : entity.chunkPosition().z;
+
         var watchRecMap = ImmPtlChunkTracking.getWatchRecordForChunk(
             entity.level().dimension(),
-            entity.chunkPosition().x, entity.chunkPosition().z
+            trackChunkX, trackChunkZ
         );
         
         // no need to clamp it with render distance, as we check chunk watch records now

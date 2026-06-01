@@ -58,8 +58,20 @@ public class EntitySync {
                     
                     for (ChunkMap.TrackedEntity trackedEntity : entityTrackerMap.values()) {
                         IETrackedEntity ieTrackedEntity = (IETrackedEntity) trackedEntity;
-                        
-                        long chunkPos = ieTrackedEntity.ip_getEntity().chunkPosition().toLong();
+
+                        // Sable compat: a sub-level entity (e.g. a Create seat on an
+                        // airship) lives ~20M blocks out in the plot grid, so its raw
+                        // chunk is never in entity-ticking range and sendChanges would
+                        // never run for it -- the player sitting on it never gets a
+                        // SetPassengers packet. Route through the effective-tracking-
+                        // chunk seam (SableBridge), which returns the visible airship
+                        // chunk for sub-level entities and NO_REMAP otherwise. No-op
+                        // when Sable is absent.
+                        net.minecraft.world.entity.Entity ipEntity = ieTrackedEntity.ip_getEntity();
+                        long remapped = ipl.sable.SableBridge.effectiveTrackingChunkPos(ipEntity);
+                        long chunkPos = remapped != ipl.sable.SableBridge.NO_REMAP
+                            ? remapped
+                            : ipEntity.chunkPosition().toLong();
                         if (distanceManager.inEntityTickingRange(chunkPos)) {
                             ieTrackedEntity.ip_sendChanges();
                         }

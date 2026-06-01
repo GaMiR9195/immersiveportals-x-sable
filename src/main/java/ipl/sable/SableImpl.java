@@ -3,8 +3,12 @@ package ipl.sable;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3d;
+import dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.ryanhcode.sable.sublevel.entity_collision.SubLevelEntityCollision;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -49,5 +53,43 @@ final class SableImpl {
         Level level, Vec3 playerPos, double x, double y, double z
     ) {
         return Sable.HELPER.distanceSquaredWithSubLevels(level, playerPos, x, y, z);
+    }
+
+    static boolean hasSubLevelFloorThisTick(Entity entity) {
+        if (!(entity instanceof EntityMovementExtension ext)) {
+            return false;
+        }
+        SubLevelEntityCollision.CollisionInfo info = ext.sable$getCollisionInfo();
+        return info != null
+            && info.trackingSubLevel != null
+            && info.verticalCollisionBelow;
+    }
+
+    @Nullable
+    static net.minecraft.resources.ResourceKey<Level> subLevelDimensionOfVehicle(Entity vehicle) {
+        if (vehicle == null) return null;
+        SubLevel containing = Sable.HELPER.getContaining(vehicle);
+        if (containing == null) return null;
+        return containing.getLevel().dimension();
+    }
+
+    static long effectiveTrackingChunkPos(Entity entity) {
+        Vec3 raw = entity.position();
+        SubLevel subLevel = Sable.HELPER.getContaining(entity.level(), raw);
+        if (subLevel == null) {
+            return SableBridge.NO_REMAP;
+        }
+        // The entity's literal position is deep in the sub-level plot grid
+        // (~20M blocks out). Its *visible* position -- where players actually see
+        // it and therefore where tracking visibility should be evaluated -- is the
+        // plot-local position mapped through the sub-level's pose. This mirrors
+        // Sable's own vanilla-path remap in
+        // entity_tracking.TrackedEntityMixin#sable$trackSubLevelEntities, which IP
+        // strands because IP relocates the tracking loop out of vanilla ChunkMap.
+        Vec3 visible = subLevel.logicalPose().transformPosition(raw);
+        return ChunkPos.asLong(
+            SectionPos.blockToSectionCoord(visible.x),
+            SectionPos.blockToSectionCoord(visible.z)
+        );
     }
 }

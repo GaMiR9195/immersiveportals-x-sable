@@ -9,6 +9,7 @@
     "SableCrossDimTrackingMixin",
     "SableSubLevelTransitMixin",
     "SableCollisionInfoInitMixin",
+    "SableSeatMountDimensionStampMixin",
     "SableServerSubLevelKinematicMixin",
     "SableMirrorPhysicsSystemMixin",
     "SableRapierPipelineOwnershipGuardMixin",

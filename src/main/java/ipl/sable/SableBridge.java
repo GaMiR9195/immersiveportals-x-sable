@@ -1,6 +1,8 @@
 package ipl.sable;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -114,5 +116,103 @@ public final class SableBridge {
             return dx * dx + dy * dy + dz * dz;
         }
         return SableImpl.distanceSquaredWithSubLevels(level, playerPos, x, y, z);
+    }
+
+    /**
+     * Does this entity have a sub-level floor beneath it <em>this collision tick</em>?
+     *
+     * <p>Reads Sable's per-tick {@code CollisionInfo}: true iff the entity is
+     * tracking a sub-level ({@code trackingSubLevel != null}) AND that tracking
+     * came from a downward collision this tick ({@code verticalCollisionBelow}).
+     * Sable only sets {@code trackingSubLevel} when {@code verticalCollisionBelow}
+     * is true, but {@code trackingSubLevel} also persists across ticks as a field;
+     * requiring {@code verticalCollisionBelow} pins this to "standing on a ship
+     * floor right now" rather than a stale carry-over.
+     *
+     * <p>Used by IP's {@code Entity.collide} wrap to decide whether to fold Sable's
+     * sub-level collision back in when IP would otherwise take its portal-only
+     * branch -- the fix for "fall through an airship deck the moment it clips the
+     * portal frame." Returns {@code false} when Sable is absent (no-op, upstream IP
+     * behavior preserved).
+     */
+    public static boolean hasSubLevelFloorThisTick(Entity entity) {
+        if (!PRESENT) return false;
+        return SableImpl.hasSubLevelFloorThisTick(entity);
+    }
+
+    /**
+     * The dimension of the sub-level that {@code vehicle} belongs to, or
+     * {@code null} if the vehicle isn't on a sub-level (or Sable is absent).
+     *
+     * <p>Used to stamp the IP dimension field on the {@code ClientboundPlayerPositionPacket}
+     * that Sable sends when a player mounts a seat on a sub-level
+     * ({@code ServerPlayerMixin.sable$adjustTeleportPacket}). That packet's
+     * coordinates are sub-level-LOCAL ({@code logicalPose().transformPositionInverse}),
+     * so the dimension IP resolves them against must be the dimension the
+     * <em>sub-level</em> lives in -- not the player's current dimension. Today those
+     * coincide (you can only mount a same-dim seat), but anchoring on the sub-level
+     * is correct by construction for the future "click/stay-seated across a portal"
+     * cases where the seat's sub-level is in the destination dim while the player is
+     * (still) source-side.
+     */
+    @Nullable
+    public static ResourceKey<Level> subLevelDimensionOfVehicle(Entity vehicle) {
+        if (!PRESENT) return null;
+        return SableImpl.subLevelDimensionOfVehicle(vehicle);
+    }
+
+    /**
+     * Sentinel returned by {@link #effectiveTrackingChunkPos} when there is no
+     * remap to apply (Sable absent, or the entity isn't on a sub-level). Callers
+     * fall back to the entity's raw {@code chunkPosition()} on this value.
+     * {@code Long.MIN_VALUE} can't collide with a real packed {@link net.minecraft.world.level.ChunkPos}
+     * long (real chunk coords are 32-bit halves; MIN_VALUE would require x=z=
+     * {@code Integer.MIN_VALUE}, ~34 billion blocks out -- unreachable).
+     */
+    public static final long NO_REMAP = Long.MIN_VALUE;
+
+    /**
+     * <b>The designated unification seam between Sable's and IP's "track distant
+     * chunks" solutions.</b>
+     *
+     * <p>Both mods solve the same underlying problem -- an entity's
+     * tracking-relevant position is not its literal coordinate -- from opposite
+     * ends. <b>Sable transforms the entity</b>: a sub-level entity sits ~20M blocks
+     * out in the plot grid but is visibly on an airship next to you, so Sable
+     * remaps its position ({@code logicalPose().transformPosition}) and lets stock
+     * distance logic run. <b>IP transforms the watcher set</b>: a chunk seen
+     * through a portal keeps its coordinates but gains extra portal-aware watchers.
+     * These are orthogonal axes of one abstraction, and the seat-on-a-sub-level
+     * case is exactly where they must compose -- IP's portal-aware visibility must
+     * be evaluated <em>at Sable's remapped position</em>.
+     *
+     * <p>They don't compose today because IP replaces vanilla's tracking loop
+     * wholesale ({@code MixinChunkMap_E} cancels {@code ChunkMap.tick}; the loop
+     * moves into {@code EntitySync}), which silently strands Sable's vanilla-callsite
+     * remap ({@code entity_tracking.TrackedEntityMixin} +
+     * {@code server_entities_tick.ChunkMapMixin}, both {@code @WrapOperation}s on
+     * callsites that no longer execute). So IP's tracking reads the raw ~20M-block
+     * chunk, finds no watchers, and never tracks the entity -- e.g. a player sitting
+     * on a Create seat on an airship never receives the {@code SetPassengers} packet.
+     *
+     * <p>This method is the single point IP's tracking gates consult for an entity's
+     * effective tracking chunk. It returns the visible-position chunk (packed
+     * {@link net.minecraft.world.level.ChunkPos} long) for sub-level entities, or
+     * {@link #NO_REMAP} otherwise (caller uses the raw chunk). Routing all of IP's
+     * tracking-position reads through this one function keeps the remap consistent
+     * (the danger of scattered redirects is remapping some reads but not the
+     * distance math that depends on them).
+     *
+     * <p><b>Eventual convergence:</b> when Sable's and IP's tracking systems are
+     * unified, this becomes the integration contract -- ideally promoted to a real
+     * {@code getEffectiveTrackingPosition()} that vanilla answers with
+     * {@code position()}, Sable overrides, and IP consumes. For now it teaches IP's
+     * replacement the one fact Sable knows that IP doesn't, without merging the two
+     * sources of truth (that merge is the actual rewrite). No-op when Sable is
+     * absent -- IP behaves exactly as upstream.
+     */
+    public static long effectiveTrackingChunkPos(Entity entity) {
+        if (!PRESENT || entity == null) return NO_REMAP;
+        return SableImpl.effectiveTrackingChunkPos(entity);
     }
 }

@@ -144,15 +144,18 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
             return Vec3.ZERO;
         }
 
+        // Base pass: ALWAYS delegate through the operation chain first. With Sable
+        // present this runs its sub-level-aware @Redirect (computing the airship
+        // floor and populating sable$collisionInfo); without Sable it bottoms out
+        // at vanilla collide(). Either way this is the result we return when no
+        // portal collision is active -- identical to upstream in that case.
+        Vec3 sableResult = (Vec3) original.call(entity, attemptedMove);
+
         if (!IPGlobal.crossPortalCollision
             || ip_portalCollisionHandler == null
             || !ip_portalCollisionHandler.hasCollisionEntry()
         ) {
-            // Was: collide(attemptedMove) -- the @Shadow virtual call, which bypassed any
-            // other mixins at this call site. Now delegates through the operation chain so
-            // Sable's sub-level-aware @Redirect (and any future co-applied wrappers) still run.
-            Vec3 normalCollisionResult = (Vec3) original.call(entity, attemptedMove);
-            return normalCollisionResult;
+            return sableResult;
         }
 
         Vec3 result = ip_portalCollisionHandler.handleCollision(
@@ -169,7 +172,59 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
             return Vec3.ZERO;
         }
 
+        // Sable-compat fix: when an entity is standing on a sub-level (airship)
+        // that straddles a portal, IP's portal branch previously returned `result`
+        // and dropped Sable's sub-level floor entirely -- so the moment the ship
+        // clipped the portal frame, the deck stopped colliding and the entity fell
+        // through. The two collision systems are not mutually exclusive here: the
+        // real sub-level lives wholly in the source dim (the mirror is a separate
+        // copy), so its floor is always valid source-dim geometry and must keep
+        // applying. We fold both constraints together per-axis (most-restrictive).
+        //
+        // Gated on hasSubLevelFloorThisTick so the ONLY behavior that changes is
+        // "riding a ship floor at a portal": a pure portal crossing with no ship
+        // under the entity still returns `result` exactly as before. No-op when
+        // Sable is absent.
+        //
+        // FUTURE (option B): `sableResult` is Sable's FULL collide -- it includes
+        // Sable's internal vanilla this-side collision, so a block in the portal
+        // frame edge could theoretically over-constrain via the merge below. To
+        // eliminate that, pull ONLY the sub-level contribution (call
+        // SubLevelEntityCollision.collide directly, skipping Sable's vanilla merge)
+        // and constrain `result` with just that. More coupling to Sable internals;
+        // deferred until/unless the frame-edge case actually bites.
+        if (SableBridge.hasSubLevelFloorThisTick((Entity) (Object) this)) {
+            return ip_mostRestrictivePerAxis(attemptedMove, result, sableResult);
+        }
+
         return result;
+    }
+
+    /**
+     * Combine two independent collision results by taking the more-restrictive
+     * component on each axis, relative to the attempted movement's direction.
+     * For a falling entity ({@code attempted.y < 0}), this keeps whichever result
+     * stops it higher (closer to zero) -- so a sub-level floor that halts the fall
+     * wins over a portal result that would let it keep falling.
+     */
+    @Unique
+    private static Vec3 ip_mostRestrictivePerAxis(Vec3 attempted, Vec3 a, Vec3 b) {
+        return new Vec3(
+            ip_restrictAxis(attempted.x, a.x, b.x),
+            ip_restrictAxis(attempted.y, a.y, b.y),
+            ip_restrictAxis(attempted.z, a.z, b.z)
+        );
+    }
+
+    @Unique
+    private static double ip_restrictAxis(double attempted, double a, double b) {
+        if (attempted > 0.0) {
+            return Math.min(a, b); // moving positive: the smaller allowed step wins
+        }
+        if (attempted < 0.0) {
+            return Math.max(a, b); // moving negative: the larger (closer to 0) wins -> floor holds
+        }
+        return 0.0;
     }
     
     //don't burn when jumping into end portal
