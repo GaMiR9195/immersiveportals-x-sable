@@ -83,6 +83,23 @@ public final class SableTransitController {
 
     private static final Map<MirrorRegistry.MirrorKey, Long> lastMirrorOpTick = new HashMap<>();
 
+    /**
+     * Per-(source, portal) locked source->dest normal for the crossing-phase
+     * evaluation, held for the duration of a contact session. Distinct from the
+     * client-side clip-normal tracker ({@code SubLevelPortalContactTracker}) on
+     * purpose: that one stores the clip normal (oriented toward the KEPT/source
+     * side) and is written from the render thread; this stores the opposite
+     * source->dest direction and is written from the server thread. Sharing one
+     * map would let the two sign conventions clobber each other in singleplayer
+     * (same JVM, same UUID key). Server-thread only, so a plain HashMap is fine.
+     *
+     * <p>Locking matters because a free-rotating airship's AABB center can wobble
+     * across the plane mid-straddle; without the lock the oriented normal could
+     * flip and bounce the crossing phase. The entry is dropped when the pair is no
+     * longer near the portal (see the despawn/cleanup pass).
+     */
+    private static final Map<MirrorRegistry.MirrorKey, Vec3> lockedCrossingNormal = new HashMap<>();
+
     private SableTransitController() {}
 
     /**
@@ -127,6 +144,7 @@ public final class SableTransitController {
         MirrorRegistry.clear();
         lastMirrorOpTick.clear();
         lastTransitTick.clear();
+        lockedCrossingNormal.clear();
         if (despawned > 0 || !snapshot.isEmpty()) {
             LOG.info("[IPL-MIRROR] server-stop cleanup: despawned {} mirror(s), cleared registry", despawned);
         }
@@ -189,89 +207,103 @@ public final class SableTransitController {
                 Portal::isTeleportable
             );
 
-            boolean candidateAddedForAirship = false;
-            for (Portal portal : nearby) {
-                if (PortalCrossingDetector.didCrossThisTick(airship, portal)) {
-                    if (candidates == null) candidates = new ArrayList<>(1);
-                    candidates.add(new TransitCandidate(airship, portal));
-                    candidateAddedForAirship = true;
-                    // Only fire one transit per airship per tick -- if the airship
-                    // overlaps multiple portals, we pick the first crossing detected.
-                    break;
-                }
-            }
-
-            // Deduplicate portals by destination dim before spawning mirrors.
-            // IP creates pairs of portals per frame -- a "main" Portal plus an
-            // "intrinsic_diligent" companion, both isTeleportable=true, both
-            // pointing to the same destDim. Without dedup we spawn one mirror per
-            // companion entity, which shows up to the player as two visually
-            // identical airships hovering side-by-side ("ghost copies"). Pick the
+            // Deduplicate portals by destination dim. IP creates pairs of portals
+            // per frame -- a "main" Portal plus an "intrinsic_diligent" companion,
+            // both isTeleportable=true, both pointing to the same destDim. Without
+            // dedup we'd spawn one mirror per companion ("ghost copies"). Pick the
             // single portal closest to the airship per dest dim.
             List<Portal> nearbyDedup = pickClosestPortalPerDestDim(nearby, airship);
 
-            // Mirror lifecycle: for each nearby portal NOT in a crossing state this
-            // tick, spawn-or-sync the mirror for that (source, portal) pair. (If we
-            // just queued a crossing transit, skip mirror handling -- the transit
-            // executor will despawn the mirror as part of handoff.)
-            if (!candidateAddedForAirship) {
-                for (Portal portal : nearbyDedup) {
-                    UUID portalUuid = portal.getUUID();
-                    MirrorRegistry.MirrorKey key = new MirrorRegistry.MirrorKey(
-                        airship.getUniqueId(), portalUuid
-                    );
+            // Edge-interval crossing model (replaces the old centroid-crossing +
+            // proximity-spawn gates). For each nearby portal we project the airship's
+            // OBB onto a per-session-locked source->dest normal and classify:
+            //   APPROACHING -> hide mirror (leading edge hasn't reached the plane)
+            //   STRADDLING  -> spawn/sync mirror (leading edge through, trailing not)
+            //   CROSSED     -> if a mirror exists (it straddled and is now fully
+            //                  through), swap; the mirror becomes the source.
+            // The mirror's existence IS the straddle latch: we only ever swap a
+            // (source, portal) pair that previously straddled and spawned a mirror,
+            // so a ship that backs out, or one teleported fully across without
+            // straddling, never spuriously swaps.
+            boolean candidateAddedForAirship = false;
+            for (Portal portal : nearbyDedup) {
+                UUID portalUuid = portal.getUUID();
+                MirrorRegistry.MirrorKey key = new MirrorRegistry.MirrorKey(
+                    airship.getUniqueId(), portalUuid
+                );
 
-                    // Cooldown check on the (source, portal) pair. If we just spawned
-                    // or despawned a mirror for this pair, give it a few ticks before
-                    // doing anything. Prevents rapid respawn churn -> wasted CPU +
-                    // possible visual artifacts.
-                    Long lastOp = lastMirrorOpTick.get(key);
-                    if (lastOp != null && (nowTick - lastOp) < MIRROR_COOLDOWN_TICKS) {
-                        // Still in cooldown. If a mirror exists in the registry, count
-                        // it as "seen" so the despawn-pass below doesn't kill it. If
-                        // not, just skip.
-                        if (MirrorRegistry.get(airship.getUniqueId(), portalUuid) != null) {
-                            seenMirrors.add(key);
-                        }
-                        continue;
-                    }
+                Vec3 normal = ipl$lockedSourceToDestNormal(airship, portal);
+                PortalCrossingDetector.CrossingState state =
+                    PortalCrossingDetector.evaluate(airship, portal, normal);
 
-                    MirrorRegistry.MirrorEntry entry = MirrorRegistry.get(
-                        airship.getUniqueId(), portalUuid
-                    );
-                    try {
-                        if (entry == null) {
-                            // First time approach -- spawn a mirror in the dest dim.
-                            ServerSubLevel spawned = MirrorOps.spawnMirror(airship, portal);
-                            if (spawned != null) {
-                                seenMirrors.add(key);
-                                lastMirrorOpTick.put(key, nowTick);
-                            }
-                        } else {
-                            // Existing mirror -- sync its pose from source via portal transform.
-                            boolean ok = MirrorOps.syncMirrorPose(airship, portal, entry);
-                            if (ok) {
-                                seenMirrors.add(key);
-                            } else {
-                                // Sync failed (mirror gone from dest container, dest dim
-                                // unloaded, etc.). Run a proper despawn -- removes from
-                                // registry AND emits the wrapped removeSubLevel so any
-                                // client-side stale mirror gets cleaned up. Without this,
-                                // we leave an orphaned mirror in the dest container that
-                                // eventually gets auto-removed by Sable's
-                                // processSubLevelRemovals (invalid mass tracker) which
-                                // calls destroyAllBlocks -- dropping items.
-                                MirrorOps.despawnMirror(entry, level.getServer());
-                                lastMirrorOpTick.put(key, nowTick);
-                            }
-                        }
-                    } catch (Throwable t) {
-                        LOG.error("[IPL-MIRROR] uncaught exception handling mirror for {}/{}",
-                            airship.getUniqueId(), portalUuid, t);
-                        // Even on uncaught failure, set cooldown to prevent log spam.
-                        lastMirrorOpTick.put(key, nowTick);
+                MirrorRegistry.MirrorEntry entry = MirrorRegistry.get(
+                    airship.getUniqueId(), portalUuid
+                );
+
+                if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED) {
+                    // Fully through. Only transit if this pair actually straddled
+                    // (mirror exists). If it does, queue the swap and let the
+                    // executor despawn the mirror as part of handoff.
+                    if (entry != null) {
+                        if (candidates == null) candidates = new ArrayList<>(1);
+                        candidates.add(new TransitCandidate(airship, portal));
+                        candidateAddedForAirship = true;
+                        break; // one transit per airship per tick
                     }
+                    // No mirror -> never straddled (e.g. parked fully past, or an
+                    // approach we never saw begin). Nothing to do.
+                    continue;
                 }
+
+                if (state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING) {
+                    // Leading edge hasn't reached the plane: the mirror must NOT be
+                    // visible yet. If one somehow exists for this pair (e.g. the ship
+                    // retreated after starting to cross), let the despawn pass below
+                    // reap it by simply not marking it seen.
+                    continue;
+                }
+
+                // STRADDLING: spawn-or-sync the mirror.
+                Long lastOp = lastMirrorOpTick.get(key);
+                if (lastOp != null && (nowTick - lastOp) < MIRROR_COOLDOWN_TICKS) {
+                    // In cooldown. If a mirror exists, keep it alive (mark seen).
+                    if (entry != null) {
+                        seenMirrors.add(key);
+                    }
+                    continue;
+                }
+
+                try {
+                    if (entry == null) {
+                        ServerSubLevel spawned = MirrorOps.spawnMirror(airship, portal);
+                        if (spawned != null) {
+                            seenMirrors.add(key);
+                            lastMirrorOpTick.put(key, nowTick);
+                        }
+                    } else {
+                        boolean ok = MirrorOps.syncMirrorPose(airship, portal, entry);
+                        if (ok) {
+                            seenMirrors.add(key);
+                        } else {
+                            // Sync failed (mirror gone from dest container, dest dim
+                            // unloaded, etc.). Proper despawn -- removes from registry
+                            // and emits the wrapped removeSubLevel so any client-side
+                            // stale mirror gets cleaned up.
+                            MirrorOps.despawnMirror(entry, level.getServer());
+                            lastMirrorOpTick.put(key, nowTick);
+                        }
+                    }
+                } catch (Throwable t) {
+                    LOG.error("[IPL-MIRROR] uncaught exception handling mirror for {}/{}",
+                        airship.getUniqueId(), portalUuid, t);
+                    lastMirrorOpTick.put(key, nowTick);
+                }
+            }
+
+            // Once we've queued a crossing transit for this airship, skip any
+            // further mirror handling for it this tick (the executor will despawn).
+            if (candidateAddedForAirship) {
+                continue;
             }
         }
 
@@ -286,6 +318,10 @@ public final class SableTransitController {
             if (!seenMirrors.contains(key)) {
                 MirrorOps.despawnMirror(entry, level.getServer());
                 lastMirrorOpTick.put(key, nowTick);
+                // Contact session ended (ship left the approach zone or retreated):
+                // release the locked crossing normal so a fresh re-approach
+                // re-snapshots it.
+                lockedCrossingNormal.remove(key);
             }
         }
 
@@ -314,6 +350,12 @@ public final class SableTransitController {
                 if (mirrorEntry != null) {
                     MirrorOps.despawnMirror(mirrorEntry, level.getServer());
                 }
+
+                // Crossing session resolved into a transit -- release the locked
+                // crossing normal for this pair.
+                lockedCrossingNormal.remove(
+                    new MirrorRegistry.MirrorKey(uuid, c.portal.getUUID())
+                );
 
                 boolean transited = SableTransitOps.executeTransit(c.airship, c.portal);
                 if (transited) {
@@ -349,6 +391,41 @@ public final class SableTransitController {
      * picked one and the discarded one would produce nearly the same mirror
      * pose anyway; using "closest" gives a stable, well-defined choice).
      */
+    /**
+     * The source->dest normal to use for {@code airship}'s crossing evaluation
+     * against {@code portal}, locked for the duration of the contact session.
+     *
+     * <p>Orient the portal's raw normal so it points toward where the ship is
+     * heading (dest) -- away from the sub-level's current AABB center, since the
+     * ship body sits on the source side -- then lock that direction on first
+     * contact in {@link #lockedCrossingNormal}. The entry is released when the
+     * pair leaves the portal's approach zone (see the cleanup pass).
+     */
+    private static Vec3 ipl$lockedSourceToDestNormal(ServerSubLevel airship, Portal portal) {
+        MirrorRegistry.MirrorKey key =
+            new MirrorRegistry.MirrorKey(airship.getUniqueId(), portal.getUUID());
+        Vec3 existing = lockedCrossingNormal.get(key);
+        if (existing != null) {
+            return existing;
+        }
+
+        Vec3 center = airship.boundingBox().toMojang().getCenter();
+        Vec3 origin = portal.getOriginPos();
+        Vec3 rawNormal = portal.getNormal();
+
+        double centerDot =
+            (center.x - origin.x) * rawNormal.x +
+            (center.y - origin.y) * rawNormal.y +
+            (center.z - origin.z) * rawNormal.z;
+        // Ship body is on the source side, so the center sits on the negative side
+        // of the source->dest normal. If centerDot > 0 the raw normal already
+        // points from dest toward the center (i.e. dest->source); flip it.
+        Vec3 sourceToDest = centerDot < 0 ? rawNormal : rawNormal.scale(-1.0);
+
+        lockedCrossingNormal.put(key, sourceToDest);
+        return sourceToDest;
+    }
+
     private static List<Portal> pickClosestPortalPerDestDim(List<Portal> portals, ServerSubLevel airship) {
         if (portals.size() <= 1) return portals;
 

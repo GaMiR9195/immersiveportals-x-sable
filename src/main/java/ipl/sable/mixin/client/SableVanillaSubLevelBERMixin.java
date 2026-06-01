@@ -9,7 +9,6 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.render.SourceClipPortalFinder;
 import ipl.sable.render.SubLevelClipUniformPatcher;
 import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.client.renderer.MultiBufferSource.BufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -144,6 +143,36 @@ public abstract class SableVanillaSubLevelBERMixin {
             return;
         }
 
+        // TEMPORARY (2026-06-01): skip rendering sub-level block entities while
+        // inside IP's portal-content render pass.
+        //
+        // Trigger: Create/catnip BEs (e.g. offroad WheelMount) drive catnip's
+        // ShadeSeparatingSuperByteBuffer, whose buffer is NOT in a valid "building"
+        // state inside IP's portal-content pass -> BufferBuilder "Not building!" ->
+        // render-thread crash. Two crashes pinned this down:
+        //   - 11:57:49: WheelMount on a MIRROR (sub 44197828), and
+        //   - 12:06:13: WheelMount on the SOURCE airship (sub d080a16c) viewed
+        //     through the portal mid-crossing -- mirror already despawned.
+        // Both are 24-27 frames deep in IrisPortalRenderer.renderPortalContent.
+        // So the condition is NOT "is a mirror" (an earlier, too-narrow guard that
+        // this replaces) and NOT our old endBatch drain (removing it changed
+        // nothing) -- it is specifically "a catnip BE rendered through the portal
+        // pass." A mirror is only ever seen through a portal, so gating on the
+        // portal pass subsumes the mirror case.
+        //
+        // Cost (honest): sub-level block entities -- cogs, wheels, chests --
+        // do NOT render in the portal VIEW for now (the main, non-portal render is
+        // untouched, so they render normally when you're in the same dimension as
+        // the airship). This is a visible regression for "look through the portal
+        // and see the airship's machinery," but that path currently CANNOT work --
+        // catnip's buffer isn't valid in the portal pass. The PROPER fix (deferred
+        // to a dedicated render session) is to give catnip's buffer the IP
+        // portal-render context it needs so these BEs render correctly through the
+        // portal -- the rendering analog of the effectiveTrackingChunkPos seam.
+        if (qouteall.imm_ptl.core.render.context_management.PortalRendering.isRendering()) {
+            return; // catnip BEs aren't buildable in the portal pass yet; skip to avoid crash
+        }
+
         SourceClipPortalFinder.ClipDecision decision =
             SourceClipPortalFinder.findStraddlingPortalPlane(sub);
         if (decision == null) {
@@ -152,15 +181,28 @@ public abstract class SableVanillaSubLevelBERMixin {
             return;
         }
 
-        // Pre-drain: flush anything queued BEFORE we set up our clip state,
-        // so e.g. slime outer-shell vertices queued earlier in the frame
-        // get drawn with their normal (un-clipped) state. Without this,
-        // the post-bracket global flush would catch them too and clip them
-        // against the airship's plane ("naked slime on the hidden half"
-        // regression).
-        if (source instanceof BufferSource bs) {
-            bs.endBatch();
-        }
+        // NOTE (2026-06-01): the per-BE buffer-drain hack was REMOVED here.
+        //
+        // It previously called source.endBatch() before AND after the BE render,
+        // to scope the slot-1 clip to exactly this BE's vertices under deferred
+        // MultiBufferSource rendering. That mid-loop flush is fundamentally
+        // incompatible with renderers that own a buffer's lifecycle ACROSS the
+        // render call -- notably catnip's ShadeSeparatingSuperByteBuffer
+        // (Create/offroad wheel mounts). Draining mid-build corrupts catnip's
+        // shared shade-separation buffer; its next beginVertex throws
+        // "Not building!" and crashes the render thread. Crucially, the corruption
+        // outlives this BE: catching the throw does NOT repair the buffer, so the
+        // crash just resurfaces on the next catnip consumer a few frames later
+        // (crash-2026-06-01_11.31.37 then _11.46.31, different call sites, same
+        // root). Catch-and-continue was the wrong tool; the only reliable fix is
+        // to not corrupt the buffer in the first place -- i.e. don't drain.
+        //
+        // Cost of removal: the slot-1 clip for sub-level BEs is no longer perfectly
+        // scoped to a single BE within the deferred batch (the cog-clip feature was
+        // already incomplete -- cogs don't fully clip -- so this regresses nothing
+        // that worked). The clip uniform + CD1 are still set around the BE render
+        // below, which is the actual clip mechanism; only the fragile flush is gone.
+        // The whole cog-clip approach is slated for a proper rethink next session.
 
         SubLevelClipUniformPatcher.patchForSubLevel(sub, decision.plane());
         GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
@@ -168,16 +210,6 @@ public abstract class SableVanillaSubLevelBERMixin {
         int progBefore = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
         try {
             original.call(dispatcher, be, partialTick, pose, source);
-
-            // Post-drain: now that the cog has queued its vertices, flush
-            // them globally. The queue was empty when we entered (pre-drain
-            // above), so this drains ONLY the cog's contribution -- meaning
-            // our active clip state (CD1 enabled, slot-1 set) applies to
-            // the cog's draws and nothing else.
-            if (source instanceof BufferSource bs) {
-                bs.endBatch();
-            }
-
             int progAfter = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
             ipl$logPostDraw(be.getClass().getSimpleName(), progBefore, progAfter);
         } finally {
