@@ -20,7 +20,8 @@
     "SableSubLevelSerializerMirrorRecoveryMixin",
     "SableSubLevelStorageFileMirrorSkipMixin",
     "IplServerHeartbeatMixin",
-    "IplServerStopMirrorCleanupMixin"
+    "IplServerStopMirrorCleanupMixin",
+    "IplSubLevelFieldSplitMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
