@@ -59,7 +59,10 @@
     "client.IplRenderDataProbeMixin",
     "client.IplPredictionBridgeMixin",
     "client.IplClientLevelPredictionAccessor",
-    "client.IplClientSubLevelPoseOverrideMixin"
+    "client.IplClientSubLevelPoseOverrideMixin",
+    "client.IplStaffPickMixin",
+    "client.IplClipContextAccessor",
+    "client.IplProjectionAwareClipMixin"
   ],
   "injectors": {
     "defaultRequire": 0
