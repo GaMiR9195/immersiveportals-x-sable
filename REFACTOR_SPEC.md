@@ -444,8 +444,49 @@ Master kill-switch: `-Dipl.sable.dimAgnostic=false` reverts to the legacy mirror
 
 ### 20.4 Known gaps / follow-ups
 
+Updated 2026-06-10 after the straddle-physics milestone (`dcb8126`); ordered roughly by
+priority.
+
+- ~~**Sub-level disk persistence**~~ FIXED (boot-restore): saving always worked
+  (`saveAll` serializes live ships); RESTORE was chunk-event-driven and the hosting dim's
+  chunks only load via physics tickets of already-live ships — boot deadlock, plus
+  surprise "ghost" restores when a new ship's tickets overlapped an old save's holding
+  position, plus mid-session despawns when ticket churn unloaded a chunk intersecting a
+  live ship (the rare disappear-on-crossing). Now: holding region files enumerated at
+  first hosting tick and released eagerly (readiness bypassed for hosting), and
+  hosting-dim chunk-UNLOAD events are ignored by the holding map.
+- **Sub-level ↔ sub-level interaction across parent frames** (untested blind spot, the
+  big one): all hosted ships share one Rapier scene with poses in their PARENT frames.
+  Same-parent pairs interact correctly; ships from different parents can phantom-collide
+  on coordinate overlap, and a straddler + a dest-side ship do NOT collide where they
+  visually meet at the portal mouth. Direction: parent-keyed collision filters + portal-
+  mapped kinematic collider clones for straddlers (the terrain-clone concept applied to
+  ship bodies — a physics-only mirror, no plots). Needs design first.
+- **Rare disappearance on crossing**: sub-levels occasionally vanish during a flip; no
+  repro yet. Instrument `removeSubLevel` with a reason log for hosted ships (suspects:
+  straddle-latch reap, rehome rollback, mirror-era removal guards, MassTracker-invalid
+  destroy).
+- **Staff recast on straddled levels**: hand-recast raycasts don't target the
+  through-part (raycast/clip pose path is unmapped — same family as the fixed
+  collision/getOnPos frame errors; fix via the pose-provider seam + staff target
+  resolution).
+- **Staff control through portals** (enhancement): keep drag/aim active across the
+  portal with the target mapped through the portal transform.
+- **Deferred block logic** MOSTLY FIXED (`IplPlotDeferredLogicMixin`): scheduled ticks
+  and block events route to the hosting level (cascades run on the interaction dim whose
+  plot tick containers are stale/missing — the pre-rehome original even leaves a
+  registered-but-never-collected container, so drops were silent); block-event packets
+  broadcast to the sub-level's tracking players (vanilla targets 64 blocks around PLOT
+  coords = nobody, a stock-Sable gap). Repeaters + lamps verified; ~+1 tick scheduling
+  latency from cross-level routing. REMAINING: pistons extend once then stick — suspect
+  the moving-piston BLOCK ENTITY not ticking (or its state corrupted by the pre-fix
+  ghost-plot overlap); retest on a clean world, then check plot-chunk BE ticking
+  (`registerAllBlockEntitiesAfterLevelLoad` / `isTicking` full-status gate) for BEs
+  placed at runtime.
 - **Sodium backend**: `IplHostedSubLevelRenderMixin` covers the vanilla path only; the Sodium reach-around dispatcher hooks `SodiumWorldRenderer` and needs its own gather splice. Test without Sodium first.
-- **Straddle visuals**: during a straddle the ship renders fully in its parent dim (the through-portion can poke out past the portal frame in the direct view until the flip fires). The legacy slot-1 source-clip machinery is still present and may partially cover this; the proper fix is dual-pass rendering with complementary slot-0 planes (then the spec's phase 8 slot-1 deletion).
+- **Straddle render polish**: portal-plane seam hole (eye-space mismatch at the clip
+  boundary) and Flywheel-rendered components (cogs) using a buggy eye-space clip in
+  portal-containing scenes.
 - **Split timing**: parent inheritance for split-off sub-levels races `clearSplitFrom()` (tracking processes the addition queue in the same container tick). If the `[IPL-REHOME] … no persisted parent dim` warn shows after a split, hook the splitter's allocation site directly.
 - **Hosted ships never hold-unload** (always "loaded enough") and keep their parent-frame terrain chunks force-loaded via synchronous `getChunk` — perf parity with legacy unloading is a follow-up.
 - **Old-parent terrain residue**: after a flip, the previous parent's terrain sections persist in the hosting pipeline up to ~20 ticks; with nether 8:1 compression they can overlap the arrival position.

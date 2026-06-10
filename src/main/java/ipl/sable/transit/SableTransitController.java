@@ -156,6 +156,7 @@ public final class SableTransitController {
         lockedCrossingNormal.clear();
         hostedStraddleLatch.clear();
         IplStraddleTerrainClone.clearAll();
+        SableRehomeOps.resetBootRestore();
         if (despawned > 0 || !snapshot.isEmpty()) {
             LOG.info("[IPL-MIRROR] server-stop cleanup: despawned {} mirror(s), cleared registry", despawned);
         }

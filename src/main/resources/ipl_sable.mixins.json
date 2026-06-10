@@ -33,7 +33,10 @@
     "IplHostingLevelPlayerLookupMixin",
     "IplStraddleCollisionPoseMixin",
     "IplStraddleInBlockPoseMixin",
-    "IplStraddleOnPosMixin"
+    "IplStraddleOnPosMixin",
+    "IplPlotDeferredLogicMixin",
+    "IplHostedHoldingMixin",
+    "IplHostedHoldingReadinessMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",

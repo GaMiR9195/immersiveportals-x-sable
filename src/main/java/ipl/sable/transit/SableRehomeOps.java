@@ -94,6 +94,7 @@ public final class SableRehomeOps {
         }
 
         if (IplDimAgnostic.isHostingLevel(level)) {
+            bootRestoreHosted(container, level);
             restoreParents(container, level);
             return;
         }
@@ -113,6 +114,75 @@ public final class SableRehomeOps {
                     airship.getUniqueId(), level.dimension().location(), t);
             }
             break; // at most one rehome per container tick
+        }
+    }
+
+    private static boolean bootRestoreDone = false;
+
+    /** Reset on server stop so singleplayer relaunch re-restores. */
+    public static void resetBootRestore() {
+        bootRestoreDone = false;
+    }
+
+    /**
+     * One-shot eager restore of every held sub-level in the hosting dimension.
+     *
+     * <p>Sable restores held sub-levels when the container level loads a chunk at their
+     * holding position. In the hosting dim those chunk loads only happen via physics
+     * tickets of already-live ships — at a fresh boot there are none, so nothing ever
+     * restores (and a NEW ship flying near an OLD save's holding position produced
+     * surprise "ghost" restores). Here we enumerate the holding region files on disk
+     * (r.&lt;regionX&gt;.&lt;regionZ&gt;) and feed every covered chunk position through the
+     * public {@code updateChunkStatus(pos, loaded=true)} API; the readiness bypass
+     * ({@code IplHostedHoldingReadinessMixin}) then releases everything on the next
+     * {@code processChanges}.
+     */
+    private static void bootRestoreHosted(ServerSubLevelContainer container, ServerLevel hosting) {
+        if (bootRestoreDone) return;
+        bootRestoreDone = true;
+
+        try {
+            java.nio.file.Path dimFolder = net.minecraft.world.level.dimension.DimensionType.getStorageFolder(
+                hosting.dimension(),
+                hosting.getServer().getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT));
+            java.nio.file.Path subLevelsFolder = dimFolder.resolve("sublevels");
+            if (!java.nio.file.Files.isDirectory(subLevelsFolder)) {
+                LOG.info("[IPL-BOOT-RESTORE] no holding storage at {} (nothing saved yet)", subLevelsFolder);
+                return;
+            }
+
+            // Holding-chunk region files are "r.<regionX>.<regionZ>" (a numeric third
+            // component means a sub-level storage file — skip those).
+            java.util.regex.Pattern regionPattern =
+                java.util.regex.Pattern.compile("^r\\.(-?\\d+)\\.(-?\\d+)(?:\\.[a-zA-Z]\\w*)?$");
+
+            int regions = 0;
+            var holdingMap = container.getHoldingChunkMap();
+            try (java.util.stream.Stream<java.nio.file.Path> files =
+                     java.nio.file.Files.list(subLevelsFolder)) {
+                for (java.nio.file.Path file : (Iterable<java.nio.file.Path>) files::iterator) {
+                    java.util.regex.Matcher m = regionPattern.matcher(file.getFileName().toString());
+                    if (!m.matches()) continue;
+                    regions++;
+                    int regionX = Integer.parseInt(m.group(1));
+                    int regionZ = Integer.parseInt(m.group(2));
+                    for (int cx = 0; cx < 32; cx++) {
+                        for (int cz = 0; cz < 32; cz++) {
+                            holdingMap.updateChunkStatus(
+                                new net.minecraft.world.level.ChunkPos(
+                                    (regionX << 5) + cx, (regionZ << 5) + cz), true);
+                        }
+                    }
+                }
+            }
+
+            int before = container.getAllSubLevels().size();
+            holdingMap.processChanges();
+            int released = container.getAllSubLevels().size() - before;
+            LOG.info("[IPL-BOOT-RESTORE] scanned {} region file(s), released {} held sub-level(s)",
+                regions, released);
+        } catch (Throwable t) {
+            LOG.error("[IPL-BOOT-RESTORE] failed", t);
         }
     }
 
