@@ -355,3 +355,82 @@ The pipeline-defaults mixin (phase 2c) was masking step 6 without fixing steps 4
 - `IplRapier3DUnifyMixin` (phase 2b — unified physics scene enables Portal-style mechanics regardless of which option we pick)
 - This spec document
 
+---
+
+## 20. Status: Option B implemented on `ipl-sable-dim-agnostic-v2` (2026-06-09)
+
+Phases 2–6 implemented on top of the phase 0/1 foundation, following Option B
+(migrate-at-assembly) with the parent-flip transit, then **runtime-validated through an
+iterative bring-up session** (same day). Working in-game: rehome at assembly, hosted
+rendering, walking/collision, block place/break, physics staff (lock + drag), pistons
+pushing ships, straddle dual-render (source clip + dest-side projection), and full
+cross-portal transit with arrival-terrain re-bake.
+Master kill-switch: `-Dipl.sable.dimAgnostic=false` reverts to the legacy mirror/copy model.
+
+### 20.0 Bring-up findings (read before debugging anything "silently not working")
+
+1. **IP subclass overrides bypass Sable's vanilla-class mixins.** Sable hooks
+   `ClientChunkCache`, `ViewArea`, etc.; IP's secondary worlds use `ImmPtlClientChunkMap`
+   and `ImmPtlViewArea`, whose overrides never hit those hooks. Plot routing is re-added
+   directly in the IP classes (delegating to `ipl.sable.client.IplPlotChunkRouting`).
+   Related trap: interface DEFAULT methods (e.g. `EntityGetter.getPlayerByUUID`) can't be
+   mixin-targeted via `Level` — with `defaultRequire: 0` the miss is silent; an override
+   must be MERGED into `ServerLevel` instead (`IplHostingLevelPlayerLookupMixin`).
+2. **The Rapier pipeline re-reads voxel content through level-bound accessors** — the
+   section arguments are coordinate carriers only. Any cross-dim feed must route reads
+   via `IplTerrainReadOverride` (covers `LevelAccelerator.getChunk` and the
+   `handleBlockChange` neighbor reads).
+3. **Vanilla section compile self-cancels via `hasAllNeighbors()`** — vacant plot-grid
+   coords must resolve to a non-null empty chunk (Sable's semantics), or hosted geometry
+   stays UNCOMPILED forever.
+4. **Client block-change predictions live on the player's level**, while hosted
+   confirmations arrive under the sublevels level — bridged via
+   `IplPredictionBridgeMixin`, else breaks roll back visually.
+5. **The plot grid is a universal address space** (`IplPlotBridgeMixin`): chunk-coordinate
+   plot lookups from ANY dimension fall through to the hosting container (allocation
+   guard exempted). This single bridge powers parent-dim block reads, collision clipping,
+   placement checks, by-UUID tool lookups, and `getContaining`.
+6. **Per-body pipeline calls are location-transparent**: the Rapier ownership guard
+   forwards calls on hosted bodies to the owning (hosting) pipeline instead of no-opping
+   (impulses, velocities, teleport, wake, constraints, contraption enrollment).
+
+### 20.1 Server side
+
+| Piece | Artifact | Notes |
+|---|---|---|
+| Rehome sweep (phase 2) | `ipl/sable/transit/SableRehomeOps.sweep` — driven per container tick from `SableSubLevelTransitMixin`, before the transit controller | Assembly/load paths untouched (fixes the v1 `assembleBlocks` blocker). One rehome per container tick: allocate same-UUID twin in `ipl_sable:sublevels` at identical pose → `copyPlotBlocks` (proven 3-pass) → relocate plot-resident entities → transfer velocity verbatim → remove parent original. Parent persisted in sub-level `user_data` (`ipl_parent_dim`); restored by the sweep on world load. Split sub-levels inherit parent from their split source (best-effort; see 20.4). |
+| Gate + helpers | `ipl/sable/dim/IplDimAgnostic` | `isEnabled` / `isHostingLevel` / `isHosted` / `getParentLevel` / `getServerParentLevel` |
+| Tracking (phase 2b) | extensions in `SableCrossDimTrackingMixin` | Hosting container's viewers = parent-dim players within Sable tracking range + IP portal viewers of the parent pose-chunk. All existing cross-dim machinery (server-wide player resolution, forced `shouldLoad`, bootstrap full-sync, forced TCP) applies unchanged. `sendRemoval` wrapped in `withForceRedirect(hosting)`. Parent-dim stamp RPC (`McRemoteProcedureCall` → `ipl.sable.client.IplParentDimSync`) sent after each hosted full sync. |
+| Packet stamping (phase 3) | `IplHostingLevelTickRedirectMixin` (whole hosting `ServerLevel.tick` under `withForceRedirect`) + `IplPlotChunkSendStampMixin` (plot-expansion chunk send, which runs in C2S handling between ticks) | Every packet the hosting dim emits is dim-stamped; IP's client unwrap lands them in the client's sublevels containers. The client sublevels `ClientLevel` is created lazily by IP on the first redirected packet. |
+| Unload + terrain (phases 3/5) | `IplHostedTicketManagerMixin` | (a) hosting dim is always "loaded enough" → hosted ships never `moveToUnloaded`, no ticket thrash; (b) inside the per-sub-level ticket loop, terrain chunk sections are read from the PARENT dim (section index recomputed against the parent's height profile) and fed into the HOSTING pipeline — ship pose and terrain share the parent frame, so Rapier collision is consistent without the v1 global scene unification. |
+| Spatial queries (phase 5) | `IplHostedIntersectionMixin` on `ActiveSableCompanion` | `getAllIntersecting(level, bounds)` splices in hosted sub-levels with `parentLevel == level` (both sides; client resolves via non-creating `IplClientHostedLookup`). Also fixes `getVelocity(level, subLevel, …)` to resolve the physics handle from the sub-level's own (hosting) container. |
+| Transit (phase 6) | `SableRehomeOps.executeHostedTransit` + hosted dispatch in `SableTransitController` | Portal query against the PARENT dim; explicit straddle latch replaces "mirror exists"; CROSSED → pose remap (`computeMappedPose`), velocity rotation, rider teleport from parent, `parentLevel` flip, forced re-track (StopTracking to all, re-bootstrap next tick). No block copy, no container move. Mirrors fully disabled in dim-agnostic mode. |
+
+### 20.2 Client side
+
+| Piece | Artifact | Notes |
+|---|---|---|
+| Parent stamp | `ipl/sable/client/IplParentDimSync` | RPC receiver; sets duck parent on the hosted `ClientSubLevel` in the sublevels client container. |
+| Render gather (phase 4) | `client/IplHostedSubLevelRenderMixin` (priority 1010, vanilla backend) | Mirrors all seven of Sable's `LevelRenderer` hook points, feeding hosted sub-levels whose `parentLevel == this.level`. Each `ClientLevel` has its own `LevelRenderer`, so main pass + every IP portal pass get per-dimension visibility automatically; IP slot-0 crops at portal planes. |
+| Section compile source | `client/IplHostedRenderDataMixin` | Hosted render data is built with `ClientWorldLoader.getWorldRenderer(SUBLEVELS).getSectionRenderDispatcher()` → block/light reads come from the sublevels `ClientLevel` (resolved question #1, the multi-dispatcher pattern). |
+
+### 20.3 Test sequence (acceptance ladder)
+
+1. Boot: `[IPL-SABLE-DIM] … loaded OK` + `[IPL-REHOME] dim-agnostic mode ENABLED`.
+2. Assemble an airship → `[IPL-REHOME] rehoming uuid=… minecraft:overworld -> ipl_sable:sublevels` then `complete`. Ship stays visible, walkable, pilotable; propellers thrust.
+3. `/forge dimensions` or region files: plot chunks in the sublevels dim, none in overworld.
+4. Save + reload → `[IPL-REHOME] restored parent …`; ship reappears in overworld.
+5. Look at the ship through a nether portal from the nether → visible, clipped at the plane (slot-0).
+6. Fly the ship through the portal → `[IPL-FLIP] firing … complete`; ship + riders arrive in the nether; chunks never moved.
+
+### 20.4 Known gaps / follow-ups
+
+- **Sodium backend**: `IplHostedSubLevelRenderMixin` covers the vanilla path only; the Sodium reach-around dispatcher hooks `SodiumWorldRenderer` and needs its own gather splice. Test without Sodium first.
+- **Straddle visuals**: during a straddle the ship renders fully in its parent dim (the through-portion can poke out past the portal frame in the direct view until the flip fires). The legacy slot-1 source-clip machinery is still present and may partially cover this; the proper fix is dual-pass rendering with complementary slot-0 planes (then the spec's phase 8 slot-1 deletion).
+- **Split timing**: parent inheritance for split-off sub-levels races `clearSplitFrom()` (tracking processes the addition queue in the same container tick). If the `[IPL-REHOME] … no persisted parent dim` warn shows after a split, hook the splitter's allocation site directly.
+- **Hosted ships never hold-unload** (always "loaded enough") and keep their parent-frame terrain chunks force-loaded via synchronous `getChunk` — perf parity with legacy unloading is a follow-up.
+- **Old-parent terrain residue**: after a flip, the previous parent's terrain sections persist in the hosting pipeline up to ~20 ticks; with nether 8:1 compression they can overlap the arrival position.
+- **Cross-parent terrain bleed**: ships from different parent dims share the hosting Rapier scene; overlapping parent-frame positions would see each other's terrain copies.
+- **`SubLevelTrackingPointSavedData`** (spawn points on airships) still per-parent-dim; unresolved from phase 1.
+- Hanging/plot-resident entity relocation during rehome uses `teleportEntityGeneral` per entity; passengers are skipped (vanilla re-seats).
+

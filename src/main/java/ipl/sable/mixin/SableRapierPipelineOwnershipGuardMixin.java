@@ -97,6 +97,42 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
         return body == null || !this.activeSubLevels.containsKey(body.getRuntimeId());
     }
 
+    private static long ipl$lastConstraintLogMs = 0;
+
+    /** TEMPORARY bring-up diagnostic: prove constraint forwarding fires (rate-limited). */
+    private void ipl$logConstraintForward(
+        @Nullable ServerSubLevel a, @Nullable ServerSubLevel b, Object configuration
+    ) {
+        long now = System.currentTimeMillis();
+        if (now - ipl$lastConstraintLogMs < 2000) return;
+        ipl$lastConstraintLogMs = now;
+        IPL$LOG.info("[IPL-RAPIER-GUARD] forwarded addConstraint a={} b={} config={}",
+            a == null ? "world" : a.getUniqueId(),
+            b == null ? "world" : b.getUniqueId(),
+            configuration.getClass().getSimpleName());
+    }
+
+    /**
+     * Dim-agnostic location transparency: a per-body call landing on the WRONG pipeline
+     * (e.g. the physics staff resolving the player's dim's pipeline while the grabbed
+     * sub-level's body lives in {@code ipl_sable:sublevels}'s pipeline) is forwarded to
+     * the body's OWNING pipeline instead of being dropped. Returns null when there is no
+     * forwarding target (then the original no-op guard applies — e.g. true mirrors).
+     * No recursion: the owning pipeline's level == the body's level, so its own guard
+     * never forwards again.
+     */
+    private RapierPhysicsPipeline ipl$forwardTarget(PhysicsPipelineBody body) {
+        if (!ipl.sable.dim.IplDimAgnostic.isEnabled()) return null;
+        if (!(body instanceof ServerSubLevel sub)) return null;
+        if (!ipl.sable.dim.IplDimAgnostic.isHosted(sub)) return null;
+        if (sub.getLevel() == this.level) return null; // we ARE the owning pipeline's level
+        dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer owning =
+            dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(sub.getLevel());
+        if (owning == null) return null;
+        return owning.physicsSystem().getPipeline() instanceof RapierPhysicsPipeline rapier
+            ? rapier : null;
+    }
+
     /**
      * True when {@code sub} is non-null and the pipeline has no native rigid body
      * for it. Null subs are NOT "not owned" -- a null sub-level in a constraint
@@ -111,13 +147,19 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
     @Inject(method = "getLinearVelocity", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardGetLinearVelocity(PhysicsPipelineBody body, Vector3d dest,
                                             CallbackInfoReturnable<Vector3d> cir) {
-        if (ipl$notOwned(body)) cir.setReturnValue(dest.zero());
+        if (ipl$notOwned(body)) {
+            RapierPhysicsPipeline target = ipl$forwardTarget(body);
+            cir.setReturnValue(target != null ? target.getLinearVelocity(body, dest) : dest.zero());
+        }
     }
 
     @Inject(method = "getAngularVelocity", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardGetAngularVelocity(PhysicsPipelineBody body, Vector3d dest,
                                              CallbackInfoReturnable<Vector3d> cir) {
-        if (ipl$notOwned(body)) cir.setReturnValue(dest.zero());
+        if (ipl$notOwned(body)) {
+            RapierPhysicsPipeline target = ipl$forwardTarget(body);
+            cir.setReturnValue(target != null ? target.getAngularVelocity(body, dest) : dest.zero());
+        }
     }
 
     // readPose's first param is ServerSubLevel (which implements PhysicsPipelineBody)
@@ -125,45 +167,75 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
     @Inject(method = "readPose", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardReadPose(ServerSubLevel body, Pose3d dest,
                                    CallbackInfoReturnable<Pose3d> cir) {
-        if (ipl$notOwned(body)) cir.setReturnValue(dest);
+        if (ipl$notOwned(body)) {
+            RapierPhysicsPipeline target = ipl$forwardTarget(body);
+            if (target != null) {
+                target.readPose(body, dest);
+            }
+            cir.setReturnValue(dest);
+        }
     }
 
-    // ---- void mutators: skip entirely for unowned bodies -----------------------
+    // ---- void mutators: forward to the owning pipeline, or skip for true orphans ----
 
     @Inject(method = "teleport", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardTeleport(PhysicsPipelineBody body, Vector3dc position, Quaterniondc orientation,
                                    CallbackInfo ci) {
-        if (ipl$notOwned(body)) ci.cancel();
+        if (ipl$notOwned(body)) {
+            RapierPhysicsPipeline target = ipl$forwardTarget(body);
+            if (target != null) target.teleport(body, position, orientation);
+            ci.cancel();
+        }
     }
 
     @Inject(method = "applyImpulse", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardApplyImpulse(PhysicsPipelineBody body, Vector3dc position, Vector3dc force,
                                        CallbackInfo ci) {
-        if (ipl$notOwned(body)) ci.cancel();
+        if (ipl$notOwned(body)) {
+            RapierPhysicsPipeline target = ipl$forwardTarget(body);
+            if (target != null) target.applyImpulse(body, position, force);
+            ci.cancel();
+        }
     }
 
     @Inject(method = "applyLinearAndAngularImpulse", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardApplyLinearAndAngularImpulse(PhysicsPipelineBody body, Vector3dc force, Vector3dc torque,
                                                        boolean wakeUp, CallbackInfo ci) {
-        if (ipl$notOwned(body)) ci.cancel();
+        if (ipl$notOwned(body)) {
+            RapierPhysicsPipeline target = ipl$forwardTarget(body);
+            if (target != null) target.applyLinearAndAngularImpulse(body, force, torque, wakeUp);
+            ci.cancel();
+        }
     }
 
     @Inject(method = "addLinearAndAngularVelocity", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardAddVelocity(PhysicsPipelineBody body, Vector3dc linearVelocity, Vector3dc angularVelocity,
                                       CallbackInfo ci) {
-        if (ipl$notOwned(body)) ci.cancel();
+        if (ipl$notOwned(body)) {
+            RapierPhysicsPipeline target = ipl$forwardTarget(body);
+            if (target != null) target.addLinearAndAngularVelocity(body, linearVelocity, angularVelocity);
+            ci.cancel();
+        }
     }
 
     @Inject(method = "wakeUp", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardWakeUp(PhysicsPipelineBody body, CallbackInfo ci) {
-        if (ipl$notOwned(body)) ci.cancel();
+        if (ipl$notOwned(body)) {
+            RapierPhysicsPipeline target = ipl$forwardTarget(body);
+            if (target != null) target.wakeUp(body);
+            ci.cancel();
+        }
     }
 
     // onStatsChanged is called by the block-copy cascade during mirror spawn;
     // without this guard it would hand a mirror's stale id to native code.
     @Inject(method = "onStatsChanged", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardOnStatsChanged(ServerSubLevel serverSubLevel, CallbackInfo ci) {
-        if (ipl$notOwned(serverSubLevel)) ci.cancel();
+        if (ipl$notOwned(serverSubLevel)) {
+            RapierPhysicsPipeline target = ipl$forwardTarget(serverSubLevel);
+            if (target != null) target.onStatsChanged(serverSubLevel);
+            ci.cancel();
+        }
     }
 
     // ---- Structural mutations: the JNI-abort paths (see class javadoc) ----------
@@ -182,6 +254,21 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
         PhysicsConstraintConfiguration<T> configuration, CallbackInfoReturnable<T> cir
     ) {
         if (ipl$notOwnedSub(sublevelA) || ipl$notOwnedSub(sublevelB)) {
+            // Dim-agnostic forward (the physics staff resolves the player's dim's pipeline
+            // while the grabbed body lives in the hosting pipeline). Both non-null ends must
+            // live in the SAME owning pipeline; null means "the static world", which exists
+            // in every scene.
+            RapierPhysicsPipeline target = null;
+            if (sublevelA != null) target = ipl$forwardTarget(sublevelA);
+            if (target == null && sublevelB != null) target = ipl$forwardTarget(sublevelB);
+            boolean sameScene = sublevelA == null || sublevelB == null
+                || sublevelA.getLevel() == sublevelB.getLevel();
+            if (target != null && sameScene) {
+                ipl$logConstraintForward(sublevelA, sublevelB, configuration);
+                cir.setReturnValue(target.addConstraint(sublevelA, sublevelB, configuration));
+                return;
+            }
+
             ServerSubLevel offender = ipl$notOwnedSub(sublevelA) ? sublevelA : sublevelB;
             IPL$LOG.warn("[IPL-RAPIER-GUARD] refused addConstraint on unowned sub-level {} "
                 + "(no native body -- e.g. a kinematic mirror). Returning null handle.",
@@ -205,6 +292,15 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
     private void ipl$guardAddContraption(KinematicContraption contraption, CallbackInfo ci) {
         SubLevel mount = Sable.HELPER.getContaining(this.level, contraption.sable$getPosition());
         if (mount instanceof ServerSubLevel serverMount && ipl$notOwnedSub(serverMount)) {
+            // Dim-agnostic forward: a Create contraption assembling on a hosted airship must
+            // enroll in the pipeline that owns the mount's body.
+            RapierPhysicsPipeline target = ipl$forwardTarget(serverMount);
+            if (target != null) {
+                target.add(contraption);
+                ci.cancel();
+                return;
+            }
+
             IPL$LOG.warn("[IPL-RAPIER-GUARD] refused add(KinematicContraption) on unowned mount "
                 + "sub-level {} (no native body -- e.g. a kinematic mirror). Skipping enrollment.",
                 serverMount.getUniqueId());

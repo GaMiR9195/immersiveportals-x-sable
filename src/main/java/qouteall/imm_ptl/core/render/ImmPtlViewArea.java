@@ -163,6 +163,13 @@ public class ImmPtlViewArea extends ViewArea {
 
     @Override
     public void setDirty(int cx, int cy, int cz, boolean isImportant) {
+        // Sable plot routing: dirty marks at plot-grid coords belong to the sub-level's own
+        // render data. Sable's ViewAreaMixin does this for the vanilla ViewArea; this
+        // override would otherwise swallow them (and allocate phantom columns at ~1.28M).
+        if (ipl.sable.dim.IplDimAgnostic.isEnabled()
+            && ipl.sable.client.IplPlotChunkRouting.trySetSectionDirty(this.level, cx, cy, cz, isImportant)) {
+            return;
+        }
         RenderSection builtChunk = provideBuiltChunkByChunkPos(cx, cy, cz);
         builtChunk.setDirty(isImportant);
     }

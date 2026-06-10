@@ -3,6 +3,7 @@ package ipl.sable.transit;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.dim.IplDimAgnostic;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -100,6 +101,14 @@ public final class SableTransitController {
      */
     private static final Map<MirrorRegistry.MirrorKey, Vec3> lockedCrossingNormal = new HashMap<>();
 
+    /**
+     * Dim-agnostic straddle latch. In the legacy model the mirror's existence is the latch
+     * ("only swap a pair that previously straddled"); hosted sub-levels have no mirrors, so the
+     * latch is explicit: a (subLevel, portal) key enters on STRADDLING, leaves on APPROACHING
+     * (ship backed out) or on the CROSSED flip. Server-thread only.
+     */
+    private static final java.util.Set<MirrorRegistry.MirrorKey> hostedStraddleLatch = new java.util.HashSet<>();
+
     private SableTransitController() {}
 
     /**
@@ -145,6 +154,7 @@ public final class SableTransitController {
         lastMirrorOpTick.clear();
         lastTransitTick.clear();
         lockedCrossingNormal.clear();
+        hostedStraddleLatch.clear();
         if (despawned > 0 || !snapshot.isEmpty()) {
             LOG.info("[IPL-MIRROR] server-stop cleanup: despawned {} mirror(s), cleared registry", despawned);
         }
@@ -167,6 +177,11 @@ public final class SableTransitController {
         // tick -- so we can despawn any mirror whose source is no longer in the
         // approach zone after we finish the iteration.
         java.util.Set<MirrorRegistry.MirrorKey> seenMirrors = new java.util.HashSet<>();
+
+        // Same idea for hosted (dim-agnostic) pairs: latch + locked-normal entries whose pair
+        // is no longer near a portal get reaped after the loop. Only meaningful when ticking
+        // the hosting container (all hosted ships live there).
+        java.util.Set<MirrorRegistry.MirrorKey> seenHostedKeys = new java.util.HashSet<>();
 
         // Collect transit candidates first so we don't mutate iterators while iterating
         // (transit will call container.removeSubLevel which mutates allSubLevels).
@@ -211,9 +226,23 @@ public final class SableTransitController {
                 continue;
             }
 
+            // Dim-agnostic model: the legacy mirror/copy machinery is disabled. Un-hosted
+            // ships are pending rehome (SableRehomeOps.sweep handles them within a tick);
+            // hosted ships query portals in their PARENT dim and transit via parent flip.
+            boolean hosted = IplDimAgnostic.isHosted(airship);
+            if (IplDimAgnostic.isEnabled() && !hosted) {
+                continue;
+            }
+
+            ServerLevel portalQueryLevel = level;
+            if (hosted) {
+                portalQueryLevel = IplDimAgnostic.getServerParentLevel(airship);
+                if (portalQueryLevel == null) continue;
+            }
+
             // Convert Sable's BoundingBox3d to MC AABB for the portal query.
             AABB airshipAabb = airship.boundingBox().toMojang().inflate(PORTAL_QUERY_INFLATION);
-            List<Portal> nearby = level.getEntitiesOfClass(
+            List<Portal> nearby = portalQueryLevel.getEntitiesOfClass(
                 Portal.class,
                 airshipAabb,
                 Portal::isTeleportable
@@ -247,6 +276,34 @@ public final class SableTransitController {
                 Vec3 normal = ipl$lockedSourceToDestNormal(airship, portal);
                 PortalCrossingDetector.CrossingState state =
                     PortalCrossingDetector.evaluate(airship, portal, normal);
+
+                // Hosted (dim-agnostic) dispatch: no mirrors. The explicit straddle latch
+                // replaces "mirror exists" as the only-swap-after-straddle guard; CROSSED
+                // resolves to a parent flip via SableRehomeOps.executeHostedTransit.
+                if (hosted) {
+                    switch (state.phase()) {
+                        case CROSSED -> {
+                            if (hostedStraddleLatch.remove(key)) {
+                                if (candidates == null) candidates = new ArrayList<>(1);
+                                candidates.add(new TransitCandidate(airship, portal));
+                                candidateAddedForAirship = true;
+                            }
+                            // No latch -> never straddled (parked past the portal); nothing to do.
+                        }
+                        case STRADDLING -> {
+                            hostedStraddleLatch.add(key);
+                            seenHostedKeys.add(key);
+                        }
+                        case APPROACHING -> {
+                            // Ship backed out of a straddle (or hasn't reached the plane):
+                            // clear the latch but keep the locked normal while still nearby.
+                            hostedStraddleLatch.remove(key);
+                            seenHostedKeys.add(key);
+                        }
+                    }
+                    if (candidateAddedForAirship) break; // one transit per airship per tick
+                    continue;
+                }
 
                 MirrorRegistry.MirrorEntry entry = MirrorRegistry.get(
                     airship.getUniqueId(), portalUuid
@@ -319,6 +376,15 @@ public final class SableTransitController {
             }
         }
 
+        // Reap hosted latch/locked-normal state for pairs no longer near any portal. All
+        // hosted ships live in the hosting container, so only its tick does the cleanup
+        // (in dim-agnostic mode the legacy mirror path never populates these maps, so the
+        // shared lockedCrossingNormal map only holds hosted keys here).
+        if (IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(level)) {
+            hostedStraddleLatch.removeIf(k -> !seenHostedKeys.contains(k));
+            lockedCrossingNormal.keySet().removeIf(k -> !seenHostedKeys.contains(k));
+        }
+
         // Despawn mirrors whose source is no longer in any portal's approach zone.
         // Iterate a snapshot so we can remove during the loop.
         for (MirrorRegistry.MirrorEntry entry : new ArrayList<>(MirrorRegistry.all())) {
@@ -352,6 +418,18 @@ public final class SableTransitController {
         for (TransitCandidate c : candidates) {
             UUID uuid = c.airship.getUniqueId();
             try {
+                // Hosted transit: parent flip, no mirror bookkeeping.
+                if (IplDimAgnostic.isHosted(c.airship)) {
+                    lockedCrossingNormal.remove(
+                        new MirrorRegistry.MirrorKey(uuid, c.portal.getUUID())
+                    );
+                    boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal);
+                    if (flipped) {
+                        lastTransitTick.put(uuid, nowTick);
+                    }
+                    continue;
+                }
+
                 // Before atomic teleport, despawn any mirror for this (source, portal)
                 // pair so we don't end up with mirror + new dest sub-level coexisting.
                 // Phase 2 C2 will replace this with proper handoff (mirror promoted in

@@ -62,7 +62,22 @@ public final class SourceClipPortalFinder {
     @Nullable
     public static ClipDecision findStraddlingPortalPlane(ClientSubLevel sub) {
         if (sub == null) return null;
-        if (!(sub.getLevel() instanceof ClientLevel level)) return null;
+
+        // Dest-side projection pass (dim-agnostic straddle rendering): the projection
+        // driver has already computed the complementary plane — install that instead of
+        // searching. This makes the legacy bracket the single clip installer for both
+        // sides of a partial crossing.
+        qouteall.q_misc_util.my_util.Plane projectionPlane =
+            ipl.sable.client.IplStraddleRenderState.getPlaneFor(sub);
+        if (projectionPlane != null) {
+            return new ClipDecision(
+                ipl.sable.client.IplStraddleRenderState.getPortalFor(sub), projectionPlane);
+        }
+
+        // Hosted sub-levels live in ipl_sable:sublevels, which contains no portals — the
+        // straddle search must run in the PARENT dimension (where the ship visually is).
+        // Falls back to getLevel() for legacy embedded sub-levels.
+        if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) return null;
 
         AABB box = sub.boundingBox().toMojang();
         Vec3 center = box.getCenter();

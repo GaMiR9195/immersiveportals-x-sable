@@ -156,6 +156,47 @@ public abstract class SableCrossDimTrackingMixin {
         ipl$crossDimViewersBySubLevel.clear();
         ipl$crossDimViewerUnion.clear();
 
+        // Dim-agnostic hosting container: every sub-level here lives in ipl_sable:sublevels
+        // and every viewer is by definition cross-dim. A sub-level's viewers are the players
+        // of its PARENT dim within Sable's tracking range of the (parent-coordinate) pose,
+        // plus any player viewing that parent-dim chunk through an IP portal. All downstream
+        // machinery in this mixin (server-wide player resolution, forced shouldLoad,
+        // bootstrap full-sync, redirected packet emission, forced TCP) then applies as-is.
+        if (ipl.sable.dim.IplDimAgnostic.isEnabled()
+            && ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
+            double range = dev.ryanhcode.sable.SableConfig.SUB_LEVEL_TRACKING_RANGE.getAsDouble();
+            double rangeSq = range * range;
+
+            for (SubLevel subLevel : container.getAllSubLevels()) {
+                if (subLevel.isRemoved()) continue;
+
+                net.minecraft.server.level.ServerLevel parent =
+                    ipl.sable.dim.IplDimAgnostic.getServerParentLevel(subLevel);
+                if (parent == null) continue; // parent unresolved (pre-restore); not viewable yet
+
+                Vector3dc pos = subLevel.logicalPose().position();
+                Set<UUID> viewers = new HashSet<>();
+
+                for (ServerPlayer player : parent.players()) {
+                    if (pos.distanceSquared(player.getX(), player.getY(), player.getZ()) < rangeSq) {
+                        viewers.add(player.getGameProfile().getId());
+                    }
+                }
+
+                ChunkPos chunkPos = new ChunkPos(BlockPos.containing(pos.x(), pos.y(), pos.z()));
+                for (ServerPlayer viewer : ImmPtlChunkTracking.getPlayersViewingChunk(
+                    parent.dimension(), chunkPos.x, chunkPos.z, false)) {
+                    viewers.add(viewer.getGameProfile().getId());
+                }
+
+                if (!viewers.isEmpty()) {
+                    ipl$crossDimViewersBySubLevel.put(subLevel.getUniqueId(), viewers);
+                    ipl$crossDimViewerUnion.addAll(viewers);
+                }
+            }
+            return;
+        }
+
         for (SubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
 
@@ -286,7 +327,32 @@ public abstract class SableCrossDimTrackingMixin {
                 // sendBoundsUpdates is being called from tick. But we may also be called
                 // outside that context (e.g. if sendBoundsUpdates is invoked elsewhere),
                 // so set it explicitly here -- nested same-value is a no-op.
+                if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
+                    // Diagnostic for the dim-agnostic bring-up: how many plot chunks does the
+                    // server actually bundle into this full sync?
+                    org.slf4j.LoggerFactory.getLogger("ipl-hosted-gather").info(
+                        "[IPL-HOSTED-SYNC] full sync of {} to {}: {} loaded plot chunk(s) server-side",
+                        serverSubLevel.getUniqueId(), viewer.getGameProfile().getName(),
+                        serverSubLevel.getPlot().getLoadedChunks().size());
+                }
                 PacketRedirection.withForceRedirect(level, () -> sendFullSync(viewer, serverSubLevel, null));
+
+                // Hosted sub-levels: follow the full sync with the parent-dim stamp so the
+                // client knows which dimension to render this sub-level in. Sent after the
+                // bundled sync, so the client-side ClientSubLevel exists when it arrives.
+                if (ipl.sable.dim.IplDimAgnostic.isEnabled()
+                    && ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
+                    net.minecraft.server.level.ServerLevel parent =
+                        ipl.sable.dim.IplDimAgnostic.getServerParentLevel(serverSubLevel);
+                    if (parent != null) {
+                        qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                            viewer,
+                            "ipl.sable.client.IplParentDimSync.RemoteCallables.setParent",
+                            serverSubLevel.getUniqueId().toString(),
+                            parent.dimension().location().toString()
+                        );
+                    }
+                }
             }
         }
     }
@@ -343,5 +409,35 @@ public abstract class SableCrossDimTrackingMixin {
             return false;
         }
         return original.call(server, player);
+    }
+
+    // ------------------------------------------------------------------------
+    // 8. Dim-agnostic: stamp StopTracking packets with the hosting dim. sendRemoval
+    //    fires from tick's removal pass and from onSubLevelRemoved -- both outside the
+    //    bounds/movement redirect wraps -- and its packets must land in the client's
+    //    sublevels-dim container, not whatever dim the recipient currently displays.
+    //    Gated to the hosting container so legacy-dim behavior is untouched.
+    // ------------------------------------------------------------------------
+
+    @WrapOperation(
+        method = {"tick", "onSubLevelRemoved"},
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/sublevel/system/SubLevelTrackingSystem;sendRemoval(Lfoundry/veil/api/network/VeilPacketManager$PacketSink;Ldev/ryanhcode/sable/sublevel/ServerSubLevel;)V"
+        ),
+        require = 1
+    )
+    private void ipl$stampRemovalWithHostingDim(
+        SubLevelTrackingSystem self,
+        foundry.veil.api.network.VeilPacketManager.PacketSink sink,
+        ServerSubLevel subLevel,
+        Operation<Void> original
+    ) {
+        if (ipl.sable.dim.IplDimAgnostic.isEnabled()
+            && ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
+            PacketRedirection.withForceRedirect(level, () -> original.call(self, sink, subLevel));
+        } else {
+            original.call(self, sink, subLevel);
+        }
     }
 }

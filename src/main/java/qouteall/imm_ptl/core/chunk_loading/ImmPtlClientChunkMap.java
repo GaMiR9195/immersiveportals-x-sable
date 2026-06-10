@@ -58,16 +58,38 @@ public class ImmPtlClientChunkMap extends ClientChunkCache {
     public ImmPtlClientChunkMap(ClientLevel clientWorld, int loadDistance) {
         super(clientWorld, 1);
         // the chunk array is unused. make it small by passing 1 as load distance to super constructor
-        
+
         mainThread = ((IEMinecraftClient) Minecraft.getInstance()).ip_getRunningThread();
+    }
+
+    /** Sable plot routing: stand-in for vacant plot-grid coords (see getChunk). */
+    private LevelChunk ipl$plotEmptyChunk;
+
+    private LevelChunk ipl$getPlotEmptyChunk() {
+        if (ipl$plotEmptyChunk == null) {
+            ipl$plotEmptyChunk = new net.minecraft.world.level.chunk.EmptyLevelChunk(
+                this.level, net.minecraft.world.level.ChunkPos.ZERO,
+                this.level.registryAccess()
+                    .registryOrThrow(net.minecraft.core.registries.Registries.BIOME)
+                    .getHolderOrThrow(net.minecraft.world.level.biome.Biomes.PLAINS)
+            );
+        }
+        return ipl$plotEmptyChunk;
     }
     
     @Override
     public void drop(ChunkPos chunkPos) {
         Validate.isTrue(Thread.currentThread() == mainThread);
-        
+
+        // Sable plot chunks are lifecycle-managed by their SubLevelContainer, never dropped
+        // by view-range logic (mirrors Sable's own ClientChunkCacheMixin on the vanilla cache).
+        if (ipl.sable.dim.IplDimAgnostic.isEnabled()
+            && ipl.sable.client.IplPlotChunkRouting.isPlotBound(this.level, chunkPos.x, chunkPos.z)) {
+            return;
+        }
+
 //        LOGGER.info("unload {} {}", level, chunkPos);
-        
+
         LevelChunk chunk = chunkMapForMainThread.get(chunkPos.toLong());
         if (chunk != null) {
             modifyChunkMap(chunkMap -> {
@@ -102,6 +124,18 @@ public class ImmPtlClientChunkMap extends ClientChunkCache {
     
     @Override
     public LevelChunk getChunk(int x, int z, ChunkStatus chunkStatus, boolean create) {
+        // Sable plot chunks live in the sub-level plots, not in IP's flat map. This is what
+        // lets the section compiler / block reads on a secondary world see hosted airships.
+        // For VACANT plot-grid coords we must return a non-null empty chunk, exactly like
+        // Sable's hook on the vanilla cache does: the section compiler's hasAllNeighbors()
+        // check treats null as "not loaded" and silently cancels every compile task,
+        // freezing hosted sub-level geometry at UNCOMPILED forever.
+        if (ipl.sable.dim.IplDimAgnostic.isEnabled()
+            && ipl.sable.client.IplPlotChunkRouting.isPlotBound(this.level, x, z)) {
+            LevelChunk plotChunk = ipl.sable.client.IplPlotChunkRouting.tryGetChunk(this.level, x, z);
+            return plotChunk != null ? plotChunk : ipl$getPlotEmptyChunk();
+        }
+
         return readChunkMap(chunkMap -> {
             LevelChunk chunk = chunkMap.get(ChunkPos.asLong(x, z));
             if (chunk != null) {
@@ -141,7 +175,18 @@ public class ImmPtlClientChunkMap extends ClientChunkCache {
         Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer
     ) {
         Validate.isTrue(Thread.currentThread() == mainThread);
-        
+
+        // Route Sable plot-grid chunks into the owning sub-level plot. Sable's own routing is
+        // a mixin on the vanilla ClientChunkCache and never applies to this override — without
+        // this, hosted sub-level chunks land in IP's flat map and the plot stays empty.
+        if (ipl.sable.dim.IplDimAgnostic.isEnabled()) {
+            LevelChunk routed = ipl.sable.client.IplPlotChunkRouting.tryReplaceWithPacketData(
+                this.level, x, z, buf, nbt, consumer);
+            if (routed != null) {
+                return routed;
+            }
+        }
+
         long chunkPosLong = ChunkPos.asLong(x, z);
         LevelChunk worldChunk = chunkMapForMainThread.get(chunkPosLong);
         if (worldChunk == null) {

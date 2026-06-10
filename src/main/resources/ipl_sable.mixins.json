@@ -21,7 +21,16 @@
     "SableSubLevelStorageFileMirrorSkipMixin",
     "IplServerHeartbeatMixin",
     "IplServerStopMirrorCleanupMixin",
-    "IplSubLevelFieldSplitMixin"
+    "IplSubLevelFieldSplitMixin",
+    "IplHostingLevelTickRedirectMixin",
+    "IplPlotChunkSendStampMixin",
+    "IplHostedTicketManagerMixin",
+    "IplHostedIntersectionMixin",
+    "IplLevelAcceleratorOverrideMixin",
+    "IplPlotBridgeMixin",
+    "IplHostedTerrainChangeForwardMixin",
+    "IplRapierBlockChangeReadFixMixin",
+    "IplHostingLevelPlayerLookupMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
@@ -37,7 +46,14 @@
     "client.IplFlywheelEmbeddedClipMixin",
     "client.IplGlUseProgramProbeMixin",
     "client.IplProgramManagerProbeMixin",
-    "client.IplShaderUniformProbeMixin"
+    "client.IplShaderUniformProbeMixin",
+    "client.IplHostedSubLevelRenderMixin",
+    "client.IplHostedRenderDataMixin",
+    "client.IplClientPlotChunkProbeMixin",
+    "client.IplRenderDataProbeMixin",
+    "client.IplPredictionBridgeMixin",
+    "client.IplClientLevelPredictionAccessor",
+    "client.IplClientSubLevelPoseOverrideMixin"
   ],
   "injectors": {
     "defaultRequire": 0

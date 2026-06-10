@@ -40,6 +40,10 @@ public abstract class SableSubLevelTransitMixin {
     private void ipl$onContainerTickTail(CallbackInfo ci) {
         ServerSubLevelContainer self = (ServerSubLevelContainer) (Object) this;
         if (self.getLevel() instanceof ServerLevel) {
+            // Dim-agnostic rehome sweep runs first: migrates freshly-assembled/loaded
+            // sub-levels into ipl_sable:sublevels (and restores persisted parents on the
+            // hosting container) before the transit controller looks at them.
+            ipl.sable.transit.SableRehomeOps.sweep(self);
             SableTransitController.onContainerTick(self);
         }
     }
