@@ -194,6 +194,15 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
         // and constrain `result` with just that. More coupling to Sable internals;
         // deferred until/unless the frame-edge case actually bites.
         if (SableBridge.hasSubLevelFloorThisTick((Entity) (Object) this)) {
+            // Riding a ship that's STRADDLING the portal: Sable's collision is now
+            // both-frame aware (mapped poses + cross-seam terrain clone), so it is
+            // authoritative. Folding IP's portal result in here constrained the rider
+            // against dest-world geometry beyond the plane (the ground the linked portal
+            // stands on, the frame at mapped coords) — phantom floors that reduced
+            // apparent gravity and capped jumps while on the through-part.
+            if (SableBridge.isFloorSubLevelStraddlingPortal((Entity) (Object) this)) {
+                return sableResult;
+            }
             return ip_mostRestrictivePerAxis(attemptedMove, result, sableResult);
         }
 

@@ -141,6 +141,21 @@ public final class SableBridge {
     }
 
     /**
+     * Is the sub-level floor under this entity currently STRADDLING a portal?
+     *
+     * <p>Used by IP's {@code Entity.collide} wrap: while riding a straddling ship inside the
+     * portal-collision zone, Sable's collision is both-frame aware (mapped poses + cross-seam
+     * terrain clone), so IP's two-sided portal collision must NOT be folded in — its
+     * other-side pass collides the rider's transformed box against dest-world geometry beyond
+     * the plane (e.g. the ground the source portal stands on), producing phantom floors
+     * (reduced apparent gravity) and capped jumps. Returns {@code false} when Sable is absent.
+     */
+    public static boolean isFloorSubLevelStraddlingPortal(Entity entity) {
+        if (!PRESENT) return false;
+        return SableImpl.isFloorSubLevelStraddlingPortal(entity);
+    }
+
+    /**
      * The dimension of the sub-level that {@code vehicle} belongs to, or
      * {@code null} if the vehicle isn't on a sub-level (or Sable is absent).
      *

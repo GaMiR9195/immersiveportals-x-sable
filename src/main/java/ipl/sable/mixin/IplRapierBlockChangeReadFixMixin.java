@@ -39,6 +39,10 @@ public abstract class IplRapierBlockChangeReadFixMixin {
         ServerLevel level, BlockPos pos, Operation<BlockState> original
     ) {
         Level override = IplTerrainReadOverride.get();
-        return override != null ? override.getBlockState(pos) : original.call(level, pos);
+        if (override == null) {
+            return original.call(level, pos);
+        }
+        BlockPos offset = IplTerrainReadOverride.getOffset();
+        return override.getBlockState(offset != null ? pos.offset(offset) : pos);
     }
 }

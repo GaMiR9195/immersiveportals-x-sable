@@ -168,6 +168,34 @@ public final class IplClientHostedLookup {
         return out == null ? java.util.List.of() : out;
     }
 
+    /**
+     * Collision-frame offset: the block translation mapping {@code sub}'s source frame into
+     * {@code destLevel}, when it is currently straddling a translation-only portal whose
+     * destination is that dimension. Null otherwise.
+     */
+    /** Whether this hosted sub-level currently straddles a portal (client judgment). */
+    public static boolean isClientStraddling(dev.ryanhcode.sable.sublevel.SubLevel sub) {
+        if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return false;
+        return ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub) != null;
+    }
+
+    @Nullable
+    public static net.minecraft.core.BlockPos getClientStraddleOffsetInto(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
+    ) {
+        if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return null;
+
+        ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
+            ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
+        if (decision == null || decision.portal() == null) return null;
+        qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
+        if (portal.getDestDim() != destLevel.dimension()) return null;
+
+        if (!ipl.sable.transit.IplStraddlePoseMap.isApproxIdentity(portal.getRotationD())) return null;
+        return ipl.sable.transit.IplStraddlePoseMap.blockAligned(
+            portal.getDestPos().subtract(portal.getOriginPos()));
+    }
+
     /** Client port of SableTransitOps.computeMappedPose (pose through the portal transform). */
     private static dev.ryanhcode.sable.companion.math.Pose3d ipl$computeMappedPose(
         dev.ryanhcode.sable.companion.math.Pose3dc sourcePose,

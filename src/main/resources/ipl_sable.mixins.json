@@ -30,7 +30,10 @@
     "IplPlotBridgeMixin",
     "IplHostedTerrainChangeForwardMixin",
     "IplRapierBlockChangeReadFixMixin",
-    "IplHostingLevelPlayerLookupMixin"
+    "IplHostingLevelPlayerLookupMixin",
+    "IplStraddleCollisionPoseMixin",
+    "IplStraddleInBlockPoseMixin",
+    "IplStraddleOnPosMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",

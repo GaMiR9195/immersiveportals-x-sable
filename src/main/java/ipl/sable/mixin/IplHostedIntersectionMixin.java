@@ -58,7 +58,24 @@ public abstract class IplHostedIntersectionMixin {
         List<SubLevel> extra = null;
         for (SubLevel sub : hostingContainer.getAllSubLevels()) {
             if (sub.isRemoved()) continue;
-            if (IplDimAgnostic.getParentLevel(sub) != level) continue;
+
+            if (IplDimAgnostic.getParentLevel(sub) != level) {
+                // Foreign ship straddling INTO this dimension: include it when its
+                // portal-MAPPED bounds intersect the query. Pose mapping for the collision
+                // math happens in IplStraddleCollisionPoseMixin.
+                net.minecraft.core.BlockPos offset =
+                    ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, level);
+                if (offset == null) continue;
+                dev.ryanhcode.sable.companion.math.BoundingBox3d mapped =
+                    new dev.ryanhcode.sable.companion.math.BoundingBox3d();
+                mapped.set(sub.boundingBox());
+                mapped.move(offset.getX(), offset.getY(), offset.getZ());
+                if (!mapped.intersects(bounds)) continue;
+                if (extra == null) extra = new ArrayList<>(4);
+                extra.add(sub);
+                continue;
+            }
+
             if (!sub.boundingBox().intersects(bounds)) continue;
             if (extra == null) extra = new ArrayList<>(4);
             extra.add(sub);

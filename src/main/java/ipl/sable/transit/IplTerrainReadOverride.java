@@ -21,6 +21,14 @@ public final class IplTerrainReadOverride {
 
     private static final ThreadLocal<Level> OVERRIDE = new ThreadLocal<>();
 
+    /**
+     * Optional block-space translation applied to override reads: a read at source-frame
+     * position P returns the override level's state at P + offset. Used by the straddle
+     * terrain clone to bake DEST-dim terrain into the hosting scene at source-frame
+     * coordinates (translation-only portal pairs).
+     */
+    private static final ThreadLocal<net.minecraft.core.BlockPos> OFFSET = new ThreadLocal<>();
+
     private IplTerrainReadOverride() {}
 
     @Nullable
@@ -28,11 +36,23 @@ public final class IplTerrainReadOverride {
         return OVERRIDE.get();
     }
 
+    @Nullable
+    public static net.minecraft.core.BlockPos getOffset() {
+        return OFFSET.get();
+    }
+
     public static void set(Level level) {
         OVERRIDE.set(level);
+        OFFSET.remove();
+    }
+
+    public static void set(Level level, net.minecraft.core.BlockPos offset) {
+        OVERRIDE.set(level);
+        OFFSET.set(offset);
     }
 
     public static void clear() {
         OVERRIDE.remove();
+        OFFSET.remove();
     }
 }

@@ -393,6 +393,25 @@ Master kill-switch: `-Dipl.sable.dimAgnostic=false` reverts to the legacy mirror
 6. **Per-body pipeline calls are location-transparent**: the Rapier ownership guard
    forwards calls on hosted bodies to the owning (hosting) pipeline instead of no-opping
    (impulses, velocities, teleport, wake, constraints, contraption enrollment).
+7. **Frame errors amplify through height-profile gates.** A pose used in the wrong
+   dimension frame is off by the portal offset; harmless-looking consumers blow up when
+   the wrong Y crosses a height gate. Two bites: `LevelAccelerator` indexes sections with
+   its constructor level's `minSection` (nether accelerator + hosting plot chunk = 64-block
+   shift), and `Level.isLoaded`'s FIRST gate is `isOutsideBuildHeight` — Sable's
+   plot-local `getOnPos` result at unmapped Y (~264) fails the nether's 0..256 range,
+   vanilla travel takes its "chunk below not loaded" failsafe, and the rider's velocity is
+   pinned to `-0.1 * 0.98F` every tick (eaten jumps, floaty falls — through-part only,
+   because the overworld's -64..320 range happens to contain the wrong Y).
+8. **Mixin composition rules learned the hard way** (straddle getOnPos saga):
+   (a) callbacks at the same injection point do NOT reliably order by mixin priority —
+   Sable's cancellable HEAD inject ran first regardless of ours being 1000 or 1200, and a
+   cancel skips all later callbacks; (b) `@ModifyReturnValue` does not see returns produced
+   by another mixin's `setReturnValue`; (c) methods ADDED by another mixin (handler
+   bodies) cannot be injection targets at all — wildcard `method = "*"` silently skips
+   them. The reliable seam is the CALLER: vanilla methods that delegate
+   (`getBlockPosBelowThatAffectsMyMovement` etc.) return normally and their returns are
+   correctable. And don't stack two corrections: a fix at the source plus a fix at the
+   caller double-subtracts the offset.
 
 ### 20.1 Server side
 

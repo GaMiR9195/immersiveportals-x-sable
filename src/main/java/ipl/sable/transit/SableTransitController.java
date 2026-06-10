@@ -155,6 +155,7 @@ public final class SableTransitController {
         lastTransitTick.clear();
         lockedCrossingNormal.clear();
         hostedStraddleLatch.clear();
+        IplStraddleTerrainClone.clearAll();
         if (despawned > 0 || !snapshot.isEmpty()) {
             LOG.info("[IPL-MIRROR] server-stop cleanup: despawned {} mirror(s), cleared registry", despawned);
         }
@@ -284,6 +285,7 @@ public final class SableTransitController {
                     switch (state.phase()) {
                         case CROSSED -> {
                             if (hostedStraddleLatch.remove(key)) {
+                                IplStraddleTerrainClone.clear(key);
                                 if (candidates == null) candidates = new ArrayList<>(1);
                                 candidates.add(new TransitCandidate(airship, portal));
                                 candidateAddedForAirship = true;
@@ -293,11 +295,16 @@ public final class SableTransitController {
                         case STRADDLING -> {
                             hostedStraddleLatch.add(key);
                             seenHostedKeys.add(key);
+                            // Cross-seam physics: clone dest terrain (through the inverse
+                            // portal transform) into the hosting scene while straddling.
+                            IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
                         }
                         case APPROACHING -> {
                             // Ship backed out of a straddle (or hasn't reached the plane):
                             // clear the latch but keep the locked normal while still nearby.
-                            hostedStraddleLatch.remove(key);
+                            if (hostedStraddleLatch.remove(key)) {
+                                IplStraddleTerrainClone.clear(key);
+                            }
                             seenHostedKeys.add(key);
                         }
                     }
@@ -381,7 +388,13 @@ public final class SableTransitController {
         // (in dim-agnostic mode the legacy mirror path never populates these maps, so the
         // shared lockedCrossingNormal map only holds hosted keys here).
         if (IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(level)) {
-            hostedStraddleLatch.removeIf(k -> !seenHostedKeys.contains(k));
+            hostedStraddleLatch.removeIf(k -> {
+                if (!seenHostedKeys.contains(k)) {
+                    IplStraddleTerrainClone.clear(k);
+                    return true;
+                }
+                return false;
+            });
             lockedCrossingNormal.keySet().removeIf(k -> !seenHostedKeys.contains(k));
         }
 

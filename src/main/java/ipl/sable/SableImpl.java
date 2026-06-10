@@ -65,6 +65,18 @@ final class SableImpl {
             && info.verticalCollisionBelow;
     }
 
+    static boolean isFloorSubLevelStraddlingPortal(Entity entity) {
+        if (!(entity instanceof EntityMovementExtension ext)) {
+            return false;
+        }
+        SubLevelEntityCollision.CollisionInfo info = ext.sable$getCollisionInfo();
+        if (info == null || info.trackingSubLevel == null || !info.verticalCollisionBelow) {
+            return false;
+        }
+        return ipl.sable.transit.IplStraddlePoseMap.isStraddling(
+            info.trackingSubLevel, entity.level());
+    }
+
     @Nullable
     static net.minecraft.resources.ResourceKey<Level> subLevelDimensionOfVehicle(Entity vehicle) {
         if (vehicle == null) return null;
