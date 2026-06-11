@@ -55,40 +55,6 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
         try {
             IplStraddleStaffPick.ProjectionHit projectionHit =
                 IplStraddleStaffPick.clipProjections(self, ctx);
-
-            // TEMPORARY diagnostic (2s throttle)
-            long now = System.currentTimeMillis();
-            if (now - ipl$lastProbeMs > 2000) {
-                ipl$lastProbeMs = now;
-                java.util.List<ipl.sable.client.IplClientHostedLookup.StraddleProjection> projections =
-                    ipl.sable.client.IplClientHostedLookup.getStraddleProjectionsInto(self);
-                StringBuilder hosted = new StringBuilder();
-                dev.ryanhcode.sable.api.sublevel.SubLevelContainer hc =
-                    ipl.sable.client.IplClientHostedLookup.getHostingContainerOrNull();
-                if (hc != null) {
-                    for (dev.ryanhcode.sable.sublevel.SubLevel sub : hc.getAllSubLevels()) {
-                        if (sub.isRemoved()) continue;
-                        net.minecraft.world.level.Level parent =
-                            ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
-                        Object decision = sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel cs
-                            ? ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(cs)
-                            : "notClient";
-                        hosted.append(String.format("[uuid=%.8s parent=%s renderData=%s decision=%s] ",
-                            sub.getUniqueId().toString(),
-                            parent == null ? "null" : parent.dimension().location().getPath(),
-                            sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel c && c.getRenderData() != null,
-                            decision != null ? "yes" : "null"));
-                    }
-                }
-                org.slf4j.LoggerFactory.getLogger("ipl-clip").info(
-                    "[IPL-CLIP] dim={} base={}@{} projHit={} projCount={} hosted={}",
-                    self.dimension().location(),
-                    base == null ? null : base.getType(),
-                    base == null ? null : base.getLocation(),
-                    projectionHit != null ? projectionHit.hit().getLocation() : null,
-                    projections.size(), hosted);
-            }
-
             if (projectionHit == null) {
                 return base;
             }
@@ -103,8 +69,6 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
             IPL$REENTRANT.set(false);
         }
     }
-
-    private static long ipl$lastProbeMs = 0L;
 
     /**
      * Ray distance² for a stock clip hit. World-frame hits measure directly; plot-frame

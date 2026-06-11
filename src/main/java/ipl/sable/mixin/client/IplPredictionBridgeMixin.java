@@ -21,27 +21,30 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * the break (and writing the stale state into the shared plot chunk).
  *
  * <p>Fix: when the hosting client level receives a server-verified state at any position,
- * forward it to the player's level's prediction handler so pending predictions there are
- * confirmed instead of rolled back.
+ * forward it to EVERY other client level's prediction handler. Originally only the
+ * player's current level was bridged, but interactions routed through IP's cross-portal
+ * block manipulation book their predictions on the REMOTE world's handler (and a
+ * through-part near the portal aperture takes that path even when the player aims from
+ * its own side) — an unverified prediction there rolled back into a ghost block. Plot
+ * coordinates are globally unique, so fanning the confirmation out to all levels is
+ * unambiguous.
  */
 @Mixin(ClientLevel.class)
 public abstract class IplPredictionBridgeMixin {
 
     @Inject(method = "setServerVerifiedBlockState", at = @At("HEAD"))
-    private void ipl$confirmPredictionOnPlayerLevel(
+    private void ipl$confirmPredictionOnAllLevels(
         BlockPos pos, BlockState state, int flags, CallbackInfo ci
     ) {
         if (!IplDimAgnostic.isEnabled()) return;
         ClientLevel self = (ClientLevel) (Object) this;
         if (!IplDimAgnostic.isHostingLevel(self)) return;
 
-        var player = Minecraft.getInstance().player;
-        if (player == null) return;
-        ClientLevel playerLevel = (ClientLevel) player.clientLevel;
-        if (playerLevel == null || playerLevel == self) return;
-
-        ((IplClientLevelPredictionAccessor) playerLevel)
-            .ipl$getBlockStatePredictionHandler()
-            .updateKnownServerState(pos, state);
+        for (ClientLevel clientLevel : qouteall.imm_ptl.core.ClientWorldLoader.getClientWorlds()) {
+            if (clientLevel == self) continue;
+            ((IplClientLevelPredictionAccessor) clientLevel)
+                .ipl$getBlockStatePredictionHandler()
+                .updateKnownServerState(pos, state);
+        }
     }
 }

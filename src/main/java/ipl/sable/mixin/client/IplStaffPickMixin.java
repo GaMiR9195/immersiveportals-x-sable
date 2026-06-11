@@ -46,4 +46,32 @@ public abstract class IplStaffPickMixin {
         HitResult mapped = IplStraddleStaffPick.pickStraddleProjections(player, range, partialTick);
         return mapped != null ? mapped : vanilla;
     }
+
+    /**
+     * Frame-correct staff visuals/anchors: every {@code SubLevel.logicalPose()} read in the
+     * staff's client handler (beam endpoints, lock anchors, particles — all of which
+     * transform plot-local hit locations back to world space) substitutes the portal-mapped
+     * pose for foreign straddlers, so the lock/beam appears AT the through-part rather than
+     * at the source-frame position ~135 blocks away.
+     */
+    @WrapOperation(
+        method = "*",
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/sublevel/SubLevel;logicalPose()Ldev/ryanhcode/sable/companion/math/Pose3d;",
+            remap = false
+        ),
+        require = 0
+    )
+    private dev.ryanhcode.sable.companion.math.Pose3d ipl$mapStaffPose(
+        dev.ryanhcode.sable.sublevel.SubLevel sub,
+        Operation<dev.ryanhcode.sable.companion.math.Pose3d> original
+    ) {
+        dev.ryanhcode.sable.companion.math.Pose3d pose = original.call(sub);
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.level == null) return pose;
+        net.minecraft.core.BlockPos offset =
+            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, mc.level);
+        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+    }
 }

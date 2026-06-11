@@ -98,19 +98,28 @@ public class BlockManipulationServer {
         Vec3 playerPos = player.position();
         double distanceSquare = 6 * 6 * 4 * 4 * playerScale * playerScale;
         if (player.level().dimension() == dimension) {
-            if (playerPos.distanceToSqr(pos) < distanceSquare) {
+            // Frame-aware: plot-coordinate requests (Sable ship blocks) project to world
+            // space through the owning sub-level's pose before measuring.
+            if (ipl.sable.SableBridge.frameAwareDistanceSqr(player.level(), playerPos, pos)
+                < distanceSquare) {
                 return true;
             }
         }
         return IPMcHelper.getNearbyPortals(
             player,
             IPGlobal.maxNormalPortalRadius
-        ).anyMatch(portal ->
-            portal.getDestDim() == dimension &&
-                portal.isInteractableBy(player) &&
-                portal.transformPoint(playerPos).distanceToSqr(pos) <
-                    distanceSquare * portal.getScale() * portal.getScale()
-        );
+        ).anyMatch(portal -> {
+            if (portal.getDestDim() != dimension || !portal.isInteractableBy(player)) {
+                return false;
+            }
+            net.minecraft.server.level.ServerLevel destLevel =
+                player.server.getLevel(portal.getDestDim());
+            Vec3 transformed = portal.transformPoint(playerPos);
+            double distSq = destLevel != null
+                ? ipl.sable.SableBridge.frameAwareDistanceSqr(destLevel, transformed, pos)
+                : transformed.distanceToSqr(pos);
+            return distSq < distanceSquare * portal.getScale() * portal.getScale();
+        });
     }
     
     public static Tuple<BlockHitResult, ResourceKey<Level>> getHitResultForPlacing(

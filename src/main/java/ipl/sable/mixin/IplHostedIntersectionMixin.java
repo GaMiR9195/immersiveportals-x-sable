@@ -104,6 +104,57 @@ public abstract class IplHostedIntersectionMixin {
         return null;
     }
 
+    /**
+     * THE projection keystone: {@code projectOutOfSubLevel} maps plot-space positions back
+     * to world space and feeds every frame-aware distance in Sable —
+     * {@code distanceSquaredWithSubLevels} (all overloads), and through it
+     * {@code GameRenderer.pick}'s reach clamp and {@code filterHitResult}. With the
+     * UNMAPPED pose, a hit on a foreign straddler's through-part projects to the
+     * SOURCE-frame world position: the reach clamp sees a huge distance and discards the
+     * pick (no outline, no break; the staff locked "far below" because its beam used the
+     * same wrong projection). Substituting the portal-mapped pose for foreign straddlers
+     * fixes the whole family at once. Both pose sources are wrapped: the level pose
+     * provider (client) and the {@code logicalPose()} fallback (server).
+     */
+    @WrapOperation(
+        method = "projectOutOfSubLevel",
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/mixinterface/clip_overwrite/LevelPoseProviderExtension;sable$getPose(Ldev/ryanhcode/sable/sublevel/SubLevel;)Ldev/ryanhcode/sable/companion/math/Pose3dc;"
+        ),
+        require = 0
+    )
+    private dev.ryanhcode.sable.companion.math.Pose3dc ipl$mapProjectionPoseClient(
+        dev.ryanhcode.sable.mixinterface.clip_overwrite.LevelPoseProviderExtension ext,
+        SubLevel sub,
+        Operation<dev.ryanhcode.sable.companion.math.Pose3dc> original,
+        @com.llamalad7.mixinextras.sugar.Local(argsOnly = true) Level level
+    ) {
+        dev.ryanhcode.sable.companion.math.Pose3dc pose = original.call(ext, sub);
+        net.minecraft.core.BlockPos offset =
+            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, level);
+        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+    }
+
+    @WrapOperation(
+        method = "projectOutOfSubLevel",
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/sublevel/SubLevel;logicalPose()Ldev/ryanhcode/sable/companion/math/Pose3d;"
+        ),
+        require = 0
+    )
+    private dev.ryanhcode.sable.companion.math.Pose3d ipl$mapProjectionPoseFallback(
+        SubLevel sub,
+        Operation<dev.ryanhcode.sable.companion.math.Pose3d> original,
+        @com.llamalad7.mixinextras.sugar.Local(argsOnly = true) Level level
+    ) {
+        dev.ryanhcode.sable.companion.math.Pose3d pose = original.call(sub);
+        net.minecraft.core.BlockPos offset =
+            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, level);
+        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+    }
+
     @WrapOperation(
         method = "getVelocity(Lnet/minecraft/world/level/Level;Ldev/ryanhcode/sable/companion/SubLevelAccess;Lorg/joml/Vector3dc;Lorg/joml/Vector3d;)Lorg/joml/Vector3d;",
         at = @At(

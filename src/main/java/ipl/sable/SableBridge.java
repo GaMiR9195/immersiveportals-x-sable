@@ -156,6 +156,22 @@ public final class SableBridge {
     }
 
     /**
+     * Distance² that understands sub-level frames: positions inside a plot project to
+     * world space through the owning sub-level's pose (portal-mapped for foreign
+     * straddlers via the projection keystone wrap). Falls back to raw distance² without
+     * Sable. Used by IP's cross-portal interaction targeting/validation, where a raw
+     * measurement against plot coordinates (~20M) rejects every ship interaction.
+     */
+    public static double frameAwareDistanceSqr(
+        net.minecraft.world.level.Level level,
+        net.minecraft.world.phys.Vec3 a,
+        net.minecraft.world.phys.Vec3 b
+    ) {
+        if (!PRESENT) return a.distanceToSqr(b);
+        return SableImpl.frameAwareDistanceSqr(level, a, b);
+    }
+
+    /**
      * The dimension of the sub-level that {@code vehicle} belongs to, or
      * {@code null} if the vehicle isn't on a sub-level (or Sable is absent).
      *

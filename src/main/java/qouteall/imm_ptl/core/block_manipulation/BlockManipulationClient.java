@@ -103,7 +103,10 @@ public class BlockManipulationClient {
             }
         }
         
-        return cameraPos.distanceTo(client.hitResult.getLocation());
+        // Frame-aware: a local hit on a Sable sub-level is in PLOT coordinates; the raw
+        // distance (~20M) would let the portal path wrongly steal priority from it.
+        return Math.sqrt(ipl.sable.SableBridge.frameAwareDistanceSqr(
+            client.level, cameraPos, client.hitResult.getLocation()));
     }
     
     private static void updateTargetedBlockThroughPortal(
@@ -174,6 +177,27 @@ public class BlockManipulationClient {
             }
         );
         
+        // Sable ships: the traverseBlocks lambda above bypasses level.clip, so sub-levels
+        // (native ones in the dest world AND foreign straddle projections into it) are
+        // invisible to it. Run the overlay-aware clip too; if it hits a ship (plot-coord
+        // result) that is frame-closer than the terrain hit, prefer it.
+        if (ipl.sable.SableBridge.PRESENT) {
+            BlockHitResult overlayHit = world.clip(new ClipContext(
+                from, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, client.player));
+            if (overlayHit != null && overlayHit.getType() == HitResult.Type.BLOCK
+                && (Math.abs(overlayHit.getBlockPos().getX()) >= 1_000_000
+                    || Math.abs(overlayHit.getBlockPos().getZ()) >= 1_000_000)) {
+                double terrainDistSq = hitResultIsMissedOrNull(remoteHitResult)
+                    ? Double.MAX_VALUE
+                    : from.distanceToSqr(remoteHitResult.getLocation());
+                double shipDistSq = ipl.sable.SableBridge.frameAwareDistanceSqr(
+                    world, from, overlayHit.getLocation());
+                if (shipDistSq < terrainDistSq) {
+                    remoteHitResult = overlayHit;
+                }
+            }
+        }
+
         if (remoteHitResult.getLocation().y < world.getMinBuildHeight() + 0.1) {
             remoteHitResult = new BlockHitResult(
                 remoteHitResult.getLocation(),

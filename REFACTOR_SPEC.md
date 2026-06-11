@@ -466,10 +466,17 @@ priority.
   repro yet. Instrument `removeSubLevel` with a reason log for hosted ships (suspects:
   straddle-latch reap, rehome rollback, mirror-era removal guards, MassTracker-invalid
   destroy).
-- **Staff recast on straddled levels**: hand-recast raycasts don't target the
-  through-part (raycast/clip pose path is unmapped — same family as the fixed
-  collision/getOnPos frame errors; fix via the pose-provider seam + staff target
-  resolution).
+- ~~**Targeting straddled through-parts**~~ DONE: projection-aware client clip
+  (mapped-pose ray clips with `sable$setDoNotProject` recursion suppression +
+  frame-correct distance comparison), the `projectOutOfSubLevel` keystone wraps (mapped
+  pose feeds ALL of Sable's frame-aware distances incl. `GameRenderer.pick`'s reach
+  clamp), mapped `canInteractWithBlock`, outline via a state-bracket outside Sable's
+  outline mixin, staff lock/beam pose wraps, cross-portal ship targeting through IP's
+  block manipulation (overlay clip + `SableBridge.frameAwareDistanceSqr` in
+  client targeting and server `canPlayerReach`), and the prediction bridge fanned out to
+  all client worlds (IP's remote pipeline books predictions on the remote world).
+  Verified: pick/outline/break/place on through-parts near-side and through the portal;
+  staff lock lands correctly. Remaining staff DRAG = the through-portal staff item.
 - **Staff control through portals** (enhancement): keep drag/aim active across the
   portal with the target mapped through the portal transform.
 - **Deferred block logic** MOSTLY FIXED (`IplPlotDeferredLogicMixin`): scheduled ticks

@@ -65,6 +65,10 @@ final class SableImpl {
             && info.verticalCollisionBelow;
     }
 
+    static double frameAwareDistanceSqr(Level level, Vec3 a, Vec3 b) {
+        return Sable.HELPER.distanceSquaredWithSubLevels(level, a, b);
+    }
+
     static boolean isFloorSubLevelStraddlingPortal(Entity entity) {
         if (!(entity instanceof EntityMovementExtension ext)) {
             return false;
