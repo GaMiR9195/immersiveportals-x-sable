@@ -95,9 +95,17 @@ public abstract class IplPlotBridgeMixin {
         if (hosting == null || hosting == (Object) this) return original;
 
         dev.ryanhcode.sable.sublevel.SubLevel hosted = hosting.getSubLevel(uuid);
-        if (hosted != null && !hosted.isRemoved()
-            && IplDimAgnostic.getParentLevel(hosted) == self) {
-            return hosted;
+        if (hosted != null && !hosted.isRemoved()) {
+            if (IplDimAgnostic.getParentLevel(hosted) == self) {
+                return hosted;
+            }
+            // Also resolve ships STRADDLING INTO this dimension: their through-part is
+            // interactable here (the staff's drag packet resolves the target by UUID from
+            // the player's level — without this, dragging the through-part silently
+            // no-ops server-side while working fine from the parent side).
+            if (ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(hosted, self) != null) {
+                return hosted;
+            }
         }
         return original;
     }

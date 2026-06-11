@@ -31,12 +31,15 @@ public abstract class IplStaffPickMixin {
         method = "*",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/world/entity/player/Player;pick(DFZ)Lnet/minecraft/world/phys/HitResult;"
+            // The staff's variable is typed LocalPlayer, so the INVOKE owner in bytecode
+            // is LocalPlayer (inherited method or not) — a Player-owner target never
+            // matches (spec §20.0 item 8 receiver-type rule).
+            target = "Lnet/minecraft/client/player/LocalPlayer;pick(DFZ)Lnet/minecraft/world/phys/HitResult;"
         ),
         require = 0
     )
     private HitResult ipl$pickThroughParts(
-        Player player, double range, float partialTick, boolean fluids,
+        net.minecraft.client.player.LocalPlayer player, double range, float partialTick, boolean fluids,
         Operation<HitResult> original
     ) {
         HitResult vanilla = original.call(player, range, partialTick, fluids);
@@ -68,6 +71,28 @@ public abstract class IplStaffPickMixin {
         Operation<dev.ryanhcode.sable.companion.math.Pose3d> original
     ) {
         dev.ryanhcode.sable.companion.math.Pose3d pose = original.call(sub);
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.level == null) return pose;
+        net.minecraft.core.BlockPos offset =
+            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, mc.level);
+        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+    }
+
+    /** Same mapping for interpolated render poses (drag beam endpoint uses renderPose(pt)). */
+    @WrapOperation(
+        method = "*",
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/sublevel/ClientSubLevel;renderPose(F)Ldev/ryanhcode/sable/companion/math/Pose3dc;",
+            remap = false
+        ),
+        require = 0
+    )
+    private dev.ryanhcode.sable.companion.math.Pose3dc ipl$mapStaffRenderPose(
+        dev.ryanhcode.sable.sublevel.ClientSubLevel sub, float pt,
+        Operation<dev.ryanhcode.sable.companion.math.Pose3dc> original
+    ) {
+        dev.ryanhcode.sable.companion.math.Pose3dc pose = original.call(sub, pt);
         net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
         if (mc.level == null) return pose;
         net.minecraft.core.BlockPos offset =

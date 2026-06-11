@@ -37,7 +37,9 @@
     "IplPlotDeferredLogicMixin",
     "IplHostedHoldingMixin",
     "IplHostedHoldingReadinessMixin",
-    "IplStraddleInteractDistanceMixin"
+    "IplStraddleInteractDistanceMixin",
+    "IplStaffDragGoalMixin",
+    "IplHostingLevelNeverEmptyMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
@@ -64,7 +66,8 @@
     "client.IplStaffPickMixin",
     "client.IplClipContextAccessor",
     "client.IplProjectionAwareClipMixin",
-    "client.IplStraddleOutlineMixin"
+    "client.IplStraddleOutlineMixin",
+    "client.IplStaffRenderPoseMixin"
   ],
   "injectors": {
     "defaultRequire": 0

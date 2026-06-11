@@ -121,16 +121,6 @@ public abstract class IplPlotDeferredLogicMixin implements LevelAccessor {
         BlockPos pos, Block block, int eventID, int eventParam, CallbackInfo ci
     ) {
         ServerLevel target = ipl$plotRouteTarget(pos);
-        // TEMPORARY diagnostic: log every plot-coord block event (routed or already hosting).
-        if (Math.abs(pos.getX()) >= 1_000_000 || Math.abs(pos.getZ()) >= 1_000_000) {
-            ServerLevel self = (ServerLevel) (Object) this;
-            org.slf4j.LoggerFactory.getLogger("ipl-blockevent").info(
-                "[IPL-BLOCKEVENT] queue pos={} block={} id={} param={} from={} routed={} stateNow={} stateAbove={}",
-                pos, block.getDescriptionId(), eventID, eventParam,
-                self.dimension().location(), target != null,
-                self.getBlockState(pos),
-                self.getBlockState(pos.above()));
-        }
         if (target != null) {
             target.blockEvent(pos, block, eventID, eventParam);
             ci.cancel();
@@ -157,10 +147,6 @@ public abstract class IplPlotDeferredLogicMixin implements LevelAccessor {
             List<ServerPlayer> tracking = container == null ? List.of()
                 : container.getPlayersTracking(
                     new ChunkPos(((int) Math.floor(x)) >> 4, ((int) Math.floor(z)) >> 4));
-            // TEMPORARY diagnostic
-            org.slf4j.LoggerFactory.getLogger("ipl-blockevent").info(
-                "[IPL-BLOCKEVENT] broadcast pos=({},{},{}) dim={} trackingPlayers={}",
-                (int) x, (int) y, (int) z, self.dimension().location(), tracking.size());
             if (!tracking.isEmpty()) {
                 for (ServerPlayer player : tracking) {
                     player.connection.send(packet);

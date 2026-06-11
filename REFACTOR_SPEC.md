@@ -412,6 +412,14 @@ Master kill-switch: `-Dipl.sable.dimAgnostic=false` reverts to the legacy mirror
    (`getBlockPosBelowThatAffectsMyMovement` etc.) return normally and their returns are
    correctable. And don't stack two corrections: a fix at the source plus a fix at the
    caller double-subtracts the offset.
+   (d) INVOKE targets match the BYTECODE RECEIVER TYPE — javac emits the static type of
+   the receiver variable as the owner, even for inherited methods. A call through a
+   `LocalPlayer`-typed variable to `pick` (declared on Entity) needs owner
+   `net/minecraft/client/player/LocalPlayer`, not `Player`; same for
+   `ClientSubLevel`-typed calls to `logicalPose`. With `require = 0` a wrong owner is a
+   SILENT no-op — when a wrap "mysteriously doesn't fire", check the receiver's declared
+   type at the call site first. (e) Mixin classes may not contain non-private static
+   members — shared helpers go in regular classes.
 
 ### 20.1 Server side
 
@@ -479,17 +487,18 @@ priority.
   staff lock lands correctly. Remaining staff DRAG = the through-portal staff item.
 - **Staff control through portals** (enhancement): keep drag/aim active across the
   portal with the target mapped through the portal transform.
-- **Deferred block logic** MOSTLY FIXED (`IplPlotDeferredLogicMixin`): scheduled ticks
-  and block events route to the hosting level (cascades run on the interaction dim whose
-  plot tick containers are stale/missing — the pre-rehome original even leaves a
-  registered-but-never-collected container, so drops were silent); block-event packets
-  broadcast to the sub-level's tracking players (vanilla targets 64 blocks around PLOT
-  coords = nobody, a stock-Sable gap). Repeaters + lamps verified; ~+1 tick scheduling
-  latency from cross-level routing. REMAINING: pistons extend once then stick — suspect
-  the moving-piston BLOCK ENTITY not ticking (or its state corrupted by the pre-fix
-  ghost-plot overlap); retest on a clean world, then check plot-chunk BE ticking
-  (`registerAllBlockEntitiesAfterLevelLoad` / `isTicking` full-status gate) for BEs
-  placed at runtime.
+- ~~**Deferred block logic**~~ DONE (`IplPlotDeferredLogicMixin` +
+  `IplHostingLevelNeverEmptyMixin`): scheduled ticks and block events route to the
+  hosting level (cascades run on the interaction dim whose plot tick containers are
+  stale/missing — the pre-rehome original even leaves a registered-but-never-collected
+  container, so drops were silent); block-event packets broadcast to the sub-level's
+  tracking players (vanilla targets 64 blocks around PLOT coords = nobody, a stock-Sable
+  gap). The piston's final layer: vanilla's EMPTY-LEVEL optimization skips
+  `tickBlockEntities` after 300 ticks with no players in the dimension — nobody is ever
+  IN the hosting dim, so every ship block entity froze (the moving-piston BE stuck
+  mid-extend; furnaces/hoppers would be equally dead). The hosting level now resets
+  `emptyTime` every tick. Verified: repeaters, lamps, multi-cycle pistons. ~+1 tick
+  scheduling latency from cross-level routing.
 - **Sodium backend**: `IplHostedSubLevelRenderMixin` covers the vanilla path only; the Sodium reach-around dispatcher hooks `SodiumWorldRenderer` and needs its own gather splice. Test without Sodium first.
 - **Straddle render polish**: portal-plane seam hole (eye-space mismatch at the clip
   boundary) and Flywheel-rendered components (cogs) using a buggy eye-space clip in
