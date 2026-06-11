@@ -4,61 +4,92 @@
 [Immersive Portals](https://github.com/iPortalTeam/ImmersivePortalsModForNeo)
 that adds compatibility with the
 [Sable](https://github.com/ryanhcode/sable) physics/sub-level mod, letting
-airships and other physics-assembled sub-levels interact with portals — clip
-correctly at portal frames and travel between dimensions.
+airships and other physics-assembled sub-levels interact with portals — render
+clipped at portal frames, straddle a portal with working physics on **both**
+sides, and travel between dimensions as a continuous motion rather than a
+teleport.
 
 It is **not** a general-purpose Immersive Portals release: it targets the
-Sable + Create stack on NeoForge 1.21.1 and carries experimental gameplay code
-(see [Known Limitations](#known-limitations)). For vanilla portal use, prefer
-the upstream releases linked at the bottom of this file.
+Sable + Simulated + Create Aeronautics stack on NeoForge 1.21.1 and carries
+experimental gameplay code (see [Known Limitations](#known-limitations)). For
+vanilla portal use, prefer the upstream releases linked at the bottom of this
+file.
 
-## Approach
+## The Unifying Move
 
-Two largely independent systems make this work:
+Sable embeds each sub-level's blocks ("plot chunks") at a far offset inside its
+parent dimension. Immersive Portals renders and simulates multiple dimensions
+at once. This fork unifies the two models — **dimension-agnostic sub-levels**:
 
-- **Rendering — clip planes in the vertex stage.** When a sub-level straddles a
-  portal, the half of it that's logically on the other side must not poke through
-  the frame. We inject a second clip plane (`gl_ClipDistance[1]`, alongside IP's
-  existing portal clip) into the relevant vertex shaders — vanilla, Iris-rewritten,
-  Sodium-terrain, and Create/Flywheel-compiled programs — and feed it a plane
-  equation each frame. Geometry past the portal is culled by the GPU, so cogs,
-  block entities, and terrain on an airship clip cleanly at the opening.
+- Every sub-level's plot chunks live once, in a dedicated hosting dimension
+  (`ipl_sable:sublevels`). The "parent dimension" becomes metadata: a pose
+  frame, not a container.
+- **Rendering** gathers hosted sub-levels per camera dimension. A ship
+  straddling a portal renders in *both* dimensions — the source side clipped at
+  the portal plane, the through-portion drawn at the portal-mapped pose with
+  the complementary clip (`gl_ClipDistance` slot-1, alongside IP's portal
+  clip; covers vanilla and Iris-rewritten programs).
+- **Physics** is both-side aware while straddling: the destination dimension's
+  terrain is cloned into the physics scene through the inverse portal
+  transform, so the through-portion of the hull collides with dest terrain
+  before any transition; entities stand on, walk on, and ride the through-part
+  exactly where it renders.
+- **Transit** is a parent flip. When the ship's center crosses the plane, its
+  parent reference changes and its pose is remapped through the portal — no
+  block copying, no mirror entity, no duplicate inventories. Riders are carried
+  through.
+- **Interaction** is frame-mapped end to end: crosshair targeting, hit
+  outlines, block breaking/placing, redstone (including pistons and other
+  block entities), and Simulated's physics staff (lock + drag) all work on the
+  through-portion from either side, and through the portal via IP's
+  cross-portal block manipulation.
 
-- **Gameplay — server-side transit with a preview mirror.** As an airship
-  approaches a portal we spawn a *kinematic mirror*: a transient, server-side
-  copy of the sub-level in the destination dimension, posed through the portal
-  transform so you see where the ship is about to emerge. Mirrors are deliberately
-  **not** physics bodies (no native rigid body — their pose is driven entirely by
-  the source), are scoped to the server lifecycle, and are never written to disk.
-  When the ship's center crosses the plane, an atomic transit moves the real
-  sub-level (blocks, block-entity data, riders) into the destination dimension.
+The implementation notes, architecture decisions, and a catalog of the
+cross-dimensional frame bugs encountered along the way live in
+[`REFACTOR_SPEC.md`](REFACTOR_SPEC.md) (see §20).
 
 ## What Works
 
-- Sub-level clipping at portal planes — cogs, block entities, and terrain on an
-  airship are culled correctly at the frame, including under Iris shaderpacks.
-- Portal traversal — flying an assembled airship through a portal moves it (and
-  standing/mounted-free riders) to the destination dimension; the mirror gives a
-  live preview during approach. Repeated round-trips, quit/reload, and
-  quit-to-title are stable.
+- Assembly, persistence (save/reload), and physics for hosted sub-levels in
+  any dimension.
+- Straddle rendering: a ship halfway through a portal draws coherently on both
+  sides, clipped at the frame, in direct view and through the portal.
+- Straddle physics: hull contact with both dimensions' terrain; standing,
+  walking, jumping (correct friction — ice is slippery) on the through-part;
+  riders carried across the transition seamlessly.
+- Full block interaction on the through-part: targeting, outlines,
+  break/place with clean client prediction, redstone components including
+  multi-cycle pistons, furnaces and other block entities.
+- Physics staff: lock and drag on the through-part from either side of the
+  portal.
+- Cross-portal block interaction (IP's feature) extended to ship blocks.
+- Repeated round-trips, quit/reload, and quit-to-title are stable.
 
 ## Known Limitations
 
-This is compat between two mods that each rewrite large parts of the engine;
-some interactions aren't solved yet:
+- **Ship ↔ ship interaction across dimensions** is the current frontier: two
+  ships in the same dimension interact normally, but a straddling ship and a
+  ship native to the destination side don't collide with each other at the
+  portal mouth yet, and ships from different dimensions can phantom-interact
+  when their coordinate spaces overlap.
+- **Translation-only portal pairs.** The straddle physics/interaction mapping
+  supports the standard same-orientation nether-portal link; rotated portal
+  pairs render but skip the cross-seam physics.
+- **Sodium/Iris render backend** for the hosted render path is untested in v2
+  (the slot-1 clip plumbing from v1 exists; the gather splice does not yet).
+- Polish items: the staff drag beam doesn't visually connect across the portal
+  and the drag releases when the ship completes its transition; Jade's
+  "looking at" overlay doesn't resolve targets through portals (an upstream
+  IP+Jade integration gap); Flywheel-compiled components (cogs) use a buggy
+  eye-space clip during straddles in portal-containing scenes.
 
-- **Physics interactions mid-transit.** Standing on a sub-level *while it
-  traverses* a portal isn't fully handled — you may be left behind or dismounted
-  rather than carried through. Sitting on Create contraptions (seats) across a
-  transit has the same gap.
-- **Source ↔ mirror update propagation.** Changes on one copy of a straddling
-  ship don't propagate to the other. Most visibly, interacting with a block
-  entity (e.g. a chest) that exists on both the source and its mirror can
-  **duplicate items**. Treat chests on a portal-straddling airship as unsafe
-  until this is addressed.
+A `-Dipl.sable.dimAgnostic=false` JVM flag reverts to the legacy
+mirror/copy-based model.
 
 Contributions and bug reports are welcome — the gameplay logic lives under
-`ipl.sable` and the shader injection under `assets/immersive_portals/shaders`.
+`ipl.sable`, the dimension-agnostic core under `ipl.sable.transit` /
+`ipl.sable.dim`, and the shader injection under
+`assets/immersive_portals/shaders`.
 
 ---
 
@@ -102,4 +133,3 @@ succeed.
 [Discord Server](https://discord.gg/BZxgURK)
 
 [Support qouteall on Patreon](https://www.patreon.com/qouteall)
-
