@@ -146,13 +146,19 @@ public final class IplStraddleTerrainClone {
         ServerSubLevelContainer hostingContainer = SubLevelContainer.getContainer(hosted.getLevel());
         if (hostingContainer == null) return;
 
+        // Per-scene model: the body (and so the scene to feed cloned terrain into) lives in
+        // the PARENT dimension's pipeline; legacy: the hosting container's.
+        PhysicsPipeline scenePipeline = ipl.sable.dim.IplSceneOwnership.isEnabled()
+            ? ipl.sable.dim.IplSceneOwnership.owningPipeline(hosted)
+            : hostingContainer.physicsSystem().getPipeline();
+        if (scenePipeline == null) return;
+
         MirrorRegistry.MirrorKey key =
             new MirrorRegistry.MirrorKey(hosted.getUniqueId(), portal.getUUID());
         CloneState state = STATES.computeIfAbsent(key, k -> {
             LOG.info("[IPL-STRADDLE-CLONE] start uuid={} portal={} offset={}",
                 hosted.getUniqueId(), portal.getUUID(), offset);
-            return new CloneState(hosted.getUniqueId(), parent, dest,
-                hostingContainer.physicsSystem().getPipeline(), offset);
+            return new CloneState(hosted.getUniqueId(), parent, dest, scenePipeline, offset);
         });
 
         long now = parent.getGameTime();

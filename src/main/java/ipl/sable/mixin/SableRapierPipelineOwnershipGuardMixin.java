@@ -115,22 +115,31 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
     /**
      * Dim-agnostic location transparency: a per-body call landing on the WRONG pipeline
      * (e.g. the physics staff resolving the player's dim's pipeline while the grabbed
-     * sub-level's body lives in {@code ipl_sable:sublevels}'s pipeline) is forwarded to
-     * the body's OWNING pipeline instead of being dropped. Returns null when there is no
-     * forwarding target (then the original no-op guard applies — e.g. true mirrors).
-     * No recursion: the owning pipeline's level == the body's level, so its own guard
-     * never forwards again.
+     * sub-level's body lives elsewhere) is forwarded to the body's OWNING pipeline instead
+     * of being dropped. Returns null when there is no forwarding target (then the original
+     * no-op guard applies — e.g. true mirrors). No recursion: the owning pipeline's level
+     * == the body's scene level, so its own guard never forwards again.
+     *
+     * <p>Per-scene model (spec §2.2): the owning scene is the body's CURRENT home
+     * (tracked by the add/remove routing below — usually the parent dimension), falling
+     * back to the computed owner. Per-scene off: the hosting level, as before.
      */
     private RapierPhysicsPipeline ipl$forwardTarget(PhysicsPipelineBody body) {
         if (!ipl.sable.dim.IplDimAgnostic.isEnabled()) return null;
         if (!(body instanceof ServerSubLevel sub)) return null;
         if (!ipl.sable.dim.IplDimAgnostic.isHosted(sub)) return null;
-        if (sub.getLevel() == this.level) return null; // we ARE the owning pipeline's level
-        dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer owning =
-            dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(sub.getLevel());
-        if (owning == null) return null;
-        return owning.physicsSystem().getPipeline() instanceof RapierPhysicsPipeline rapier
-            ? rapier : null;
+        ServerLevel sceneLevel = ipl$sceneLevelOf(sub);
+        if (sceneLevel == this.level) return null; // we ARE the owning pipeline's level
+        return ipl.sable.dim.IplSceneOwnership.pipelineOf(sceneLevel);
+    }
+
+    /** The level whose Rapier scene currently holds (or should hold) this body. */
+    private ServerLevel ipl$sceneLevelOf(ServerSubLevel sub) {
+        if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
+            ServerLevel home = ipl.sable.dim.IplSceneOwnership.getBodyHome(sub);
+            return home != null ? home : ipl.sable.dim.IplSceneOwnership.owningLevel(sub);
+        }
+        return (ServerLevel) sub.getLevel();
     }
 
     /**
@@ -262,7 +271,7 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
             if (sublevelA != null) target = ipl$forwardTarget(sublevelA);
             if (target == null && sublevelB != null) target = ipl$forwardTarget(sublevelB);
             boolean sameScene = sublevelA == null || sublevelB == null
-                || sublevelA.getLevel() == sublevelB.getLevel();
+                || ipl$sceneLevelOf(sublevelA) == ipl$sceneLevelOf(sublevelB);
             if (target != null && sameScene) {
                 ipl$logConstraintForward(sublevelA, sublevelB, configuration);
                 cir.setReturnValue(target.addConstraint(sublevelA, sublevelB, configuration));
@@ -306,5 +315,160 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
                 serverMount.getUniqueId());
             ci.cancel();
         }
+    }
+
+    // ======================================================================
+    // Per-scene routing (portal-physics spec §2.2, phase 1): a hosted ship's
+    // body AND its plot voxel data live in the PARENT dimension's scene.
+    // ======================================================================
+
+    @Inject(
+        method = "add(Ldev/ryanhcode/sable/sublevel/ServerSubLevel;Ldev/ryanhcode/sable/companion/math/Pose3dc;)V",
+        at = @At("HEAD"), cancellable = true, remap = false, require = 0)
+    private void ipl$routeBodyAdd(
+        ServerSubLevel subLevel, dev.ryanhcode.sable.companion.math.Pose3dc pose, CallbackInfo ci
+    ) {
+        if (!ipl.sable.dim.IplSceneOwnership.isEnabled()) return;
+        if (!ipl.sable.dim.IplDimAgnostic.isHosted(subLevel)) return;
+        ServerLevel owner = ipl.sable.dim.IplSceneOwnership.owningLevel(subLevel);
+        if (owner == this.level) {
+            ipl.sable.dim.IplSceneOwnership.recordBodyAdded(subLevel, this.level);
+            return; // proceed: this pipeline owns the body
+        }
+        RapierPhysicsPipeline target = ipl.sable.dim.IplSceneOwnership.pipelineOf(owner);
+        if (target == null) {
+            // No owning pipeline resolvable (parent gone?) — keep the body here as fallback.
+            ipl.sable.dim.IplSceneOwnership.recordBodyAdded(subLevel, this.level);
+            return;
+        }
+        target.add(subLevel, pose); // recursion ends: owner == target's level → records + proceeds
+        ci.cancel();
+    }
+
+    @Inject(
+        method = "remove(Ldev/ryanhcode/sable/sublevel/ServerSubLevel;)V",
+        at = @At("HEAD"), cancellable = true, remap = false, require = 0)
+    private void ipl$routeBodyRemove(ServerSubLevel subLevel, CallbackInfo ci) {
+        if (!ipl.sable.dim.IplSceneOwnership.isEnabled()) return;
+        if (!ipl.sable.dim.IplDimAgnostic.isHosted(subLevel)) return;
+        ServerLevel home = ipl.sable.dim.IplSceneOwnership.getBodyHome(subLevel);
+        if (home == null || home == this.level) {
+            ipl.sable.dim.IplSceneOwnership.recordBodyRemoved(subLevel);
+            return; // proceed: the body (if any) is here
+        }
+        RapierPhysicsPipeline target = ipl.sable.dim.IplSceneOwnership.pipelineOf(home);
+        if (target == null) {
+            ipl.sable.dim.IplSceneOwnership.recordBodyRemoved(subLevel);
+            return;
+        }
+        target.remove(subLevel); // recursion ends: home == target's level → records + proceeds
+        ci.cancel();
+    }
+
+    /**
+     * The hosted owner of a plot-bound chunk column, or null when the coords are world
+     * terrain / the plot is unknown. Plot-grid chunk coords are in the ~1.28M range;
+     * world chunk coords are not.
+     */
+    private ServerSubLevel ipl$plotSectionOwner(int chunkX, int chunkZ) {
+        if (!ipl.sable.dim.IplSceneOwnership.isEnabled()) return null;
+        if (Math.abs(chunkX) < 62_500 && Math.abs(chunkZ) < 62_500) return null;
+        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
+            ipl.sable.dim.IplDimAgnostic.getHostingContainerFor(this.level);
+        if (container == null) return null;
+        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(chunkX, chunkZ);
+        if (plot == null) return null;
+        return plot.getSubLevel() instanceof ServerSubLevel sub
+            && ipl.sable.dim.IplDimAgnostic.isHosted(sub) ? sub : null;
+    }
+
+    /**
+     * Run {@code call} with the hosting level installed as the terrain-read override
+     * (plot chunks physically live there; the executing pipeline's accelerator is bound
+     * to its own level), preserving any override a caller already installed.
+     */
+    private static void ipl$withHostingReadOverride(net.minecraft.world.level.Level hosting, Runnable call) {
+        net.minecraft.world.level.Level prior = ipl.sable.transit.IplTerrainReadOverride.get();
+        net.minecraft.core.BlockPos priorOffset = ipl.sable.transit.IplTerrainReadOverride.getOffset();
+        ipl.sable.transit.IplTerrainReadOverride.set(hosting);
+        try {
+            call.run();
+        } finally {
+            if (prior != null) {
+                if (priorOffset != null) ipl.sable.transit.IplTerrainReadOverride.set(prior, priorOffset);
+                else ipl.sable.transit.IplTerrainReadOverride.set(prior);
+            } else {
+                ipl.sable.transit.IplTerrainReadOverride.clear();
+            }
+        }
+    }
+
+    @Inject(method = "handleChunkSectionAddition", at = @At("HEAD"), cancellable = true,
+        remap = false, require = 0)
+    private void ipl$routePlotSectionAdd(
+        net.minecraft.world.level.chunk.LevelChunkSection section, int x, int y, int z,
+        boolean uploadDataIfGlobal, CallbackInfo ci
+    ) {
+        ServerSubLevel owner = ipl$plotSectionOwner(x, z);
+        if (owner == null) return;
+        ServerLevel owningLevel = ipl$sceneLevelOf(owner);
+        RapierPhysicsPipeline self = (RapierPhysicsPipeline) (Object) this;
+
+        if (owningLevel == this.level) {
+            // We are the owning scene — just make sure the voxel bake reads plot content
+            // from the hosting level. Re-dispatch terminates: override is set on re-entry.
+            if (ipl.sable.transit.IplTerrainReadOverride.get() != null) return;
+            ipl$withHostingReadOverride(owner.getLevel(),
+                () -> self.handleChunkSectionAddition(section, x, y, z, uploadDataIfGlobal));
+            ci.cancel();
+            return;
+        }
+        RapierPhysicsPipeline target = ipl.sable.dim.IplSceneOwnership.pipelineOf(owningLevel);
+        if (target == null) return; // fallback: feed locally
+        ipl$withHostingReadOverride(owner.getLevel(),
+            () -> target.handleChunkSectionAddition(section, x, y, z, uploadDataIfGlobal));
+        ci.cancel();
+    }
+
+    @Inject(method = "handleChunkSectionRemoval", at = @At("HEAD"), cancellable = true,
+        remap = false, require = 0)
+    private void ipl$routePlotSectionRemove(int x, int y, int z, CallbackInfo ci) {
+        ServerSubLevel owner = ipl$plotSectionOwner(x, z);
+        if (owner == null) return;
+        ServerLevel owningLevel = ipl$sceneLevelOf(owner);
+        if (owningLevel == this.level) return;
+        RapierPhysicsPipeline target = ipl.sable.dim.IplSceneOwnership.pipelineOf(owningLevel);
+        if (target == null) return;
+        target.handleChunkSectionRemoval(x, y, z);
+        ci.cancel();
+    }
+
+    @Inject(method = "handleBlockChange", at = @At("HEAD"), cancellable = true,
+        remap = false, require = 0)
+    private void ipl$routePlotBlockChange(
+        net.minecraft.core.SectionPos sectionPos,
+        net.minecraft.world.level.chunk.LevelChunkSection chunk,
+        int x, int y, int z,
+        net.minecraft.world.level.block.state.BlockState oldState,
+        net.minecraft.world.level.block.state.BlockState newState,
+        CallbackInfo ci
+    ) {
+        ServerSubLevel owner = ipl$plotSectionOwner(sectionPos.x(), sectionPos.z());
+        if (owner == null) return;
+        ServerLevel owningLevel = ipl$sceneLevelOf(owner);
+        RapierPhysicsPipeline self = (RapierPhysicsPipeline) (Object) this;
+
+        if (owningLevel == this.level) {
+            if (ipl.sable.transit.IplTerrainReadOverride.get() != null) return;
+            ipl$withHostingReadOverride(owner.getLevel(),
+                () -> self.handleBlockChange(sectionPos, chunk, x, y, z, oldState, newState));
+            ci.cancel();
+            return;
+        }
+        RapierPhysicsPipeline target = ipl.sable.dim.IplSceneOwnership.pipelineOf(owningLevel);
+        if (target == null) return;
+        ipl$withHostingReadOverride(owner.getLevel(),
+            () -> target.handleBlockChange(sectionPos, chunk, x, y, z, oldState, newState));
+        ci.cancel();
     }
 }

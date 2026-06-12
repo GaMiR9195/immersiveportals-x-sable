@@ -54,6 +54,11 @@ public abstract class IplHostedTerrainChangeForwardMixin {
         if (!IplDimAgnostic.isEnabled() || IplDimAgnostic.isHostingLevel(this.level)) {
             return;
         }
+        // Per-scene model: parent-dim block changes update the parent's OWN scene natively
+        // through the stock path above — there is no hosting-scene terrain copy to sync.
+        if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
+            return;
+        }
 
         SubLevelContainer hostingContainer = IplDimAgnostic.getHostingContainerFor(this.level);
         if (!(hostingContainer instanceof ServerSubLevelContainer serverHosting)) {

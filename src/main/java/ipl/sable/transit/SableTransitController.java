@@ -157,6 +157,7 @@ public final class SableTransitController {
         hostedStraddleLatch.clear();
         IplStraddleTerrainClone.clearAll();
         SableRehomeOps.resetBootRestore();
+        ipl.sable.dim.IplSceneOwnership.clearAll();
         if (despawned > 0 || !snapshot.isEmpty()) {
             LOG.info("[IPL-MIRROR] server-stop cleanup: despawned {} mirror(s), cleared registry", despawned);
         }
@@ -174,6 +175,14 @@ public final class SableTransitController {
         // Lazy prune of the cooldown map: drop entries older than the cooldown window.
         // Keeps the map bounded even after server uptime grows.
         pruneCooldownMap(nowTick);
+
+        // Per-scene model: migrate any hosted body whose scene doesn't match its parent —
+        // covers boot-restored ships whose parent resolved after the body was created
+        // (fallback landed it in the hosting scene) and any missed flip path.
+        if (ipl.sable.dim.IplSceneOwnership.isEnabled()
+            && ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
+            ipl.sable.dim.IplSceneOwnership.reconcile(container);
+        }
 
         // Track which (sourceUuid, portalUuid) pairs are still active mirrors this
         // tick -- so we can despawn any mirror whose source is no longer in the

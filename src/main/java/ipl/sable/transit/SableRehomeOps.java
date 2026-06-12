@@ -376,13 +376,25 @@ public final class SableRehomeOps {
         // Flip the parent.
         stampParent(hosted, newParent, hosting);
 
-        // Force re-bake the hosting scene's terrain at the ARRIVAL region from the NEW
-        // parent. Sections there may still hold the OLD parent's content (especially with
-        // nether-portal coordinate overlap), and the ticket manager never re-reads sections
-        // whose tickets the ship keeps refreshing — without this the ship rests on a phantom
-        // copy of the old dimension's terrain ("standing on air" after crossing).
         hosted.updateBoundingBox();
-        rebakeTerrainAround(hosted, newParent, pipeline);
+        if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
+            // Per-scene model: the authority swap IS a scene migration — the body (and its
+            // plot voxel sections) move from the old parent's scene to the new parent's,
+            // carrying the already-mapped pose and velocities. No terrain rebake: each
+            // scene's terrain is native and was never wrong.
+            net.minecraft.server.level.ServerLevel from =
+                ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) != null
+                    ? ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) : oldParent;
+            ipl.sable.dim.IplSceneOwnership.migrate(hosted, from, newParent);
+        } else {
+            // Legacy single-hosting-scene model: force re-bake the hosting scene's terrain
+            // at the ARRIVAL region from the NEW parent. Sections there may still hold the
+            // OLD parent's content (especially with nether-portal coordinate overlap), and
+            // the ticket manager never re-reads sections whose tickets the ship keeps
+            // refreshing — without this the ship rests on a phantom copy of the old
+            // dimension's terrain ("standing on air" after crossing).
+            rebakeTerrainAround(hosted, newParent, pipeline);
+        }
 
         // Force re-track: drop every tracker with a StopTracking stamped to the hosting dim
         // (their client removes the sub-level from the sublevels container cleanly). The

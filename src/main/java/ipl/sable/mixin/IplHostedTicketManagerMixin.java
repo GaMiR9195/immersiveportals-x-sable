@@ -79,6 +79,11 @@ public abstract class IplHostedTicketManagerMixin {
         double timeStep,
         CallbackInfo ci
     ) {
+        // Per-scene model: the hosting scene holds no terrain at all — the parent's own
+        // manager enrolls terrain natively (ipl$enrollHostedShipTerrain below).
+        if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
+            return;
+        }
         if (!IplDimAgnostic.isEnabled() || !IplDimAgnostic.isHostingLevel(level)) {
             return;
         }
@@ -146,6 +151,102 @@ public abstract class IplHostedTicketManagerMixin {
             org.slf4j.LoggerFactory.getLogger("ipl-hosted-terrain").info(
                 "[IPL-HOSTED-TERRAIN] pre-enrolled parent terrain for {} hosted sub-level(s), firstParent={}",
                 hostedCount, firstParent.dimension().location());
+        }
+    }
+
+    // ======================================================================
+    // Per-scene model (spec §2.2 phase 1): terrain enrolls in the PARENT's
+    // own manager — native chunks, native coords, native height profile.
+    // ======================================================================
+
+    @org.spongepowered.asm.mixin.Shadow(remap = false)
+    private java.util.Map<SectionPos, dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicket>
+        physicsChunks;
+
+    /**
+     * Enroll terrain sections around every hosted ship whose PARENT is this manager's
+     * level. The stock per-sub-level loop never sees hosted ships (they live in the
+     * hosting container), so this replicates exactly its ticket semantics for them:
+     * get-or-create the ticket (feeding the section to THIS pipeline on creation — real
+     * chunk, no read override) and REFRESH lastInhabitedTick, so the 20-tick expiry
+     * doesn't churn terrain in and out of the scene.
+     *
+     * <p>Deliberately NOT replicated: the moveToUnloaded branch. Holding/unload semantics
+     * for hosted ships stay with the hosting container (IplHostedHoldingMixin et al.).
+     */
+    @Inject(method = "update", at = @At("HEAD"), require = 1)
+    private void ipl$enrollHostedShipTerrain(
+        ServerLevel level,
+        ServerSubLevelContainer container,
+        SubLevelPhysicsSystem system,
+        PhysicsPipeline pipeline,
+        double timeStep,
+        CallbackInfo ci
+    ) {
+        if (!ipl.sable.dim.IplSceneOwnership.isEnabled()) return;
+        if (IplDimAgnostic.isHostingLevel(level)) return;
+
+        dev.ryanhcode.sable.api.sublevel.SubLevelContainer hostingContainer =
+            IplDimAgnostic.getHostingContainerFor(level);
+        if (hostingContainer == null) return;
+
+        BoundingBox3d b = new BoundingBox3d();
+        BoundingBox3d b2 = new BoundingBox3d();
+        Vector3d velocity = new Vector3d();
+        long gameTime = level.getGameTime();
+        int enrolledShips = 0;
+
+        for (dev.ryanhcode.sable.sublevel.SubLevel anySub : hostingContainer.getAllSubLevels()) {
+            if (!(anySub instanceof ServerSubLevel subLevel)) continue;
+            if (subLevel.isRemoved()) continue;
+            if (IplDimAgnostic.getServerParentLevel(subLevel) != level) continue;
+            enrolledShips++;
+
+            // Same bounds expansion as the stock loop (incl. fall-velocity prediction);
+            // this pipeline owns the body under per-scene, so the velocity read is local.
+            b.set(subLevel.boundingBox());
+            b2.set(b);
+            if (subLevel.lastPose().position()
+                .distanceSquared(subLevel.logicalPose().position()) > 0.05 * 0.05) {
+                pipeline.getLinearVelocity(subLevel, velocity.zero()).mul(timeStep);
+                b2.move(0.0, Mth.clamp(velocity.y,
+                    -PhysicsChunkTicketManager.MAX_PREDICTION_DISTANCE,
+                    PhysicsChunkTicketManager.MAX_PREDICTION_DISTANCE), 0.0);
+                b.expandTo(b2);
+            }
+            b.expand(1.0, b);
+
+            BoundingBox3i chunkBounds = b.chunkBoundsFrom();
+            for (int x = chunkBounds.minX(); x <= chunkBounds.maxX(); x++) {
+                for (int z = chunkBounds.minZ(); z <= chunkBounds.maxZ(); z++) {
+                    if (!PhysicsChunkTicketManager.isChunkLoadedEnough(level, x, z)) continue;
+                    for (int y = chunkBounds.minY(); y <= chunkBounds.maxY(); y++) {
+                        int index = level.getSectionIndexFromSectionY(y);
+                        if (index < 0 || index >= level.getSectionsCount()) continue;
+
+                        SectionPos sectionPos = SectionPos.of(x, y, z);
+                        dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicket ticket =
+                            this.physicsChunks.get(sectionPos);
+                        if (ticket == null) {
+                            LevelChunk chunkAt = level.getChunk(x, z);
+                            pipeline.handleChunkSectionAddition(
+                                chunkAt.getSection(index), x, y, z, false);
+                            ticket = new dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicket(
+                                sectionPos, gameTime, null);
+                            this.physicsChunks.put(sectionPos, ticket);
+                        }
+                        ticket.setLastInhabitedTick(gameTime);
+                    }
+                }
+            }
+        }
+
+        long now = System.currentTimeMillis();
+        if (enrolledShips > 0 && now - ipl$lastTerrainLogMs > 5000) {
+            ipl$lastTerrainLogMs = now;
+            org.slf4j.LoggerFactory.getLogger("ipl-hosted-terrain").info(
+                "[IPL-SCENE-TERRAIN] {} enrolled native terrain for {} hosted ship(s)",
+                level.dimension().location(), enrolledShips);
         }
     }
 }
