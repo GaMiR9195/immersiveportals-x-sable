@@ -250,6 +250,26 @@ public final class SableTransitController {
                 Portal::isTeleportable
             );
 
+            // Dimension-stack seams (VerticalConnectingPortal & friends) are GLOBAL portals —
+            // held in GlobalPortalStorage, never returned by entity queries. Include any whose
+            // (rect-clamped) nearest point reaches the inflated ship box. Distance-to-center vs
+            // the box's half-diagonal matches the entity query's reach semantics closely enough.
+            if (IplDimAgnostic.isEnabled()) {
+                Vec3 shipCenter = airshipAabb.getCenter();
+                double reach = 0.5 * Math.sqrt(
+                    airshipAabb.getXsize() * airshipAabb.getXsize()
+                        + airshipAabb.getYsize() * airshipAabb.getYsize()
+                        + airshipAabb.getZsize() * airshipAabb.getZsize());
+                for (Portal globalPortal :
+                    qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage
+                        .getGlobalPortals(portalQueryLevel)) {
+                    if (globalPortal.isTeleportable()
+                        && globalPortal.getDistanceToNearestPointInPortal(shipCenter) <= reach) {
+                        nearby.add(globalPortal);
+                    }
+                }
+            }
+
             // Deduplicate portals by destination dim. IP creates pairs of portals
             // per frame -- a "main" Portal plus an "intrinsic_diligent" companion,
             // both isTeleportable=true, both pointing to the same destDim. Without
@@ -541,11 +561,14 @@ public final class SableTransitController {
 
         for (Portal portal : portals) {
             ResourceKey<Level> destDim = portal.getDestDim();
-            double distSq = portal.getOriginPos().distanceToSqr(airshipCenter);
+            // Rect-clamped distance, NOT origin distance: a dimension-stack global portal's
+            // origin sits at (0, seamY, 0), which would lose to any entity portal for ships
+            // away from the world axis even when the ship is touching the seam plane.
+            double dist = portal.getDistanceToNearestPointInPortal(airshipCenter);
             Double current = bestDistSqPerDest.get(destDim);
-            if (current == null || distSq < current) {
+            if (current == null || dist < current) {
                 bestPerDest.put(destDim, portal);
-                bestDistSqPerDest.put(destDim, distSq);
+                bestDistSqPerDest.put(destDim, dist);
             }
         }
 

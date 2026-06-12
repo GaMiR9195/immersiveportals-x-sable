@@ -192,6 +192,7 @@ public final class IplClientHostedLookup {
         if (portal.getDestDim() != destLevel.dimension()) return null;
 
         if (!ipl.sable.transit.IplStraddlePoseMap.isApproxIdentity(portal.getRotationD())) return null;
+        if (Math.abs(portal.getScaling() - 1.0) > 1e-9) return null; // scaled seams unsupported
         return ipl.sable.transit.IplStraddlePoseMap.blockAligned(
             portal.getDestPos().subtract(portal.getOriginPos()));
     }

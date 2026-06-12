@@ -120,6 +120,18 @@ public final class IplStraddleTerrainClone {
             }
             return;
         }
+        // Scaled portals (e.g. a respectSpaceRatio dimension stack's 1:8 seam) would need
+        // scaled re-voxelization; the translation-only mapping would feed terrain at the
+        // wrong size. Skip, like rotation.
+        if (Math.abs(portal.getScaling() - 1.0) > 1e-9) {
+            if (!loggedRotationSkip) {
+                loggedRotationSkip = true;
+                LOG.info("[IPL-STRADDLE-CLONE] portal {} has scale {}; cross-seam terrain clone "
+                    + "supports scale-1 pairs — skipping (logged once)",
+                    portal.getUUID(), portal.getScaling());
+            }
+            return;
+        }
         Vec3 d = portal.getDestPos().subtract(portal.getOriginPos());
         BlockPos offset = blockAligned(d);
         if (offset == null) {
@@ -251,11 +263,19 @@ public final class IplStraddleTerrainClone {
         }
     }
 
-    /** A real section instance for the call (the Rapier impl ignores its content). */
+    /**
+     * A real section instance for the call (the Rapier impl ignores its content — it is a
+     * coordinate carrier; voxel content is re-read through the level-bound accessors under
+     * {@link IplTerrainReadOverride}). Clamped into the parent's section range: a ship
+     * straddling a dimension-stack FLOOR/CEILING seam has source-frame voxels beyond the
+     * parent's build height, which must still feed (their dest-frame read, checked by the
+     * caller, is in range).
+     */
     private static LevelChunkSection sectionFor(ServerLevel level, BlockPos pos) {
         int sectionY = pos.getY() >> 4;
         int index = level.getSectionIndexFromSectionY(sectionY);
-        if (index < 0 || index >= level.getSectionsCount()) return null;
+        if (index < 0) index = 0;
+        if (index >= level.getSectionsCount()) index = level.getSectionsCount() - 1;
         try {
             LevelChunk chunk = level.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
             return chunk.getSection(index);

@@ -83,15 +83,22 @@ public final class SourceClipPortalFinder {
         Vec3 center = box.getCenter();
 
         Portal best = null;
-        double bestDistSq = Double.MAX_VALUE;
+        double bestDist = Double.MAX_VALUE;
         Plane bestPlane = null;
         boolean anyStraddle = false;
 
-        // Iterate all client-side entities. Cheap enough for the small entity counts
-        // typical in vanilla survival; if this shows up in profilers we can swap to
-        // a chunk-section query around the sub-level's AABB.
+        // Candidates: portal entities PLUS global portals (dimension-stack seams live in
+        // GlobalPortalStorage and never appear in entity iteration). Entity iteration is
+        // cheap enough for the small entity counts typical in vanilla survival; if this
+        // shows up in profilers we can swap to a chunk-section query around the AABB.
+        java.util.List<Portal> candidates = new java.util.ArrayList<>();
         for (Entity e : level.entitiesForRendering()) {
-            if (!(e instanceof Portal portal)) continue;
+            if (e instanceof Portal portal) candidates.add(portal);
+        }
+        candidates.addAll(
+            qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage.getGlobalPortals(level));
+
+        for (Portal portal : candidates) {
             if (!portal.isTeleportable()) continue;
 
             Vec3 origin = portal.getOriginPos();
@@ -173,9 +180,12 @@ public final class SourceClipPortalFinder {
                 orientedNormal = orientedNormal.scale(-1.0);
             }
 
-            double distSq = origin.distanceToSqr(center);
-            if (distSq < bestDistSq) {
-                bestDistSq = distSq;
+            // Rect-clamped distance, NOT origin distance: a dimension-stack global portal's
+            // origin sits at (0, seamY, 0) — origin distance would lose to any entity portal
+            // for ships away from the world axis even when the ship straddles the seam.
+            double dist = portal.getDistanceToNearestPointInPortal(center);
+            if (dist < bestDist) {
+                bestDist = dist;
                 best = portal;
                 bestPlane = new Plane(origin, orientedNormal);
             }
