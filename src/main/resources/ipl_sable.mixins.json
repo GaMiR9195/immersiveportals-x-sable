@@ -39,7 +39,10 @@
     "IplHostedHoldingReadinessMixin",
     "IplStraddleInteractDistanceMixin",
     "IplStaffDragGoalMixin",
-    "IplHostingLevelNeverEmptyMixin"
+    "IplHostingLevelNeverEmptyMixin",
+    "IplHostedBeTickContextMixin",
+    "IplHostedWorldFrameRouterMixin",
+    "IplEntityLevelInvoker"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
