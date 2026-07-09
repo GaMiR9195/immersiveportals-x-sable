@@ -44,7 +44,8 @@
     "IplHostedWorldFrameRouterMixin",
     "IplEntityLevelInvoker",
     "IplRapierPipelineAccess",
-    "IplCloneSubstepMixin"
+    "IplCloneSubstepMixin",
+    "IplNativesOverrideMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",

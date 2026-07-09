@@ -35,7 +35,8 @@ public abstract class IplCloneSubstepMixin {
         require = 0
     )
     private void ipl$servoClonesBeforeStep(PhysicsPipeline pipeline, double dt, Operation<Void> original) {
-        IplStraddleCloneBody.servoPreStep(this.level, dt);
+        IplStraddleCloneBody.preStep(this.level, dt);
         original.call(pipeline, dt);
+        IplStraddleCloneBody.postStep(this.level, dt);
     }
 }

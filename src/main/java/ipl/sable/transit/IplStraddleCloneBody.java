@@ -66,31 +66,27 @@ public final class IplStraddleCloneBody {
     private static final boolean ENABLED =
         !"false".equalsIgnoreCase(System.getProperty("ipl.sable.cloneBodies", "true"));
 
-    /** Servo position-correction rate (1/s): velocity addend = error * rate. */
-    private static final double POS_CORR_RATE =
-        Double.parseDouble(System.getProperty("ipl.sable.clone.posCorrRate", "10.0"));
-    private static final double ANG_CORR_RATE =
-        Double.parseDouble(System.getProperty("ipl.sable.clone.angCorrRate", "10.0"));
-    /** Pose divergence beyond which the clone snaps (teleport) instead of servoing. */
-    private static final double SNAP_DISTANCE = 1.0;
+    // ------------------------------------------------------------------
+    // Position-based coupling (replaces impulse feedback): the clone is PINNED to the
+    // portal-mapped pose before each dest-scene substep; the solver then resolves its
+    // contacts — positionally and with correct torques, because the contact points act on
+    // the clone's real collider — and whatever pose/velocity correction the solver applied
+    // to the clone is copied onto the real body after the step. Per-substep transfer caps
+    // keep deep-penetration recovery from teleporting the ship.
+    // ------------------------------------------------------------------
 
-    /** Feedback impulse = pairForce * dt * scale, dt folded in here (1/40 default stepping). */
-    private static final double FEEDBACK_DT =
-        Double.parseDouble(System.getProperty("ipl.sable.clone.feedbackDt", "0.025"));
-    private static final double FEEDBACK_SCALE =
-        Double.parseDouble(System.getProperty("ipl.sable.clone.feedbackScale", "1.0"));
-    /** Flip feedback direction if the contact-normal sign convention turns out inverted. */
-    private static final boolean FEEDBACK_FLIP =
-        "true".equalsIgnoreCase(System.getProperty("ipl.sable.clone.feedbackFlip", "false"));
-    /**
-     * Hard cap on the velocity change feedback may apply to the real body per tick (m/s).
-     * Penetration-recovery contact forces spike arbitrarily high while the servo holds the
-     * clone against terrain (the real ship being pushed in by a drag motor or momentum);
-     * uncapped, those spikes EJECT the ship from the seam. Capped, they saturate into firm
-     * resistance.
-     */
-    private static final double MAX_FEEDBACK_DV =
-        Double.parseDouble(System.getProperty("ipl.sable.clone.maxFeedbackDv", "3.0"));
+    /** Ignore post-step clone displacements smaller than this (gravity integration noise). */
+    private static final double TRANSFER_DEADBAND =
+        Double.parseDouble(System.getProperty("ipl.sable.clone.transferDeadband", "0.01"));
+    /** Max position correction copied to the real body per substep (blocks). */
+    private static final double MAX_POS_TRANSFER =
+        Double.parseDouble(System.getProperty("ipl.sable.clone.maxPosTransfer", "0.5"));
+    /** Max rotation correction copied per substep (radians). */
+    private static final double MAX_ANG_TRANSFER =
+        Double.parseDouble(System.getProperty("ipl.sable.clone.maxAngTransfer", "0.15"));
+    /** Max velocity correction copied per substep (m/s). */
+    private static final double MAX_VEL_TRANSFER =
+        Double.parseDouble(System.getProperty("ipl.sable.clone.maxVelTransfer", "3.0"));
 
     private static final Map<MirrorRegistry.MirrorKey, Session> SESSIONS = new HashMap<>();
 
@@ -110,12 +106,21 @@ public final class IplStraddleCloneBody {
         final int realId;
         final int cloneId;
         final BlockPos offset;
+        /** The REAL body's aperture clip region for this portal (14 doubles), if natives allow. */
+        double[] realClipRegion;
         final LongArrayList fedSections = new LongArrayList();
         final double[] poseBuf = new double[7];
         final double[] realLin = new double[3];
         final double[] realAng = new double[3];
         final double[] cloneLin = new double[3];
         final double[] cloneAng = new double[3];
+        /** Pre-step pin state, for measuring the solver's post-step correction. */
+        final double[] targetPose = new double[7];
+        final double[] pinnedLin = new double[3];
+        final double[] pinnedAng = new double[3];
+        boolean pinned = false;
+        /** Dest dimension gravity (m/s²), analytically removed from the velocity delta. */
+        org.joml.Vector3d destGravity = new org.joml.Vector3d(0, -9.8, 0);
 
         Session(ServerSubLevel sub, ServerLevel parent, ServerLevel dest, BlockPos offset) {
             this.sub = sub;
@@ -167,10 +172,69 @@ public final class IplStraddleCloneBody {
         if (SESSIONS.containsKey(key)) return;
 
         Session session = new Session(hosted, parent, dest, offset);
+        try {
+            session.destGravity.set(
+                dev.ryanhcode.sable.physics.config.dimension_physics.DimensionPhysicsData
+                    .getGravity(dest));
+        } catch (Throwable t) {
+            // keep the (0, -9.8, 0) default
+        }
         if (!spawnClone(session)) return;
         SESSIONS.put(key, session);
-        LOG.info("[IPL-CLONE] start uuid={} portal={} offset={} cloneId={} destScene={}",
-            hosted.getUniqueId(), portal.getUUID(), offset, session.cloneId, session.destSceneId);
+
+        // Aperture contact clipping (spec §2.5), when the IPSable natives are live:
+        //  - REAL body: contacts past the portal plane inside the aperture are dropped —
+        //    the through-part stops colliding with SOURCE-side terrain and ships.
+        //  - CLONE body: the complementary half — contacts BEFORE the (offset-mapped)
+        //    plane are dropped, so only the through-part is physically present dest-side.
+        if (ipl.sable.natives.IplRapierNatives.isAvailable()) {
+            double margin = 1.0;
+            double halfW = portal.getWidth() * 0.5 + margin;
+            double halfH = portal.getHeight() * 0.5 + margin;
+            Vec3 origin = portal.getOriginPos();
+            Vec3 axisW = portal.getAxisW();
+            Vec3 axisH = portal.getAxisH();
+
+            session.realClipRegion = clipRegion(origin, sourceToDest, axisW, halfW, axisH, halfH);
+            applyRealClipRegions(hosted, session.parentSceneId, session.realId);
+
+            Vec3 destPlanePoint = origin.add(offset.getX(), offset.getY(), offset.getZ());
+            double[] cloneRegion = clipRegion(
+                destPlanePoint, sourceToDest.scale(-1.0), axisW, halfW, axisH, halfH);
+            ipl.sable.natives.IplRapierNatives.setClipRegions(
+                session.destSceneId, session.cloneId, cloneRegion);
+        }
+
+        LOG.info("[IPL-CLONE] start uuid={} portal={} offset={} cloneId={} destScene={} clipped={}",
+            hosted.getUniqueId(), portal.getUUID(), offset, session.cloneId, session.destSceneId,
+            session.realClipRegion != null);
+    }
+
+    private static double[] clipRegion(
+        Vec3 point, Vec3 normal, Vec3 axisW, double halfW, Vec3 axisH, double halfH
+    ) {
+        return new double[]{
+            point.x, point.y, point.z,
+            normal.x, normal.y, normal.z,
+            axisW.x, axisW.y, axisW.z, halfW,
+            axisH.x, axisH.y, axisH.z, halfH
+        };
+    }
+
+    /**
+     * (Re)apply the union of all active sessions' clip regions to a ship's REAL body —
+     * a ship can straddle several portals at once, and regions replace wholesale.
+     */
+    private static void applyRealClipRegions(ServerSubLevel ship, int parentSceneId, int realId) {
+        java.util.ArrayList<double[]> regions = new java.util.ArrayList<>(2);
+        for (Session s : SESSIONS.values()) {
+            if (s.sub == ship && s.realClipRegion != null) regions.add(s.realClipRegion);
+        }
+        double[] flat = new double[regions.size() * 14];
+        for (int i = 0; i < regions.size(); i++) {
+            System.arraycopy(regions.get(i), 0, flat, i * 14, 14);
+        }
+        ipl.sable.natives.IplRapierNatives.setClipRegions(parentSceneId, realId, flat);
     }
 
     /** Straddle ended (backed out, flipped, or left the zone): despawn the clone. */
@@ -178,6 +242,13 @@ public final class IplStraddleCloneBody {
         Session session = SESSIONS.remove(key);
         if (session == null) return;
         despawn(session);
+        // Recompute the real body's clip regions from whatever sessions remain (usually
+        // none → cleared): the through-part becomes fully source-solid again.
+        if (session.realClipRegion != null
+            && ipl.sable.natives.IplRapierNatives.isAvailable()
+            && !session.sub.isRemoved()) {
+            applyRealClipRegions(session.sub, session.parentSceneId, session.realId);
+        }
         LOG.info("[IPL-CLONE] end uuid={} cloneId={} reason={}",
             session.sub.getUniqueId(), session.cloneId, reason);
     }
@@ -326,88 +397,157 @@ public final class IplStraddleCloneBody {
     }
 
     // ------------------------------------------------------------------
-    // Servo: called just before each dest scene's physics substep.
+    // Position-based coupling: pin before the substep, measure after it.
     // ------------------------------------------------------------------
 
-    /** Drive every clone whose DEST scene is about to step toward the portal-mapped pose. */
-    public static void servoPreStep(ServerLevel steppingLevel, double dt) {
+    /** Pin every clone whose DEST scene is about to step to the portal-mapped pose. */
+    public static void preStep(ServerLevel steppingLevel, double dt) {
         if (SESSIONS.isEmpty()) return;
 
         for (Session s : SESSIONS.values()) {
             if (s.dest != steppingLevel) continue;
-            if (s.sub.isRemoved()) continue;
-
-            Pose3dc real = s.sub.logicalPose();
-            double tx = real.position().x() + s.offset.getX();
-            double ty = real.position().y() + s.offset.getY();
-            double tz = real.position().z() + s.offset.getZ();
-
-            Rapier3D.getPose(s.destSceneId, s.cloneId, s.poseBuf);
-            double ex = tx - s.poseBuf[0];
-            double ey = ty - s.poseBuf[1];
-            double ez = tz - s.poseBuf[2];
-            double errSq = ex * ex + ey * ey + ez * ez;
-
-            // Bring-up probe: prove the servo runs and show the chase error (remove later).
-            long now = System.currentTimeMillis();
-            if (now - lastServoLogMs > 2000) {
-                lastServoLogMs = now;
-                LOG.info("[IPL-CLONE-SERVO] cloneId={} dest={} posErr={} clonePos=({}, {}, {})",
-                    s.cloneId, s.dest.dimension().location(),
-                    String.format("%.3f", Math.sqrt(errSq)),
-                    String.format("%.1f", s.poseBuf[0]), String.format("%.1f", s.poseBuf[1]),
-                    String.format("%.1f", s.poseBuf[2]));
-            }
-
-            Rapier3D.getLinearVelocity(s.parentSceneId, s.realId, s.realLin);
-            Rapier3D.getAngularVelocity(s.parentSceneId, s.realId, s.realAng);
-
-            if (errSq > SNAP_DISTANCE * SNAP_DISTANCE) {
-                Rapier3D.teleportObject(s.destSceneId, s.cloneId, tx, ty, tz,
-                    real.orientation().x(), real.orientation().y(),
-                    real.orientation().z(), real.orientation().w());
-                Rapier3D.getLinearVelocity(s.destSceneId, s.cloneId, s.cloneLin);
-                Rapier3D.getAngularVelocity(s.destSceneId, s.cloneId, s.cloneAng);
-                Rapier3D.addLinearAngularVelocities(s.destSceneId, s.cloneId,
-                    s.realLin[0] - s.cloneLin[0], s.realLin[1] - s.cloneLin[1],
-                    s.realLin[2] - s.cloneLin[2],
-                    s.realAng[0] - s.cloneAng[0], s.realAng[1] - s.cloneAng[1],
-                    s.realAng[2] - s.cloneAng[2], true);
+            if (s.sub.isRemoved()) {
+                s.pinned = false;
                 continue;
             }
 
-            // Orientation error → angular correction (shortest arc, axis * angle * rate).
-            Quaterniond cloneQ = new Quaterniond(
-                s.poseBuf[3], s.poseBuf[4], s.poseBuf[5], s.poseBuf[6]);
-            Quaterniond targetQ = new Quaterniond(real.orientation());
-            Quaterniond diff = targetQ.mul(cloneQ.conjugate(new Quaterniond()), new Quaterniond());
-            if (diff.w < 0) diff.set(-diff.x, -diff.y, -diff.z, -diff.w);
-            double cx = diff.x, cy = diff.y, cz = diff.z;
-            double axisLen = Math.sqrt(cx * cx + cy * cy + cz * cz);
-            double corrX = 0, corrY = 0, corrZ = 0;
-            if (axisLen > 1e-9) {
-                double angle = 2.0 * Math.acos(Math.min(1.0, Math.max(-1.0, diff.w)));
-                double mul = angle * ANG_CORR_RATE / axisLen;
-                corrX = cx * mul;
-                corrY = cy * mul;
-                corrZ = cz * mul;
-            }
+            Pose3dc real = s.sub.logicalPose();
+            s.targetPose[0] = real.position().x() + s.offset.getX();
+            s.targetPose[1] = real.position().y() + s.offset.getY();
+            s.targetPose[2] = real.position().z() + s.offset.getZ();
+            s.targetPose[3] = real.orientation().x();
+            s.targetPose[4] = real.orientation().y();
+            s.targetPose[5] = real.orientation().z();
+            s.targetPose[6] = real.orientation().w();
 
-            double targetLinX = s.realLin[0] + ex * POS_CORR_RATE;
-            double targetLinY = s.realLin[1] + ey * POS_CORR_RATE;
-            double targetLinZ = s.realLin[2] + ez * POS_CORR_RATE;
-            double targetAngX = s.realAng[0] + corrX;
-            double targetAngY = s.realAng[1] + corrY;
-            double targetAngZ = s.realAng[2] + corrZ;
+            Rapier3D.teleportObject(s.destSceneId, s.cloneId,
+                s.targetPose[0], s.targetPose[1], s.targetPose[2],
+                s.targetPose[3], s.targetPose[4], s.targetPose[5], s.targetPose[6]);
+
+            // Exact-set the clone's velocities to the real body's (translation-only
+            // portals: the frames align; addLinearAngularVelocities is a native set of
+            // current + delta).
+            Rapier3D.getLinearVelocity(s.parentSceneId, s.realId, s.realLin);
+            Rapier3D.getAngularVelocity(s.parentSceneId, s.realId, s.realAng);
+            Rapier3D.getLinearVelocity(s.destSceneId, s.cloneId, s.cloneLin);
+            Rapier3D.getAngularVelocity(s.destSceneId, s.cloneId, s.cloneAng);
+            Rapier3D.addLinearAngularVelocities(s.destSceneId, s.cloneId,
+                s.realLin[0] - s.cloneLin[0], s.realLin[1] - s.cloneLin[1],
+                s.realLin[2] - s.cloneLin[2],
+                s.realAng[0] - s.cloneAng[0], s.realAng[1] - s.cloneAng[1],
+                s.realAng[2] - s.cloneAng[2], true);
+
+            s.pinnedLin[0] = s.realLin[0];
+            s.pinnedLin[1] = s.realLin[1];
+            s.pinnedLin[2] = s.realLin[2];
+            s.pinnedAng[0] = s.realAng[0];
+            s.pinnedAng[1] = s.realAng[1];
+            s.pinnedAng[2] = s.realAng[2];
+            s.pinned = true;
+        }
+    }
+
+    /**
+     * After the dest scene stepped: whatever pose/velocity correction the solver applied
+     * to the pinned clone (contact resolution — correct points, correct torques) is copied
+     * onto the real body, clamped per substep. Gravity's free-fall contribution over the
+     * step is removed analytically so a contact-free clone transfers nothing.
+     */
+    public static void postStep(ServerLevel steppingLevel, double dt) {
+        if (SESSIONS.isEmpty()) return;
+
+        for (Session s : SESSIONS.values()) {
+            if (s.dest != steppingLevel || !s.pinned) continue;
+            s.pinned = false;
+            if (s.sub.isRemoved()) continue;
+
+            Rapier3D.getPose(s.destSceneId, s.cloneId, s.poseBuf);
+            double dx = s.poseBuf[0] - s.targetPose[0] - s.destGravity.x * dt * dt * 0.5;
+            double dy = s.poseBuf[1] - s.targetPose[1] - s.destGravity.y * dt * dt * 0.5;
+            double dz = s.poseBuf[2] - s.targetPose[2] - s.destGravity.z * dt * dt * 0.5;
+            // The pin gives the clone the real body's velocity; a contact-free step just
+            // integrates that velocity — subtract it to isolate the solver's correction.
+            dx -= s.pinnedLin[0] * dt;
+            dy -= s.pinnedLin[1] * dt;
+            dz -= s.pinnedLin[2] * dt;
+            double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+            Quaterniond target = new Quaterniond(
+                s.targetPose[3], s.targetPose[4], s.targetPose[5], s.targetPose[6]);
+            Quaterniond current = new Quaterniond(
+                s.poseBuf[3], s.poseBuf[4], s.poseBuf[5], s.poseBuf[6]);
+            // Remove the free rotation the pinned angular velocity produces over dt.
+            double wLen = Math.sqrt(s.pinnedAng[0] * s.pinnedAng[0]
+                + s.pinnedAng[1] * s.pinnedAng[1] + s.pinnedAng[2] * s.pinnedAng[2]);
+            if (wLen > 1e-9) {
+                Quaterniond freeSpin = new Quaterniond().rotationAxis(wLen * dt,
+                    s.pinnedAng[0] / wLen, s.pinnedAng[1] / wLen, s.pinnedAng[2] / wLen);
+                target = freeSpin.mul(target, new Quaterniond());
+            }
+            Quaterniond dq = current.mul(target.conjugate(new Quaterniond()), new Quaterniond());
+            if (dq.w < 0) dq.set(-dq.x, -dq.y, -dq.z, -dq.w);
+            double axisLen = Math.sqrt(dq.x * dq.x + dq.y * dq.y + dq.z * dq.z);
+            double angle = axisLen > 1e-9
+                ? 2.0 * Math.acos(Math.min(1.0, Math.max(-1.0, dq.w))) : 0.0;
 
             Rapier3D.getLinearVelocity(s.destSceneId, s.cloneId, s.cloneLin);
             Rapier3D.getAngularVelocity(s.destSceneId, s.cloneId, s.cloneAng);
-            // addLinearAngularVelocities is set_linvel(current + delta) natively — adding
-            // (target - current) is an exact set.
-            Rapier3D.addLinearAngularVelocities(s.destSceneId, s.cloneId,
-                targetLinX - s.cloneLin[0], targetLinY - s.cloneLin[1], targetLinZ - s.cloneLin[2],
-                targetAngX - s.cloneAng[0], targetAngY - s.cloneAng[1], targetAngZ - s.cloneAng[2],
-                true);
+            double dvx = s.cloneLin[0] - s.pinnedLin[0] - s.destGravity.x * dt;
+            double dvy = s.cloneLin[1] - s.pinnedLin[1] - s.destGravity.y * dt;
+            double dvz = s.cloneLin[2] - s.pinnedLin[2] - s.destGravity.z * dt;
+            double dax = s.cloneAng[0] - s.pinnedAng[0];
+            double day = s.cloneAng[1] - s.pinnedAng[1];
+            double daz = s.cloneAng[2] - s.pinnedAng[2];
+            double dvMag = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+            double daMag = Math.sqrt(dax * dax + day * day + daz * daz);
+
+            boolean posMoved = dist > TRANSFER_DEADBAND;
+            boolean rotMoved = angle > 0.005;
+            boolean velMoved = dvMag > 0.05 || daMag > 0.02;
+            if (!posMoved && !rotMoved && !velMoved) continue;
+
+            // Clamp per-substep transfers.
+            if (dist > MAX_POS_TRANSFER) {
+                double f = MAX_POS_TRANSFER / dist;
+                dx *= f; dy *= f; dz *= f;
+            }
+            double appliedAngle = Math.min(angle, MAX_ANG_TRANSFER);
+            if (dvMag > MAX_VEL_TRANSFER) {
+                double f = MAX_VEL_TRANSFER / dvMag;
+                dvx *= f; dvy *= f; dvz *= f;
+            }
+            if (daMag > MAX_VEL_TRANSFER) {
+                double f = MAX_VEL_TRANSFER / daMag;
+                dax *= f; day *= f; daz *= f;
+            }
+
+            // Apply to the real body: position/rotation shift + velocity correction.
+            Rapier3D.getPose(s.parentSceneId, s.realId, s.poseBuf);
+            double nx = s.poseBuf[0] + (posMoved ? dx : 0);
+            double ny = s.poseBuf[1] + (posMoved ? dy : 0);
+            double nz = s.poseBuf[2] + (posMoved ? dz : 0);
+            Quaterniond realRot = new Quaterniond(
+                s.poseBuf[3], s.poseBuf[4], s.poseBuf[5], s.poseBuf[6]);
+            if (rotMoved && axisLen > 1e-9) {
+                Quaterniond clampedDq = new Quaterniond().rotationAxis(appliedAngle,
+                    dq.x / axisLen, dq.y / axisLen, dq.z / axisLen);
+                realRot = clampedDq.mul(realRot, new Quaterniond()).normalize();
+            }
+            Rapier3D.teleportObject(s.parentSceneId, s.realId,
+                nx, ny, nz, realRot.x, realRot.y, realRot.z, realRot.w);
+            if (velMoved) {
+                Rapier3D.addLinearAngularVelocities(s.parentSceneId, s.realId,
+                    dvx, dvy, dvz, dax, day, daz, true);
+            }
+            Rapier3D.wakeUpObject(s.parentSceneId, s.realId);
+
+            long now = System.currentTimeMillis();
+            if (now - lastServoLogMs > 2000) {
+                lastServoLogMs = now;
+                LOG.info("[IPL-CLONE-PBC] cloneId={} dPos={} dAng={} dVel={}",
+                    s.cloneId, String.format("%.3f", dist),
+                    String.format("%.3f", angle), String.format("%.2f", dvMag));
+            }
         }
     }
 
@@ -440,79 +580,9 @@ public final class IplStraddleCloneBody {
                     level.dimension().location(), records.length / 15, ids);
             }
         }
-        if (records.length < 15) return;
-
-        int applied = 0;
-        for (Session s : SESSIONS.values()) {
-            if (s.dest != level) continue;
-            if (s.sub.isRemoved()) continue;
-
-            // Pass 1: manifold-point count PER PAIR involving the clone — each record
-            // carries its pair's TOTAL force, so the split must be per pair (a global
-            // split under-counts one pair and a missing split multiplies the force by
-            // the manifold size).
-            java.util.Map<Long, Integer> pairPoints = null;
-            for (int i = 0; i + 15 <= records.length; i += 15) {
-                int idA = (int) records[i];
-                int idB = (int) records[i + 1];
-                if (idA != s.cloneId && idB != s.cloneId) continue;
-                if (pairPoints == null) pairPoints = new java.util.HashMap<>(4);
-                pairPoints.merge(((long) idA << 32) | (idB & 0xFFFFFFFFL), 1, Integer::sum);
-            }
-            if (pairPoints == null) continue;
-
-            // Pass 2: collect candidate impulses.
-            double sumImpulse = 0;
-            java.util.ArrayList<double[]> impulses = new java.util.ArrayList<>(pairPoints.size() * 4);
-            for (int i = 0; i + 15 <= records.length; i += 15) {
-                int idA = (int) records[i];
-                int idB = (int) records[i + 1];
-                boolean cloneIsA = idA == s.cloneId;
-                boolean cloneIsB = idB == s.cloneId;
-                if (!cloneIsA && !cloneIsB) continue;
-
-                double mag = records[i + 2];
-                if (!Double.isFinite(mag) || mag <= 0 || mag > 1e9) continue;
-
-                int points = pairPoints.get(((long) idA << 32) | (idB & 0xFFFFFFFFL));
-                int normalBase = cloneIsA ? i + 3 : i + 6;
-                int pointBase = cloneIsA ? i + 9 : i + 12;
-
-                double impulse = mag * FEEDBACK_DT * FEEDBACK_SCALE / points
-                    * (FEEDBACK_FLIP ? -1.0 : 1.0);
-                impulses.add(new double[]{
-                    records[pointBase], records[pointBase + 1], records[pointBase + 2],
-                    records[normalBase] * impulse, records[normalBase + 1] * impulse,
-                    records[normalBase + 2] * impulse});
-                sumImpulse += Math.abs(impulse);
-            }
-            if (impulses.isEmpty()) continue;
-
-            // Per-tick Δv cap: scale ALL impulses down proportionally so the total can't
-            // exceed MAX_FEEDBACK_DV on this ship. Saturation = firm resistance, not ejection.
-            double mass = Math.max(1.0, s.sub.getMassTracker().getMass());
-            double dv = sumImpulse / mass;
-            double damp = dv > MAX_FEEDBACK_DV ? MAX_FEEDBACK_DV / dv : 1.0;
-
-            // Body-local point + body-local force on the REAL body: for translation-only
-            // portals the clone's local frame IS the real body's local frame, and the
-            // native applyForce expects exactly this convention (COM-relative point,
-            // force rotated into world by body orientation).
-            for (double[] imp : impulses) {
-                Rapier3D.applyForce(s.parentSceneId, s.realId,
-                    imp[0], imp[1], imp[2],
-                    imp[3] * damp, imp[4] * damp, imp[5] * damp, true);
-                applied++;
-            }
-        }
-
-        if (applied > 0) {
-            long now = System.currentTimeMillis();
-            if (now - lastFeedbackLogMs > 2000) {
-                lastFeedbackLogMs = now;
-                LOG.info("[IPL-CLONE-FEEDBACK] applied {} contact impulse(s) from {}",
-                    applied, level.dimension().location());
-            }
-        }
+        // Contact impulses are no longer re-applied to the real body — the position-based
+        // coupling (preStep/postStep) copies the solver's own resolution of the clone
+        // instead, which carries correct torques by construction. The tee remains as a
+        // diagnostic (which pairs are contacting dest-side).
     }
 }

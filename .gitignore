@@ -48,3 +48,7 @@ crowdin-translate-1.2.jar
 src/main/resources/immersive_portals.timestamp
 /libs/
 /runs/
+
+# IPSable natives dev loop: cargo build artifacts + locally-built DLL resource
+natives/target/
+src/main/resources/natives_ipl/
