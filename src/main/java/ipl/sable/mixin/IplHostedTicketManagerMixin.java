@@ -216,37 +216,64 @@ public abstract class IplHostedTicketManagerMixin {
             }
             b.expand(1.0, b);
 
-            BoundingBox3i chunkBounds = b.chunkBoundsFrom();
-            for (int x = chunkBounds.minX(); x <= chunkBounds.maxX(); x++) {
-                for (int z = chunkBounds.minZ(); z <= chunkBounds.maxZ(); z++) {
-                    if (!PhysicsChunkTicketManager.isChunkLoadedEnough(level, x, z)) continue;
-                    for (int y = chunkBounds.minY(); y <= chunkBounds.maxY(); y++) {
-                        int index = level.getSectionIndexFromSectionY(y);
-                        if (index < 0 || index >= level.getSectionsCount()) continue;
-
-                        SectionPos sectionPos = SectionPos.of(x, y, z);
-                        dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicket ticket =
-                            this.physicsChunks.get(sectionPos);
-                        if (ticket == null) {
-                            LevelChunk chunkAt = level.getChunk(x, z);
-                            pipeline.handleChunkSectionAddition(
-                                chunkAt.getSection(index), x, y, z, false);
-                            ticket = new dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicket(
-                                sectionPos, gameTime, null);
-                            this.physicsChunks.put(sectionPos, ticket);
-                        }
-                        ticket.setLastInhabitedTick(gameTime);
-                    }
-                }
-            }
+            ipl$enrollSections(level, pipeline, b, gameTime);
         }
+
+        // Straddle CLONE bodies whose DESTINATION is this level: the clone needs terrain
+        // around the portal-mapped region (ship bounds ⊕ offset). Nothing else enrolls it —
+        // the straddler's parent is still the source side, and the clone is pure native
+        // state no container knows about.
+        int[] cloneRegions = {0};
+        ipl.sable.transit.IplStraddleCloneBody.forEachSessionInto(level, (ship, offset) -> {
+            BoundingBox3d cb = new BoundingBox3d();
+            cb.set(ship.boundingBox());
+            cb.move(offset.getX(), offset.getY(), offset.getZ());
+            cb.expand(1.0, cb);
+            ipl$enrollSections(level, pipeline, cb, gameTime);
+            cloneRegions[0]++;
+        });
+        enrolledShips += cloneRegions[0];
 
         long now = System.currentTimeMillis();
         if (enrolledShips > 0 && now - ipl$lastTerrainLogMs > 5000) {
             ipl$lastTerrainLogMs = now;
             org.slf4j.LoggerFactory.getLogger("ipl-hosted-terrain").info(
-                "[IPL-SCENE-TERRAIN] {} enrolled native terrain for {} hosted ship(s)",
+                "[IPL-SCENE-TERRAIN] {} enrolled native terrain for {} hosted ship/clone region(s)",
                 level.dimension().location(), enrolledShips);
+        }
+    }
+
+    /**
+     * Get-or-create + REFRESH tickets for every section in {@code bounds} (the stock
+     * addTicket semantics — refresh matters: without it the 20-tick expiry churns terrain
+     * in and out of the scene).
+     */
+    @Unique
+    private void ipl$enrollSections(
+        ServerLevel level, PhysicsPipeline pipeline, BoundingBox3d bounds, long gameTime
+    ) {
+        BoundingBox3i chunkBounds = bounds.chunkBoundsFrom();
+        for (int x = chunkBounds.minX(); x <= chunkBounds.maxX(); x++) {
+            for (int z = chunkBounds.minZ(); z <= chunkBounds.maxZ(); z++) {
+                if (!PhysicsChunkTicketManager.isChunkLoadedEnough(level, x, z)) continue;
+                for (int y = chunkBounds.minY(); y <= chunkBounds.maxY(); y++) {
+                    int index = level.getSectionIndexFromSectionY(y);
+                    if (index < 0 || index >= level.getSectionsCount()) continue;
+
+                    SectionPos sectionPos = SectionPos.of(x, y, z);
+                    dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicket ticket =
+                        this.physicsChunks.get(sectionPos);
+                    if (ticket == null) {
+                        LevelChunk chunkAt = level.getChunk(x, z);
+                        pipeline.handleChunkSectionAddition(
+                            chunkAt.getSection(index), x, y, z, false);
+                        ticket = new dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicket(
+                            sectionPos, gameTime, null);
+                        this.physicsChunks.put(sectionPos, ticket);
+                    }
+                    ticket.setLastInhabitedTick(gameTime);
+                }
+            }
         }
     }
 }

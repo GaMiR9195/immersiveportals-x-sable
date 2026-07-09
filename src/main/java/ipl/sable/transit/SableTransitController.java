@@ -155,6 +155,7 @@ public final class SableTransitController {
         lastTransitTick.clear();
         lockedCrossingNormal.clear();
         hostedStraddleLatch.clear();
+        IplStraddleCloneBody.clearAll();
         IplStraddleTerrainClone.clearAll();
         SableRehomeOps.resetBootRestore();
         ipl.sable.dim.IplSceneOwnership.clearAll();
@@ -308,6 +309,21 @@ public final class SableTransitController {
                 PortalCrossingDetector.CrossingState state =
                     PortalCrossingDetector.evaluate(airship, portal, normal);
 
+                // Bring-up probe (remove later): log every phase evaluation that is either
+                // non-trivial or follows a latched straddle — the 1-tick clone-session
+                // mystery lives in this decision.
+                if (hosted && (state.phase() != PortalCrossingDetector.CrossingPhase.APPROACHING
+                    || hostedStraddleLatch.contains(key))) {
+                    LOG.info("[IPL-PHASE] uuid={} portal={} phase={} lead={} trail={} nearby={} latched={}",
+                        airship.getUniqueId().toString().substring(0, 8),
+                        portalUuid.toString().substring(0, 8),
+                        state.phase(),
+                        String.format("%.2f", state.leadingEdge()),
+                        String.format("%.2f", state.trailingEdge()),
+                        nearbyDedup.size(),
+                        hostedStraddleLatch.contains(key));
+                }
+
                 // Hosted (dim-agnostic) dispatch: no mirrors. The explicit straddle latch
                 // replaces "mirror exists" as the only-swap-after-straddle guard; CROSSED
                 // resolves to a parent flip via SableRehomeOps.executeHostedTransit.
@@ -315,6 +331,9 @@ public final class SableTransitController {
                     switch (state.phase()) {
                         case CROSSED -> {
                             if (hostedStraddleLatch.remove(key)) {
+                                // Clone must despawn BEFORE the transit migrates the real
+                                // body into the dest scene (their plot sections share keys).
+                                IplStraddleCloneBody.clear(key, "crossed");
                                 IplStraddleTerrainClone.clear(key);
                                 if (candidates == null) candidates = new ArrayList<>(1);
                                 candidates.add(new TransitCandidate(airship, portal));
@@ -325,14 +344,20 @@ public final class SableTransitController {
                         case STRADDLING -> {
                             hostedStraddleLatch.add(key);
                             seenHostedKeys.add(key);
-                            // Cross-seam physics: clone dest terrain (through the inverse
-                            // portal transform) into the hosting scene while straddling.
-                            IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
+                            // Cross-seam physics: a servoed CLONE BODY in the dest scene
+                            // (per-scene model, spec §2.3-2.4), or legacy: dest terrain
+                            // baked into the body's scene through the inverse transform.
+                            if (IplStraddleCloneBody.isEnabled()) {
+                                IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
+                            } else {
+                                IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
+                            }
                         }
                         case APPROACHING -> {
                             // Ship backed out of a straddle (or hasn't reached the plane):
                             // clear the latch but keep the locked normal while still nearby.
                             if (hostedStraddleLatch.remove(key)) {
+                                IplStraddleCloneBody.clear(key, "backed-out");
                                 IplStraddleTerrainClone.clear(key);
                             }
                             seenHostedKeys.add(key);
@@ -420,6 +445,7 @@ public final class SableTransitController {
         if (IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(level)) {
             hostedStraddleLatch.removeIf(k -> {
                 if (!seenHostedKeys.contains(k)) {
+                    IplStraddleCloneBody.clear(k, "reaped");
                     IplStraddleTerrainClone.clear(k);
                     return true;
                 }

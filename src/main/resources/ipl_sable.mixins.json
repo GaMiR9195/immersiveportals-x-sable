@@ -42,7 +42,9 @@
     "IplHostingLevelNeverEmptyMixin",
     "IplHostedBeTickContextMixin",
     "IplHostedWorldFrameRouterMixin",
-    "IplEntityLevelInvoker"
+    "IplEntityLevelInvoker",
+    "IplRapierPipelineAccess",
+    "IplCloneSubstepMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",

@@ -38,6 +38,8 @@ public final class IplStraddlePoseMap {
             // Client-only class; loaded lazily when this branch executes.
             return ipl.sable.client.IplClientHostedLookup.getClientStraddleOffsetInto(sub, contextLevel);
         }
+        BlockPos cloneOffset = IplStraddleCloneBody.getOffsetInto(sub, contextLevel);
+        if (cloneOffset != null) return cloneOffset;
         return IplStraddleTerrainClone.getOffsetInto(sub, contextLevel);
     }
 
@@ -52,7 +54,8 @@ public final class IplStraddlePoseMap {
         if (contextLevel.isClientSide()) {
             return ipl.sable.client.IplClientHostedLookup.isClientStraddling(sub);
         }
-        return IplStraddleTerrainClone.hasSession(sub.getUniqueId());
+        return IplStraddleCloneBody.hasSession(sub.getUniqueId())
+            || IplStraddleTerrainClone.hasSession(sub.getUniqueId());
     }
 
     /** Copy of {@code pose} translated into the mapped frame. */
