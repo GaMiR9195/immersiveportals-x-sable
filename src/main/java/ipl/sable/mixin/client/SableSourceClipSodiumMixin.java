@@ -1,7 +1,6 @@
 package ipl.sable.mixin.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
-import dev.ryanhcode.sable.sublevel.render.sodium.SubLevelRenderSectionManager;
 import ipl.sable.render.SourceClipDiag;
 import ipl.sable.render.SourceClipPortalFinder;
 import ipl.sable.render.SubLevelClipUniformPatcher;
@@ -25,8 +24,12 @@ import qouteall.imm_ptl.core.render.FrontClipping;
  * independent {@code ipl_subLevelClipEquation} uniform (gl_ClipDistance[1])
  * and enable {@code GL_CLIP_DISTANCE1} for the draw.
  */
+// NOTE (sable 2.0 migration): SubLevelRenderSectionManager no longer exists — Sable 2.0
+// restructured the Sodium path into mixin impls (sublevel_render/impl/sodium). String
+// target keeps this compiling and silently inert; re-target when the Sodium backend work
+// happens (it remains documented-untested).
 @Pseudo
-@Mixin(value = SubLevelRenderSectionManager.class, remap = false)
+@Mixin(targets = "dev.ryanhcode.sable.sublevel.render.sodium.SubLevelRenderSectionManager", remap = false)
 public abstract class SableSourceClipSodiumMixin {
 
     @Shadow(remap = false)

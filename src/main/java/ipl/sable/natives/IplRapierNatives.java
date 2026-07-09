@@ -33,5 +33,5 @@ public final class IplRapierNatives {
      * <p>Layout: N regions × 14 doubles —
      * {@code [px py pz  nx ny nz  wx wy wz  halfW  hx hy hz  halfH]}.
      */
-    public static native void setClipRegions(int sceneId, int bodyId, double[] regions);
+    public static native void setClipRegions(long sceneHandle, int bodyId, double[] regions);
 }

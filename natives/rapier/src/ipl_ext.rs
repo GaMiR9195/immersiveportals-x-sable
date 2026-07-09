@@ -1,36 +1,36 @@
-//! IPSable extensions to the sable_rapier natives (portal-physics spec phase 4).
+//! IPSable extensions to the sable_rapier natives (portal-physics spec phase 4),
+//! rebased onto sable 2.0.3 (scene handles are raw `Arc<PhysicsScene>` pointers; sable
+//! data lives behind `RwLock`, so hook-time reads are properly synchronized).
 //!
 //! Exposed under the `ipl.sable.natives.IplRapierNatives` Java class — sable's own JNI
-//! surface is untouched, so the ABI stays compatible with the release jar.
+//! surface is untouched.
 
 use jni::JNIEnv;
 use jni::objects::{JClass, JDoubleArray};
-use jni::sys::jint;
+use jni::sys::{jint, jlong};
 use marten::Real;
-use rapier3d::math::Vector;
+use rapier3d::math::Vec3;
 
-use crate::get_scene_mut;
-use crate::scene::LevelColliderID;
+use crate::scene::{LevelColliderID, PhysicsScene};
 
 /// An oriented clip volume for aperture contact clipping (spec §2.5): solver contacts past
 /// the plane (signed distance >= 0 along `normal`) AND within the lateral rectangle
 /// (|projection on axis_w| <= half_w, |projection on axis_h| <= half_h) are dropped from
 /// the owning body's manifolds. The lateral bound is what makes geometry passing BESIDE a
-/// free-standing portal frame collide normally — an infinite half-space gets that wrong
-/// both ways.
+/// free-standing portal frame collide normally.
 #[derive(Debug, Clone)]
 pub struct IplClipRegion {
-    pub point: Vector,
-    pub normal: Vector,
-    pub axis_w: Vector,
+    pub point: Vec3,
+    pub normal: Vec3,
+    pub axis_w: Vec3,
     pub half_w: Real,
-    pub axis_h: Vector,
+    pub axis_h: Vec3,
     pub half_h: Real,
 }
 
 impl IplClipRegion {
     #[inline]
-    pub fn contains(&self, p: Vector) -> bool {
+    pub fn contains(&self, p: Vec3) -> bool {
         let rel = p - self.point;
         if rel.dot(self.normal) < 0.0 {
             return false;
@@ -45,10 +45,13 @@ impl IplClipRegion {
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'local>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
-    scene_id: jint,
+    scene_handle: jlong,
     body_id: jint,
     data: JDoubleArray<'local>,
 ) {
+    if scene_handle == 0 {
+        return;
+    }
     let len = match env.get_array_length(&data) {
         Ok(l) => l as usize,
         Err(_) => return,
@@ -58,8 +61,10 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
         return;
     }
 
-    let scene = get_scene_mut(scene_id);
-    let Some(info) = scene
+    // Same handle-deref pattern as the upstream natives (with_handle).
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene.sable_data.write().unwrap();
+    let Some(info) = sable_data
         .level_colliders
         .get_mut(&(body_id as LevelColliderID))
     else {
@@ -69,11 +74,11 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
     info.clip_regions.clear();
     for c in values.chunks_exact(14) {
         info.clip_regions.push(IplClipRegion {
-            point: Vector::new(c[0] as Real, c[1] as Real, c[2] as Real),
-            normal: Vector::new(c[3] as Real, c[4] as Real, c[5] as Real),
-            axis_w: Vector::new(c[6] as Real, c[7] as Real, c[8] as Real),
+            point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
+            normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
+            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
             half_w: c[9] as Real,
-            axis_h: Vector::new(c[10] as Real, c[11] as Real, c[12] as Real),
+            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
             half_h: c[13] as Real,
         });
     }

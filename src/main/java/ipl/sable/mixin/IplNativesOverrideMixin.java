@@ -3,7 +3,6 @@ package ipl.sable.mixin;
 import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
-import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -25,7 +24,7 @@ import java.nio.file.StandardCopyOption;
  * resource ({@code /natives_ipl/}), and this mixin — whose handler executes as merged
  * {@code Rapier3D} code, i.e. the exact classloader whose natives the JVM resolves —
  * extracts and {@code System.load}s it at the head of {@code loadLibrary}, cancelling the
- * stock path. The local build is ABI-reconciled against the sable 1.2.2 jar
+ * stock path. The local build is built from the matching sable release tag
  * (5-arg {@code newVoxelCollider}, no-op {@code dispose}).
  *
  * <p>Fail-open: any problem (missing resource — e.g. non-Windows platforms we don't bundle,
@@ -35,9 +34,6 @@ import java.nio.file.StandardCopyOption;
 @Pseudo
 @Mixin(value = Rapier3D.class, remap = false)
 public abstract class IplNativesOverrideMixin {
-
-    @Shadow(remap = false)
-    public static boolean ENABLED;
 
     @Inject(method = "loadLibrary", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private static void ipl$loadCustomNatives(CallbackInfo ci) {
@@ -73,7 +69,6 @@ public abstract class IplNativesOverrideMixin {
                 Path dll = dir.resolve("sable_rapier_ipl_x86_64_windows.dll");
                 Files.copy(stream, dll, StandardCopyOption.REPLACE_EXISTING);
                 System.load(dll.toAbsolutePath().toString());
-                ENABLED = true;
                 ipl.sable.natives.IplRapierNatives.markAvailable();
                 org.slf4j.LoggerFactory.getLogger("ipl-natives").info(
                     "[IPL-NATIVES] loaded IPSable-built sable_rapier natives from {}", dll.toAbsolutePath());

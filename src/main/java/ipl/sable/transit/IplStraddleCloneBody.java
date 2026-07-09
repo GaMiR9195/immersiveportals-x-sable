@@ -101,8 +101,9 @@ public final class IplStraddleCloneBody {
         final ServerSubLevel sub;
         final ServerLevel parent;
         final ServerLevel dest;
-        final int parentSceneId;
-        final int destSceneId;
+        /** Sable 2.0: scenes are native long handles held by each level's pipeline. */
+        final long parentScene;
+        final long destScene;
         final int realId;
         final int cloneId;
         final BlockPos offset;
@@ -122,13 +123,14 @@ public final class IplStraddleCloneBody {
         /** Dest dimension gravity (m/s²), analytically removed from the velocity delta. */
         org.joml.Vector3d destGravity = new org.joml.Vector3d(0, -9.8, 0);
 
-        Session(ServerSubLevel sub, ServerLevel parent, ServerLevel dest, BlockPos offset) {
+        Session(ServerSubLevel sub, ServerLevel parent, ServerLevel dest, BlockPos offset,
+                long parentScene, long destScene) {
             this.sub = sub;
             this.parent = parent;
             this.dest = dest;
             this.offset = offset;
-            this.parentSceneId = Rapier3D.getID(parent);
-            this.destSceneId = Rapier3D.getID(dest);
+            this.parentScene = parentScene;
+            this.destScene = destScene;
             this.realId = Rapier3D.getID(sub);
             this.cloneId = Rapier3D.nextBodyID();
         }
@@ -171,7 +173,13 @@ public final class IplStraddleCloneBody {
             new MirrorRegistry.MirrorKey(hosted.getUniqueId(), portal.getUUID());
         if (SESSIONS.containsKey(key)) return;
 
-        Session session = new Session(hosted, parent, dest, offset);
+        RapierPhysicsPipeline parentPipeline = IplSceneOwnership.pipelineOf(parent);
+        RapierPhysicsPipeline destPipeline = IplSceneOwnership.pipelineOf(dest);
+        if (parentPipeline == null || destPipeline == null) return;
+        long parentScene = ((IplRapierPipelineAccess) parentPipeline).ipl$sceneHandle();
+        long destScene = ((IplRapierPipelineAccess) destPipeline).ipl$sceneHandle();
+
+        Session session = new Session(hosted, parent, dest, offset, parentScene, destScene);
         try {
             session.destGravity.set(
                 dev.ryanhcode.sable.physics.config.dimension_physics.DimensionPhysicsData
@@ -196,17 +204,17 @@ public final class IplStraddleCloneBody {
             Vec3 axisH = portal.getAxisH();
 
             session.realClipRegion = clipRegion(origin, sourceToDest, axisW, halfW, axisH, halfH);
-            applyRealClipRegions(hosted, session.parentSceneId, session.realId);
+            applyRealClipRegions(hosted, session.parentScene, session.realId);
 
             Vec3 destPlanePoint = origin.add(offset.getX(), offset.getY(), offset.getZ());
             double[] cloneRegion = clipRegion(
                 destPlanePoint, sourceToDest.scale(-1.0), axisW, halfW, axisH, halfH);
             ipl.sable.natives.IplRapierNatives.setClipRegions(
-                session.destSceneId, session.cloneId, cloneRegion);
+                session.destScene, session.cloneId, cloneRegion);
         }
 
         LOG.info("[IPL-CLONE] start uuid={} portal={} offset={} cloneId={} destScene={} clipped={}",
-            hosted.getUniqueId(), portal.getUUID(), offset, session.cloneId, session.destSceneId,
+            hosted.getUniqueId(), portal.getUUID(), offset, session.cloneId, session.destScene,
             session.realClipRegion != null);
     }
 
@@ -225,7 +233,7 @@ public final class IplStraddleCloneBody {
      * (Re)apply the union of all active sessions' clip regions to a ship's REAL body —
      * a ship can straddle several portals at once, and regions replace wholesale.
      */
-    private static void applyRealClipRegions(ServerSubLevel ship, int parentSceneId, int realId) {
+    private static void applyRealClipRegions(ServerSubLevel ship, long parentScene, int realId) {
         java.util.ArrayList<double[]> regions = new java.util.ArrayList<>(2);
         for (Session s : SESSIONS.values()) {
             if (s.sub == ship && s.realClipRegion != null) regions.add(s.realClipRegion);
@@ -234,7 +242,7 @@ public final class IplStraddleCloneBody {
         for (int i = 0; i < regions.size(); i++) {
             System.arraycopy(regions.get(i), 0, flat, i * 14, 14);
         }
-        ipl.sable.natives.IplRapierNatives.setClipRegions(parentSceneId, realId, flat);
+        ipl.sable.natives.IplRapierNatives.setClipRegions(parentScene, realId, flat);
     }
 
     /** Straddle ended (backed out, flipped, or left the zone): despawn the clone. */
@@ -247,7 +255,7 @@ public final class IplStraddleCloneBody {
         if (session.realClipRegion != null
             && ipl.sable.natives.IplRapierNatives.isAvailable()
             && !session.sub.isRemoved()) {
-            applyRealClipRegions(session.sub, session.parentSceneId, session.realId);
+            applyRealClipRegions(session.sub, session.parentScene, session.realId);
         }
         LOG.info("[IPL-CLONE] end uuid={} cloneId={} reason={}",
             session.sub.getUniqueId(), session.cloneId, reason);
@@ -317,17 +325,17 @@ public final class IplStraddleCloneBody {
             pose.orientation().x(), pose.orientation().y(),
             pose.orientation().z(), pose.orientation().w()
         };
-        Rapier3D.createSubLevel(s.destSceneId, s.cloneId, p7);
+        ipl.sable.mixin.IplRapier3DInvoker.ipl$createSubLevel(s.destScene, s.cloneId, p7);
 
         // Stats BEFORE any chunk insert — native insert_block unwraps local_bounds and
         // hard-aborts the process without them (the phase-1 lesson, lib.rs:218).
         Vector3dc com = s.sub.getMassTracker().getCenterOfMass();
         if (com != null) {
-            Rapier3D.setCenterOfMass(s.destSceneId, s.cloneId, com.x(), com.y(), com.z());
-            Rapier3D.setMassPropertiesFrom(s.destSceneId, s.cloneId, s.sub.getMassTracker());
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$setCenterOfMass(s.destScene, s.cloneId, com.x(), com.y(), com.z());
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$setMassPropertiesFrom(s.destScene, s.cloneId, s.sub.getMassTracker());
         }
         BoundingBox3ic bounds = s.sub.getPlot().getBoundingBox();
-        Rapier3D.setLocalBounds(s.destSceneId, s.cloneId,
+        ipl.sable.mixin.IplRapier3DInvoker.ipl$setLocalBounds(s.destScene, s.cloneId,
             bounds.minX(), bounds.minY(), bounds.minZ(),
             bounds.maxX(), bounds.maxY(), bounds.maxZ());
 
@@ -378,7 +386,7 @@ public final class IplStraddleCloneBody {
                             }
                         }
                     }
-                    Rapier3D.addChunk(s.destSceneId, cp.x, sectionY, cp.z, packed, false, s.cloneId);
+                    ipl.sable.mixin.IplRapier3DInvoker.ipl$addChunk(s.destScene, cp.x, sectionY, cp.z, packed, false, s.cloneId);
                     s.fedSections.add(SectionPos.asLong(cp.x, sectionY, cp.z));
                 }
             }
@@ -390,10 +398,10 @@ public final class IplStraddleCloneBody {
     private static void despawn(Session s) {
         for (int i = 0; i < s.fedSections.size(); i++) {
             long packed = s.fedSections.getLong(i);
-            Rapier3D.removeChunk(s.destSceneId,
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$removeChunk(s.destScene,
                 SectionPos.x(packed), SectionPos.y(packed), SectionPos.z(packed), false);
         }
-        Rapier3D.removeSubLevel(s.destSceneId, s.cloneId);
+        ipl.sable.mixin.IplRapier3DInvoker.ipl$removeSubLevel(s.destScene, s.cloneId);
     }
 
     // ------------------------------------------------------------------
@@ -420,18 +428,18 @@ public final class IplStraddleCloneBody {
             s.targetPose[5] = real.orientation().z();
             s.targetPose[6] = real.orientation().w();
 
-            Rapier3D.teleportObject(s.destSceneId, s.cloneId,
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(s.destScene, s.cloneId,
                 s.targetPose[0], s.targetPose[1], s.targetPose[2],
                 s.targetPose[3], s.targetPose[4], s.targetPose[5], s.targetPose[6]);
 
             // Exact-set the clone's velocities to the real body's (translation-only
             // portals: the frames align; addLinearAngularVelocities is a native set of
             // current + delta).
-            Rapier3D.getLinearVelocity(s.parentSceneId, s.realId, s.realLin);
-            Rapier3D.getAngularVelocity(s.parentSceneId, s.realId, s.realAng);
-            Rapier3D.getLinearVelocity(s.destSceneId, s.cloneId, s.cloneLin);
-            Rapier3D.getAngularVelocity(s.destSceneId, s.cloneId, s.cloneAng);
-            Rapier3D.addLinearAngularVelocities(s.destSceneId, s.cloneId,
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(s.parentScene, s.realId, s.realLin);
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(s.parentScene, s.realId, s.realAng);
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(s.destScene, s.cloneId, s.cloneLin);
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(s.destScene, s.cloneId, s.cloneAng);
+            Rapier3D.addLinearAngularVelocities(s.destScene, s.cloneId,
                 s.realLin[0] - s.cloneLin[0], s.realLin[1] - s.cloneLin[1],
                 s.realLin[2] - s.cloneLin[2],
                 s.realAng[0] - s.cloneAng[0], s.realAng[1] - s.cloneAng[1],
@@ -461,7 +469,7 @@ public final class IplStraddleCloneBody {
             s.pinned = false;
             if (s.sub.isRemoved()) continue;
 
-            Rapier3D.getPose(s.destSceneId, s.cloneId, s.poseBuf);
+            Rapier3D.getPose(s.destScene, s.cloneId, s.poseBuf);
             double dx = s.poseBuf[0] - s.targetPose[0] - s.destGravity.x * dt * dt * 0.5;
             double dy = s.poseBuf[1] - s.targetPose[1] - s.destGravity.y * dt * dt * 0.5;
             double dz = s.poseBuf[2] - s.targetPose[2] - s.destGravity.z * dt * dt * 0.5;
@@ -490,8 +498,8 @@ public final class IplStraddleCloneBody {
             double angle = axisLen > 1e-9
                 ? 2.0 * Math.acos(Math.min(1.0, Math.max(-1.0, dq.w))) : 0.0;
 
-            Rapier3D.getLinearVelocity(s.destSceneId, s.cloneId, s.cloneLin);
-            Rapier3D.getAngularVelocity(s.destSceneId, s.cloneId, s.cloneAng);
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(s.destScene, s.cloneId, s.cloneLin);
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(s.destScene, s.cloneId, s.cloneAng);
             double dvx = s.cloneLin[0] - s.pinnedLin[0] - s.destGravity.x * dt;
             double dvy = s.cloneLin[1] - s.pinnedLin[1] - s.destGravity.y * dt;
             double dvz = s.cloneLin[2] - s.pinnedLin[2] - s.destGravity.z * dt;
@@ -522,7 +530,7 @@ public final class IplStraddleCloneBody {
             }
 
             // Apply to the real body: position/rotation shift + velocity correction.
-            Rapier3D.getPose(s.parentSceneId, s.realId, s.poseBuf);
+            Rapier3D.getPose(s.parentScene, s.realId, s.poseBuf);
             double nx = s.poseBuf[0] + (posMoved ? dx : 0);
             double ny = s.poseBuf[1] + (posMoved ? dy : 0);
             double nz = s.poseBuf[2] + (posMoved ? dz : 0);
@@ -533,13 +541,13 @@ public final class IplStraddleCloneBody {
                     dq.x / axisLen, dq.y / axisLen, dq.z / axisLen);
                 realRot = clampedDq.mul(realRot, new Quaterniond()).normalize();
             }
-            Rapier3D.teleportObject(s.parentSceneId, s.realId,
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(s.parentScene, s.realId,
                 nx, ny, nz, realRot.x, realRot.y, realRot.z, realRot.w);
             if (velMoved) {
-                Rapier3D.addLinearAngularVelocities(s.parentSceneId, s.realId,
+                Rapier3D.addLinearAngularVelocities(s.parentScene, s.realId,
                     dvx, dvy, dvz, dax, day, daz, true);
             }
-            Rapier3D.wakeUpObject(s.parentSceneId, s.realId);
+            Rapier3D.wakeUpObject(s.parentScene, s.realId);
 
             long now = System.currentTimeMillis();
             if (now - lastServoLogMs > 2000) {

@@ -23,4 +23,8 @@ public interface IplRapierPipelineAccess {
 
     @Accessor(value = "colliderBakery", remap = false)
     RapierVoxelColliderBakery ipl$colliderBakery();
+
+    /** Sable 2.0: scene ids are native {@code long} handles held by the pipeline. */
+    @org.spongepowered.asm.mixin.gen.Invoker(value = "getSceneHandle", remap = false)
+    long ipl$sceneHandle();
 }

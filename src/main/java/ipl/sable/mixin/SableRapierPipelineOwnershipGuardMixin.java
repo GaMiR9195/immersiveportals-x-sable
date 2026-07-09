@@ -259,9 +259,13 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
      */
     @Inject(method = "addConstraint", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private <T extends PhysicsConstraintHandle> void ipl$guardAddConstraint(
-        @Nullable ServerSubLevel sublevelA, @Nullable ServerSubLevel sublevelB,
+        @Nullable PhysicsPipelineBody bodyA, @Nullable PhysicsPipelineBody bodyB,
         PhysicsConstraintConfiguration<T> configuration, CallbackInfoReturnable<T> cir
     ) {
+        // Sable 2.0 widened the params to PhysicsPipelineBody; our ownership logic still
+        // keys on sub-levels (other body kinds are always locally owned).
+        ServerSubLevel sublevelA = bodyA instanceof ServerSubLevel s ? s : null;
+        ServerSubLevel sublevelB = bodyB instanceof ServerSubLevel s ? s : null;
         if (ipl$notOwnedSub(sublevelA) || ipl$notOwnedSub(sublevelB)) {
             // Dim-agnostic forward (the physics staff resolves the player's dim's pipeline
             // while the grabbed body lives in the hosting pipeline). Both non-null ends must
@@ -274,7 +278,8 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
                 || ipl$sceneLevelOf(sublevelA) == ipl$sceneLevelOf(sublevelB);
             if (target != null && sameScene) {
                 ipl$logConstraintForward(sublevelA, sublevelB, configuration);
-                cir.setReturnValue(target.addConstraint(sublevelA, sublevelB, configuration));
+                // Forward the ORIGINAL bodies — one end may be a non-sublevel body.
+                cir.setReturnValue(target.addConstraint(bodyA, bodyB, configuration));
                 return;
             }
 
@@ -327,13 +332,14 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
         method = "processCollisionEffects",
         at = @At(
             value = "INVOKE",
-            target = "Ldev/ryanhcode/sable/physics/impl/rapier/Rapier3D;clearCollisions(I)[D"
+            // Sable 2.0: scene ids are native long handles.
+            target = "Ldev/ryanhcode/sable/physics/impl/rapier/Rapier3D;clearCollisions(J)[D"
         ),
         require = 0)
     private double[] ipl$teeCollisionRecords(
-        int sceneId, com.llamalad7.mixinextras.injector.wrapoperation.Operation<double[]> original
+        long sceneHandle, com.llamalad7.mixinextras.injector.wrapoperation.Operation<double[]> original
     ) {
-        double[] records = original.call(sceneId);
+        double[] records = original.call(sceneHandle);
         ipl.sable.transit.IplStraddleCloneBody.onCollisionRecords(this.level, records);
         return records;
     }

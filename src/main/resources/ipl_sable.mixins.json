@@ -44,6 +44,7 @@
     "IplHostedWorldFrameRouterMixin",
     "IplEntityLevelInvoker",
     "IplRapierPipelineAccess",
+    "IplRapier3DInvoker",
     "IplCloneSubstepMixin",
     "IplNativesOverrideMixin"
   ],

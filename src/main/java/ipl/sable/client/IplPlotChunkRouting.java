@@ -71,7 +71,7 @@ public final class IplPlotChunkRouting {
 
         level.onChunkLoaded(chunkPos);
         level.getLightEngine().setLightEnabled(chunkPos, true);
-        SableChunkEventPlatform.INSTANCE.onChunkPacketReplaced(chunk);
+        SableChunkEventPlatform.INSTANCE.onClientChunkPacketReplaced(chunk);
         return chunk;
     }
 
