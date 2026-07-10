@@ -14,11 +14,16 @@ apply plugin: 'maven-publish'
 apply plugin: 'net.neoforged.gradle.userdev'
 apply plugin: 'net.neoforged.gradle.mixin'
 
-version = mod_version
+// The archive carries the fork's version. The mod's *declared* version (what lands
+// in neoforge.mods.toml and what other mods' dependency ranges check against) stays
+// mod_version, expanded in ProcessResources below.
+version = "${fork_version}+ip-${mod_version}"
 group = mod_group_id
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
+// Each repository is scoped (exclusiveContent) to the groups it actually serves,
+// so Gradle never probes the wrong host and resolution stays deterministic.
 repositories {
     mavenLocal()
     exclusiveContent {
@@ -42,18 +47,96 @@ repositories {
             includeGroup "curse.maven"
         }
     }
-    maven {
-        name "tterrag maven"
-        url "https://maven.tterrag.com/"
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "CaffeineMC"
+                url = "https://maven.caffeinemc.net/releases"
+            }
+        }
+        filter {
+            includeGroup "net.caffeinemc"
+        }
     }
-
-    flatDir {
-        dir "deps"
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "Sinytra"
+                url = "https://maven.su5ed.dev/releases"
+            }
+        }
+        filter {
+            includeGroupByRegex "org\\.sinytra.*"
+        }
+    }
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "Create"
+                url = "https://maven.createmod.net"
+            }
+        }
+        filter {
+            includeGroup "com.simibubi.create"
+            includeGroup "net.createmod.ponder"
+            includeGroup "dev.engine-room.flywheel"
+        }
+    }
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "IThundxr"
+                url = "https://maven.ithundxr.dev/snapshots"
+            }
+        }
+        filter {
+            includeGroup "com.tterrag.registrate"
+        }
+    }
+    exclusiveContent {
+        forRepository {
+            // Sable, its companion, Offroad, plus Create Aeronautics + Simulated
+            maven {
+                name = "RyanHCode"
+                url = "https://maven.ryanhcode.dev/releases"
+            }
+        }
+        filter {
+            includeGroupByRegex "dev\\.ryanhcode.*"
+            includeGroup "dev.eriksonn.aeronautics"
+            includeGroup "dev.simulated_team.simulated"
+        }
+    }
+    exclusiveContent {
+        forRepository {
+            // Veil (+ its glsl-processor / molang-compiler transitives), JEI
+            maven {
+                name = "BlameJared"
+                url = "https://maven.blamejared.com"
+            }
+        }
+        filter {
+            includeGroup "foundry.veil"
+            includeGroup "io.github.ocelot"
+            includeGroupByRegex "gg\\.moonflower.*"
+            includeGroup "mezz.jei"
+        }
+    }
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "TheIllusiveC4"
+                url = "https://maven.theillusivec4.top"
+            }
+        }
+        filter {
+            includeGroupByRegex "top\\.theillusivec4.*"
+        }
     }
 }
 
 base {
-    archivesName = mod_id
+    archivesName = archives_base_name
 }
 
 jarJar.enable()
@@ -130,17 +213,19 @@ mixin {
 
 dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
-    /*implementation "maven.modrinth:embeddium:Na1PoLYF"
-    compileOnly "maven.modrinth:oculus:1.20.1-1.6.15a"*/
 
-    implementation "maven.modrinth:sodium:mc1.21.1-0.6.13-neoforge"
-    implementation "maven.modrinth:iris:1.8.1+1.21.1-neoforge"
-
-    // Modern Flywheel for NeoForge 1.21.1 -- extracted from Create's JIJ.
-    // Needed so IplFlywheelEmbeddedClipMixin can use direct class
-    // references to EmbeddedEnvironment + GlProgram. compileOnly because
-    // Flywheel is loaded at runtime via Create's JIJ already.
-    compileOnly files("libs/flywheel-neoforge-1.21.1-1.0.6.jar")
+    // Sodium 0.8+ publishes native NeoForge artifacts. The release jar players
+    // install JiJ-bundles the Forgified Fabric API modules below; the dev
+    // environment uses the unbundled -mod artifact, so they're declared here.
+    // (FFAPI is Sinytra's native NeoForge port of Fabric API - no Connector.)
+    implementation "net.caffeinemc:sodium-neoforge-mod:${sodium_version}+mc${minecraft_version}"
+    implementation "net.caffeinemc:sodium-neoforge-api:${sodium_version}+mc${minecraft_version}"
+    implementation "net.caffeinemc:sodium-neoforge:${sodium_version}+mc${minecraft_version}"
+    implementation "org.sinytra.forgified-fabric-api:fabric-api-base:0.4.42+d1308ded19"
+    implementation "org.sinytra.forgified-fabric-api:fabric-block-view-api-v2:1.0.11+e9036fd419"
+    implementation "org.sinytra.forgified-fabric-api:fabric-rendering-data-attachment-v1:0.3.49+73761d2e19"
+    implementation "org.sinytra.forgified-fabric-api:fabric-renderer-api-v1:3.4.1+9125b6dc19"
+    implementation "maven.modrinth:iris:1.8.14-beta.1+1.21.1-neoforge"
 
     implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
     implementation "maven.modrinth:pehkui:3.8.3+1.21-neoforge"
@@ -157,37 +242,34 @@ dependencies {
 //    implementation "curse.maven:camol-1214396:6337020"
 
     // Oritech
-    implementation "maven.modrinth:oritech:0.16.2"
+    implementation "maven.modrinth:oritech:1.2.6-neoforge"
     implementation "maven.modrinth:architectury-api:13.0.8+neoforge"
-    implementation "maven.modrinth:geckolib:DTo3uxPN"
-    // stitch:4.0.1 no longer exists on Modrinth maven (404). Unused in IP src - commenting out.
-    // implementation "maven.modrinth:stitch:4.0.1"
+    implementation "maven.modrinth:geckolib:4.7.7-neoforge"
+    implementation "maven.modrinth:athena-ctm:4.0.6-neoforge"
 
-    // Create (bumped from 6.0.6 to 6.0.10 to match Sable's pin)
-    implementation "maven.modrinth:create:UjX6dr61"
+    // Create ("slim" = no bundled deps, so Ponder/Flywheel/Registrate are declared
+    // explicitly; in release jars they arrive via Create's JarInJar)
+    implementation("com.simibubi.create:create-${minecraft_version}:${create_version}:slim") { transitive = false }
+    implementation "net.createmod.ponder:ponder-neoforge:${ponder_version}+mc${minecraft_version}"
+    implementation "dev.engine-room.flywheel:flywheel-neoforge-${minecraft_version}:${flywheel_version}"
+    implementation "com.tterrag.registrate:Registrate:${registrate_version}"
 
-    // Create Aeronautics 1.3.0 (bundled jar; brings its own deps via JarInJar)
-    runtimeOnly "maven.modrinth:create-aeronautics:w7zlLnea"
+    // Sable - needed at compile time so IP's mixin compat patches can target Sable
+    // classes/methods. The Rapier physics layer ships as its own subproject artifact
+    // (same java package), and the companion's types appear in Sable's API surface
+    // (SubLevel.boundingBox() returns BoundingBox3dc, etc).
+    implementation "dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}"
+    implementation "dev.ryanhcode.sable:sable-sable_rapier-${minecraft_version}:${sable_version}"
+    implementation "dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:${sable_companion_version}"
+    // Veil - Sable's networking framework; its PacketContext type appears in Sable's
+    // packet handler signatures. Veil pulls in glsl-processor transitively, which our
+    // Veil ShaderPreProcessor needs on the compile classpath (GlslTree / GlslParser).
+    implementation "foundry.veil:veil-neoforge-${minecraft_version}:${veil_version}"
 
-    // Sable 2.0.3 - needed at compile time so IP's mixin compat patches can target
-    // Sable classes/methods. Since 2.0 the Rapier physics layer ships as its own
-    // JarJar'd subproject jar (same java package), so it joins the compile classpath
-    // alongside the main jar and the companion (whose types appear in Sable's API
-    // surface: SubLevel.boundingBox() returns BoundingBox3dc, etc). Extracted via:
-    //   unzip -j deps/sable-neoforge-1.21.1-2.0.3.jar 'META-INF/jarjar/*.jar' -d deps/
-    implementation files("deps/sable-neoforge-1.21.1-2.0.3.jar")
-    implementation files("deps/dev.ryanhcode.sable.sable-sable_rapier-1.21.1-2.0.3.jar")
-    implementation files("deps/sable-companion-common-1.21.1-1.6.0.jar")
-    // Veil - Sable's networking framework. Its PacketContext type appears in Sable's
-    // packet handler signatures, so we need it on the compile classpath when mixing
-    // into those handlers. Veil ships inside Sable's JarJar (4.1.4 as of sable 2.0.3).
-    implementation files("deps/veil-neoforge-1.21.1-4.1.4.jar")
-    // glsl-processor - bundled inside Veil's JarJar; needed on the compile classpath so
-    // our Veil ShaderPreProcessor can reference GlslTree / GlslParser when modifying
-    // the AST Veil hands to preprocessors. Extracted once via:
-    //   unzip -j deps/veil-neoforge-1.21.1-4.0.1.jar \
-    //     META-INF/jarjar/glsl-processor-0.2.3.jar -d deps/
-    implementation files("deps/glsl-processor-0.2.3.jar")
+    // Create Aeronautics + Simulated + Offroad (released in lockstep, one version)
+    implementation "dev.simulated_team.simulated:simulated-neoforge-${minecraft_version}:${aeronautics_version}"
+    implementation "dev.eriksonn.aeronautics:aeronautics-neoforge-${minecraft_version}:${aeronautics_version}"
+    implementation "dev.ryanhcode.offroad:offroad-neoforge-${minecraft_version}:${aeronautics_version}"
 
     // Mekanism
     implementation "maven.modrinth:mekanism:10.7.14.79"

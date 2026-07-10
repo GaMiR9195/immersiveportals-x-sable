@@ -145,11 +145,9 @@ This mod also provides some API for:
 ## Building
 
 This fork builds against NeoForge 1.21.1. Run `./gradlew build`; the mod jar is
-written to `build/libs/`. Note that the Flywheel compile dependency is supplied
-as a local file under `libs/` (extracted from Create's bundled jar) and is
-gitignored, so a fresh clone needs that jar dropped in before `compileJava` will
-succeed. The Sable jars under `deps/` are extracted from the sable release jar
-(see the comments in `build.gradle`).
+written to `build/libs/`. All dependencies (Sable, Veil, Create, Aeronautics,
+Sodium, …) resolve from public mavens — a fresh clone builds with no manual
+steps. JDK 21 is the only prerequisite.
 
 The patched Sable physics natives live under `natives/` (a fork of sable's
 Rust workspace at the matching release tag, plus our aperture-clipping
