@@ -97,8 +97,9 @@ cross-dimensional frame bugs encountered along the way live in
   your own via `natives/build-windows.ps1` or its cargo equivalent.
 - Slight positional drift can accumulate while resting hard against far-side
   walls/floors (pin/solve float mismatch — polish).
-- **Sodium/Iris render backend** for the hosted render path is untested
-  (Sable 2.0 restructured its Sodium path; our hook awaits a re-target).
+- **Iris shaders** on the hosted render path are untested. (Sodium itself is
+  supported as of v0.3.1 — hosted sub-levels render through Sable's
+  reach-around backend with Sodium 0.8.)
 - Polish items: the staff drag beam doesn't visually connect across the portal
   and the drag releases when the ship completes its transition; Jade's
   "looking at" overlay doesn't resolve targets through portals (an upstream

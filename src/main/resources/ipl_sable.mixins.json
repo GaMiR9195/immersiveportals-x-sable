@@ -64,6 +64,7 @@
     "client.IplProgramManagerProbeMixin",
     "client.IplShaderUniformProbeMixin",
     "client.IplHostedSubLevelRenderMixin",
+    "client.IplHostedSubLevelRenderSodiumMixin",
     "client.IplHostedRenderDataMixin",
     "client.IplClientPlotChunkProbeMixin",
     "client.IplRenderDataProbeMixin",
