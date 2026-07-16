@@ -8,8 +8,10 @@ configs:
       sub-level plane. Without slot-1 here, the bracket enables
       GL_CLIP_DISTANCE1 but the vertex shader never writes it, leaving the
       rasterizer reading undefined and letting cog meshes leak.
-      Camera-relative-world space (Position.xyz + ChunkOffset) matches the
-      space SubLevelClipUniformPatcher publishes the equation in.
+      Sable's vanilla chunk path leaves `Position + ChunkOffset` in rotated
+      plot-local, camera-relative space; its model-view transform applies the
+      sub-level rotation afterward. `SubLevelClipUniformPatcher` therefore
+      uploads the matching inverse-rotated normal for this shader family.
       NOTE: previous attempt to add Sable's 'terrain_solid' etc. shaders here
       caused an Iris shader compile error: "undefined variable Position".
       Those shaders use Iris/Veil attribute conventions, not vanilla's
@@ -37,50 +39,6 @@ configs:
                   iportal_ClippingEquation.w;
               gl_ClipDistance[1] = dot(_ipl_worldPos, ipl_subLevelClipEquation.xyz) +
                   ipl_subLevelClipEquation.w;
-    debugOutput: false
-  - comment: |-
-      For portal area rendering and entity rendering and particle.
-      Sable-fork fix: vanilla entity shaders consume `Position` in MODEL space
-      (per-vertex, relative to the entity's own origin) and then transform to
-      eye space via `ModelViewMat`. IP's pre-fork injection of
-      `dot(Position.xyz, iportal_ClippingEquation.xyz)` dotted model-space
-      vertices against a world-space equation — geometric nonsense that
-      "sort of" clipped depending on where the entity happened to be in world
-      coordinates. That's why a chest sitting at the base of a portal would
-      not get culled when viewed through the portal from the other side.
-      The fix: transform `Position` by `ModelViewMat` (giving eye space) and
-      use the eye-space form of the equation, which IP already computes as
-      `FrontClipping.activeClipPlaneAfterModelView`. The setShader hook in
-      `MixinRenderSystem_Clipping` now selects which form to upload by
-      checking whether the bound shader is in the entity-class affectedShaders
-      set defined here.
-    type: vs
-    affectedShaders:
-      - rendertype_entity_solid
-      - rendertype_entity_cutout
-      - rendertype_entity_cutout_no_cull
-      - rendertype_entity_cutout_no_cull_z_offset
-      - rendertype_item_entity_translucent_cull
-      - rendertype_entity_translucent_cull
-      - rendertype_entity_translucent
-      - rendertype_entity_smooth_cutout
-      - rendertype_beacon_beam",
-      - rendertype_entity_translucent_emissive
-      - rendertype_entity_translucent_cull
-      - portal_area
-      - particle
-    transformations:
-      - pattern: |-
-          void ( )*main( )*\(( )*( )*\)( )*(
-          )*\{
-        replacement: |-
-          out float gl_ClipDistance[1];
-          uniform vec4 iportal_ClippingEquation;
-          void main() {
-              gl_ClipDistance[0] = dot(
-                  (ModelViewMat * vec4(Position.xyz, 1.0)).xyz,
-                  iportal_ClippingEquation.xyz
-              ) + iportal_ClippingEquation.w;
     debugOutput: false
   - comment: |-
       For iris+sodium shaderpack-style terrain. Slot-1 added so cog block

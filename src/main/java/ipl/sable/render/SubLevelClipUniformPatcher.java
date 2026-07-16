@@ -16,6 +16,7 @@ import org.lwjgl.opengl.GL41;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.CHelper;
+import qouteall.imm_ptl.core.ducks.IEShader;
 import qouteall.q_misc_util.my_util.Plane;
 
 /**
@@ -152,6 +153,12 @@ public final class SubLevelClipUniformPatcher {
      */
     private static volatile float[] currentSubLevelEqLocal = null;
 
+    /**
+     * Equation for vanilla Sable chunk vertices. Their {@code Position + ChunkOffset}
+     * is plot-local after camera translation, unlike Iris/Sodium terrain world positions.
+     */
+    private static volatile float[] currentSubLevelEqVanillaInput = null;
+
     /** Persistent counterpart of {@link #currentSubLevelEqLocal}. */
     private static volatile float[] latestSubLevelEqLocal = null;
 
@@ -224,6 +231,10 @@ public final class SubLevelClipUniformPatcher {
         return currentSubLevelEqLocal;
     }
 
+    public static float[] getCurrentSubLevelEqVanillaInput() {
+        return currentSubLevelEqVanillaInput;
+    }
+
     /** Sub-level-local equation, persistent across bracket exit (with freshness check). */
     public static float[] getLatestSubLevelEqLocal() {
         if (ipl$latestIsStale()) return null;
@@ -264,10 +275,9 @@ public final class SubLevelClipUniformPatcher {
             return;
         }
 
-        // Build the camera-relative world-space clip equation. The shader's discard
-        // tests against (gbufferModelViewInverse * iris_ModelViewMat * (Position +
-        // ChunkOffset)).xyz which is camera-relative world coords; our (n, c) is in
-        // the same space, so dot product + c > 0 ⇔ kept side.
+        // Build the camera-relative world-space clip equation used by Iris/Sodium.
+        // Vanilla Sable terrain receives an inverse-rotated normal below because its
+        // Position + ChunkOffset remains plot-local until the model-view transform.
         Vec3 cameraPos = CHelper.getCurrentCameraPos();
         Vec3 n = plane.normal();
         Vec3 p = plane.pos();
@@ -285,7 +295,21 @@ public final class SubLevelClipUniformPatcher {
             cw = (float) c;
         }
 
-        uniform.set(nx, ny, nz, cw);
+        float[] eqVanillaInput = null;
+        if (sub != null) {
+            try {
+                Pose3dc renderPose = sub.renderPose();
+                Vec3 nInput = renderPose.transformNormalInverse(n);
+                eqVanillaInput = new float[]{(float) nInput.x, (float) nInput.y, (float) nInput.z, cw};
+            } catch (Exception e) {
+                // Fall back to world space if a transient pose read is unavailable.
+            }
+        }
+        currentSubLevelEqVanillaInput = eqVanillaInput;
+
+        float[] currentEq = IplProgramRegistry.isVanillaSubLevelInputShader(shader.getName())
+            && eqVanillaInput != null ? eqVanillaInput : new float[]{nx, ny, nz, cw};
+        uniform.set(currentEq[0], currentEq[1], currentEq[2], currentEq[3]);
         uniform.upload();
 
         // Publish world-space equation for chunk shaders (iris+sodium
@@ -313,12 +337,10 @@ public final class SubLevelClipUniformPatcher {
         currentSubLevelEqEye = eqEye;
         latestSubLevelEqEye = eqEye;
 
-        // Compute sub-level-LOCAL form. Cog / per-BE shaders under Sable
-        // apparently produce sub-level-local position from the
-        // `gbufferModelViewInverse * iris_ModelViewMat * iris_Position`
-        // chain (iris_ModelViewMat for BE path doesn't include the
-        // sub-level transform that's present in the chunk-section path).
-        // We need a matching equation form so the dot product makes sense.
+        // Retain the local form for shader paths that explicitly recover plot
+        // coordinates. Vanilla entity/text shaders do not use it: their emitted
+        // vertices already include Sable's BE pose transform and are clipped in
+        // eye space with eqEye below.
         float[] eqLocal = null;
         if (sub != null) {
             try {
@@ -349,18 +371,15 @@ public final class SubLevelClipUniformPatcher {
         // glProgramUniform4f writes to a specified program regardless of
         // bind state (GL 4.1+).
         final float[] eqW = currentSubLevelEqWorld;
-        final float[] eqL = currentSubLevelEqLocal;
+        final float[] eqV = currentSubLevelEqVanillaInput;
         IplSubLevelUniformRegistry.forEach((programId, loc) -> {
-            // Entity-style programs (block_entity_diffuse, moving_block,
-            // particles, etc.) under Sable's per-BE path produce
-            // sub-level-LOCAL position from the recovery chain -- write
-            // the local equation form so the dot matches. Fall back to
-            // world if local wasn't computable (no sub-level pose).
-            // Chunks (terrain_*) produce world position from their chain
-            // (with iris_ChunkOffset) and keep the world equation.
+            // Entity-style programs evaluate their transformed BE vertices in
+            // eye space. Chunks use world/input space.
             float[] eq;
-            if (IplProgramRegistry.isEntityStyleProgram(programId) && eqL != null) {
-                eq = eqL;
+            if (IplProgramRegistry.usesVanillaSubLevelInputSpace(programId) && eqV != null) {
+                eq = eqV;
+            } else if (IplProgramRegistry.isEntityStyleProgram(programId)) {
+                eq = currentSubLevelEqEye;
             } else {
                 eq = eqW;
             }
@@ -386,6 +405,48 @@ public final class SubLevelClipUniformPatcher {
     }
 
     /**
+     * Adapts IP's slot-0 portal equation for Sable's vanilla chunk draw. Sable
+     * feeds {@code Position + ChunkOffset} in plot-local, camera-relative space;
+     * its model-view matrix applies the sub-level rotation only afterwards. IP's
+     * normal world-space terrain equation therefore has to be inverse-rotated for
+     * this one draw. The constant is already camera-relative and remains valid.
+     */
+    public static boolean patchPortalClipForVanillaSubLevel(
+        ShaderInstance shader, ClientSubLevel sub, double[] worldEquation
+    ) {
+        if (shader == null || sub == null || worldEquation == null) return false;
+
+        Uniform uniform = ((IEShader) shader).ip_getClippingEquationUniform();
+        if (uniform == null) return false;
+
+        try {
+            Vec3 normal = new Vec3(worldEquation[0], worldEquation[1], worldEquation[2]);
+            Vec3 localNormal = sub.renderPose().transformNormalInverse(normal);
+            uniform.set(
+                (float) localNormal.x, (float) localNormal.y, (float) localNormal.z,
+                (float) worldEquation[3]
+            );
+            uniform.upload();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Restore IP's world-space slot-0 equation after the scoped Sable draw. */
+    public static void restorePortalClip(ShaderInstance shader, double[] worldEquation) {
+        if (shader == null || worldEquation == null) return;
+
+        Uniform uniform = ((IEShader) shader).ip_getClippingEquationUniform();
+        if (uniform == null) return;
+        uniform.set(
+            (float) worldEquation[0], (float) worldEquation[1],
+            (float) worldEquation[2], (float) worldEquation[3]
+        );
+        uniform.upload();
+    }
+
+    /**
      * Restore the per-sub-level clip uniform to "no clipping" {@code (0,0,0,1)} and
      * push to the GPU. Used by mixin RETURN paths so subsequent draws (vanilla
      * terrain after our sub-level render) don't inherit a stale equation.
@@ -396,6 +457,7 @@ public final class SubLevelClipUniformPatcher {
         // no-clip writes in IplGlUseProgramProbeMixin.
         currentSubLevelEqWorld = null;
         currentSubLevelEqEye = null;
+        currentSubLevelEqVanillaInput = null;
 
         // NOTE: We intentionally do NOT spray (0,0,0,1) to all registered
         // programs here. Doing so was the root cause of the cog-leak bug

@@ -696,10 +696,12 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
         let mut sable_data = scene.sable_data.write().unwrap();
 
         sable_data.level_colliders.remove(&(id as LevelColliderID));
-        let handle = sable_data
-            .rigid_bodies
-            .remove(&(id as LevelColliderID))
-            .expect("No rigid body for id");
+        // Java-side cleanup can race scene teardown or repeat after a clone body
+        // was already removed during transit. JNI panics cannot unwind into Java,
+        // so an absent body must mean "already cleaned up", not abort the process.
+        let Some(handle) = sable_data.rigid_bodies.remove(&(id as LevelColliderID)) else {
+            return;
+        };
 
         let mut sim_data = scene.sim_data.write().unwrap();
 

@@ -75,7 +75,7 @@ public final class IplStraddleCloneBody {
     // keep deep-penetration recovery from teleporting the ship.
     // ------------------------------------------------------------------
 
-    /** Ignore post-step clone displacements smaller than this (gravity integration noise). */
+    /** Ignore tiny solver position corrections that otherwise cause visible pose churn. */
     private static final double TRANSFER_DEADBAND =
         Double.parseDouble(System.getProperty("ipl.sable.clone.transferDeadband", "0.01"));
     /** Max position correction copied to the real body per substep (blocks). */
@@ -456,10 +456,8 @@ public final class IplStraddleCloneBody {
     }
 
     /**
-     * After the dest scene stepped: whatever pose/velocity correction the solver applied
-     * to the pinned clone (contact resolution — correct points, correct torques) is copied
-     * onto the real body, clamped per substep. Gravity's free-fall contribution over the
-     * step is removed analytically so a contact-free clone transfers nothing.
+     * After the dest scene stepped, transfer its solver correction to the real body. Gravity's
+     * free-fall contribution is removed so a contact-free clone transfers nothing.
      */
     public static void postStep(ServerLevel steppingLevel, double dt) {
         if (SESSIONS.isEmpty()) return;
@@ -473,8 +471,8 @@ public final class IplStraddleCloneBody {
             double dx = s.poseBuf[0] - s.targetPose[0] - s.destGravity.x * dt * dt * 0.5;
             double dy = s.poseBuf[1] - s.targetPose[1] - s.destGravity.y * dt * dt * 0.5;
             double dz = s.poseBuf[2] - s.targetPose[2] - s.destGravity.z * dt * dt * 0.5;
-            // The pin gives the clone the real body's velocity; a contact-free step just
-            // integrates that velocity — subtract it to isolate the solver's correction.
+            // The pin gives the clone the real body's velocity; subtract free integration
+            // to retain only the destination solver's contact correction.
             dx -= s.pinnedLin[0] * dt;
             dy -= s.pinnedLin[1] * dt;
             dz -= s.pinnedLin[2] * dt;
@@ -484,7 +482,6 @@ public final class IplStraddleCloneBody {
                 s.targetPose[3], s.targetPose[4], s.targetPose[5], s.targetPose[6]);
             Quaterniond current = new Quaterniond(
                 s.poseBuf[3], s.poseBuf[4], s.poseBuf[5], s.poseBuf[6]);
-            // Remove the free rotation the pinned angular velocity produces over dt.
             double wLen = Math.sqrt(s.pinnedAng[0] * s.pinnedAng[0]
                 + s.pinnedAng[1] * s.pinnedAng[1] + s.pinnedAng[2] * s.pinnedAng[2]);
             if (wLen > 1e-9) {
@@ -509,12 +506,11 @@ public final class IplStraddleCloneBody {
             double dvMag = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
             double daMag = Math.sqrt(dax * dax + day * day + daz * daz);
 
-            boolean posMoved = dist > TRANSFER_DEADBAND;
-            boolean rotMoved = angle > 0.005;
             boolean velMoved = dvMag > 0.05 || daMag > 0.02;
+            boolean posMoved = dist > TRANSFER_DEADBAND;
+            boolean rotMoved = angle > 0.01;
             if (!posMoved && !rotMoved && !velMoved) continue;
 
-            // Clamp per-substep transfers.
             if (dist > MAX_POS_TRANSFER) {
                 double f = MAX_POS_TRANSFER / dist;
                 dx *= f; dy *= f; dz *= f;
@@ -529,11 +525,11 @@ public final class IplStraddleCloneBody {
                 dax *= f; day *= f; daz *= f;
             }
 
-            // Apply to the real body: position/rotation shift + velocity correction.
+            // Apply clone contact response immediately, matching the original pre/post model.
             Rapier3D.getPose(s.parentScene, s.realId, s.poseBuf);
-            double nx = s.poseBuf[0] + (posMoved ? dx : 0);
-            double ny = s.poseBuf[1] + (posMoved ? dy : 0);
-            double nz = s.poseBuf[2] + (posMoved ? dz : 0);
+            double nx = s.poseBuf[0] + (posMoved ? dx : 0.0);
+            double ny = s.poseBuf[1] + (posMoved ? dy : 0.0);
+            double nz = s.poseBuf[2] + (posMoved ? dz : 0.0);
             Quaterniond realRot = new Quaterniond(
                 s.poseBuf[3], s.poseBuf[4], s.poseBuf[5], s.poseBuf[6]);
             if (rotMoved && axisLen > 1e-9) {
@@ -541,8 +537,10 @@ public final class IplStraddleCloneBody {
                     dq.x / axisLen, dq.y / axisLen, dq.z / axisLen);
                 realRot = clampedDq.mul(realRot, new Quaterniond()).normalize();
             }
-            ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(s.parentScene, s.realId,
-                nx, ny, nz, realRot.x, realRot.y, realRot.z, realRot.w);
+            if (posMoved || rotMoved) {
+                ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(s.parentScene, s.realId,
+                    nx, ny, nz, realRot.x, realRot.y, realRot.z, realRot.w);
+            }
             if (velMoved) {
                 Rapier3D.addLinearAngularVelocities(s.parentScene, s.realId,
                     dvx, dvy, dvz, dax, day, daz, true);

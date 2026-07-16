@@ -9,6 +9,8 @@ import dev.ryanhcode.sable.sublevel.render.dispatcher.SubLevelRenderDispatcher;
 import foundry.veil.api.client.render.VeilRenderBridge;
 import foundry.veil.api.client.render.rendertype.VeilRenderType;
 import ipl.sable.client.IplClientHostedLookup;
+import ipl.sable.client.IplStraddleRenderCache;
+import ipl.sable.render.SubLevelBlockEntityRenderScope;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -83,6 +85,10 @@ public abstract class IplHostedSubLevelRenderMixin {
     @Unique
     private VanillaSubLevelBlockEntityRenderer ipl$hostedBeRenderer;
 
+    /** Buffer set captured by {@link #ipl$hostedBeRenderer}'s constructor. */
+    @Unique
+    private RenderBuffers ipl$hostedBeRenderBuffers;
+
     @Unique
     private List<ClientSubLevel> ipl$hosted() {
         return IplClientHostedLookup.getHostedSubLevelsFor(this.level);
@@ -91,6 +97,22 @@ public abstract class IplHostedSubLevelRenderMixin {
     @Unique
     private List<IplClientHostedLookup.StraddleProjection> ipl$projections() {
         return IplClientHostedLookup.getStraddleProjectionsInto(this.level);
+    }
+
+    @Inject(method = "renderLevel", at = @At("HEAD"))
+    private void ipl$beginStraddleRenderCache(
+        DeltaTracker deltaTracker, boolean bl, Camera camera, GameRenderer gameRenderer,
+        LightTexture lightTexture, Matrix4f modelView, Matrix4f projection, CallbackInfo ci
+    ) {
+        IplStraddleRenderCache.begin(this.level);
+    }
+
+    @Inject(method = "renderLevel", at = @At("RETURN"))
+    private void ipl$endStraddleRenderCache(
+        DeltaTracker deltaTracker, boolean bl, Camera camera, GameRenderer gameRenderer,
+        LightTexture lightTexture, Matrix4f modelView, Matrix4f projection, CallbackInfo ci
+    ) {
+        IplStraddleRenderCache.end(this.level);
     }
 
     @Inject(method = "allChanged", at = @At("TAIL"))
@@ -133,13 +155,33 @@ public abstract class IplHostedSubLevelRenderMixin {
     ) {
         if (hasCapturedFrustum) return;
         List<ClientSubLevel> hosted = ipl$hosted();
-        if (hosted.isEmpty()) return;
+        List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
+        if (hosted.isEmpty() && projections.isEmpty()) return;
 
         Vec3 cameraPosition = camera.getPosition();
-        SubLevelRenderDispatcher.get().updateCulling(
-            hosted, cameraPosition.x, cameraPosition.y, cameraPosition.z,
-            VeilRenderBridge.create(frustum), isSpectator
-        );
+        SubLevelRenderDispatcher dispatcher = SubLevelRenderDispatcher.get();
+        if (!hosted.isEmpty()) {
+            dispatcher.updateCulling(
+                hosted, cameraPosition.x, cameraPosition.y, cameraPosition.z,
+                VeilRenderBridge.create(frustum), isSpectator
+            );
+        }
+
+        // Projection geometry uses the source sub-level's render data, but its mapped
+        // pose belongs in this destination pass. Recompute its section visibility while
+        // that pose override is active; source-pass culling is not valid here.
+        for (IplClientHostedLookup.StraddleProjection projection : projections) {
+            ipl.sable.client.IplStraddleRenderState.set(
+                projection.sub(), projection.mappedPose(), projection.destPlane(), projection.portal());
+            try {
+                dispatcher.updateCulling(
+                    List.of(projection.sub()), cameraPosition.x, cameraPosition.y, cameraPosition.z,
+                    VeilRenderBridge.create(frustum), isSpectator
+                );
+            } finally {
+                ipl.sable.client.IplStraddleRenderState.clear();
+            }
+        }
     }
 
     @Inject(
@@ -218,26 +260,38 @@ public abstract class IplHostedSubLevelRenderMixin {
         List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
         if (hosted.isEmpty() && projections.isEmpty()) return;
 
-        if (ipl$hostedBeRenderer == null) {
+        // IP temporarily swaps this LevelRenderer's RenderBuffers while it renders
+        // a portal world. VanillaSubLevelBlockEntityRenderer captures that object in
+        // its constructor, so retaining a renderer across a swap makes native
+        // destination BEs write into the old portal buffer while this pass flushes
+        // the current one.
+        if (ipl$hostedBeRenderer == null || ipl$hostedBeRenderBuffers != this.renderBuffers) {
             ipl$hostedBeRenderer = new VanillaSubLevelBlockEntityRenderer(
                 this.blockEntityRenderDispatcher, this.renderBuffers, this.destructionProgress);
+            ipl$hostedBeRenderBuffers = this.renderBuffers;
         }
         Vec3 cameraPosition = camera.getPosition();
         float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
 
-        if (!hosted.isEmpty()) {
-            SubLevelRenderDispatcher.get().renderBlockEntities(
-                hosted, ipl$hostedBeRenderer,
-                cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick);
+        for (ClientSubLevel sub : hosted) {
+            SubLevelBlockEntityRenderScope.renderAndFlush(sub, this.renderBuffers.bufferSource(), () ->
+                SubLevelRenderDispatcher.get().renderBlockEntities(
+                    List.of(sub), ipl$hostedBeRenderer,
+                    cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick)
+            );
         }
 
         for (IplClientHostedLookup.StraddleProjection proj : projections) {
             ipl.sable.client.IplStraddleRenderState.set(
                 proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
             try {
-                SubLevelRenderDispatcher.get().renderBlockEntities(
-                    List.of(proj.sub()), ipl$hostedBeRenderer,
-                    cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick);
+                SubLevelBlockEntityRenderScope.renderAndFlush(
+                    proj.sub(), this.renderBuffers.bufferSource(), () ->
+                        SubLevelRenderDispatcher.get().renderBlockEntities(
+                            List.of(proj.sub()), ipl$hostedBeRenderer,
+                            cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick
+                        )
+                );
             } finally {
                 ipl.sable.client.IplStraddleRenderState.clear();
             }

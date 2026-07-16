@@ -178,7 +178,9 @@ public class IplGlUseProgramProbeMixin {
         //
         // GL_CLIP_PLANE0 == GL_CLIP_DISTANCE0 (both are 0x3000) so this matches
         // what FrontClipping.enableClipping does.
-        GL11.glEnable(GL11.GL_CLIP_PLANE0);
+        if (haveActive || inPortalRender) {
+            GL11.glEnable(GL11.GL_CLIP_PLANE0);
+        }
 
         // Slot 1 (GL_CLIP_DISTANCE1) MUST only be enabled when a sub-level
         // bracket is active. Previously we re-enabled it on every bind that
@@ -261,24 +263,20 @@ public class IplGlUseProgramProbeMixin {
         // (the portal plane instead of the sub-level plane).
         int subLevelLoc = locs[1];
         if (subLevelLoc >= 0) {
-            // Pick world or eye-space variant to match the shader's space.
-            // Same selector used for slot-0 above: entity-style shaders
-            // (block_entity_diffuse / moving_block / rendertype_entity_* /
-            // Veil-managed BE shaders) dot against eye-space positions, so
-            // they need eye-space equations; everything else (chunk
-            // terrain_*, vanilla rendertype_*) uses world-space.
-            float[] subEq = entityStyle
-                ? SubLevelClipUniformPatcher.getCurrentSubLevelEqEye()
+            // Sable terrain uses world/input space. A vanilla BE's PoseStack is
+            // multiplied into ModelViewMat before the shader evaluates Position,
+            // so entity-style programs evaluate the clip distance in eye space.
+            float[] subEq = IplProgramRegistry.usesVanillaSubLevelInputSpace(program)
+                ? SubLevelClipUniformPatcher.getCurrentSubLevelEqVanillaInput()
+                : entityStyle ? SubLevelClipUniformPatcher.getCurrentSubLevelEqEye()
                 : SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld();
+            if (subEq == null && entityStyle) {
+                subEq = SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld();
+            }
             if (subEq != null) {
                 GL41.glProgramUniform4f(
                     program, subLevelLoc,
                     subEq[0], subEq[1], subEq[2], subEq[3]
-                );
-            } else if (eq != null) {
-                GL41.glProgramUniform4f(
-                    program, subLevelLoc,
-                    (float) eq[0], (float) eq[1], (float) eq[2], (float) eq[3]
                 );
             }
         }

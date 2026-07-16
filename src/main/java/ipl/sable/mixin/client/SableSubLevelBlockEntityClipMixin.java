@@ -8,6 +8,7 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.SubLevelRenderDispatcher;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.VanillaSubLevelRenderDispatcher;
 import ipl.sable.render.SourceClipPortalFinder;
+import ipl.sable.render.SubLevelBlockEntityRenderScope;
 import ipl.sable.render.SubLevelClipUniformPatcher;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import org.lwjgl.opengl.GL11;
@@ -119,6 +120,11 @@ public abstract class SableSubLevelBlockEntityClipMixin {
         org.slf4j.LoggerFactory.getLogger("ipl-sable-be-coll");
 
     private static void ipl$withClip(ClientSubLevel sub, Runnable body) {
+        if (SubLevelBlockEntityRenderScope.isActiveFor(sub)) {
+            body.run();
+            return;
+        }
+
         // DIAGNOSTIC: log per-sub-level, rate-limited to once / 5s, to confirm
         // this wrap fires for cog scenes. If absent from latest.log during a
         // cog repro, the wrap target doesn't match Sable's actual call site.

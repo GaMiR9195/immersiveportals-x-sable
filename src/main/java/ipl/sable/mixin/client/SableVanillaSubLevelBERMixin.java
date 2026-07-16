@@ -7,11 +7,12 @@ import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.mixinhelpers.sublevel_render.vanilla.VanillaSubLevelBlockEntityRenderer;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.render.SourceClipPortalFinder;
+import ipl.sable.render.SubLevelBlockEntityRenderScope;
 import ipl.sable.render.SubLevelClipUniformPatcher;
 import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.phys.Vec3;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
@@ -21,7 +22,6 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
-import qouteall.imm_ptl.core.render.FrontClipping;
 
 /**
  * Bracket each per-BE render call inside {@link VanillaSubLevelBlockEntityRenderer#renderSingleBE}
@@ -143,40 +143,31 @@ public abstract class SableVanillaSubLevelBERMixin {
             return;
         }
 
-        // TEMPORARY (2026-06-01): skip rendering sub-level block entities while
-        // inside IP's portal-content render pass.
-        //
-        // Trigger: Create/catnip BEs (e.g. offroad WheelMount) drive catnip's
-        // ShadeSeparatingSuperByteBuffer, whose buffer is NOT in a valid "building"
-        // state inside IP's portal-content pass -> BufferBuilder "Not building!" ->
-        // render-thread crash. Two crashes pinned this down:
-        //   - 11:57:49: WheelMount on a MIRROR (sub 44197828), and
-        //   - 12:06:13: WheelMount on the SOURCE airship (sub d080a16c) viewed
-        //     through the portal mid-crossing -- mirror already despawned.
-        // Both are 24-27 frames deep in IrisPortalRenderer.renderPortalContent.
-        // So the condition is NOT "is a mirror" (an earlier, too-narrow guard that
-        // this replaces) and NOT our old endBatch drain (removing it changed
-        // nothing) -- it is specifically "a catnip BE rendered through the portal
-        // pass." A mirror is only ever seen through a portal, so gating on the
-        // portal pass subsumes the mirror case.
-        //
-        // Cost (honest): sub-level block entities -- cogs, wheels, chests --
-        // do NOT render in the portal VIEW for now (the main, non-portal render is
-        // untouched, so they render normally when you're in the same dimension as
-        // the airship). This is a visible regression for "look through the portal
-        // and see the airship's machinery," but that path currently CANNOT work --
-        // catnip's buffer isn't valid in the portal pass. The PROPER fix (deferred
-        // to a dedicated render session) is to give catnip's buffer the IP
-        // portal-render context it needs so these BEs render correctly through the
-        // portal -- the rendering analog of the effectiveTrackingChunkPos seam.
-        if (qouteall.imm_ptl.core.render.context_management.PortalRendering.isRendering()) {
-            return; // catnip BEs aren't buildable in the portal pass yet; skip to avoid crash
-        }
-
         SourceClipPortalFinder.ClipDecision decision =
             SourceClipPortalFinder.findStraddlingPortalPlane(sub);
         if (decision == null) {
             // Sub-level not straddling a portal -- no clip needed.
+            original.call(dispatcher, be, partialTick, pose, source);
+            return;
+        }
+
+        // Block entities use independent renderers, so they cannot inherit the
+        // section shader's clip distance. Apply the same plane before dispatch:
+        // a BE whose block center is in the culled half never emits vertices.
+        Vec3 blockCenter = Vec3.atCenterOf(be.getBlockPos());
+        Vec3 visibleCenter = sub.renderPose().transformPosition(blockCenter);
+        Vec3 planePoint = decision.plane().pos();
+        Vec3 planeNormal = decision.plane().normal();
+        double signedDistance = (visibleCenter.x - planePoint.x) * planeNormal.x
+            + (visibleCenter.y - planePoint.y) * planeNormal.y
+            + (visibleCenter.z - planePoint.z) * planeNormal.z;
+        if (signedDistance <= 0.0) {
+            return;
+        }
+
+        // The hosted renderer owns one wider scope for a whole sub-level and keeps it
+        // active through BufferSource.endBatch(), when deferred BE vertices actually draw.
+        if (SubLevelBlockEntityRenderScope.isActiveFor(sub)) {
             original.call(dispatcher, be, partialTick, pose, source);
             return;
         }

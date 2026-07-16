@@ -108,7 +108,9 @@ public final class IplProgramBindHook {
 
         // Defensive re-enable of CLIP_PLANE0 (== CLIP_DISTANCE0): Veil bloom
         // disables it mid-portal-through and never restores it.
-        GL11.glEnable(GL11.GL_CLIP_PLANE0);
+        if (haveActive || inPortalRender) {
+            GL11.glEnable(GL11.GL_CLIP_PLANE0);
+        }
 
         // CLIP_DISTANCE1 only re-enabled when a sub-level bracket is active.
         // Outside brackets, CD1 stays off and slot-1 writes are
@@ -135,22 +137,20 @@ public final class IplProgramBindHook {
         }
 
         // Slot 1 (sub-level clip):
-        //   Entity-style programs -> sub-level-LOCAL equation
-        //   Non-entity programs   -> camera-relative WORLD equation
-        // The split matches the position-recovery chain each shader family
-        // produces: entity-style chain gives sub-level-local pos under
-        // Sable's BE render (iris_ModelViewMat doesn't carry the
-        // sub-level transform there); chunked terrain chain gives
-        // world-relative pos (sub-level transform IS in iris_ModelViewMat
-        // for the chunk path).
+        //   Entity-style programs -> eye-space equation
+        //   Non-entity programs   -> camera-relative world equation
+        // Sable applies the BE pose before these entity shaders evaluate their
+        // vertices, so their slot-1 dot uses the same eye-space convention as
+        // IP slot 0.
         int subLevelLoc = locs[1];
         if (subLevelLoc >= 0) {
             float[] subEq;
-            if (entityStyle) {
-                subEq = SubLevelClipUniformPatcher.getCurrentSubLevelEqLocal();
+            if (IplProgramRegistry.usesVanillaSubLevelInputSpace(program)) {
+                subEq = SubLevelClipUniformPatcher.getCurrentSubLevelEqVanillaInput();
+            } else if (entityStyle) {
+                subEq = SubLevelClipUniformPatcher.getCurrentSubLevelEqEye();
                 if (subEq == null) {
-                    // No sub-level pose available -- fall back to world
-                    // (better than nothing).
+                    // A shader can bind before the camera matrix is available.
                     subEq = SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld();
                 }
             } else {
@@ -168,11 +168,6 @@ public final class IplProgramBindHook {
                         subEq[0], subEq[1], subEq[2], subEq[3]
                     );
                 }
-            } else if (eq != null) {
-                GL41.glProgramUniform4f(
-                    program, subLevelLoc,
-                    (float) eq[0], (float) eq[1], (float) eq[2], (float) eq[3]
-                );
             }
         }
     }

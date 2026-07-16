@@ -4,8 +4,6 @@ import com.mojang.blaze3d.shaders.Uniform;
 import com.mojang.blaze3d.systems.RenderSystem;
 import ipl.sable.duck.IplSubLevelClipShader;
 import net.minecraft.client.renderer.ShaderInstance;
-import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL30;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
@@ -158,6 +156,7 @@ public class IplShaderClipMirrorMixin {
         // both terrain (renderSectionLayer) and BE / entity (BufferSource flush
         // -> drawWithShader -> apply).
 
-        GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
+        // Slot 1 belongs only to a sub-level draw bracket. Enabling it for IP's
+        // portal-wide state leaks the last mapped projection equation into later draws.
     }
 }

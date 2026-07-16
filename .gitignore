@@ -52,3 +52,6 @@ src/main/resources/immersive_portals.timestamp
 # IPSable natives dev loop: cargo build artifacts + locally-built DLL resource
 natives/target/
 src/main/resources/natives_ipl/
+
+# gam1r
+OTHERREQUIREDSOURCES/

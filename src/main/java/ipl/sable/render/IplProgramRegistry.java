@@ -33,6 +33,12 @@ public final class IplProgramRegistry {
     private IplProgramRegistry() {}
 
     private static final ConcurrentMap<Integer, Boolean> ENTITY_STYLE_BY_PROGRAM = new ConcurrentHashMap<>();
+    private static final java.util.Set<String> VANILLA_SUBLEVEL_INPUT_SHADERS = java.util.Set.of(
+        "rendertype_solid", "rendertype_cutout", "rendertype_cutout_mipped",
+        "rendertype_translucent"
+    );
+    private static final ConcurrentMap<Integer, Boolean> VANILLA_SUBLEVEL_INPUT_BY_PROGRAM =
+        new ConcurrentHashMap<>();
 
     /**
      * Called from {@code IplShaderUniformProbeMixin} after a {@code ShaderInstance}
@@ -46,6 +52,8 @@ public final class IplProgramRegistry {
     public static void register(int programId, String shaderName) {
         if (programId == 0 || shaderName == null) return;
         ENTITY_STYLE_BY_PROGRAM.put(programId, EntityShaderNames.IS_ENTITY_STYLE.contains(shaderName));
+        VANILLA_SUBLEVEL_INPUT_BY_PROGRAM.put(
+            programId, VANILLA_SUBLEVEL_INPUT_SHADERS.contains(shaderName));
     }
 
     /**
@@ -63,4 +71,15 @@ public final class IplProgramRegistry {
         Boolean v = ENTITY_STYLE_BY_PROGRAM.get(programId);
         return v != null && v;
     }
+
+    /** Vanilla Sable chunks feed slot-1 plot-local, camera-relative vertices. */
+    public static boolean usesVanillaSubLevelInputSpace(int programId) {
+        Boolean v = VANILLA_SUBLEVEL_INPUT_BY_PROGRAM.get(programId);
+        return v != null && v;
+    }
+
+    public static boolean isVanillaSubLevelInputShader(String shaderName) {
+        return VANILLA_SUBLEVEL_INPUT_SHADERS.contains(shaderName);
+    }
+
 }
