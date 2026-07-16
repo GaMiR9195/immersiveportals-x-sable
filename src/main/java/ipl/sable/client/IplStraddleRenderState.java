@@ -21,10 +21,20 @@ public final class IplStraddleRenderState {
     @Nullable private static Pose3dc activePose;
     @Nullable private static Plane activePlane;
     @Nullable private static Portal activePortal;
+    private static final java.util.ArrayDeque<State> suspended = new java.util.ArrayDeque<>();
+
+    private record State(
+        @Nullable ClientSubLevel sub, @Nullable Pose3dc pose,
+        @Nullable Plane plane, @Nullable Portal portal
+    ) {}
 
     private IplStraddleRenderState() {}
 
     public static void set(ClientSubLevel sub, Pose3dc mappedPose, Plane destPlane, Portal portal) {
+        // Preserve outer state for recursive portal rendering.
+        if (activeSub != null) {
+            suspended.addLast(new State(activeSub, activePose, activePlane, activePortal));
+        }
         activeSub = sub;
         activePose = mappedPose;
         activePlane = destPlane;
@@ -32,6 +42,14 @@ public final class IplStraddleRenderState {
     }
 
     public static void clear() {
+        State previous = suspended.pollLast();
+        if (previous != null) {
+            activeSub = previous.sub();
+            activePose = previous.pose();
+            activePlane = previous.plane();
+            activePortal = previous.portal();
+            return;
+        }
         activeSub = null;
         activePose = null;
         activePlane = null;

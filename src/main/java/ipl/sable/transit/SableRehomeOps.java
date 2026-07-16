@@ -4,7 +4,6 @@ import dev.ryanhcode.sable.api.physics.PhysicsPipeline;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
-import dev.ryanhcode.sable.network.packets.tcp.ClientboundStopTrackingSubLevelPacket;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
@@ -15,7 +14,6 @@ import ipl.sable.dim.SableSubLevelDimension;
 import ipl.sable.duck.IplSubLevelDuck;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
@@ -26,11 +24,9 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Vector2i;
 import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import qouteall.imm_ptl.core.network.PacketRedirection;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
 
@@ -345,9 +341,9 @@ public final class SableRehomeOps {
         ServerSubLevelContainer hostingContainer = SubLevelContainer.getContainer(hosting);
         if (hostingContainer == null) return false;
         PhysicsPipeline pipeline = hostingContainer.physicsSystem().getPipeline();
-
         UUID uuid = hosted.getUniqueId();
-        Pose3d mappedPose = SableTransitOps.computeMappedPose(hosted.logicalPose(), portal);
+        Pose3d sourcePose = new Pose3d(hosted.logicalPose());
+        Pose3d mappedPose = SableTransitOps.computeMappedPose(sourcePose, portal);
 
         LOG.info("[IPL-FLIP] firing uuid={} {} -> {} destPos=({},{},{})",
             uuid, oldParent.dimension().location(), newParent.dimension().location(),
@@ -363,9 +359,6 @@ public final class SableRehomeOps {
         int riders = teleportRiders(hosted, oldParent, newParent, portal);
 
         // Move the physics body + logical pose to the mapped frame.
-        // NOTE: terrain sections from the OLD parent stay in the hosting pipeline until their
-        // tickets expire (~20 ticks). With nether 8:1 coordinate compression those can briefly
-        // overlap the arrival position; accepted for now, revisit if it causes arrival bumps.
         pipeline.teleport(hosted, mappedPose.position(), mappedPose.orientation());
         hosted.logicalPose().set(mappedPose);
         pipeline.resetVelocity(hosted);
@@ -377,46 +370,50 @@ public final class SableRehomeOps {
         stampParent(hosted, newParent, hosting);
 
         hosted.updateBoundingBox();
+
         if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
-            // Per-scene model: the authority swap IS a scene migration — the body (and its
-            // plot voxel sections) move from the old parent's scene to the new parent's,
-            // carrying the already-mapped pose and velocities. No terrain rebake: each
-            // scene's terrain is native and was never wrong.
             net.minecraft.server.level.ServerLevel from =
                 ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) != null
                     ? ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) : oldParent;
             ipl.sable.dim.IplSceneOwnership.migrate(hosted, from, newParent);
         } else {
-            // Legacy single-hosting-scene model: force re-bake the hosting scene's terrain
-            // at the ARRIVAL region from the NEW parent. Sections there may still hold the
-            // OLD parent's content (especially with nether-portal coordinate overlap), and
-            // the ticket manager never re-reads sections whose tickets the ship keeps
-            // refreshing — without this the ship rests on a phantom copy of the old
-            // dimension's terrain ("standing on air" after crossing).
             rebakeTerrainAround(hosted, newParent, pipeline);
         }
 
-        // Force re-track: drop every tracker with a StopTracking stamped to the hosting dim
-        // (their client removes the sub-level from the sublevels container cleanly). The
-        // tracking sweep re-bootstraps current viewers next tick with the fresh pose — avoiding
-        // a cross-dimension interpolation streak on clients that keep viewing through the portal.
+        // Keep existing trackers through the flip. Removing them here creates a visible gap:
+        // the destination projection is gone as soon as the ship clears the portal, while a
+        // new full-sync is not sent until the tracking system's next tick. The handoff packet
+        // moves their existing client object into the destination frame immediately; normal
+        // tracking then retains in-range viewers and removes only viewers that truly left.
         List<UUID> trackers = new ArrayList<>(hosted.getTrackingPlayers());
         if (!trackers.isEmpty()) {
-            long plotCoord = subLevelPlotCoord(hosted, hostingContainer);
-            PacketRedirection.withForceRedirect(hosting, () -> {
-                for (UUID trackerUuid : trackers) {
-                    ServerPlayer player = server.getPlayerList().getPlayer(trackerUuid);
-                    if (player != null) {
-                        player.connection.send(new ClientboundCustomPayloadPacket(
-                            new ClientboundStopTrackingSubLevelPacket(plotCoord)));
-                    }
-                }
-            });
-            hosted.getTrackingPlayers().clear();
+            for (UUID trackerUuid : trackers) {
+                ServerPlayer player = server.getPlayerList().getPlayer(trackerUuid);
+                if (player == null) continue;
+                qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                    player,
+                    "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
+                    uuid.toString(), newParent.dimension().location().toString(), encodePortalTransform(portal)
+                );
+            }
         }
 
         LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
         return true;
+    }
+
+    /** Serializes the exact crossing transform for clients that do not track the source portal. */
+    private static String encodePortalTransform(Portal portal) {
+        Vec3 origin = portal.getOriginPos();
+        Vec3 destination = portal.getDestPos();
+        qouteall.q_misc_util.my_util.DQuaternion rotation = portal.getRotationD();
+        return String.join(";",
+            Double.toHexString(origin.x), Double.toHexString(origin.y), Double.toHexString(origin.z),
+            Double.toHexString(destination.x), Double.toHexString(destination.y), Double.toHexString(destination.z),
+            Double.toHexString(rotation.x), Double.toHexString(rotation.y),
+            Double.toHexString(rotation.z), Double.toHexString(rotation.w),
+            Double.toHexString(portal.getScaling())
+        );
     }
 
     /**
@@ -472,13 +469,6 @@ public final class SableRehomeOps {
             hosted.setUserDataTag(userData);
         }
         userData.putString(PARENT_DIM_KEY, parent.dimension().location().toString());
-    }
-
-    /** The encoded plot coordinate used by Sable's tracking packets (see getSubLevelLong). */
-    private static long subLevelPlotCoord(ServerSubLevel subLevel, SubLevelContainer container) {
-        Vector2i origin = container.getOrigin();
-        ChunkPos plotPos = subLevel.getPlot().plotPos;
-        return ChunkPos.asLong(plotPos.x - origin.x, plotPos.z - origin.y);
     }
 
     /**

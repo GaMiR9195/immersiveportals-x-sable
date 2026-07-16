@@ -1,10 +1,13 @@
 package ipl.sable.client;
 
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.Pose3d;
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.dim.SableSubLevelDimension;
 import net.minecraft.client.multiplayer.ClientLevel;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.portal.Portal;
 
 /**
  * Client-side, non-creating lookup of the {@code ipl_sable:sublevels} {@code ClientLevel} and
@@ -52,6 +55,12 @@ public final class IplClientHostedLookup {
      * portal pass each query with their own level, giving per-dimension visibility for free.
      */
     public static java.util.List<dev.ryanhcode.sable.sublevel.ClientSubLevel> getHostedSubLevelsFor(
+        @Nullable ClientLevel level
+    ) {
+        return IplStraddleRenderCache.hosted(level, () -> ipl$getHostedSubLevelsUncached(level));
+    }
+
+    private static java.util.List<dev.ryanhcode.sable.sublevel.ClientSubLevel> ipl$getHostedSubLevelsUncached(
         @Nullable ClientLevel level
     ) {
         if (level == null || !ipl.sable.dim.IplDimAgnostic.isEnabled()) {
@@ -120,6 +129,29 @@ public final class IplClientHostedLookup {
      * destination is {@code destLevel}.
      */
     public static java.util.List<StraddleProjection> getStraddleProjectionsInto(ClientLevel destLevel) {
+        return IplStraddleRenderCache.projections(
+            destLevel, () -> ipl$getStraddleProjectionsUncached(destLevel));
+    }
+
+    @Nullable
+    public static StraddleProjection getStraddleProjectionFor(ClientSubLevel clientSub) {
+        if (!(((ipl.sable.duck.IplSubLevelDuck) clientSub).ipl$getParentLevel() instanceof ClientLevel)) {
+            return null;
+        }
+        ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
+            ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
+        if (decision == null || decision.portal() == null) return null;
+
+        Portal portal = decision.portal();
+        Pose3d mapped = ipl$computeMappedPose(clientSub.renderPose(), portal);
+        net.minecraft.world.phys.Vec3 srcPos = decision.plane().pos();
+        net.minecraft.world.phys.Vec3 srcNormal = decision.plane().normal();
+        qouteall.q_misc_util.my_util.Plane destPlane = new qouteall.q_misc_util.my_util.Plane(
+            portal.transformPoint(srcPos), portal.transformLocalVec(srcNormal).scale(-1.0));
+        return new StraddleProjection(clientSub, portal, mapped, destPlane);
+    }
+
+    private static java.util.List<StraddleProjection> ipl$getStraddleProjectionsUncached(ClientLevel destLevel) {
         if (destLevel == null || !ipl.sable.dim.IplDimAgnostic.isEnabled()) {
             return java.util.List.of();
         }

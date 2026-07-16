@@ -2,6 +2,8 @@ package ipl.sable.mixin.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
+import ipl.sable.client.IplStraddleRenderState;
+import ipl.sable.render.IplProgramRegistry;
 import ipl.sable.render.SourceClipDiag;
 import ipl.sable.render.SourceClipPortalFinder;
 import ipl.sable.render.SubLevelClipUniformPatcher;
@@ -18,6 +20,9 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.render.FrontClipping;
+import qouteall.imm_ptl.core.render.context_management.PortalRendering;
+import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.portal.PortalExtension;
 
 /**
  * Phase 3a: source-side render clipping for Sable sub-levels straddling a portal.
@@ -71,6 +76,10 @@ public abstract class SableSourceClipMixin {
     @Unique
     private boolean ipl$installedClipThisCall;
 
+    /** IP slot 0 was temporarily converted to Sable's plot-local input space. */
+    @Unique
+    private double[] ipl$portalClipEquationThisCall;
+
     @Inject(
         method = "renderChunkedSubLevel",
         at = @At("HEAD"),
@@ -83,6 +92,31 @@ public abstract class SableSourceClipMixin {
         CallbackInfo ci
     ) {
         this.ipl$installedClipThisCall = false;
+        this.ipl$portalClipEquationThisCall = null;
+
+        // Sable's vanilla chunk vertices are plot-local until its model-view
+        // matrix rotates them. IP's slot-0 equation is camera-relative world
+        // space, so using it unchanged produces a rotated portal cut whenever
+        // the airship is rotated. Convert only for this scoped Sable draw, then
+        // restore it before the parent world's terrain uses the same shader.
+        if (FrontClipping.isClippingEnabled
+            && IplProgramRegistry.isVanillaSubLevelInputShader(shader.getName())) {
+            double[] portalEquation = FrontClipping.getActiveClipPlaneEquationBeforeModelView();
+            if (SubLevelClipUniformPatcher.patchPortalClipForVanillaSubLevel(
+                shader, getSubLevel(), portalEquation
+            )) {
+                this.ipl$portalClipEquationThisCall = portalEquation;
+            }
+        }
+
+        // IP stores both faces of one physical portal as distinct entities. The
+        // finder may select the active portal's flipped face, which has the same
+        // route and aperture but is not the same Java object. Slot 0 already owns
+        // either face's portal pass, so slot 1 must stay off for both.
+        if (ipl$isProjectionThroughActivePortal()) {
+            SourceClipDiag.onVanillaCall(false);
+            return;
+        }
 
         SourceClipPortalFinder.ClipDecision decision =
             SourceClipPortalFinder.findStraddlingPortalPlane(getSubLevel());
@@ -109,6 +143,19 @@ public abstract class SableSourceClipMixin {
         SourceClipDiag.onVanillaCall(true);
     }
 
+    @Unique
+    private boolean ipl$isProjectionThroughActivePortal() {
+        if (!PortalRendering.isRendering()) return false;
+
+        Portal projectionPortal = IplStraddleRenderState.getPortalFor(getSubLevel());
+        if (projectionPortal == null) return false;
+
+        Portal activePortal = PortalRendering.getRenderingPortal();
+        return projectionPortal == activePortal
+            || projectionPortal == PortalExtension.get(activePortal).flippedPortal
+            || activePortal == PortalExtension.get(projectionPortal).flippedPortal;
+    }
+
     @Inject(
         method = "renderChunkedSubLevel",
         at = @At("RETURN"),
@@ -120,6 +167,11 @@ public abstract class SableSourceClipMixin {
         double camX, double camY, double camZ,
         CallbackInfo ci
     ) {
+        if (this.ipl$portalClipEquationThisCall != null) {
+            SubLevelClipUniformPatcher.restorePortalClip(shader, this.ipl$portalClipEquationThisCall);
+            this.ipl$portalClipEquationThisCall = null;
+        }
+
         if (!this.ipl$installedClipThisCall) return;
         this.ipl$installedClipThisCall = false;
 

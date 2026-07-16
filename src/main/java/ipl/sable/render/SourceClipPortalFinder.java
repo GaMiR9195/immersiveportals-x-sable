@@ -11,6 +11,8 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Finds, for a given client-side sub-level being rendered, the portal whose plane
@@ -35,6 +37,15 @@ import java.util.UUID;
  * spawning, so the visual and the spawn logic align.
  */
 public final class SourceClipPortalFinder {
+
+    /**
+     * Last valid source/destination split for an in-flight hosted ship. A local client can
+     * observe the ship fully past the plane before it receives the server's parent-flip RPC.
+     * Keeping this decision through that short window prevents the destination projection from
+     * being withdrawn a frame before normal destination rendering takes over.
+     */
+    private static final ConcurrentMap<UUID, ClipDecision> CROSSING_LATCHES =
+        new ConcurrentHashMap<>();
 
     /**
      * Lateral tolerance for the "is the airship in the portal opening" gate,
@@ -74,6 +85,17 @@ public final class SourceClipPortalFinder {
                 ipl.sable.client.IplStraddleRenderState.getPortalFor(sub), projectionPlane);
         }
 
+        if (ipl.sable.client.IplStraddleRenderCache.hasDecision(sub)) {
+            return ipl.sable.client.IplStraddleRenderCache.decision(sub);
+        }
+        ClipDecision decision = ipl$findUncached(sub);
+        ipl.sable.client.IplStraddleRenderCache.cacheDecision(sub, decision);
+        return decision;
+    }
+
+    @Nullable
+    private static ClipDecision ipl$findUncached(ClientSubLevel sub) {
+
         // Hosted sub-levels live in ipl_sable:sublevels, which contains no portals — the
         // straddle search must run in the PARENT dimension (where the ship visually is).
         // Falls back to getLevel() for legacy embedded sub-levels.
@@ -81,6 +103,7 @@ public final class SourceClipPortalFinder {
 
         AABB box = sub.boundingBox().toMojang();
         Vec3 center = box.getCenter();
+        boolean knownMirror = isKnownMirror(sub.getUniqueId());
 
         Portal best = null;
         double bestDist = Double.MAX_VALUE;
@@ -91,18 +114,24 @@ public final class SourceClipPortalFinder {
         // GlobalPortalStorage and never appear in entity iteration). Entity iteration is
         // cheap enough for the small entity counts typical in vanilla survival; if this
         // shows up in profilers we can swap to a chunk-section query around the AABB.
-        java.util.List<Portal> candidates = new java.util.ArrayList<>();
-        for (Entity e : level.entitiesForRendering()) {
-            if (e instanceof Portal portal) candidates.add(portal);
+        java.util.List<Portal> candidates =
+            ipl.sable.client.IplStraddleRenderCache.portalCandidates(level);
+        if (candidates == null) {
+            candidates = collectCandidates(level);
+            ipl.sable.client.IplStraddleRenderCache.cachePortalCandidates(level, candidates);
         }
-        candidates.addAll(
-            qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage.getGlobalPortals(level));
 
         for (Portal portal : candidates) {
             if (!portal.isTeleportable()) continue;
+            if (!isCanonicalEntranceFace(portal, candidates)) continue;
 
             Vec3 origin = portal.getOriginPos();
             Vec3 portalNormal = portal.getNormal();
+
+            // A two-sided portal has coplanar, opposite-facing entities. Only the
+            // face whose source side contains this sub-level may establish a source
+            // clip. The retained latch below owns the brief post-crossing interval.
+            if (!portal.isInFrontOfPortal(center)) continue;
 
             // Straddle check: compute signed distance from each AABB corner to the
             // plane; if signs differ, the box crosses the plane.
@@ -124,51 +153,16 @@ public final class SourceClipPortalFinder {
             anyStraddle = true;
 
             // Orient the normal so the kept half-space contains the sub-level's
-            // center.
-            //
-            // Why: IP creates TWO portal entities per physical frame -- one for
-            // each face, with opposite normals. The clip math is symmetric in
-            // *direction* but our finder previously picked whichever entity had
-            // the closer origin, so the chosen normal was non-deterministic with
-            // respect to the airship's approach direction. Result: entering from
-            // one side worked correctly, entering from the opposite side flipped
-            // the clip and made the airship's source-side half culled instead of
-            // the dest-side half.
-            //
-            // Anchoring on the sub-level center is correct because at any frame
-            // where we're rendering a *straddling* sub-level, the AABB centroid
-            // sits on the source side of the portal plane (transit fires the
-            // moment the centroid crosses, after which the sub-level is no longer
-            // in this dim). For mirrors in the dest dim, the same property holds
-            // -- the mirror's center is on the dest-side of its own portal,
-            // which is the side it should keep visible.
-            //
-            // This is NOT camera-aware; the previous attempt to do that was
-            // wrong because portals are one-way views, so the clipped side is a
-            // property of the portal/sub-level pair, not the camera position.
+            // center. IP creates two portal entities per physical frame, with
+            // opposite normals; this makes the selected face's direction stable.
             double centerDot =
                 (center.x - origin.x) * portalNormal.x +
                 (center.y - origin.y) * portalNormal.y +
                 (center.z - origin.z) * portalNormal.z;
             Vec3 orientedNormal = centerDot < 0 ? portalNormal.scale(-1.0) : portalNormal;
 
-            // Mirror-specific adjustment. IP's portal mapping rotates the airship's
-            // local frame by 180° around the portal axis when transforming source ->
-            // dest, so the mirror's center ends up on the *opposite* side of the
-            // dest-dim portal from where we semantically want kept. Concretely:
-            //
-            //   - Source airship straddling source portal: its center is on the
-            //     source side, which is also where its visible (un-clipped) body
-            //     should be. The center-toward orientation above is correct.
-            //
-            //   - Mirror straddling dest portal: its center is the source center
-            //     mapped through the 180° rotation, which puts the center on the
-            //     side that visually corresponds to "where the source airship's
-            //     dest-side parts continue" -- i.e., the side that SHOULD be
-            //     kept-visible (the part you see through the portal frame as the
-            //     airship enters the dest dim). User reported the kept side
-            //     swapping when entering the nether; this flip restores the
-            //     intended invariant "kept half is the source-dim airship's side."
+            // Legacy mirrors use the opposite semantic ownership from hosted
+            // source objects, so retain their existing final inversion.
             //
             // Detection: in singleplayer the integrated server's MirrorRegistry
             // is in the same JVM as our client mixin, so we can do a read-only
@@ -176,7 +170,7 @@ public final class SourceClipPortalFinder {
             // thread are tolerable -- worst case we miss a transition tick and
             // pick the wrong orientation for one frame. For multiplayer we'd need
             // a sync packet; deferred until needed.
-            if (isKnownMirror(sub.getUniqueId())) {
+            if (knownMirror) {
                 orientedNormal = orientedNormal.scale(-1.0);
             }
 
@@ -184,16 +178,27 @@ public final class SourceClipPortalFinder {
             // origin sits at (0, seamY, 0) — origin distance would lose to any entity portal
             // for ships away from the world axis even when the ship straddles the seam.
             double dist = portal.getDistanceToNearestPointInPortal(center);
-            if (dist < bestDist) {
+            if (dist < bestDist || (dist == bestDist && best != null
+                && portal.getUUID().compareTo(best.getUUID()) < 0)) {
                 bestDist = dist;
                 best = portal;
                 bestPlane = new Plane(origin, orientedNormal);
             }
         }
 
-        // Drop the contact cache if the sub-level no longer straddles ANY
-        // portal -- next contact starts fresh.
+        // A local render pose can leave the plane one or more network frames before the
+        // server's parent-flip reaches this client. Keep the last split while the whole ship
+        // has crossed into its destination half; the projection then remains visible until the
+        // handoff switches this same object to normal destination rendering. A full return to
+        // the source half is a genuine aborted crossing and releases the latch.
         if (!anyStraddle) {
+            ClipDecision latched = CROSSING_LATCHES.get(sub.getUniqueId());
+            if (latched != null && !latched.portal().isRemoved()) {
+                if (maxSignedDistance(box, latched.plane().pos(), latched.plane().normal()) <= 0.0) {
+                    return latched;
+                }
+            }
+            CROSSING_LATCHES.remove(sub.getUniqueId());
             SubLevelPortalContactTracker.clearContact(sub.getUniqueId());
             return null;
         }
@@ -213,7 +218,15 @@ public final class SourceClipPortalFinder {
             bestPlane = new Plane(bestPlane.pos(), stableNormal);
         }
 
-        return new ClipDecision(best, bestPlane);
+        ClipDecision decision = new ClipDecision(best, bestPlane);
+        CROSSING_LATCHES.put(sub.getUniqueId(), decision);
+        return decision;
+    }
+
+    /** Parent flip completed: destination rendering now owns this sub-level. */
+    public static void clearCrossingLatch(UUID subLevelId) {
+        CROSSING_LATCHES.remove(subLevelId);
+        SubLevelPortalContactTracker.clearContact(subLevelId);
     }
 
     /**
@@ -231,6 +244,28 @@ public final class SourceClipPortalFinder {
             // Registry unavailable or concurrent modification -- fall through.
         }
         return false;
+    }
+
+    /** Keep render-side portal companion selection identical to transit selection. */
+    private static boolean isCanonicalEntranceFace(Portal portal, java.util.List<Portal> candidates) {
+        Boolean cached = ipl.sable.client.IplStraddleRenderCache.canonicalPortalFace(portal);
+        if (cached != null) return cached;
+        for (Portal other : candidates) {
+            if (other == portal || !portal.getDestDim().equals(other.getDestDim())) continue;
+            if (portal.getOriginPos().distanceToSqr(other.getOriginPos()) > 1.0e-12
+                || portal.getDestPos().distanceToSqr(other.getDestPos()) > 1.0e-12
+                || Math.abs(portal.getWidth() - other.getWidth()) > 1.0e-6
+                || Math.abs(portal.getHeight() - other.getHeight()) > 1.0e-6
+                || portal.getNormal().dot(other.getNormal()) < 0.999999) {
+                continue;
+            }
+            if (portal.getUUID().compareTo(other.getUUID()) > 0) {
+                ipl.sable.client.IplStraddleRenderCache.cacheCanonicalPortalFace(portal, false);
+                return false;
+            }
+        }
+        ipl.sable.client.IplStraddleRenderCache.cacheCanonicalPortalFace(portal, true);
+        return true;
     }
 
     /**
@@ -257,16 +292,21 @@ public final class SourceClipPortalFinder {
     private static boolean boxOverlapsPortalRect(
         AABB box, Vec3 origin, Vec3 axisW, Vec3 axisH, double width, double height
     ) {
-        Vec3 center = box.getCenter();
-        Vec3 toCenter = center.subtract(origin);
+        double centerX = (box.minX + box.maxX) * 0.5;
+        double centerY = (box.minY + box.maxY) * 0.5;
+        double centerZ = (box.minZ + box.maxZ) * 0.5;
 
         double limitW = width * 0.5 * (1.0 + RECT_MARGIN_FACTOR);
         double limitH = height * 0.5 * (1.0 + RECT_MARGIN_FACTOR);
 
-        double projW = toCenter.x * axisW.x + toCenter.y * axisW.y + toCenter.z * axisW.z;
+        double projW = (centerX - origin.x) * axisW.x
+            + (centerY - origin.y) * axisW.y
+            + (centerZ - origin.z) * axisW.z;
         if (Math.abs(projW) > limitW) return false;
 
-        double projH = toCenter.x * axisH.x + toCenter.y * axisH.y + toCenter.z * axisH.z;
+        double projH = (centerX - origin.x) * axisH.x
+            + (centerY - origin.y) * axisH.y
+            + (centerZ - origin.z) * axisH.z;
         if (Math.abs(projH) > limitH) return false;
 
         return true;
@@ -274,27 +314,41 @@ public final class SourceClipPortalFinder {
 
     /**
      * Does this AABB have corners on both sides of the plane defined by
-     * (planePoint, planeNormal)? Computes signed distance for each of the 8 corners
-     * and returns true iff at least one is positive AND at least one is non-positive.
+     * (planePoint, planeNormal)? Uses exact center and projection-radius extrema.
      */
     private static boolean boxStraddlesPlane(AABB box, Vec3 planePoint, Vec3 planeNormal) {
-        double[] xs = {box.minX, box.maxX};
-        double[] ys = {box.minY, box.maxY};
-        double[] zs = {box.minZ, box.maxZ};
-        boolean anyPos = false, anyNonPos = false;
-        for (double x : xs) {
-            for (double y : ys) {
-                for (double z : zs) {
-                    double signedDist =
-                        (x - planePoint.x) * planeNormal.x +
-                        (y - planePoint.y) * planeNormal.y +
-                        (z - planePoint.z) * planeNormal.z;
-                    if (signedDist > 0) anyPos = true;
-                    else anyNonPos = true;
-                    if (anyPos && anyNonPos) return true;
-                }
-            }
+        return minSignedDistance(box, planePoint, planeNormal) <= 0.0
+            && maxSignedDistance(box, planePoint, planeNormal) > 0.0;
+    }
+
+    private static java.util.List<Portal> collectCandidates(ClientLevel level) {
+        java.util.List<Portal> candidates = new java.util.ArrayList<>();
+        for (Entity entity : level.entitiesForRendering()) {
+            if (entity instanceof Portal portal) candidates.add(portal);
         }
-        return false;
+        candidates.addAll(
+            qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage.getGlobalPortals(level));
+        return candidates;
+    }
+
+    /** Exact AABB projection extrema without allocating corner or interval arrays. */
+    private static double minSignedDistance(AABB box, Vec3 planePoint, Vec3 planeNormal) {
+        return signedDistanceAtCenter(box, planePoint, planeNormal) - projectionRadius(box, planeNormal);
+    }
+
+    private static double maxSignedDistance(AABB box, Vec3 planePoint, Vec3 planeNormal) {
+        return signedDistanceAtCenter(box, planePoint, planeNormal) + projectionRadius(box, planeNormal);
+    }
+
+    private static double signedDistanceAtCenter(AABB box, Vec3 planePoint, Vec3 planeNormal) {
+        return ((box.minX + box.maxX) * 0.5 - planePoint.x) * planeNormal.x
+            + ((box.minY + box.maxY) * 0.5 - planePoint.y) * planeNormal.y
+            + ((box.minZ + box.maxZ) * 0.5 - planePoint.z) * planeNormal.z;
+    }
+
+    private static double projectionRadius(AABB box, Vec3 planeNormal) {
+        return (box.maxX - box.minX) * 0.5 * Math.abs(planeNormal.x)
+            + (box.maxY - box.minY) * 0.5 * Math.abs(planeNormal.y)
+            + (box.maxZ - box.minZ) * 0.5 * Math.abs(planeNormal.z);
     }
 }

@@ -69,7 +69,7 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
         // Vanilla rendertypes (Sable-overridden in this fork). Sub-level
         // block entities -- Create cogs via KineticBlockEntityRenderer chief
         // among them -- bind these inside SableSubLevelBlockEntityClipMixin's
-        // bracket. YAML entry 1 injects gl_ClipDistance[1] writes; register
+        // bracket. The terrain YAML entry injects gl_ClipDistance[1]; register
         // the Java Uniform here so SubLevelClipUniformPatcher.patchForSubLevel
         // resolves and uploads to it via the setShader path.
         "rendertype_solid",
@@ -82,7 +82,7 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
         "entities_solid",
         "entities_cutout",
         "entities_translucent",
-        // Iris-rewritten vanilla entity shader (no shaderpack). The YAML
+         // Iris-rewritten vanilla entity shader (no shaderpack). The YAML
         // injection for this name declares `uniform vec4 ipl_subLevelClipEquation;`
         // and writes gl_ClipDistance[1] -- so the Java-side Uniform needs
         // to be registered too, otherwise Mojang's updateLocations won't

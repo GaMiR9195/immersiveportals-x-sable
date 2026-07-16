@@ -82,9 +82,10 @@ public final class IplServerWatchdog {
             if (stalledNanos < STALL_THRESHOLD_NANOS) continue;
             if (now - lastDumpNanos < REDUMP_INTERVAL_NANOS) continue;
 
-            lastDumpNanos = now;
-
             StackTraceElement[] stack = st.getStackTrace();
+            if (isWaitingForNextTick(st, stack)) continue;
+
+            lastDumpNanos = now;
             StringBuilder sb = new StringBuilder(2048);
             sb.append("[IPL-WATCHDOG] SERVER THREAD STALLED ~")
                 .append(stalledNanos / 1_000_000_000L)
@@ -101,5 +102,17 @@ public final class IplServerWatchdog {
             }
             LOG.error(sb.toString());
         }
+    }
+
+    /** The server can deliberately sleep for arbitrary time while paused. */
+    private static boolean isWaitingForNextTick(Thread thread, StackTraceElement[] stack) {
+        if (thread.getState() != Thread.State.TIMED_WAITING) return false;
+        for (StackTraceElement frame : stack) {
+            if (frame.getClassName().equals("net.minecraft.server.MinecraftServer")
+                && frame.getMethodName().equals("waitUntilNextTick")) {
+                return true;
+            }
+        }
+        return false;
     }
 }

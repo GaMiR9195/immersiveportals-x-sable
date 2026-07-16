@@ -85,7 +85,8 @@ public abstract class IplHostedSubLevelRenderSodiumMixin {
         CallbackInfo ci
     ) {
         List<ClientSubLevel> hosted = ipl$hosted();
-        if (hosted.isEmpty()) return;
+        List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
+        if (hosted.isEmpty() && projections.isEmpty()) return;
 
         // The pass's LevelRenderer: IP swaps Minecraft.levelRenderer per portal pass, so
         // this is the frustum of whichever dimension pass this SodiumWorldRenderer serves.
@@ -93,11 +94,29 @@ public abstract class IplHostedSubLevelRenderSodiumMixin {
         if (frustum == null) return;
 
         Vec3 cameraPosition = camera.getPosition();
-        SubLevelRenderDispatcher.get().updateCulling(
-            hosted, cameraPosition.x, cameraPosition.y, cameraPosition.z,
-            VeilRenderBridge.create(frustum),
-            Minecraft.getInstance().player != null && Minecraft.getInstance().player.isSpectator()
-        );
+        SubLevelRenderDispatcher dispatcher = SubLevelRenderDispatcher.get();
+        if (!hosted.isEmpty()) {
+            dispatcher.updateCulling(
+                hosted, cameraPosition.x, cameraPosition.y, cameraPosition.z,
+                VeilRenderBridge.create(frustum), spectator
+            );
+        }
+
+        // Projection geometry uses the source sub-level's render data, but its mapped
+        // pose belongs in this destination pass. Recompute its section visibility while
+        // that pose override is active; source-pass culling is not valid here.
+        for (IplClientHostedLookup.StraddleProjection projection : projections) {
+            IplStraddleRenderState.set(
+                projection.sub(), projection.mappedPose(), projection.destPlane(), projection.portal());
+            try {
+                dispatcher.updateCulling(
+                    List.of(projection.sub()), cameraPosition.x, cameraPosition.y, cameraPosition.z,
+                    VeilRenderBridge.create(frustum), spectator
+                );
+            } finally {
+                IplStraddleRenderState.clear();
+            }
+        }
     }
 
     // mirrors the vanilla mixin's ipl$compileHostedSections (Sable: sable$setupTerrain)
