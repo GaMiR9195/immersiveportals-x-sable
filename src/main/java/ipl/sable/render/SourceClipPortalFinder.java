@@ -8,6 +8,7 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
+import qouteall.q_misc_util.my_util.BoxPredicateF;
 import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.UUID;
@@ -122,7 +123,7 @@ public final class SourceClipPortalFinder {
 
         for (Portal portal : candidates) {
             if (!portal.isTeleportable()) continue;
-            if (!isPortalActiveInCurrentRenderPass(portal)) continue;
+            if (!isPortalVisibleThroughCurrentRenderPass(portal, level)) continue;
             if (!isCanonicalEntranceFace(portal, candidates)) continue;
 
             Vec3 origin = portal.getOriginPos();
@@ -181,12 +182,12 @@ public final class SourceClipPortalFinder {
         if (!anyStraddle) {
             ClipDecision latched = CROSSING_LATCHES.get(sub.getUniqueId());
             if (latched != null && !latched.portal().isRemoved()
-                && isPortalActiveInCurrentRenderPass(latched.portal())) {
+                && isPortalVisibleThroughCurrentRenderPass(latched.portal(), level)) {
                 if (maxSignedDistance(box, latched.plane().pos(), latched.plane().normal()) <= 0.0) {
                     return latched;
                 }
             }
-            if (latched != null && !isPortalActiveInCurrentRenderPass(latched.portal())) {
+            if (latched != null && !isPortalVisibleThroughCurrentRenderPass(latched.portal(), level)) {
                 return null;
             }
             CROSSING_LATCHES.remove(sub.getUniqueId());
@@ -215,17 +216,48 @@ public final class SourceClipPortalFinder {
     }
 
     /**
-     * A destination-world render contains every loaded portal in that dimension,
-     * but a sub-level split may only belong to the portal that opened this render
-     * pass. Otherwise a distant loaded portal contributes its clip plane while
-     * rendering through an unrelated portal.
+     * In a portal pass, this level contains all loaded destination portals. A
+     * source clip may use one only when its finite aperture lies in the active
+     * portal's destination view volume. Otherwise an off-screen portal in the
+     * loaded destination dimension can cut Sable geometry inside an unrelated
+     * portal view.
      */
-    private static boolean isPortalActiveInCurrentRenderPass(Portal portal) {
+    private static boolean isPortalVisibleThroughCurrentRenderPass(
+        Portal portal, ClientLevel level
+    ) {
         if (!PortalRendering.isRendering()) {
             return true;
         }
         Portal activePortal = PortalRendering.getRenderingPortal();
-        return activePortal == portal || Portal.isFlippedPortal(activePortal, portal);
+        if (activePortal.getDestDim() != level.dimension()) {
+            return true;
+        }
+
+        AABB aperture = portal.getThinBoundingBox();
+        Plane clippingPlane = PortalRendering.getActiveClippingPlane();
+        if (clippingPlane != null && maxSignedDistance(
+            aperture, clippingPlane.pos(), clippingPlane.normal()
+        ) <= 0.0) {
+            return false;
+        }
+
+        Vec3 cameraPos = PortalRendering.getRenderingCameraPos();
+        BoxPredicateF innerFrustum = activePortal.getPortalShape()
+            .getInnerFrustumCullingFunc(activePortal, cameraPos);
+        if (innerFrustum == null) {
+            return true;
+        }
+
+        // IP's inner-frustum predicate receives a box relative to the virtual
+        // destination camera, not absolute destination-world coordinates.
+        return !innerFrustum.test(
+            (float) (aperture.minX - cameraPos.x),
+            (float) (aperture.minY - cameraPos.y),
+            (float) (aperture.minZ - cameraPos.z),
+            (float) (aperture.maxX - cameraPos.x),
+            (float) (aperture.maxY - cameraPos.y),
+            (float) (aperture.maxZ - cameraPos.z)
+        );
     }
 
     /** Parent flip completed: destination rendering now owns this sub-level. */
