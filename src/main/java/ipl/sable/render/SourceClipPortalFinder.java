@@ -7,8 +7,6 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.render.context_management.PortalRendering;
-import qouteall.q_misc_util.my_util.BoxPredicateF;
 import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.UUID;
@@ -123,7 +121,6 @@ public final class SourceClipPortalFinder {
 
         for (Portal portal : candidates) {
             if (!portal.isTeleportable()) continue;
-            if (!isPortalVisibleThroughCurrentRenderPass(portal, level)) continue;
             if (!isCanonicalEntranceFace(portal, candidates)) continue;
 
             Vec3 origin = portal.getOriginPos();
@@ -181,14 +178,10 @@ public final class SourceClipPortalFinder {
         // the source half is a genuine aborted crossing and releases the latch.
         if (!anyStraddle) {
             ClipDecision latched = CROSSING_LATCHES.get(sub.getUniqueId());
-            if (latched != null && !latched.portal().isRemoved()
-                && isPortalVisibleThroughCurrentRenderPass(latched.portal(), level)) {
+            if (latched != null && !latched.portal().isRemoved()) {
                 if (maxSignedDistance(box, latched.plane().pos(), latched.plane().normal()) <= 0.0) {
                     return latched;
                 }
-            }
-            if (latched != null && !isPortalVisibleThroughCurrentRenderPass(latched.portal(), level)) {
-                return null;
             }
             CROSSING_LATCHES.remove(sub.getUniqueId());
             SubLevelPortalContactTracker.clearContact(sub.getUniqueId());
@@ -213,51 +206,6 @@ public final class SourceClipPortalFinder {
         ClipDecision decision = new ClipDecision(best, bestPlane);
         CROSSING_LATCHES.put(sub.getUniqueId(), decision);
         return decision;
-    }
-
-    /**
-     * In a portal pass, this level contains all loaded destination portals. A
-     * source clip may use one only when its finite aperture lies in the active
-     * portal's destination view volume. Otherwise an off-screen portal in the
-     * loaded destination dimension can cut Sable geometry inside an unrelated
-     * portal view.
-     */
-    private static boolean isPortalVisibleThroughCurrentRenderPass(
-        Portal portal, ClientLevel level
-    ) {
-        if (!PortalRendering.isRendering()) {
-            return true;
-        }
-        Portal activePortal = PortalRendering.getRenderingPortal();
-        if (activePortal.getDestDim() != level.dimension()) {
-            return true;
-        }
-
-        AABB aperture = portal.getThinBoundingBox();
-        Plane clippingPlane = PortalRendering.getActiveClippingPlane();
-        if (clippingPlane != null && maxSignedDistance(
-            aperture, clippingPlane.pos(), clippingPlane.normal()
-        ) <= 0.0) {
-            return false;
-        }
-
-        Vec3 cameraPos = PortalRendering.getRenderingCameraPos();
-        BoxPredicateF innerFrustum = activePortal.getPortalShape()
-            .getInnerFrustumCullingFunc(activePortal, cameraPos);
-        if (innerFrustum == null) {
-            return true;
-        }
-
-        // IP's inner-frustum predicate receives a box relative to the virtual
-        // destination camera, not absolute destination-world coordinates.
-        return !innerFrustum.test(
-            (float) (aperture.minX - cameraPos.x),
-            (float) (aperture.minY - cameraPos.y),
-            (float) (aperture.minZ - cameraPos.z),
-            (float) (aperture.maxX - cameraPos.x),
-            (float) (aperture.maxY - cameraPos.y),
-            (float) (aperture.maxZ - cameraPos.z)
-        );
     }
 
     /** Parent flip completed: destination rendering now owns this sub-level. */

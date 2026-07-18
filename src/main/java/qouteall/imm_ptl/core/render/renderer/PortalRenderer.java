@@ -7,6 +7,7 @@ import net.minecraft.client.GraphicsStatus;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.culling.Frustum;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.Event;
@@ -32,6 +33,7 @@ import qouteall.imm_ptl.core.render.TransformationManager;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
+import qouteall.q_misc_util.my_util.Plane;
 import qouteall.q_misc_util.Helper;
 
 import java.util.Comparator;
@@ -153,6 +155,14 @@ public abstract class PortalRenderer {
                 return true;
             }
 
+            // Inner terrain culling already uses the active portal's clipped
+            // frustum, but portal discovery used only the camera frustum. Without
+            // this equivalent aperture test, a portal wholly behind the active
+            // clipping plane still reaches the stencil occlusion query; a stray
+            // boundary sample can then start an unnecessary recursive world render.
+            if (isFullyBehindActivePortalClip(portal)) {
+                return true;
+            }
         }
         
         double distance = portal.getDistanceToNearestPointInPortal(cameraPos);
@@ -176,6 +186,19 @@ public abstract class PortalRenderer {
         
         boolean predicateTest = NeoForge.EVENT_BUS.post(new PortalRenderingPredicateEvent(portal)).canRender();
         return !predicateTest;
+    }
+
+    /** True when no point in this portal's thin aperture can survive the active inner clip. */
+    private static boolean isFullyBehindActivePortalClip(Portal portal) {
+        Plane clip = PortalRendering.getActiveClippingPlane();
+        if (clip == null) return false;
+
+        AABB aperture = portal.getThinBoundingBox();
+        double centerDistance = clip.getDistanceTo(aperture.getCenter());
+        double radius = (aperture.getXsize() * Math.abs(clip.normal().x)
+            + aperture.getYsize() * Math.abs(clip.normal().y)
+            + aperture.getZsize() * Math.abs(clip.normal().z)) * 0.5;
+        return centerDistance + radius <= 0.0;
     }
 
     public static double getRenderRange() {

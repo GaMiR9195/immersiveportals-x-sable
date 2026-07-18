@@ -14,7 +14,6 @@ import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.portal.animation.ClientPortalAnimationManagement;
 import qouteall.imm_ptl.core.render.GlQueryObject;
 import qouteall.imm_ptl.core.render.QueryManager;
-import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 import qouteall.q_misc_util.Helper;
@@ -218,10 +217,7 @@ public class PortalRenderInfo implements AutoCloseable {
         ProfilerFiller profiler = Minecraft.getInstance().getProfiler();
         
         boolean decision;
-        // A nested pass is bounded by the active portal's current stencil mask.
-        // A visibility result from the previous frame cannot start it: modded
-        // renderers may draw their own framebuffer effects outside that mask.
-        if (IPGlobal.offsetOcclusionQuery && !PortalRendering.isRendering()) {
+        if (IPGlobal.offsetOcclusionQuery) {
             PortalRenderInfo renderInfo = get(portal);
             
             List<UUID> renderingDescription = WorldRenderInfo.getRenderingDescription();
