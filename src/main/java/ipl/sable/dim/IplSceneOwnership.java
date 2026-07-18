@@ -56,7 +56,7 @@ public final class IplSceneOwnership {
     private IplSceneOwnership() {}
 
     public static boolean isEnabled() {
-        return PER_SCENE && IplDimAgnostic.isEnabled();
+        return PER_SCENE;
     }
 
     /** The level whose Rapier scene should own this sub-level's body. */
@@ -207,4 +207,5 @@ public final class IplSceneOwnership {
             migrate(sub, home, owner);
         }
     }
+
 }

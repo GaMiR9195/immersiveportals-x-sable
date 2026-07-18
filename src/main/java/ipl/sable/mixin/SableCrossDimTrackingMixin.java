@@ -156,14 +156,13 @@ public abstract class SableCrossDimTrackingMixin {
         ipl$crossDimViewersBySubLevel.clear();
         ipl$crossDimViewerUnion.clear();
 
-        // Dim-agnostic hosting container: every sub-level here lives in ipl_sable:sublevels
+        // The hosting container holds every sub-level in ipl_sable:sublevels
         // and every viewer is by definition cross-dim. A sub-level's viewers are the players
         // of its PARENT dim within Sable's tracking range of the (parent-coordinate) pose,
         // plus any player viewing that parent-dim chunk through an IP portal. All downstream
         // machinery in this mixin (server-wide player resolution, forced shouldLoad,
         // bootstrap full-sync, redirected packet emission, forced TCP) then applies as-is.
-        if (ipl.sable.dim.IplDimAgnostic.isEnabled()
-            && ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
+        if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
             double range = dev.ryanhcode.sable.SableConfig.SUB_LEVEL_TRACKING_RANGE.getAsDouble();
             double rangeSq = range * range;
 
@@ -340,8 +339,7 @@ public abstract class SableCrossDimTrackingMixin {
                 // Hosted sub-levels: follow the full sync with the parent-dim stamp so the
                 // client knows which dimension to render this sub-level in. Sent after the
                 // bundled sync, so the client-side ClientSubLevel exists when it arrives.
-                if (ipl.sable.dim.IplDimAgnostic.isEnabled()
-                    && ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
+                if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
                     net.minecraft.server.level.ServerLevel parent =
                         ipl.sable.dim.IplDimAgnostic.getServerParentLevel(serverSubLevel);
                     if (parent != null) {
@@ -412,7 +410,7 @@ public abstract class SableCrossDimTrackingMixin {
     }
 
     // ------------------------------------------------------------------------
-    // 8. Dim-agnostic: stamp StopTracking packets with the hosting dim. sendRemoval
+    // 8. Stamp StopTracking packets with the hosting dim. sendRemoval
     //    fires from tick's removal pass and from onSubLevelRemoved -- both outside the
     //    bounds/movement redirect wraps -- and its packets must land in the client's
     //    sublevels-dim container, not whatever dim the recipient currently displays.
@@ -433,8 +431,7 @@ public abstract class SableCrossDimTrackingMixin {
         ServerSubLevel subLevel,
         Operation<Void> original
     ) {
-        if (ipl.sable.dim.IplDimAgnostic.isEnabled()
-            && ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
+        if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
             PacketRedirection.withForceRedirect(level, () -> original.call(self, sink, subLevel));
         } else {
             original.call(self, sink, subLevel);

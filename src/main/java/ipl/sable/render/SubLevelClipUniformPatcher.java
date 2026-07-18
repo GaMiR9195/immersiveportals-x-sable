@@ -40,9 +40,9 @@ import qouteall.q_misc_util.my_util.Plane;
  * chain in {@code shader_transformation.yaml}. {@code n · worldPos + c > 0}
  * is the kept half-space.
  *
- * <p>{@code patchForSubLevel} also calls {@code upload()} explicitly because
- * Sable's render path doesn't re-apply the shader after our HEAD mixin runs --
- * setting the uniform without uploading would leave the GPU value stale.
+ * <p>{@code patchForSubLevel} uploads when a program is active. If a renderer
+ * has only selected a shader, the uniform remains dirty for its next apply;
+ * calling {@code glUniform} before that bind is invalid.
  */
 public final class SubLevelClipUniformPatcher {
 
@@ -250,9 +250,8 @@ public final class SubLevelClipUniformPatcher {
     /**
      * Compute the clip equation from {@code plane} (in camera-relative form) and
      * push to {@code ipl_subLevelClipEquation} on the currently-bound shader.
-     * Also calls {@code upload()} so the GPU sees the new value before the next
-     * draw call -- Sable's render path doesn't re-apply the shader between our
-     * HEAD inject and its draw, so a bare {@code set()} would never propagate.
+     * Upload only when its GL program is active; otherwise leave it dirty for
+     * ShaderInstance.apply rather than issuing glUniform with program zero.
      */
     public static void patchForSubLevel(ClientSubLevel sub, Plane plane) {
         ShaderInstance shader = RenderSystem.getShader();

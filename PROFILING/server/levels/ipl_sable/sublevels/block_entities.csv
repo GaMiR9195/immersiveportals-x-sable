@@ -1,0 +1,5 @@
+x,y,z,type
+20481032,129,20485131,simulated:handle
+20481032,129,20485128,simulated:handle
+20481032,128,20487176,simulated:physics_assembler
+20481034,130,20483076,simulated:physics_assembler

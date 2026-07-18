@@ -51,7 +51,7 @@ public abstract class IplHostedTerrainChangeForwardMixin {
         int localX, int localY, int localZ,
         BlockState oldState, BlockState newState, CallbackInfo ci
     ) {
-        if (!IplDimAgnostic.isEnabled() || IplDimAgnostic.isHostingLevel(this.level)) {
+        if (IplDimAgnostic.isHostingLevel(this.level)) {
             return;
         }
         // Per-scene model: parent-dim block changes update the parent's OWN scene natively

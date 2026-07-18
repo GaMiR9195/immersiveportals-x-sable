@@ -88,7 +88,7 @@ public final class IplStraddleCloneBody {
     private static final double MAX_VEL_TRANSFER =
         Double.parseDouble(System.getProperty("ipl.sable.clone.maxVelTransfer", "3.0"));
 
-    private static final Map<MirrorRegistry.MirrorKey, Session> SESSIONS = new HashMap<>();
+    private static final Map<StraddleKey, Session> SESSIONS = new HashMap<>();
 
     private static boolean loggedSkip = false;
     private static long lastFeedbackLogMs = 0;
@@ -99,6 +99,7 @@ public final class IplStraddleCloneBody {
 
     private static final class Session {
         final ServerSubLevel sub;
+        final Portal portal;
         final ServerLevel parent;
         final ServerLevel dest;
         /** Sable 2.0: scenes are native long handles held by each level's pipeline. */
@@ -107,7 +108,7 @@ public final class IplStraddleCloneBody {
         final int realId;
         final int cloneId;
         final BlockPos offset;
-        /** The REAL body's aperture clip region for this portal (14 doubles), if natives allow. */
+        /** The REAL body's infinite-plane clip region for this portal (14 doubles), if natives allow. */
         double[] realClipRegion;
         final LongArrayList fedSections = new LongArrayList();
         final double[] poseBuf = new double[7];
@@ -123,9 +124,10 @@ public final class IplStraddleCloneBody {
         /** Dest dimension gravity (m/s²), analytically removed from the velocity delta. */
         org.joml.Vector3d destGravity = new org.joml.Vector3d(0, -9.8, 0);
 
-        Session(ServerSubLevel sub, ServerLevel parent, ServerLevel dest, BlockPos offset,
+        Session(ServerSubLevel sub, Portal portal, ServerLevel parent, ServerLevel dest, BlockPos offset,
                 long parentScene, long destScene) {
             this.sub = sub;
+            this.portal = portal;
             this.parent = parent;
             this.dest = dest;
             this.offset = offset;
@@ -169,8 +171,7 @@ public final class IplStraddleCloneBody {
         // boot-fallback body still in the hosting scene gets reconciled within a tick.)
         if (IplSceneOwnership.getBodyHome(hosted) != parent) return;
 
-        MirrorRegistry.MirrorKey key =
-            new MirrorRegistry.MirrorKey(hosted.getUniqueId(), portal.getUUID());
+        StraddleKey key = new StraddleKey(hosted.getUniqueId(), portal.getUUID());
         if (SESSIONS.containsKey(key)) return;
 
         RapierPhysicsPipeline parentPipeline = IplSceneOwnership.pipelineOf(parent);
@@ -179,7 +180,7 @@ public final class IplStraddleCloneBody {
         long parentScene = ((IplRapierPipelineAccess) parentPipeline).ipl$sceneHandle();
         long destScene = ((IplRapierPipelineAccess) destPipeline).ipl$sceneHandle();
 
-        Session session = new Session(hosted, parent, dest, offset, parentScene, destScene);
+        Session session = new Session(hosted, portal, parent, dest, offset, parentScene, destScene);
         try {
             session.destGravity.set(
                 dev.ryanhcode.sable.physics.config.dimension_physics.DimensionPhysicsData
@@ -190,25 +191,19 @@ public final class IplStraddleCloneBody {
         if (!spawnClone(session)) return;
         SESSIONS.put(key, session);
 
-        // Aperture contact clipping (spec §2.5), when the IPSable natives are live:
-        //  - REAL body: contacts past the portal plane inside the aperture are dropped —
+        // Plane contact clipping (spec §2.5), when the IPSable natives are live:
+        //  - REAL body: contacts past the portal plane are dropped at every lateral position —
         //    the through-part stops colliding with SOURCE-side terrain and ships.
-        //  - CLONE body: the complementary half — contacts BEFORE the (offset-mapped)
-        //    plane are dropped, so only the through-part is physically present dest-side.
+        //  - CLONE body: the complementary half — contacts before the offset-mapped plane
+        //    are dropped, so only the through-part is physically present dest-side.
         if (ipl.sable.natives.IplRapierNatives.isAvailable()) {
-            double margin = 1.0;
-            double halfW = portal.getWidth() * 0.5 + margin;
-            double halfH = portal.getHeight() * 0.5 + margin;
             Vec3 origin = portal.getOriginPos();
-            Vec3 axisW = portal.getAxisW();
-            Vec3 axisH = portal.getAxisH();
 
-            session.realClipRegion = clipRegion(origin, sourceToDest, axisW, halfW, axisH, halfH);
+            session.realClipRegion = clipRegion(portal, origin, sourceToDest);
             applyRealClipRegions(hosted, session.parentScene, session.realId);
 
             Vec3 destPlanePoint = origin.add(offset.getX(), offset.getY(), offset.getZ());
-            double[] cloneRegion = clipRegion(
-                destPlanePoint, sourceToDest.scale(-1.0), axisW, halfW, axisH, halfH);
+            double[] cloneRegion = clipRegion(portal, destPlanePoint, sourceToDest.scale(-1.0));
             ipl.sable.natives.IplRapierNatives.setClipRegions(
                 session.destScene, session.cloneId, cloneRegion);
         }
@@ -218,14 +213,12 @@ public final class IplStraddleCloneBody {
             session.realClipRegion != null);
     }
 
-    private static double[] clipRegion(
-        Vec3 point, Vec3 normal, Vec3 axisW, double halfW, Vec3 axisH, double halfH
-    ) {
+    private static double[] clipRegion(Portal portal, Vec3 point, Vec3 normal) {
         return new double[]{
             point.x, point.y, point.z,
             normal.x, normal.y, normal.z,
-            axisW.x, axisW.y, axisW.z, halfW,
-            axisH.x, axisH.y, axisH.z, halfH
+            portal.getAxisW().x, portal.getAxisW().y, portal.getAxisW().z, portal.getWidth() * 0.5,
+            portal.getAxisH().x, portal.getAxisH().y, portal.getAxisH().z, portal.getHeight() * 0.5
         };
     }
 
@@ -246,7 +239,7 @@ public final class IplStraddleCloneBody {
     }
 
     /** Straddle ended (backed out, flipped, or left the zone): despawn the clone. */
-    public static void clear(MirrorRegistry.MirrorKey key, String reason) {
+    public static void clear(StraddleKey key, String reason) {
         Session session = SESSIONS.remove(key);
         if (session == null) return;
         despawn(session);
@@ -289,6 +282,18 @@ public final class IplStraddleCloneBody {
             }
         }
         return null;
+    }
+
+    /** True when {@code position} is on the destination side of a same-dimension session. */
+    public static boolean isInMappedHalf(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level, Vec3 position
+    ) {
+        for (Session s : SESSIONS.values()) {
+            if (s.dest == level && s.parent == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
+                return s.portal.getNormal().dot(position.subtract(s.portal.getOriginPos())) <= 0.0;
+            }
+        }
+        return false;
     }
 
     /**

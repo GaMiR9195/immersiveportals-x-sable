@@ -35,7 +35,7 @@ public abstract class IplHostedHoldingMixin {
 
     @Inject(method = "updateChunkStatus", at = @At("HEAD"), cancellable = true, require = 0)
     private void ipl$noMidSessionHoldsOnHosting(ChunkPos chunkPos, boolean loaded, CallbackInfo ci) {
-        if (!loaded && IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(this.level)) {
+        if (!loaded && IplDimAgnostic.isHostingLevel(this.level)) {
             ci.cancel();
         }
     }

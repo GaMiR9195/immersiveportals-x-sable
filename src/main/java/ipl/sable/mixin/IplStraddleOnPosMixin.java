@@ -60,8 +60,6 @@ public abstract class IplStraddleOnPosMixin {
     )
     private BlockPos ipl$correctOnPosFrame(BlockPos original) {
         Entity self = (Entity) (Object) this;
-        if (!ipl.sable.dim.IplDimAgnostic.isEnabled()) return original;
-
         // Cheap reject: plot-grid coords are in the millions; world coords are not.
         if (Math.abs(original.getX()) < 1_000_000 && Math.abs(original.getZ()) < 1_000_000) {
             return original;
@@ -76,7 +74,8 @@ public abstract class IplStraddleOnPosMixin {
         SubLevel owner = plot.getSubLevel();
         if (owner == null) return original;
 
-        BlockPos offset = IplStraddlePoseMap.getOffsetInto(owner, self.level());
+        BlockPos offset = IplStraddlePoseMap.getCollisionOffsetInto(
+            owner, self.level(), self.getBoundingBox());
         if (offset == null) return original;
 
         // The unmapped-frame local position is off by exactly the portal offset.

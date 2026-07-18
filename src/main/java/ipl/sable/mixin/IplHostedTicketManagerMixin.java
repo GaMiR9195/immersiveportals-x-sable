@@ -55,7 +55,7 @@ public abstract class IplHostedTicketManagerMixin {
         boolean original, ServerLevel level, int x, int z
     ) {
         if (original) return true;
-        return IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(level);
+        return IplDimAgnostic.isHostingLevel(level);
     }
 
     @Unique
@@ -84,7 +84,7 @@ public abstract class IplHostedTicketManagerMixin {
         if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
             return;
         }
-        if (!IplDimAgnostic.isEnabled() || !IplDimAgnostic.isHostingLevel(level)) {
+        if (!IplDimAgnostic.isHostingLevel(level)) {
             return;
         }
 

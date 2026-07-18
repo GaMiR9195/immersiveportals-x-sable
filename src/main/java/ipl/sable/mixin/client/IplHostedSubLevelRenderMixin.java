@@ -37,6 +37,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import qouteall.imm_ptl.core.ducks.IEWorldRenderer;
 
 import java.util.List;
 import java.util.Objects;
@@ -82,6 +83,7 @@ public abstract class IplHostedSubLevelRenderMixin {
     @Final
     private Long2ObjectMap<SortedSet<BlockDestructionProgress>> destructionProgress;
 
+    /** Keep each source or mapped instance's shared render data culled for its active pose. */
     @Unique
     private VanillaSubLevelBlockEntityRenderer ipl$hostedBeRenderer;
 
@@ -197,6 +199,7 @@ public abstract class IplHostedSubLevelRenderMixin {
 
         List<ClientSubLevel> hosted = ipl$hosted();
         if (!hosted.isEmpty()) {
+            ipl$updateCullingForDraw(hosted);
             SubLevelRenderDispatcher.get().renderSectionLayer(
                 hosted, renderType, shader, x, y, z, modelView, projection, partialTick);
         }
@@ -205,6 +208,7 @@ public abstract class IplHostedSubLevelRenderMixin {
             ipl.sable.client.IplStraddleRenderState.set(
                 proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
             try {
+                ipl$updateCullingForDraw(List.of(proj.sub()));
                 SubLevelRenderDispatcher.get().renderSectionLayer(
                     List.of(proj.sub()), renderType, shader, x, y, z, modelView, projection, partialTick);
             } finally {
@@ -225,7 +229,8 @@ public abstract class IplHostedSubLevelRenderMixin {
         if (!(unwrapped instanceof VeilRenderType.LayeredRenderType layered)) return;
 
         List<ClientSubLevel> hosted = ipl$hosted();
-        if (hosted.isEmpty()) return;
+        List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
+        if (hosted.isEmpty() && projections.isEmpty()) return;
 
         SubLevelRenderDispatcher dispatcher = SubLevelRenderDispatcher.get();
         for (RenderType layer : layered.getLayers()) {
@@ -235,12 +240,41 @@ public abstract class IplHostedSubLevelRenderMixin {
                 Minecraft.getInstance().getWindow());
             shader.apply();
 
-            dispatcher.renderSectionLayer(hosted, renderType, shader, x, y, z, modelView, projection,
-                Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false));
+            if (!hosted.isEmpty()) {
+                ipl$updateCullingForDraw(hosted);
+                dispatcher.renderSectionLayer(hosted, layer, shader, x, y, z, modelView, projection,
+                    Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false));
+            }
+            for (IplClientHostedLookup.StraddleProjection proj : projections) {
+                ipl.sable.client.IplStraddleRenderState.set(
+                    proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
+                try {
+                    ipl$updateCullingForDraw(List.of(proj.sub()));
+                    dispatcher.renderSectionLayer(
+                        List.of(proj.sub()), layer, shader, x, y, z, modelView, projection,
+                        Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false));
+                } finally {
+                    ipl.sable.client.IplStraddleRenderState.clear();
+                }
+            }
 
             shader.clear();
             layer.clearRenderState();
         }
+    }
+
+    @Unique
+    private void ipl$updateCullingForDraw(List<ClientSubLevel> sublevels) {
+        Frustum frustum = ((IEWorldRenderer) Minecraft.getInstance().levelRenderer).portal_getFrustum();
+        if (frustum == null) return;
+
+        Minecraft minecraft = Minecraft.getInstance();
+        Vec3 cameraPosition = minecraft.gameRenderer.getMainCamera().getPosition();
+        boolean spectator = minecraft.player != null && minecraft.player.isSpectator();
+        SubLevelRenderDispatcher.get().updateCulling(
+            sublevels, cameraPosition.x, cameraPosition.y, cameraPosition.z,
+            VeilRenderBridge.create(frustum), spectator
+        );
     }
 
     @Inject(

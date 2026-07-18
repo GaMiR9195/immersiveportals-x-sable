@@ -152,6 +152,7 @@ public abstract class PortalRenderer {
             if (outerPortal.cannotRenderInMe(portal)) {
                 return true;
             }
+
         }
         
         double distance = portal.getDistanceToNearestPointInPortal(cameraPos);
@@ -176,7 +177,7 @@ public abstract class PortalRenderer {
         boolean predicateTest = NeoForge.EVENT_BUS.post(new PortalRenderingPredicateEvent(portal)).canRender();
         return !predicateTest;
     }
-    
+
     public static double getRenderRange() {
         double range = client.options.getEffectiveRenderDistance() * 16;
         if (RenderStates.isLaggy || IPGlobal.reducedPortalRendering) {

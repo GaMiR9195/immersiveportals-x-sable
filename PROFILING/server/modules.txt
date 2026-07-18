@@ -1,0 +1,129 @@
+ADVAPI32.dll:Расширенная библиотека API Windows 32:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+AUDIOSES.DLL:Сеанс обработки звука:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+COMCTL32.dll:Библиотека элементов управления взаимодействия с пользователем:6.10 (WinBuild.160101.0800):Microsoft Corporation
+CRYPT32.dll:API32 криптографии:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+CRYPTBASE.dll:Base cryptographic API DLL:10.0.26100.8246 (WinBuild.160101.0800):Microsoft Corporation
+CRYPTSP.dll:Cryptographic Service Provider API:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+CoreMessaging.dll:Microsoft CoreMessaging Dll:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+CoreUIComponents.dll:Microsoft Core UI Components Dll:10.0.26100.8655:Microsoft Corporation
+DBGHELP.DLL:Windows Image Helper:10.0.26100.8328 (WinBuild.160101.0800):Microsoft Corporation
+DEVOBJ.dll:Device Information Set DLL:10.0.26100.1150 (WinBuild.160101.0800):Microsoft Corporation
+DNSAPI.dll:Динамическая библиотека API DNS-клиента:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+DSPARSE.dll:Active Directory Domain Services API:10.0.26100.1 (WinBuild.160101.0800):Microsoft Corporation
+GDI32.dll:GDI Client DLL:10.0.26100.8328 (WinBuild.160101.0800):Microsoft Corporation
+GLU32.dll:Библиотека подпрограмм OpenGL:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+IMM32.DLL:Multi-User Windows IMM32 API Client DLL:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+IPHLPAPI.DLL:API вспомогательного приложения IP:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+KERNEL32.DLL:Библиотека клиента Windows NT BASE API:10.0.26100.8457 (WinBuild.160101.0800):Microsoft Corporation
+KERNELBASE.dll:Библиотека клиента Windows NT BASE API:10.0.26100.8457 (WinBuild.160101.0800):Microsoft Corporation
+MMDevApi.dll:MMDevice API:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+MSCTF.dll:Серверная библиотека MSCTF:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+MpOav.dll:IOfficeAntiVirus Module:4.18.26060.3008 (df1b0eba8e0e68e7272235d6dea4de3285c715b9):Microsoft Corporation
+NSI.dll:NSI User-mode interface DLL:10.0.26100.8246 (WinBuild.160101.0800):Microsoft Corporation
+NTASN1.dll:Microsoft ASN.1 API:10.0.26100.1 (WinBuild.160101.0800):Microsoft Corporation
+OLEAUT32.dll:OLEAUT32.DLL:10.0.26100.8655 (WinBuild.160101.0800):Microsoft Corporation
+Oleacc.dll:Active Accessibility Core Component:7.2.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+OpenAL.dll:Main implementation library:1.23.1:
+POWRPROF.dll:DLL модуля поддержки профиля управления питанием:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+PSAPI.DLL:Process Status Helper:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+RPCRT4.dll:Библиотека удаленного вызова процедур:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+SETUPAPI.dll:Windows Setup API:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+SHCORE.dll:SHCORE:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+SHELL32.dll:Общая библиотека оболочки Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+SspiCli.dll:Security Support Provider Interface:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+TextShaping.dll:Microsoft Text Shaping Library:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+UMPDC.dll:User Mode Power Dependency Coordinator:10.0.26100.8115 (WinBuild.160101.0800):Microsoft Corporation
+USER32.dll:Многопользовательская библиотека клиента USER API Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+USERENV.dll:Userenv:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+VCRUNTIME140.dll:Microsoft® C Runtime Library:14.38.33135.0:Microsoft Corporation
+VERSION.dll:Version Checking and File Installation Libraries:10.0.26100.1150 (WinBuild.160101.0800):Microsoft Corporation
+WINHTTP.dll:Службы HTTP Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+WINMM.dll:MCI API DLL:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+WINSTA.dll:Winstation Library:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+WINTRUST.dll:Microsoft Trust Verification APIs:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+WS2_32.dll:32-разрядная библиотека Windows Socket 2.0:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+WTSAPI32.dll:Windows Remote Desktop Session Host Server SDK APIs:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+amsi.dll:Anti-Malware Scan Interface:10.0.26100.7309 (WinBuild.160101.0800):Microsoft Corporation
+apphelp.dll:Клиентская библиотека совместимости приложений:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+awt.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+bcrypt.dll:Библиотека криптографических примитивов Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+bcryptPrimitives.dll:Windows Cryptographic Primitives Library:10.0.26100.8328 (WinBuild.160101.0800):Microsoft Corporation
+cfgmgr32.dll:Configuration Manager DLL:10.0.26100.8115 (WinBuild.160101.0800):Microsoft Corporation
+clbcatq.dll:COM+ Configuration Catalog:2001.12.10941.16384 (WinBuild.160101.0800):Microsoft Corporation
+combase.dll:Microsoft COM для Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+cryptnet.dll:Crypto Network Related API:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+dbgcore.DLL:Windows Core Debugging Helpers:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+dinput8.dll:Microsoft DirectInput:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+drvstore.dll:Driver Store API:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+dwmapi.dll:Интерфейс API диспетчера окон рабочего стола (Майкрософт):10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+dxcore.dll:DXCore:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+extnet.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+fastprox.dll:WMI Custom Marshaller:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+fwpuclnt.dll:API пользовательского режима FWP/IPsec:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+gdi32full.dll:GDI Client DLL:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+glfw.dll:GLFW 3.4.0 DLL:3.4.0:GLFW
+icm32.dll:Microsoft Color Management Module (CMM):10.0.26100.2314 (WinBuild.160101.0800):Microsoft Corporation
+imagehlp.dll:Windows NT Image Helper:10.0.26100.4202 (WinBuild.160101.0800):Microsoft Corporation
+inputhost.dll:InputHost:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+java.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+javaw.exe:OpenJDK Platform binary:21.0.7.0:Microsoft
+jemalloc.dll
+jimage.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+jli.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+jna1092951943742998149.dll:JNA native library:7.0.0:Java(TM) Native Access (JNA)
+jsvml.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+jvm.dll:OpenJDK 64-Bit server VM:21.0.7.0:Microsoft
+kernel.appcore.dll:AppModel API Host:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+lwjgl.dll
+lwjgl_opengl.dll
+lwjgl_stb.dll
+management.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+management_ext.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+msasn1.dll:ASN.1 Runtime APIs:10.0.26100.8246 (WinBuild.160101.0800):Microsoft Corporation
+mscms.dll:DLL-библиотека системы сопоставления цветов Майкрософт:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+msvcp140.dll:Microsoft® C Runtime Library:14.38.33135.0:Microsoft Corporation
+msvcp_win.dll:Microsoft® C Runtime Library:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+msvcrt.dll:Windows NT CRT DLL:7.0.26100.8246 (WinBuild.160101.0800):Microsoft Corporation
+mswsock.dll:Расширение поставщика службы API Microsoft Windows Sockets 2.0:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+napinsp.dll:Поставщик оболочки совместимости для имен электронной почты:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+ncrypt.dll:Маршрутизатор Windows NCrypt:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+net.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+nio.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+nlansp_c.dll:NLA Namespace Service Provider DLL:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+ntdll.dll:Системная библиотека NT:10.0.26100.8457 (WinBuild.160101.0800):Microsoft Corporation
+ntmarta.dll:Поставщик Windows NT MARTA:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+nvgpucomp64.dll:NVIDIA GPU Compiler Driver, Version 582.28 :32.0.15.8228:NVIDIA Corporation
+nvoglv64.dll:NVIDIA Compatible OpenGL ICD:32.0.15.8228:NVIDIA Corporation
+nvspcap64.dll:NVIDIA Game Proxy 8FileVersion  1:11.0.5.420  8Produc:NVIDIA Corporation  L$FileDescriptio
+ole32.dll:Microsoft OLE для Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+opengl32.dll:OpenGL Client DLL:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+pdh.dll:Модуль поддержки данных производительности Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+perfos.dll:Библиотека объектов производительности системы Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+pfclient.dll:SysMain Client:10.0.26100.4202 (WinBuild.160101.0800):Microsoft Corporation
+profapi.dll:User Profile Basic API:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+rasadhlp.dll:Remote Access AutoDial Helper:10.0.26100.7920 (WinBuild.160101.0800):Microsoft Corporation
+resourcepolicyclient.dll:Resource Policy Client:10.0.26100.8115 (WinBuild.160101.0800):Microsoft Corporation
+rsaenh.dll:Microsoft Enhanced Cryptographic Provider:10.0.26100.1 (WinBuild.160101.0800):Microsoft Corporation
+sable_rapier_ipl_x86_64_windows.dll
+sapi.dll:Speech API:5.3.31910.00 (WinBuild.160101.0800):Microsoft Corporation
+sechost.dll:Host for SCM/SDDL/LSA Lookup APIs:10.0.26100.1 (WinBuild.160101.0800):Microsoft Corporation
+shlwapi.dll:Библиотека небольших программ оболочки:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+sunmscapi.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+textinputframework.dll:"TextInputFramework.DYNLINK":10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+ucrtbase.dll:Microsoft® C Runtime Library:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+uxtheme.dll:Библиотека тем UxTheme (Microsoft):10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+vcruntime140_1.dll:Microsoft® C Runtime Library:14.38.33135.0:Microsoft Corporation
+verify.dll:OpenJDK Platform binary:21.0.7.0:Microsoft
+wbemcomn.dll:WMI:10.0.26100.7920 (WinBuild.160101.0800):Microsoft Corporation
+wbemprox.dll:WMI:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+wbemsvc.dll:WMI:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+win32u.dll:Win32u:10.0.26100.8655 (WinBuild.160101.0800):Microsoft Corporation
+windows.staterepositorycore.dll:Windows StateRepository API Core:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+windows.storage.dll:API хранения Microsoft WinRT:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+winrnr.dll:LDAP RnR Provider DLL:10.0.26100.8521 (WinBuild.160101.0800):Microsoft Corporation
+wintypes.dll:Библиотека DLL основных типов Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+wldp.dll:Политика блокировки Windows:10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+wshbth.dll:Windows Sockets Helper DLL:10.0.26100.5074 (WinBuild.160101.0800):Microsoft Corporation
+wshunix.dll:AF_UNIX Winsock2 Helper DLL:10.0.26100.1 (WinBuild.160101.0800):Microsoft Corporation
+xinput1_4.dll:API общего контроллера (Майкрософт):10.0.26100.8875 (WinBuild.160101.0800):Microsoft Corporation
+zip.dll:OpenJDK Platform binary:21.0.7.0:Microsoft

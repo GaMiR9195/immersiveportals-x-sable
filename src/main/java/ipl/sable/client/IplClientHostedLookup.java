@@ -63,7 +63,7 @@ public final class IplClientHostedLookup {
     private static java.util.List<dev.ryanhcode.sable.sublevel.ClientSubLevel> ipl$getHostedSubLevelsUncached(
         @Nullable ClientLevel level
     ) {
-        if (level == null || !ipl.sable.dim.IplDimAgnostic.isEnabled()) {
+        if (level == null) {
             return java.util.List.of();
         }
         if (level.dimension() == SableSubLevelDimension.SUBLEVELS) {
@@ -152,7 +152,7 @@ public final class IplClientHostedLookup {
     }
 
     private static java.util.List<StraddleProjection> ipl$getStraddleProjectionsUncached(ClientLevel destLevel) {
-        if (destLevel == null || !ipl.sable.dim.IplDimAgnostic.isEnabled()) {
+        if (destLevel == null) {
             return java.util.List.of();
         }
         if (destLevel.dimension() == SableSubLevelDimension.SUBLEVELS) {
@@ -171,9 +171,8 @@ public final class IplClientHostedLookup {
 
             net.minecraft.world.level.Level parent =
                 ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
-            if (parent == null || parent == destLevel) continue; // native pass handles it
+            if (parent == null) continue;
             if (parent.dimension() == SableSubLevelDimension.SUBLEVELS) continue; // parent unset
-
             ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
                 ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
             if (decision == null || decision.portal() == null) continue;
@@ -181,7 +180,7 @@ public final class IplClientHostedLookup {
 
             qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
 
-            // Pose: portal-map the current interpolated render pose.
+            // Render the mapped half even when source and destination are the same level.
             dev.ryanhcode.sable.companion.math.Pose3d mapped =
                 ipl$computeMappedPose(clientSub.renderPose(), portal);
 

@@ -36,7 +36,6 @@ public abstract class IplPredictionBridgeMixin {
     private void ipl$confirmPredictionOnAllLevels(
         BlockPos pos, BlockState state, int flags, CallbackInfo ci
     ) {
-        if (!IplDimAgnostic.isEnabled()) return;
         ClientLevel self = (ClientLevel) (Object) this;
         if (!IplDimAgnostic.isHostingLevel(self)) return;
 

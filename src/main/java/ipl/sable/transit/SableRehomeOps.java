@@ -81,13 +81,7 @@ public final class SableRehomeOps {
      * </ul>
      */
     public static void sweep(ServerSubLevelContainer container) {
-        if (!IplDimAgnostic.isEnabled()) return;
         if (!(container.getLevel() instanceof ServerLevel level)) return;
-
-        if (!loggedEnabled) {
-            loggedEnabled = true;
-            LOG.info("[IPL-REHOME] dim-agnostic mode ENABLED (disable with -Dipl.sable.dimAgnostic=false)");
-        }
 
         if (IplDimAgnostic.isHostingLevel(level)) {
             bootRestoreHosted(container, level);
@@ -101,7 +95,6 @@ public final class SableRehomeOps {
         for (SubLevel subLevel : container.getAllSubLevels()) {
             if (!(subLevel instanceof ServerSubLevel airship)) continue;
             if (airship.isRemoved()) continue;
-            if (isMirror(airship)) continue;
 
             try {
                 rehome(airship, container, level, hosting);
@@ -553,12 +546,4 @@ public final class SableRehomeOps {
         return teleported;
     }
 
-    /** Mirror detection shared with the transit controller. */
-    static boolean isMirror(ServerSubLevel subLevel) {
-        if (subLevel instanceof ipl.sable.iface.IplKinematicSubLevelHolder kh && kh.ipl$isKinematicMirror()) {
-            return true;
-        }
-        CompoundTag userData = subLevel.getUserDataTag();
-        return userData != null && userData.getBoolean("ipl_mirror");
-    }
 }

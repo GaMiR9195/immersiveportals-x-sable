@@ -26,12 +26,12 @@ public final class IplRapierNatives {
     }
 
     /**
-     * Set (or clear, with an empty array) the aperture clip regions of a body: solver
-     * contacts past the region's plane and within its lateral rectangle are dropped from
-     * the body's manifolds (spec §2.5).
+     * Set (or clear, with an empty array) finite portal-aperture clip regions of a body.
+     * Contacts past a region's plane and inside its width/height rectangle are dropped.
      *
      * <p>Layout: N regions × 14 doubles —
-     * {@code [px py pz  nx ny nz  wx wy wz  halfW  hx hy hz  halfH]}.
+     * {@code [px py pz nx ny nz wx wy wz halfW hx hy hz halfH]}.
      */
     public static native void setClipRegions(long sceneHandle, int bodyId, double[] regions);
+
 }

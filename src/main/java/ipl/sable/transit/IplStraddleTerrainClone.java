@@ -52,7 +52,7 @@ public final class IplStraddleTerrainClone {
     /** Safety cap on fed voxels per (ship, portal). */
     private static final int MAX_FED = 50_000;
 
-    private static final Map<MirrorRegistry.MirrorKey, CloneState> STATES = new HashMap<>();
+    private static final Map<StraddleKey, CloneState> STATES = new HashMap<>();
 
     private static boolean loggedRotationSkip = false;
 
@@ -103,7 +103,7 @@ public final class IplStraddleTerrainClone {
 
     /** Called each tick a hosted ship is STRADDLING (from the transit controller). */
     public static void onStraddleTick(ServerSubLevel hosted, Portal portal, Vec3 sourceToDest) {
-        if (!IplDimAgnostic.isEnabled() || !IplDimAgnostic.isHosted(hosted)) return;
+        if (!IplDimAgnostic.isHosted(hosted)) return;
 
         ServerLevel parent = IplDimAgnostic.getServerParentLevel(hosted);
         if (parent == null) return;
@@ -153,8 +153,7 @@ public final class IplStraddleTerrainClone {
             : hostingContainer.physicsSystem().getPipeline();
         if (scenePipeline == null) return;
 
-        MirrorRegistry.MirrorKey key =
-            new MirrorRegistry.MirrorKey(hosted.getUniqueId(), portal.getUUID());
+        StraddleKey key = new StraddleKey(hosted.getUniqueId(), portal.getUUID());
         CloneState state = STATES.computeIfAbsent(key, k -> {
             LOG.info("[IPL-STRADDLE-CLONE] start uuid={} portal={} offset={}",
                 hosted.getUniqueId(), portal.getUUID(), offset);
@@ -171,7 +170,7 @@ public final class IplStraddleTerrainClone {
     }
 
     /** Straddle ended (backed out, flipped, or left the zone): restore parent terrain. */
-    public static void clear(MirrorRegistry.MirrorKey key) {
+    public static void clear(StraddleKey key) {
         CloneState state = STATES.remove(key);
         if (state == null) return;
 

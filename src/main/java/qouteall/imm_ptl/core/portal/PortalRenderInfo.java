@@ -31,7 +31,7 @@ import java.util.UUID;
 public class PortalRenderInfo implements AutoCloseable {
     
     private static final Logger LOGGER = LogUtils.getLogger();
-    
+
     public static class Visibility {
         public GlQueryObject lastFrameQuery;
         public GlQueryObject thisFrameQuery;

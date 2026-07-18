@@ -40,7 +40,7 @@ public abstract class IplRenderDataProbeMixin {
 
     @Unique
     private boolean ipl$isHosted() {
-        return IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(this.subLevel.getLevel());
+        return IplDimAgnostic.isHostingLevel(this.subLevel.getLevel());
     }
 
     @Inject(method = "compileSections", at = @At("HEAD"), require = 0)

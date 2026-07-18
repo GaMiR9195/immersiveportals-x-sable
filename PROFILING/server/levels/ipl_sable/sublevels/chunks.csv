@@ -1,0 +1,16 @@
+x,z,level,in_memory,status,full_status,accessible_ready,ticking_ready,entity_ticking_ready,ticket,spawning,block_entity_count,ticking_ticket,ticking_level,block_ticks,fluid_ticks
+1280064,1280960,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0
+1280064,1280959,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0
+1280064,1280320,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0
+1280064,1281216,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0
+1280064,1280448,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0
+1280064,1280576,31,false,[null],[null],done,done,done,no_ticket,false,0,no_ticket,33,0,0
+1280064,1280704,31,false,[null],[null],done,done,done,no_ticket,false,0,no_ticket,33,0,0
+1280064,1281088,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0
+1280064,1280832,31,false,[null],[null],done,done,done,no_ticket,false,0,no_ticket,33,0,0
+1280064,1280064,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0
+1280064,1280192,31,false,[null],[null],done,done,done,no_ticket,false,0,no_ticket,33,0,0
+1280064,1280193,31,false,[null],[null],done,done,done,no_ticket,false,0,no_ticket,33,0,0
+1280064,1281344,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0
+1280064,1281472,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0
+1280064,1281600,31,false,[null],[null],done,done,done,no_ticket,true,0,no_ticket,33,0,0

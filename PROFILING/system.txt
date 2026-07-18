@@ -1,0 +1,78 @@
+Minecraft Version: 1.21.1
+Minecraft Version ID: 1.21.1
+Operating System: Windows 11 (amd64) version 10.0
+Java Version: 21.0.7, Microsoft
+Java VM Version: OpenJDK 64-Bit Server VM (mixed mode), Microsoft
+Memory: 2787115008 bytes (2658 MiB) / 8189378560 bytes (7810 MiB) up to 8589934592 bytes (8192 MiB)
+CPUs: 16
+Processor Vendor: GenuineIntel
+Processor Name: 11th Gen Intel(R) Core(TM) i9-11900KF @ 3.50GHz
+Identifier: Intel64 Family 6 Model 167 Stepping 1
+Microarchitecture: Rocket Lake
+Frequency (GHz): 3.50
+Number of physical packages: 1
+Number of physical CPUs: 8
+Number of logical CPUs: 16
+Graphics card #0 name: NVIDIA GeForce GTX 1070
+Graphics card #0 vendor: NVIDIA
+Graphics card #0 VRAM (MiB): 8192.00
+Graphics card #0 deviceId: VideoController1
+Graphics card #0 versionInfo: 32.0.15.8228
+Memory slot #0 capacity (MiB): 8192.00
+Memory slot #0 clockSpeed (GHz): 2.67
+Memory slot #0 type: DDR4
+Memory slot #1 capacity (MiB): 8192.00
+Memory slot #1 clockSpeed (GHz): 2.67
+Memory slot #1 type: DDR4
+Memory slot #2 capacity (MiB): 8192.00
+Memory slot #2 clockSpeed (GHz): 2.67
+Memory slot #2 type: DDR4
+Memory slot #3 capacity (MiB): 8192.00
+Memory slot #3 clockSpeed (GHz): 2.67
+Memory slot #3 type: DDR4
+Virtual memory max (MiB): 51043.45
+Virtual memory used (MiB): 41447.02
+Swap memory total (MiB): 18393.84
+Swap memory used (MiB): 1368.77
+Space in storage for jna.tmpdir (MiB): <path not set>
+Space in storage for org.lwjgl.system.SharedLibraryExtractPath (MiB): <path not set>
+Space in storage for io.netty.native.workdir (MiB): <path not set>
+Space in storage for java.io.tmpdir (MiB): available: 53198.77, total: 487455.00
+Space in storage for workdir (MiB): available: 53198.77, total: 487455.00
+JVM Flags: 10 total; -XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump -Xms1024m -Xmx8192m -XX:+UseStringDeduplication -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:+PerfDisableSharedMem -XX:+UseZGC -XX:+ZGenerational -XX:-ZUncommit
+Loaded Shaderpack: (off)
+Launched Version: 1.21.1
+Launcher name: ElyPrismLauncher
+Backend library: LWJGL version 3.3.3+5
+Backend API: NVIDIA GeForce GTX 1070/PCIe/SSE2 GL version 4.6.0 NVIDIA 582.28, NVIDIA Corporation
+Window size: 3440x1440
+GFLW Platform: win32
+GL Caps: Using framebuffer using OpenGL 3.2
+GL debug messages: id=1281, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_VALUE error generated. ObjectLabel: unknown buffer object <name>' x 2
+id=1281, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_VALUE error generated. ObjectLabel: unknown vertex array object <name>' x 1
+id=1281, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_VALUE error generated. ObjectLabel: unknown buffer object <name>' x 2
+id=1281, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_VALUE error generated. ObjectLabel: unknown vertex array object <name>' x 1
+id=1281, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_VALUE error generated. ObjectLabel: unknown buffer object <name>' x 8
+id=1281, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_VALUE error generated. ObjectLabel: unknown vertex array object <name>' x 1
+id=1281, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_VALUE error generated. ObjectLabel: unknown buffer object <name>' x 3
+id=1281, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_VALUE error generated. ObjectLabel: unknown vertex array object <name>' x 1
+id=1281, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_VALUE error generated. ObjectLabel: unknown buffer object <name>' x 2
+id=1282, source=API, type=ERROR, severity=HIGH, message='GL_INVALID_OPERATION error generated. No active program.' x 5598
+Is Modded: Definitely; Client brand changed to 'neoforge'; Server brand changed to 'neoforge'
+Universe: 400921fb54442d18
+Type: Integrated Server (map_client.txt)
+Graphics mode: fast
+Render Distance: 5/5 chunks
+Resource Packs: vanilla, mod_resources, mod/sodium, mod/fabric_api_base, mod/fabric_renderer_api_v1, mod/irisflw, mod/aeronautics (incompatible), mod/aeronautics_bundled, mod/sablecompanion, mod/flywheel, mod/ponder (incompatible), mod/create (incompatible), mod/sable, mod/neoforge, mod/fabric_block_view_api_v2, mod/iris, mod/veil (incompatible), mod/simulated (incompatible), mod/fabric_rendering_data_attachment_v1, mod/immersive_portals_core,q_misc_util,imm_ptl (incompatible), mod/cloth_config (incompatible), mod/sodiumdynamiclights (incompatible), mod/createdynlight, mod/offroad (incompatible), mod/irisveil
+Current Language: en_us
+Locale: en_RU
+System encoding: Cp1251
+File encoding: UTF-8
+CPU: 16x 11th Gen Intel(R) Core(TM) i9-11900KF @ 3.50GHz
+Server Running: true
+Player Count: 1 / 8; [ServerPlayer['GaMiR_9195'/41, l='ServerWorld minecraft:overworld Portal Stuffs', x=93.61, y=71.32, z=191.62]]
+Active Data Packs: create:dynamic_data, vanilla, mod_data, mod/sodium, mod/fabric_api_base, mod/fabric_renderer_api_v1, mod/irisflw, mod/aeronautics (incompatible), mod/aeronautics_bundled, mod/sablecompanion, mod/flywheel (incompatible), mod/ponder (incompatible), mod/create (incompatible), mod/sable, mod/neoforge, mod/fabric_block_view_api_v2, mod/iris, mod/veil (incompatible), mod/simulated (incompatible), mod/fabric_rendering_data_attachment_v1, mod/immersive_portals_core,q_misc_util,imm_ptl (incompatible), mod/cloth_config (incompatible), mod/sodiumdynamiclights (incompatible), mod/createdynlight, mod/offroad (incompatible), mod/irisveil
+Available Data Packs: bundle, trade_rebalance, vanilla, mod/aeronautics (incompatible), mod/aeronautics_bundled, mod/cloth_config (incompatible), mod/create (incompatible), mod/createdynlight, mod/fabric_api_base, mod/fabric_block_view_api_v2, mod/fabric_renderer_api_v1, mod/fabric_rendering_data_attachment_v1, mod/flywheel (incompatible), mod/immersive_portals_core,q_misc_util,imm_ptl (incompatible), mod/iris, mod/irisflw, mod/irisveil, mod/neoforge, mod/offroad (incompatible), mod/ponder (incompatible), mod/sable, mod/sablecompanion, mod/simulated (incompatible), mod/sodium, mod/sodiumdynamiclights (incompatible), mod/veil (incompatible), mod_data, create:dynamic_data
+Enabled Feature Flags: minecraft:vanilla
+World Generation: Experimental
+World Seed: 3199235541966027537

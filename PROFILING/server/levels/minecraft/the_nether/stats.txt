@@ -1,0 +1,9 @@
+spawning_chunks: 0
+spawn_count.creature: 10
+spawn_count.monster: 71
+entities: 122,122,81,225,225,0,0
+block_entity_tickers: 0
+block_ticks: 0
+fluid_ticks: 0
+distance_manager: player ticket throttler=[], s=1
+pending_tasks: 0

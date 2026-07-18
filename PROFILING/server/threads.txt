@@ -1,0 +1,1086 @@
+"Attach Listener" daemon prio=5 Id=31 RUNNABLE
+
+
+"Chunk Render Task Executor #0" prio=3 Id=164 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #0" prio=3 Id=184 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #0" prio=3 Id=195 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #1" prio=3 Id=165 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #1" prio=3 Id=185 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #1" prio=3 Id=196 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #2" prio=3 Id=166 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #2" prio=3 Id=186 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #2" prio=3 Id=197 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #3" prio=3 Id=167 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #3" prio=3 Id=187 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #3" prio=3 Id=198 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #4" prio=3 Id=168 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #4" prio=3 Id=188 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #4" prio=3 Id=199 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #5" prio=3 Id=169 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #5" prio=3 Id=189 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #5" prio=3 Id=200 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #6" prio=3 Id=170 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #6" prio=3 Id=190 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #6" prio=3 Id=201 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #7" prio=3 Id=171 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #7" prio=3 Id=191 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #7" prio=3 Id=202 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #8" prio=3 Id=172 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #8" prio=3 Id=192 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #8" prio=3 Id=203 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #9" prio=3 Id=173 WAITING on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@66780762
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #9" prio=3 Id=193 WAITING on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@698734d0
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Chunk Render Task Executor #9" prio=3 Id=204 WAITING on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.Semaphore$NonfairSync@6f9032ab
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:754)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1099)
+	at java.base@21.0.7/java.util.concurrent.Semaphore.acquire(Semaphore.java:318)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue.waitForNextJob(ChunkJobQueue.java:45)
+	at TRANSFORMER/sodium@0.8.12+mc1.21.1/net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder$WorkerRunnable.run(ChunkBuilder.java:172)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Cleaner-0" daemon prio=8 Id=92 TIMED_WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@7bb38820
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@7bb38820
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:269)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1852)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.await(ReferenceQueue.java:71)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove0(ReferenceQueue.java:143)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:218)
+	at java.base@21.0.7/jdk.internal.ref.CleanerImpl.run(CleanerImpl.java:140)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Cleaner-1" daemon prio=8 Id=116 TIMED_WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@2d5dc0fc
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@2d5dc0fc
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:269)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1852)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.await(ReferenceQueue.java:71)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove0(ReferenceQueue.java:143)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:218)
+	at java.base@21.0.7/jdk.internal.ref.CleanerImpl.run(CleanerImpl.java:140)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Cleaner-2" daemon prio=8 Id=148 TIMED_WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@6239370e
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@6239370e
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:269)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1852)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.await(ReferenceQueue.java:71)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove0(ReferenceQueue.java:143)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:218)
+	at java.base@21.0.7/jdk.internal.ref.CleanerImpl.run(CleanerImpl.java:140)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"Common-Cleaner" daemon prio=8 Id=48 TIMED_WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@78492cd6
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@78492cd6
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:269)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1852)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.await(ReferenceQueue.java:71)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove0(ReferenceQueue.java:143)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:218)
+	at java.base@21.0.7/jdk.internal.ref.CleanerImpl.run(CleanerImpl.java:140)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"FileSystemWatchService" daemon prio=5 Id=123 RUNNABLE (in native)
+	at java.base@21.0.7/sun.nio.fs.WindowsNativeDispatcher.GetQueuedCompletionStatus0(Native Method)
+	at java.base@21.0.7/sun.nio.fs.WindowsNativeDispatcher.GetQueuedCompletionStatus(WindowsNativeDispatcher.java:1075)
+	at java.base@21.0.7/sun.nio.fs.WindowsWatchService$Poller.run(WindowsWatchService.java:587)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	at java.base@21.0.7/java.lang.Thread.run(Thread.java:1583)
+
+
+"Finalizer" daemon prio=8 Id=29 WAITING on java.lang.ref.NativeReferenceQueue$Lock@6f703f3c
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on java.lang.ref.NativeReferenceQueue$Lock@6f703f3c
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at java.base@21.0.7/java.lang.ref.NativeReferenceQueue.await(NativeReferenceQueue.java:48)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove0(ReferenceQueue.java:158)
+	at java.base@21.0.7/java.lang.ref.NativeReferenceQueue.remove(NativeReferenceQueue.java:89)
+	at java.base@21.0.7/java.lang.ref.Finalizer$FinalizerThread.run(Finalizer.java:173)
+
+
+"Flywheel Task Executor #0" prio=3 Id=174 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"Flywheel Task Executor #1" prio=3 Id=175 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"Flywheel Task Executor #2" prio=3 Id=176 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"Flywheel Task Executor #3" prio=3 Id=177 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"Flywheel Task Executor #4" prio=3 Id=178 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"Flywheel Task Executor #5" prio=3 Id=179 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"Flywheel Task Executor #6" prio=3 Id=180 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"Flywheel Task Executor #7" prio=3 Id=181 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"Flywheel Task Executor #8" prio=3 Id=182 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"Flywheel Task Executor #9" prio=3 Id=183 WAITING on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait0(Native Method)
+	-  waiting on dev.engine_room.flywheel.impl.task.ThreadGroupNotifier@5adc65b8
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:366)
+	at java.base@21.0.7/java.lang.Object.wait(Object.java:339)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ThreadGroupNotifier.awaitNotification(ThreadGroupNotifier.java:9)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.spinThenWait(ParallelTaskExecutor.java:243)
+	at TRANSFORMER/flywheel@1.0.6/dev.engine_room.flywheel.impl.task.ParallelTaskExecutor$WorkerThread.run(ParallelTaskExecutor.java:208)
+
+
+"ForkJoinPool.commonPool-worker-12" daemon prio=5 Id=61 WAITING on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"ForkJoinPool.commonPool-worker-13" daemon prio=5 Id=62 WAITING on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"ForkJoinPool.commonPool-worker-14" daemon prio=5 Id=63 WAITING on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"ForkJoinPool.commonPool-worker-15" daemon prio=5 Id=64 WAITING on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"ForkJoinPool.commonPool-worker-3" daemon prio=5 Id=52 WAITING on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"ForkJoinPool.commonPool-worker-5" daemon prio=5 Id=54 TIMED_WAITING on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkUntil(LockSupport.java:449)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1891)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"ForkJoinPool.commonPool-worker-9" daemon prio=5 Id=58 WAITING on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@155694d7
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"IO-Worker-1" prio=10 Id=147 WAITING on java.util.concurrent.CompletableFuture$Signaller@21a059e6
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.CompletableFuture$Signaller@21a059e6
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at java.base@21.0.7/java.util.concurrent.CompletableFuture$Signaller.block(CompletableFuture.java:1864)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.unmanagedBlock(ForkJoinPool.java:3780)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.managedBlock(ForkJoinPool.java:3725)
+	at java.base@21.0.7/java.util.concurrent.CompletableFuture.waitingGet(CompletableFuture.java:1898)
+	at java.base@21.0.7/java.util.concurrent.CompletableFuture.join(CompletableFuture.java:2117)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.thread.BlockableEventLoop.executeBlocking(BlockableEventLoop.java:82)
+	...
+
+	Number of locked synchronizers = 1
+	- java.util.concurrent.ThreadPoolExecutor$Worker@38e46ea
+
+
+"IO-Worker-11" prio=10 Id=211 RUNNABLE
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.profiling.FilledProfileResults.getTimes(FilledProfileResults.java:106)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.profiling.FilledProfileResults.appendProfilerResults(FilledProfileResults.java:223)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.profiling.FilledProfileResults.appendProfilerResults(FilledProfileResults.java:258)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.profiling.FilledProfileResults.appendProfilerResults(FilledProfileResults.java:258)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.profiling.FilledProfileResults.appendProfilerResults(FilledProfileResults.java:258)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.profiling.FilledProfileResults.appendProfilerResults(FilledProfileResults.java:258)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.profiling.FilledProfileResults.appendProfilerResults(FilledProfileResults.java:258)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.profiling.FilledProfileResults.appendProfilerResults(FilledProfileResults.java:258)
+	...
+
+	Number of locked synchronizers = 1
+	- java.util.concurrent.ThreadPoolExecutor$Worker@25eb6c74
+
+
+"IO-Worker-12" prio=10 Id=219 TIMED_WAITING on java.util.concurrent.SynchronousQueue$Transferer@49f56b2c
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.SynchronousQueue$Transferer@49f56b2c
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:410)
+	at java.base@21.0.7/java.util.concurrent.LinkedTransferQueue$DualNode.await(LinkedTransferQueue.java:452)
+	at java.base@21.0.7/java.util.concurrent.SynchronousQueue$Transferer.xferLifo(SynchronousQueue.java:194)
+	at java.base@21.0.7/java.util.concurrent.SynchronousQueue.xfer(SynchronousQueue.java:235)
+	at java.base@21.0.7/java.util.concurrent.SynchronousQueue.poll(SynchronousQueue.java:338)
+	at java.base@21.0.7/java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1069)
+	at java.base@21.0.7/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1130)
+	...
+
+
+"JNA Cleaner" daemon prio=5 Id=85 TIMED_WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@244a7045
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@244a7045
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:269)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1852)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.await(ReferenceQueue.java:71)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove0(ReferenceQueue.java:143)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:218)
+	at MC-BOOTSTRAP/com.sun.jna@5.14.0/com.sun.jna.internal.Cleaner$CleanerThread.run(Cleaner.java:154)
+
+
+"Java2D Disposer" daemon prio=10 Id=154 WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@7d7dc3d8
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@7d7dc3d8
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode.block(AbstractQueuedSynchronizer.java:519)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.unmanagedBlock(ForkJoinPool.java:3780)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.managedBlock(ForkJoinPool.java:3725)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1712)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.await(ReferenceQueue.java:67)
+	at java.base@21.0.7/java.lang.ref.ReferenceQueue.remove0(ReferenceQueue.java:158)
+	...
+
+
+"Netty Local Client IO #0" daemon prio=5 Id=159 WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@265d55d2
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@265d55d2
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode.block(AbstractQueuedSynchronizer.java:519)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.unmanagedBlock(ForkJoinPool.java:3780)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.managedBlock(ForkJoinPool.java:3725)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1712)
+	at java.base@21.0.7/java.util.concurrent.LinkedBlockingQueue.take(LinkedBlockingQueue.java:435)
+	at MC-BOOTSTRAP/io.netty.common@4.1.97.Final/io.netty.util.concurrent.SingleThreadEventExecutor.takeTask(SingleThreadEventExecutor.java:244)
+	...
+
+
+"Netty Local Client IO #1" daemon prio=5 Id=161 WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@476f7ef3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@476f7ef3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode.block(AbstractQueuedSynchronizer.java:519)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.unmanagedBlock(ForkJoinPool.java:3780)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.managedBlock(ForkJoinPool.java:3725)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1712)
+	at java.base@21.0.7/java.util.concurrent.LinkedBlockingQueue.take(LinkedBlockingQueue.java:435)
+	at MC-BOOTSTRAP/io.netty.common@4.1.97.Final/io.netty.util.concurrent.SingleThreadEventExecutor.takeTask(SingleThreadEventExecutor.java:244)
+	...
+
+
+"Netty Server IO #0" daemon prio=10 Id=157 RUNNABLE (in native)
+	at java.base@21.0.7/sun.nio.ch.WEPoll.wait(Native Method)
+	at java.base@21.0.7/sun.nio.ch.WEPollSelectorImpl.doSelect(WEPollSelectorImpl.java:114)
+	at java.base@21.0.7/sun.nio.ch.SelectorImpl.lockAndDoSelect(SelectorImpl.java:130)
+	-  locked io.netty.channel.nio.SelectedSelectionKeySet@2ebb816d
+	-  locked sun.nio.ch.WEPollSelectorImpl@67a639e3
+	at java.base@21.0.7/sun.nio.ch.SelectorImpl.select(SelectorImpl.java:147)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.SelectedSelectionKeySetSelector.select(SelectedSelectionKeySetSelector.java:68)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.NioEventLoop.select(NioEventLoop.java:879)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:526)
+	at MC-BOOTSTRAP/io.netty.common@4.1.97.Final/io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:997)
+	...
+
+
+"Netty Server IO #1" daemon prio=10 Id=158 RUNNABLE (in native)
+	at java.base@21.0.7/sun.nio.ch.WEPoll.wait(Native Method)
+	at java.base@21.0.7/sun.nio.ch.WEPollSelectorImpl.doSelect(WEPollSelectorImpl.java:114)
+	at java.base@21.0.7/sun.nio.ch.SelectorImpl.lockAndDoSelect(SelectorImpl.java:130)
+	-  locked io.netty.channel.nio.SelectedSelectionKeySet@d779235
+	-  locked sun.nio.ch.WEPollSelectorImpl@312e3de0
+	at java.base@21.0.7/sun.nio.ch.SelectorImpl.select(SelectorImpl.java:147)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.SelectedSelectionKeySetSelector.select(SelectedSelectionKeySetSelector.java:68)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.NioEventLoop.select(NioEventLoop.java:879)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:526)
+	at MC-BOOTSTRAP/io.netty.common@4.1.97.Final/io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:997)
+	...
+
+
+"Netty Server IO #2" daemon prio=10 Id=160 RUNNABLE (in native)
+	at java.base@21.0.7/sun.nio.ch.WEPoll.wait(Native Method)
+	at java.base@21.0.7/sun.nio.ch.WEPollSelectorImpl.doSelect(WEPollSelectorImpl.java:114)
+	at java.base@21.0.7/sun.nio.ch.SelectorImpl.lockAndDoSelect(SelectorImpl.java:130)
+	-  locked io.netty.channel.nio.SelectedSelectionKeySet@35ad21c2
+	-  locked sun.nio.ch.WEPollSelectorImpl@acb16cd
+	at java.base@21.0.7/sun.nio.ch.SelectorImpl.select(SelectorImpl.java:147)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.SelectedSelectionKeySetSelector.select(SelectedSelectionKeySetSelector.java:68)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.NioEventLoop.select(NioEventLoop.java:879)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:526)
+	at MC-BOOTSTRAP/io.netty.common@4.1.97.Final/io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:997)
+	...
+
+
+"Netty Server IO #3" daemon prio=10 Id=162 RUNNABLE (in native)
+	at java.base@21.0.7/sun.nio.ch.WEPoll.wait(Native Method)
+	at java.base@21.0.7/sun.nio.ch.WEPollSelectorImpl.doSelect(WEPollSelectorImpl.java:114)
+	at java.base@21.0.7/sun.nio.ch.SelectorImpl.lockAndDoSelect(SelectorImpl.java:130)
+	-  locked io.netty.channel.nio.SelectedSelectionKeySet@7638aa11
+	-  locked sun.nio.ch.WEPollSelectorImpl@32c3f813
+	at java.base@21.0.7/sun.nio.ch.SelectorImpl.select(SelectorImpl.java:147)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.SelectedSelectionKeySetSelector.select(SelectedSelectionKeySetSelector.java:68)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.NioEventLoop.select(NioEventLoop.java:879)
+	at MC-BOOTSTRAP/io.netty.transport@4.1.97.Final/io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:526)
+	at MC-BOOTSTRAP/io.netty.common@4.1.97.Final/io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:997)
+	...
+
+
+"Notification Thread" daemon prio=9 Id=47 RUNNABLE
+
+
+"Reference Handler" daemon prio=10 Id=28 RUNNABLE
+	at java.base@21.0.7/java.lang.ref.Reference.waitForReferencePendingList(Native Method)
+	at java.base@21.0.7/java.lang.ref.Reference.processPendingReferences(Reference.java:246)
+	at java.base@21.0.7/java.lang.ref.Reference$ReferenceHandler.run(Reference.java:208)
+
+
+"Render thread" prio=10 Id=1 RUNNABLE
+	at java.base@21.0.7/java.lang.ThreadLocal$ThreadLocalMap.getEntryAfterMiss(ThreadLocal.java:527)
+	at java.base@21.0.7/java.lang.ThreadLocal$ThreadLocalMap.getEntry(ThreadLocal.java:504)
+	at java.base@21.0.7/java.lang.ThreadLocal.get(ThreadLocal.java:187)
+	at java.base@21.0.7/java.lang.ThreadLocal.get(ThreadLocal.java:172)
+	at TRANSFORMER/immersive_portals_core@6.0.7/ipl.sable.client.IplStraddleRenderCache.current(IplStraddleRenderCache.java:114)
+	at TRANSFORMER/immersive_portals_core@6.0.7/ipl.sable.client.IplStraddleRenderCache.canonicalPortalFace(IplStraddleRenderCache.java:82)
+	at TRANSFORMER/immersive_portals_core@6.0.7/ipl.sable.render.SourceClipPortalFinder.isCanonicalEntranceFace(SourceClipPortalFinder.java:218)
+	at TRANSFORMER/immersive_portals_core@6.0.7/ipl.sable.render.SourceClipPortalFinder.ipl$findUncached(SourceClipPortalFinder.java:123)
+	...
+
+
+"Server thread" prio=8 Id=150 RUNNABLE
+	at java.management@21.0.7/sun.management.ThreadImpl.dumpThreads0(Native Method)
+	at java.management@21.0.7/sun.management.ThreadImpl.dumpAllThreads(ThreadImpl.java:518)
+	at java.management@21.0.7/sun.management.ThreadImpl.dumpAllThreads(ThreadImpl.java:506)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.server.MinecraftServer.dumpThreads(MinecraftServer.java:1845)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.server.MinecraftServer.saveDebugReport(MinecraftServer.java:1797)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.server.MinecraftServer.lambda$startMetricsRecordingTick$34(MinecraftServer.java:1884)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.server.MinecraftServer$$Lambda/0x00000000820f4ad8.run(Unknown Source)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.thread.BlockableEventLoop.lambda$submitAsync$0(BlockableEventLoop.java:60)
+	...
+
+
+"Signal Dispatcher" daemon prio=9 Id=30 RUNNABLE
+
+
+"Sound engine" daemon prio=10 Id=163 WAITING on java.lang.String@3a8782c1
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.lang.String@3a8782c1
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:221)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.client.sounds.SoundEngineExecutor.waitForTasks(SoundEngineExecutor.java:49)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.util.thread.BlockableEventLoop.managedBlock(BlockableEventLoop.java:133)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.client.sounds.SoundEngineExecutor.run(SoundEngineExecutor.java:42)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.client.sounds.SoundEngineExecutor$$Lambda/0x0000000081701280.run(Unknown Source)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	at java.base@21.0.7/java.lang.Thread.run(Thread.java:1583)
+
+
+"Timer hack thread" daemon prio=5 Id=87 TIMED_WAITING
+	at java.base@21.0.7/java.lang.Thread.sleep0(Native Method)
+	at java.base@21.0.7/java.lang.Thread.sleep(Thread.java:509)
+	at TRANSFORMER/minecraft@1.21.1/net.minecraft.Util$7.run(Util.java:759)
+
+
+"Worker-Main-12" daemon prio=5 Id=137 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-13" daemon prio=5 Id=138 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-14" daemon prio=5 Id=139 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-16" daemon prio=5 Id=215 TIMED_WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkUntil(LockSupport.java:449)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1891)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-17" daemon prio=5 Id=214 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-18" daemon prio=5 Id=213 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-19" daemon prio=5 Id=216 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-20" daemon prio=5 Id=217 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-21" daemon prio=5 Id=218 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-22" daemon prio=5 Id=212 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-4" daemon prio=5 Id=127 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-5" daemon prio=5 Id=128 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-7" daemon prio=5 Id=130 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-8" daemon prio=5 Id=131 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Worker-Main-9" daemon prio=5 Id=132 WAITING on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@2732c3e3
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"Yggdrasil Key Fetcher" daemon prio=5 Id=89 TIMED_WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@4a2d322f
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@4a2d322f
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:269)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(AbstractQueuedSynchronizer.java:1763)
+	at java.base@21.0.7/java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:1182)
+	at java.base@21.0.7/java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:899)
+	at java.base@21.0.7/java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1070)
+	at java.base@21.0.7/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1130)
+	at java.base@21.0.7/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+	...
+
+
+"config-file-watcher-0-0" daemon prio=5 Id=124 TIMED_WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@69574842
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@69574842
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:269)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(AbstractQueuedSynchronizer.java:1763)
+	at java.base@21.0.7/java.util.concurrent.LinkedBlockingDeque.pollFirst(LinkedBlockingDeque.java:515)
+	at java.base@21.0.7/java.util.concurrent.LinkedBlockingDeque.poll(LinkedBlockingDeque.java:677)
+	at java.base@21.0.7/sun.nio.fs.AbstractWatchService.poll(AbstractWatchService.java:108)
+	at MC-BOOTSTRAP/com.electronwill.nightconfig.core@3.8.3/com.electronwill.nightconfig.core.file.FileWatcher$FsWatcher.run(FileWatcher.java:531)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	...
+
+
+"ipl-server-watchdog" daemon prio=8 Id=156 TIMED_WAITING
+	at java.base@21.0.7/java.lang.Thread.sleep0(Native Method)
+	at java.base@21.0.7/java.lang.Thread.sleep(Thread.java:509)
+	at TRANSFORMER/immersive_portals_core@6.0.7/ipl.sable.IplServerWatchdog.watchdogLoop(IplServerWatchdog.java:72)
+	at TRANSFORMER/immersive_portals_core@6.0.7/ipl.sable.IplServerWatchdog$$Lambda/0x0000000081dbce60.run(Unknown Source)
+	at java.base@21.0.7/java.lang.Thread.runWith(Thread.java:1596)
+	at java.base@21.0.7/java.lang.Thread.run(Thread.java:1583)
+
+
+"modloading-sync-worker" daemon prio=5 Id=122 WAITING on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@ec23332
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject@ec23332
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode.block(AbstractQueuedSynchronizer.java:519)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.unmanagedBlock(ForkJoinPool.java:3780)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.managedBlock(ForkJoinPool.java:3725)
+	at java.base@21.0.7/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1712)
+	at java.base@21.0.7/java.util.concurrent.LinkedBlockingQueue.take(LinkedBlockingQueue.java:435)
+	at java.base@21.0.7/java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1070)
+	...
+
+
+"modloading-worker-0" daemon prio=5 Id=100 WAITING on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"modloading-worker-0" daemon prio=5 Id=101 WAITING on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"modloading-worker-0" daemon prio=5 Id=105 WAITING on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"modloading-worker-0" daemon prio=5 Id=107 WAITING on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"modloading-worker-0" daemon prio=5 Id=108 WAITING on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"modloading-worker-0" daemon prio=5 Id=111 WAITING on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"modloading-worker-0" daemon prio=5 Id=112 TIMED_WAITING on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.parkUntil(LockSupport.java:449)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1891)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+
+"modloading-worker-0" daemon prio=5 Id=114 WAITING on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/jdk.internal.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.ForkJoinPool@5a624bad
+	at java.base@21.0.7/java.util.concurrent.locks.LockSupport.park(LockSupport.java:371)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.awaitWork(ForkJoinPool.java:1893)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+	at java.base@21.0.7/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+

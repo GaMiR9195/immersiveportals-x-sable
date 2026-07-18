@@ -1,0 +1,13 @@
+spawning_chunks: 289
+spawn_count.water_ambient: 15
+spawn_count.water_creature: 8
+spawn_count.ambient: 15
+spawn_count.creature: 94
+spawn_count.underground_water_creature: 7
+spawn_count.monster: 70
+entities: 256,256,163,309,309,0,0
+block_entity_tickers: 44
+block_ticks: 0
+fluid_ticks: 1
+distance_manager: player ticket throttler=[], s=1
+pending_tasks: 0

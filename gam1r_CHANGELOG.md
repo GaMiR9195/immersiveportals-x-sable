@@ -92,6 +92,97 @@ halves must meet at the physical portal plane without an empty diagonal strip.
 
 No build or automated check was run for this change.
 
+## Nested Portal Aperture Culling
+
+### Symptom
+
+With a nearby pair of one-sided IN/OUT portals, a portal behind them (for example,
+a Nether portal) could begin rendering only from one viewing side and only after the
+camera moved far enough away. A moving, variably sized plane of the nested portal
+appeared inside the near portal aperture and frame rate dropped when it appeared.
+
+The issue did not reproduce with only one double-sided portal. It required a recursive
+portal render: the outer portal was rendering its destination world, then the nested
+portal in that destination world was considered for another portal render despite
+being completely behind the outer portal's active clip plane.
+
+### Cause
+
+IP's inner frustum culling correctly restricts destination terrain to the outer portal
+aperture. Portal entity discovery used a separate path: it checked normal camera
+visibility, then submitted each candidate portal's stencil aperture to an occlusion
+query. It did not reject a nested portal whose whole aperture was already on the
+culled side of the active inner clip plane.
+
+A tiny surviving aperture boundary sample could therefore make the `GL_ANY_SAMPLES_PASSED`
+query succeed. IP then started a complete recursive destination-world render. The
+stencil coverage from that render was camera-dependent, which is why the visible plane
+moved and changed size with the camera.
+
+### Implemented Change
+
+`PortalRenderer.shouldSkipRenderingPortal` now performs an early nested-pass aperture
+test before distance, frustum, predicate, stencil, or occlusion-query work:
+
+- only while `PortalRendering.isRendering()` is true;
+- read the active inner clipping plane from the outer portal pass;
+- project the candidate portal's thin aperture AABB onto that plane normal;
+- skip the candidate only when its positive projection extremum is at or behind the
+  clipped half-space boundary.
+
+This is a conservative geometric rejection. A portal that intersects or is in front
+of the active aperture is still handled by IP's existing frustum and occlusion-query
+pipeline. A portal entirely outside the current recursive aperture cannot submit a
+single stencil sample and cannot start its expensive destination-world render.
+
+### Files
+
+- `src/main/java/qouteall/imm_ptl/core/render/renderer/PortalRenderer.java`
+  Adds `isFullyBehindActivePortalClip` and invokes it only for nested portal passes.
+
+### Verification Needed
+
+Runtime-check two nearby one-sided IN/OUT portals with a Nether portal about five
+blocks behind them. From both sides, move the camera across the previous trigger
+distance. The Nether portal must not create a moving plane inside the IN/OUT aperture,
+and the recursive portal render / FPS drop must not start unless some real part of the
+Nether portal aperture becomes visible through the active outer portal.
+
+No build or automated check was run for this change.
+
+## Sodium Same-Dimension Portal Stability
+
+Sodium's per-region draw-command batches are now isolated by IP portal depth,
+matching its per-depth visible `ChunkRenderList` state. The portal-depth batch
+storage is sparse; clear and deletion paths skip empty depth slots.
+
+When Sodium resets a portal `ChunkRenderList`, the matching batch slot is found
+by list identity rather than the currently active portal depth. A shallower list
+can be reset while a deeper portal render is active, and clearing by active
+depth would otherwise invalidate the wrong commands.
+
+Sodium rendering contexts retain and swap `lastCameraPos`. A same-dimension
+context switch therefore does not appear to Sodium as a camera movement and does
+not trigger unnecessary terrain updates. New contexts start with the active
+portal camera position.
+
+The Sodium 0.8.12 viewport hook now uses `isBoxVisible` and `testSection`,
+converting the section center into padded section bounds before IP frustum
+culling.
+
+### Files
+
+- `src/main/java/qouteall/imm_ptl/core/compat/mixin/sodium/MixinSodiumRenderRegion.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/mixin/sodium/MixinSodiumChunkRenderList.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/sodium_compatibility/IESodiumRenderRegion.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/mixin/sodium/IESodiumWorldRenderer.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/mixin/sodium/MixinSodiumViewport.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/sodium_compatibility/SodiumInterface.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/sodium_compatibility/SodiumRenderingContext.java`
+- `src/main/java/qouteall/imm_ptl/core/render/MyGameRenderer.java`
+
+No build or automated check was run for these changes.
+
 ## Source-Side Hosted Block Entity Clipping
 
 ### Symptom
@@ -374,6 +465,44 @@ destination draw cannot reuse a source-space cached pose.
 Runtime-check a smoothly moving construction crossing a portal while observing
 from the destination side. The projection must remain visible until native
 single-frame source-pose stutter.
+
+### Follow-up: Nested Render Cache Invalidation
+
+The handoff now maps all client pose state before exposing the destination
+parent. This prevents a render pass from seeing destination ownership paired
+with a source-frame interpolation timeline.
+
+It also invalidates every active `IplStraddleRenderCache` pass after the parent
+switch. IP can perform nested portal renders; invalidating only the innermost
+pass allowed an enclosing pass to reuse a source-frame projection after the
+same handoff. The next lookup rebuilds hosted and projection lists from the
+destination parent, avoiding a stale projection or double-draw at portal exit.
+
+### Files
+
+- `src/main/java/ipl/sable/client/IplParentDimSync.java`
+  Commits mapped client state before parent visibility and clears active render
+  caches after handoff.
+- `src/main/java/ipl/sable/client/IplStraddleRenderCache.java`
+  Invalidates all nested render-pass cache entries.
+
+### Follow-up: Remove One-Tick Render Hold
+
+The previous exact-pose bridge held the construction still until the next
+`ClientSubLevel.tick`. That is a visible one-tick pause after native destination
+rendering takes over, especially at speed. It is removed.
+
+The handoff already maps every buffered snapshot, running snapshot, logical
+pose, and last pose. It now only invalidates Sable's per-partial-tick cache.
+Sable immediately rebuilds from two identical mapped handoff endpoints, then
+continues normally from destination snapshots on the following tick.
+
+### Files
+
+- `src/main/java/ipl/sable/client/IplParentDimSync.java`
+  Invalidates cached pose without holding native movement.
+- `src/main/java/ipl/sable/mixin/client/IplClientSubLevelPoseOverrideMixin.java`
+  Removes handoff-only pose override.
 
 No build or automated check was run for this change.
 
