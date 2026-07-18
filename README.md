@@ -11,6 +11,12 @@ v0.4.1
 2) Just a tiny bit of optimization
 3) RESTORED CLIPPING THROUGH WALLS!!! (was my mistake)
 
+v0.4.2
+1) Better sodium compability (same dimensional portals), I WILL NOT MAKE ULTRA DIMENSIONAL LOGIC (sable -> portal -> portal -> portal) RIGHT NOW!!!
+2) Fixed clipping through walls, bug: was limited to portal size, now unlimited.
+3) Micro stutter after teleport was minimized
+4) HUGE amount of rendering bug fixes.
+
 # Immersive Portals × Sable Compatibility Fork
 
 **Platform: NeoForge 1.21.1 · Sable 2.0.3+ · Create Aeronautics 1.3.0+ ·
