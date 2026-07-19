@@ -96,59 +96,35 @@ No build or automated check was run for this change.
 
 ### Symptom
 
-With a nearby pair of one-sided IN/OUT portals, a portal behind them (for example,
-a Nether portal) could begin rendering only from one viewing side and only after the
-camera moved far enough away. A moving, variably sized plane of the nested portal
-appeared inside the near portal aperture and frame rate dropped when it appeared.
-
-The issue did not reproduce with only one double-sided portal. It required a recursive
-portal render: the outer portal was rendering its destination world, then the nested
-portal in that destination world was considered for another portal render despite
-being completely behind the outer portal's active clip plane.
+While rendering through portal B, portal A in B's destination world could render over
+B even when A was fully behind B's destination clip plane and therefore could not be
+physically visible to the player.
 
 ### Cause
 
-IP's inner frustum culling correctly restricts destination terrain to the outer portal
-aperture. Portal entity discovery used a separate path: it checked normal camera
-visibility, then submitted each candidate portal's stencil aperture to an occlusion
-query. It did not reject a nested portal whose whole aperture was already on the
-culled side of the active inner clip plane.
-
-A tiny surviving aperture boundary sample could therefore make the `GL_ANY_SAMPLES_PASSED`
-query succeed. IP then started a complete recursive destination-world render. The
-stencil coverage from that render was camera-dependent, which is why the visible plane
-moved and changed size with the camera.
+`portal_area` lost its slot-0 clipping injection after it was removed from the shader
+transformation list. Its stencil mask was drawn without the active destination plane,
+so the occlusion query could start a recursive render for portal A. Portal collection
+also performed the behind-plane check too late, after other per-portal work.
 
 ### Implemented Change
 
-`PortalRenderer.shouldSkipRenderingPortal` now performs an early nested-pass aperture
-test before distance, frustum, predicate, stencil, or occlusion-query work:
-
-- only while `PortalRendering.isRendering()` is true;
-- read the active inner clipping plane from the outer portal pass;
-- project the candidate portal's thin aperture AABB onto that plane normal;
-- skip the candidate only when its positive projection extremum is at or behind the
-  clipped half-space boundary.
-
-This is a conservative geometric rejection. A portal that intersects or is in front
-of the active aperture is still handled by IP's existing frustum and occlusion-query
-pipeline. A portal entirely outside the current recursive aperture cannot submit a
-single stencil sample and cannot start its expensive destination-world render.
+- `portal_area.vsh` now writes `gl_ClipDistance[0]` using
+  `iportal_ClippingEquation`; its JSON declares the uniform.
+- `MixinShaderInstance` adopts that JSON uniform after shader locations are loaded.
+- `PortalRenderer` rejects portals fully behind the active clip plane while building
+  the render candidate list, before frustum tests, stencil drawing, occlusion queries,
+  or recursive world rendering.
+- A `-0.01` tolerance preserves portals that are coplanar with the destination plane.
 
 ### Files
 
 - `src/main/java/qouteall/imm_ptl/core/render/renderer/PortalRenderer.java`
-  Adds `isFullyBehindActivePortalClip` and invokes it only for nested portal passes.
+- `src/main/java/qouteall/imm_ptl/core/mixin/client/render/shader/MixinShaderInstance.java`
+- `src/main/resources/assets/immersive_portals/shaders/core/portal_area.vsh`
+- `src/main/resources/assets/immersive_portals/shaders/core/portal_area.json`
 
-### Verification Needed
-
-Runtime-check two nearby one-sided IN/OUT portals with a Nether portal about five
-blocks behind them. From both sides, move the camera across the previous trigger
-distance. The Nether portal must not create a moving plane inside the IN/OUT aperture,
-and the recursive portal render / FPS drop must not start unless some real part of the
-Nether portal aperture becomes visible through the active outer portal.
-
-No build or automated check was run for this change.
+`jarJar` build completed successfully.
 
 ## Sodium Same-Dimension Portal Stability
 
