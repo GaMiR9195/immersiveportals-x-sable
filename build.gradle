@@ -114,9 +114,12 @@ repositories {
             }
         )
         filter {
+            // dev.ryanhcode.* (Sable core/rapier/companion) must resolve from
+            // maven.ryanhcode.dev for builds without a pre-populated mavenLocal;
+            // mavenLocal is listed first above, so local overrides still win.
+            includeGroupByRegex "dev\\.ryanhcode.*"
             includeGroup "dev.eriksonn.aeronautics"
             includeGroup "dev.simulated_team.simulated"
-            includeGroup "dev.ryanhcode.offroad"
         }
     }
     exclusiveContent {

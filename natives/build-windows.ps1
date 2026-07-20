@@ -37,4 +37,14 @@ if (!(Test-Path $dll)) { throw "expected $dll after build" }
 $dest = "$PSScriptRoot\..\src\main\resources\natives_ipl"
 New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item $dll "$dest\sable_rapier_x86_64_windows.dll" -Force
+
+# MANDATORY post-link fix: the GNU-ld + llvm-dlltool combination emits kernel32 import
+# descriptors that point PAST the array's real start, orphaning leading entries
+# (GetModuleHandleA/GetProcAddress/Sleep). Their .text thunks then jump into unbound
+# import metadata -> 0xc0000005 on rayon worker threads, intermittently, with no crash
+# report (root-caused 2026-07-20 from a ProcDump full dump). The fixer rewinds the
+# descriptors and verifies zero orphaned thunks remain.
+python "$PSScriptRoot\fix_import_descriptors.py" "$dest\sable_rapier_x86_64_windows.dll"
+if ($LASTEXITCODE -ne 0) { throw "import-descriptor fix failed ($LASTEXITCODE)" }
+
 Write-Output "staged: $dest\sable_rapier_x86_64_windows.dll ($((Get-Item $dll).Length) bytes)"

@@ -14,10 +14,9 @@ use rapier3d::geometry::{ColliderSet, DefaultBroadPhase, NarrowPhase};
 use rapier3d::glamx::IVec3;
 use rapier3d::math::Vec3;
 use rapier3d::pipeline::PhysicsPipeline;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub type LevelColliderID = usize;
 
@@ -37,17 +36,18 @@ pub fn pack_section_pos(i: i32, j: i32, k: i32) -> i64 {
 
 pub type ChunkMap = HashMap<i64, ChunkSection>;
 
-pub struct ReportedCollisionBuffer(RefCell<Vec<ReportedCollision>>);
-
-unsafe impl Sync for ReportedCollisionBuffer {}
+/// IPL fix (P1): was `RefCell<Vec>` behind an `unsafe impl Sync`, but the event handler
+/// extends it from rapier's PARALLEL island-solver threads (`parallel` feature) —
+/// concurrent unsynchronized pushes corrupt the Vec. A Mutex keeps the call-site shape.
+pub struct ReportedCollisionBuffer(Mutex<Vec<ReportedCollision>>);
 
 impl ReportedCollisionBuffer {
     pub fn new() -> Self {
-        Self(RefCell::new(Vec::with_capacity(16)))
+        Self(Mutex::new(Vec::with_capacity(16)))
     }
 
-    pub fn borrow_mut(&self) -> std::cell::RefMut<'_, Vec<ReportedCollision>> {
-        self.0.borrow_mut()
+    pub fn borrow_mut(&self) -> std::sync::MutexGuard<'_, Vec<ReportedCollision>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
