@@ -11,6 +11,7 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL41;
 import org.slf4j.Logger;
@@ -309,8 +310,20 @@ public final class SubLevelClipUniformPatcher {
 
         float[] currentEq = IplProgramRegistry.isVanillaSubLevelInputShader(shader.getName())
             && eqVanillaInput != null ? eqVanillaInput : new float[]{nx, ny, nz, cw};
-        uniform.set(currentEq[0], currentEq[1], currentEq[2], currentEq[3]);
-        uniform.upload();
+        // Only touch the tracked shader's uniform when its program is ACTUALLY bound.
+        // RenderSystem.getShader() is CPU-side tracking: post/blit passes leave
+        // glUseProgram(0) while the tracked shader is still set, and upload() then
+        // raises GL_INVALID_OPERATION "No active program" on every frame, poisoning
+        // the GL state for the rest of the session (first seen on same-dimension
+        // straddles). The registry spray below reaches registered programs bind-free.
+        int boundProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+        if (boundProgram == shader.getId()) {
+            uniform.set(currentEq[0], currentEq[1], currentEq[2], currentEq[3]);
+            uniform.upload();
+        } else {
+            logEarlyReturn(
+                "shader '" + shader.getName() + "' tracked but not bound — registry spray only");
+        }
 
         // Publish world-space equation for chunk shaders (iris+sodium
         // terrain_*) that dot against a world-space position chain.
@@ -475,6 +488,9 @@ public final class SubLevelClipUniformPatcher {
         if (shader == null) return;
         Uniform uniform = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform();
         if (uniform == null) return;
+        // Same bound-program guard as patchForSubLevel: never glUniform into an
+        // unbound program (GL_INVALID_OPERATION "No active program").
+        if (GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM) != shader.getId()) return;
         uniform.set(0f, 0f, 0f, 1f);
         uniform.upload();
     }

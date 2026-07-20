@@ -132,6 +132,7 @@ impl PhysicsHooks for SablePhysicsHooks {
 }
 
 static IPL_CLIP_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static IPL_CLIP_FIRST_DROP: std::sync::Once = std::sync::Once::new();
 
 fn ipl_clip_disabled() -> bool {
     *IPL_CLIP_DISABLED
@@ -160,11 +161,45 @@ impl SablePhysicsHooks {
             if info.clip_regions.is_empty() {
                 continue;
             }
-            context
-                .solver_contacts
-                .retain(|c| !info.clip_regions.iter().any(|r| r.contains(c.point)));
-            if context.solver_contacts.is_empty() {
-                return;
+            // Diagnostics: record the last contact point this pass judged, and count
+            // seen/dropped (atomics — we only hold the scene READ lock here).
+            if let Some(c) = context.solver_contacts.first() {
+                use std::sync::atomic::Ordering;
+                info.ipl_last_contact[0].store((c.point.x as f64).to_bits(), Ordering::Relaxed);
+                info.ipl_last_contact[1].store((c.point.y as f64).to_bits(), Ordering::Relaxed);
+                info.ipl_last_contact[2].store((c.point.z as f64).to_bits(), Ordering::Relaxed);
+            }
+            // NEUTRALIZE in place — do NOT retain()/shrink the list. Partially removing
+            // solver contacts is a state stock code never produces (its remove path only
+            // ever clears ALL), and every session where the retain pass partially shrank
+            // a manifold died with the same wild jump (0xc0000005, stable bogus RIP, on
+            // solver worker threads, no hs_err) — the fork's SIMD constraint batcher
+            // lane-gathers contacts unchecked. A far-separated zero-friction contact
+            // yields zero impulse: physically identical to removal, structurally
+            // invisible to the batcher.
+            let total = context.solver_contacts.len() as u64;
+            let mut clipped = 0u64;
+            for c in context.solver_contacts.iter_mut() {
+                if info.clip_regions.iter().any(|r| r.contains(c.point)) {
+                    c.dist = 10.0;
+                    c.friction = 0.0;
+                    c.restitution = 0.0;
+                    c.tangent_velocity = Vec3::ZERO;
+                    clipped += 1;
+                }
+            }
+            {
+                use std::sync::atomic::Ordering;
+                info.ipl_clip_seen.fetch_add(total, Ordering::Relaxed);
+                info.ipl_clip_dropped.fetch_add(clipped, Ordering::Relaxed);
+            }
+            // Diagnostic: prove in-game that the clip pass fires at all (once).
+            if clipped > 0 {
+                IPL_CLIP_FIRST_DROP.call_once(|| {
+                    eprintln!(
+                        "[ipl-natives] aperture clip ACTIVE: first neutralize, {clipped} contact(s) for body {id}"
+                    );
+                });
             }
         }
     }

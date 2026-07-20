@@ -43,9 +43,22 @@ public final class SourceClipPortalFinder {
      * observe the ship fully past the plane before it receives the server's parent-flip RPC.
      * Keeping this decision through that short window prevents the destination projection from
      * being withdrawn a frame before normal destination rendering takes over.
+     *
+     * <p>The retention is DEADLINED: it bridges a network window of a few ticks, nothing
+     * more. The client's straddle gate (infinite plane + rect margin) is looser than the
+     * server's transit acceptance, so a ship can brush the opening while parking behind the
+     * portal, record a latch, and then sit "fully on the destination half" indefinitely —
+     * with no parent flip ever coming. Without the deadline that ship projects into the
+     * destination dimension forever (visible in the back of the portal from the source side).
      */
-    private static final ConcurrentMap<UUID, ClipDecision> CROSSING_LATCHES =
+    private record Latch(ClipDecision decision, long recordedAtMs) {}
+
+    private static final ConcurrentMap<UUID, Latch> CROSSING_LATCHES =
         new ConcurrentHashMap<>();
+
+    /** How long a crossing latch may outlive the last straddling frame (ms). */
+    private static final long LATCH_EXPIRY_MS =
+        Long.parseLong(System.getProperty("ipl.sable.clip.latchExpiryMs", "2000"));
 
     /**
      * Lateral tolerance for the "is the airship in the portal opening" gate,
@@ -192,10 +205,12 @@ public final class SourceClipPortalFinder {
         // handoff switches this same object to normal destination rendering. A full return to
         // the source half is a genuine aborted crossing and releases the latch.
         if (!anyStraddle) {
-            ClipDecision latched = CROSSING_LATCHES.get(sub.getUniqueId());
-            if (latched != null && !latched.portal().isRemoved()) {
-                if (maxSignedDistance(box, latched.plane().pos(), latched.plane().normal()) <= 0.0) {
-                    return latched;
+            Latch latched = CROSSING_LATCHES.get(sub.getUniqueId());
+            if (latched != null && !latched.decision().portal().isRemoved()
+                && System.currentTimeMillis() - latched.recordedAtMs() <= LATCH_EXPIRY_MS) {
+                Plane plane = latched.decision().plane();
+                if (maxSignedDistance(box, plane.pos(), plane.normal()) <= 0.0) {
+                    return latched.decision();
                 }
             }
             CROSSING_LATCHES.remove(sub.getUniqueId());
@@ -219,7 +234,7 @@ public final class SourceClipPortalFinder {
         }
 
         ClipDecision decision = new ClipDecision(best, bestPlane);
-        CROSSING_LATCHES.put(sub.getUniqueId(), decision);
+        CROSSING_LATCHES.put(sub.getUniqueId(), new Latch(decision, System.currentTimeMillis()));
         return decision;
     }
 

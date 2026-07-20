@@ -14,10 +14,9 @@ use rapier3d::geometry::{ColliderSet, DefaultBroadPhase, NarrowPhase};
 use rapier3d::glamx::IVec3;
 use rapier3d::math::Vec3;
 use rapier3d::pipeline::PhysicsPipeline;
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub type LevelColliderID = usize;
 
@@ -37,17 +36,20 @@ pub fn pack_section_pos(i: i32, j: i32, k: i32) -> i64 {
 
 pub type ChunkMap = HashMap<i64, ChunkSection>;
 
-pub struct ReportedCollisionBuffer(RefCell<Vec<ReportedCollision>>);
-
-unsafe impl Sync for ReportedCollisionBuffer {}
+/// IPL fix: this was `RefCell<Vec>` with an `unsafe impl Sync` — but the event handler
+/// extends it from rapier's PARALLEL island solver threads (the `parallel` feature is
+/// on), so concurrent pushes raced and corrupted the Vec (0xc0000005 JVM death under
+/// heavy contact-force volume, e.g. a straddle clone wedged into terrain). A Mutex keeps
+/// the same call-site shape; per-batch locking is negligible next to the solve.
+pub struct ReportedCollisionBuffer(Mutex<Vec<ReportedCollision>>);
 
 impl ReportedCollisionBuffer {
     pub fn new() -> Self {
-        Self(RefCell::new(Vec::with_capacity(16)))
+        Self(Mutex::new(Vec::with_capacity(16)))
     }
 
-    pub fn borrow_mut(&self) -> std::cell::RefMut<'_, Vec<ReportedCollision>> {
-        self.0.borrow_mut()
+    pub fn borrow_mut(&self) -> std::sync::MutexGuard<'_, Vec<ReportedCollision>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -85,6 +87,11 @@ pub struct SableSceneData {
 
     pub level_colliders: HashMap<LevelColliderID, ActiveLevelColliderInfo>,
     pub rigid_bodies: HashMap<LevelColliderID, RigidBodyHandle>,
+
+    /// IPL: body pairs (normalized id order) that must never generate contacts — a
+    /// straddle clone vs its own real body, or two clones of one ship, sharing a scene
+    /// through a same-dimension portal.
+    pub ipl_excluded_pairs: HashSet<(LevelColliderID, LevelColliderID)>,
 }
 
 /// A physics scene

@@ -62,6 +62,12 @@ pub struct ActiveLevelColliderInfo {
     /// IPSable: aperture clip volumes (spec §2.5) — contacts inside any of these are
     /// dropped from this body's manifolds in `modify_solver_contacts`.
     pub clip_regions: Vec<crate::ipl_ext::IplClipRegion>,
+    /// IPSable diagnostics: clip-pass counters, mutated with atomics under the scene
+    /// READ lock from the solver hook. Read back via `getClipStats`.
+    pub ipl_clip_seen: std::sync::atomic::AtomicU64,
+    pub ipl_clip_dropped: std::sync::atomic::AtomicU64,
+    /// Last solver-contact point seen by the clip pass for this body (f64 bit patterns).
+    pub ipl_last_contact: [std::sync::atomic::AtomicU64; 3],
 }
 
 impl ChunkAccess for ActiveLevelColliderInfo {
@@ -94,6 +100,13 @@ impl ActiveLevelColliderInfo {
             center_of_mass: None,
             octree: None,
             clip_regions: Vec::new(),
+            ipl_clip_seen: std::sync::atomic::AtomicU64::new(0),
+            ipl_clip_dropped: std::sync::atomic::AtomicU64::new(0),
+            ipl_last_contact: [
+                std::sync::atomic::AtomicU64::new(0),
+                std::sync::atomic::AtomicU64::new(0),
+                std::sync::atomic::AtomicU64::new(0),
+            ],
         }
     }
 
@@ -372,6 +385,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ini
         rope_map: RopeMap::default(),
         level_colliders: HashMap::<LevelColliderID, ActiveLevelColliderInfo>::new(),
         rigid_bodies: HashMap::<LevelColliderID, RigidBodyHandle>::new(),
+        ipl_excluded_pairs: std::collections::HashSet::new(),
     }));
     let manifold_info_map = Arc::new(SableManifoldInfoMap::default());
     let reported_collisions = Arc::new(ReportedCollisionBuffer::new());
@@ -804,6 +818,27 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
             octree_chunks,
             ..
         } = &mut *sable_data;
+
+        // IPL dedicated chunks: a body that owns private section storage keeps its copied
+        // sections out of the scene-wide map. In a same-dimension straddle the clone and
+        // the real body share one scene while describing identical ship-local section
+        // coordinates at different poses — routing the clone through main_level_chunks
+        // let either body's uploads/cleanup corrupt the other's collision source.
+        if global == 0 && object_id != -1 {
+            // Defensive: a feed racing a despawned clone must not panic across JNI
+            // (a panic here aborts the JVM). Missing body falls through to the shared
+            // path, preserving stock behavior for normal bodies.
+            if let Some(body) = level_colliders.get_mut(&(object_id as LevelColliderID)) {
+                if body.has_own_chunks() {
+                    body.insert_chunk(&chunk, x, y, z, collider_map);
+                    body.chunk_map
+                        .as_mut()
+                        .unwrap()
+                        .insert(pack_section_pos(x, y, z), chunk);
+                    return;
+                }
+            }
+        }
 
         main_level_chunks.insert(pack_section_pos(x, y, z), chunk);
 

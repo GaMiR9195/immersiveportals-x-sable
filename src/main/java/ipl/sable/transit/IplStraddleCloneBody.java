@@ -66,6 +66,25 @@ public final class IplStraddleCloneBody {
     private static final boolean ENABLED =
         !"false".equalsIgnoreCase(System.getProperty("ipl.sable.cloneBodies", "true"));
 
+    /**
+     * Same-dimension portal pairs put the real body and its clone in ONE scene. That is
+     * only safe with the custom natives' dedicated clone storage — without it the clone's
+     * plot-coordinate sections corrupt the shared scene map (and despawn deletes the real
+     * body's sections). Gate is ANDed with a live-natives check at session start.
+     */
+    private static final boolean SAME_DIM_ENABLED =
+        !"false".equalsIgnoreCase(System.getProperty("ipl.sable.sameDimStraddle", "true"));
+
+    /**
+     * Allow multiple simultaneous clone sessions for ONE ship (double straddle across two
+     * portals). Default OFF: each session runs its own PBC servo against the same real
+     * body, and two servos fight — the first in-game double straddle (two same-dim portals
+     * facing each other) oscillated and died in native code. One session per ship until a
+     * multi-session coupling is actually designed; the deepest/first straddle wins.
+     */
+    private static final boolean MULTI_STRADDLE =
+        Boolean.parseBoolean(System.getProperty("ipl.sable.multiStraddle", "false"));
+
     // ------------------------------------------------------------------
     // Position-based coupling (replaces impulse feedback): the clone is PINNED to the
     // portal-mapped pose before each dest-scene substep; the solver then resolves its
@@ -91,9 +110,11 @@ public final class IplStraddleCloneBody {
     private static final Map<MirrorRegistry.MirrorKey, Session> SESSIONS = new HashMap<>();
 
     private static boolean loggedSkip = false;
+    private static boolean loggedSameDimSkip = false;
     private static long lastFeedbackLogMs = 0;
     private static long lastServoLogMs = 0;
     private static long lastTeeLogMs = 0;
+    private static long lastClipStatLogMs = 0;
 
     private IplStraddleCloneBody() {}
 
@@ -109,6 +130,13 @@ public final class IplStraddleCloneBody {
         final BlockPos offset;
         /** The REAL body's aperture clip region for this portal (14 doubles), if natives allow. */
         double[] realClipRegion;
+        /**
+         * Clone sections live in the clone's private native chunk_map (freed with the body on
+         * removeSubLevel). False only without the custom natives — then sections sit in the
+         * shared scene map and despawn must remove them one by one (legacy behavior, unsafe
+         * for same-dimension portals but better than leaking stale collision).
+         */
+        boolean dedicatedChunks;
         final LongArrayList fedSections = new LongArrayList();
         final double[] poseBuf = new double[7];
         final double[] realLin = new double[3];
@@ -149,6 +177,20 @@ public final class IplStraddleCloneBody {
         ServerLevel dest = parent.getServer().getLevel(portal.getDestDim());
         if (dest == null || IplDimAgnostic.isHostingLevel(dest)) return;
 
+        // Same-dimension pair: real body and clone share one scene, which requires the
+        // dedicated clone storage in the custom natives (see SAME_DIM_ENABLED doc).
+        if (dest == parent
+            && (!SAME_DIM_ENABLED || !ipl.sable.natives.IplRapierNatives.isAvailable())) {
+            if (!loggedSameDimSkip) {
+                loggedSameDimSkip = true;
+                LOG.info("[IPL-CLONE] same-dimension portal {} skipped ({}) — logged once",
+                    portal.getUUID(),
+                    SAME_DIM_ENABLED ? "custom natives unavailable"
+                                     : "sameDimStraddle disabled");
+            }
+            return;
+        }
+
         // Translation-only, scale-1, block-aligned gates (same envelope as the terrain clone).
         if (!IplStraddlePoseMap.isApproxIdentity(portal.getRotationD())
             || Math.abs(portal.getScaling() - 1.0) > 1e-9) {
@@ -173,6 +215,14 @@ public final class IplStraddleCloneBody {
             new MirrorRegistry.MirrorKey(hosted.getUniqueId(), portal.getUUID());
         if (SESSIONS.containsKey(key)) return;
 
+        // One clone session per ship (see MULTI_STRADDLE): a second portal's straddle
+        // waits until the active session clears.
+        if (!MULTI_STRADDLE) {
+            for (Session t : SESSIONS.values()) {
+                if (t.sub == hosted) return;
+            }
+        }
+
         RapierPhysicsPipeline parentPipeline = IplSceneOwnership.pipelineOf(parent);
         RapierPhysicsPipeline destPipeline = IplSceneOwnership.pipelineOf(dest);
         if (parentPipeline == null || destPipeline == null) return;
@@ -189,6 +239,23 @@ public final class IplStraddleCloneBody {
         }
         if (!spawnClone(session)) return;
         SESSIONS.put(key, session);
+
+        // The clone must never contact its own real body or sibling clones of the same
+        // ship: through a same-dimension portal they share ONE scene and would
+        // phantom-collide (clip regions only cover the aperture area). Registered in
+        // every scene that could hold both ids — inert where one id is absent.
+        if (ipl.sable.natives.IplRapierNatives.isAvailable()) {
+            ipl.sable.natives.IplRapierNatives.setBodyPairExclusion(
+                session.destScene, session.realId, session.cloneId, true);
+            for (Session t : SESSIONS.values()) {
+                if (t != session && t.sub == session.sub) {
+                    ipl.sable.natives.IplRapierNatives.setBodyPairExclusion(
+                        session.destScene, session.cloneId, t.cloneId, true);
+                    ipl.sable.natives.IplRapierNatives.setBodyPairExclusion(
+                        t.destScene, session.cloneId, t.cloneId, true);
+                }
+            }
+        }
 
         // Aperture contact clipping (spec §2.5), when the IPSable natives are live:
         //  - REAL body: contacts past the portal plane inside the aperture are dropped —
@@ -243,6 +310,15 @@ public final class IplStraddleCloneBody {
             System.arraycopy(regions.get(i), 0, flat, i * 14, 14);
         }
         ipl.sable.natives.IplRapierNatives.setClipRegions(parentScene, realId, flat);
+        // Diagnostic for the source-side wall bug: show exactly what half-space the real
+        // body is being clipped against (a reversed locked normal clips the wrong half).
+        for (double[] r : regions) {
+            LOG.info("[IPL-CLONE-CLIP] realId={} plane=({},{},{}) normal=({},{},{}) halfW={} halfH={}",
+                realId,
+                String.format("%.1f", r[0]), String.format("%.1f", r[1]), String.format("%.1f", r[2]),
+                String.format("%.2f", r[3]), String.format("%.2f", r[4]), String.format("%.2f", r[5]),
+                String.format("%.1f", r[9]), String.format("%.1f", r[13]));
+        }
     }
 
     /** Straddle ended (backed out, flipped, or left the zone): despawn the clone. */
@@ -250,6 +326,20 @@ public final class IplStraddleCloneBody {
         Session session = SESSIONS.remove(key);
         if (session == null) return;
         despawn(session);
+        // Drop this session's pair exclusions (ids are never reused, so stale entries
+        // would only be inert bloat — but keep the set tight).
+        if (ipl.sable.natives.IplRapierNatives.isAvailable()) {
+            ipl.sable.natives.IplRapierNatives.setBodyPairExclusion(
+                session.destScene, session.realId, session.cloneId, false);
+            for (Session t : SESSIONS.values()) {
+                if (t.sub == session.sub) {
+                    ipl.sable.natives.IplRapierNatives.setBodyPairExclusion(
+                        session.destScene, session.cloneId, t.cloneId, false);
+                    ipl.sable.natives.IplRapierNatives.setBodyPairExclusion(
+                        t.destScene, session.cloneId, t.cloneId, false);
+                }
+            }
+        }
         // Recompute the real body's clip regions from whatever sessions remain (usually
         // none → cleared): the through-part becomes fully source-solid again.
         if (session.realClipRegion != null
@@ -265,6 +355,7 @@ public final class IplStraddleCloneBody {
     public static void clearAll() {
         SESSIONS.clear();
         loggedSkip = false;
+        loggedSameDimSkip = false;
     }
 
     /** Whether any clone session is active for this ship (server-side straddle truth). */
@@ -326,6 +417,14 @@ public final class IplStraddleCloneBody {
             pose.orientation().z(), pose.orientation().w()
         };
         ipl.sable.mixin.IplRapier3DInvoker.ipl$createSubLevel(s.destScene, s.cloneId, p7);
+
+        // Private section storage BEFORE any chunk feed: in a same-dimension straddle the
+        // clone shares the real body's scene while describing the same ship-local section
+        // coordinates, so the shared scene map would let the two bodies corrupt each other.
+        if (ipl.sable.natives.IplRapierNatives.isAvailable()) {
+            ipl.sable.natives.IplRapierNatives.useDedicatedChunks(s.destScene, s.cloneId);
+            s.dedicatedChunks = true;
+        }
 
         // Stats BEFORE any chunk insert — native insert_block unwraps local_bounds and
         // hard-aborts the process without them (the phase-1 lesson, lib.rs:218).
@@ -396,10 +495,15 @@ public final class IplStraddleCloneBody {
     }
 
     private static void despawn(Session s) {
-        for (int i = 0; i < s.fedSections.size(); i++) {
-            long packed = s.fedSections.getLong(i);
-            ipl.sable.mixin.IplRapier3DInvoker.ipl$removeChunk(s.destScene,
-                SectionPos.x(packed), SectionPos.y(packed), SectionPos.z(packed), false);
+        // Dedicated storage is freed with the body. Calling removeChunk there would be
+        // actively harmful: it targets the SHARED scene map, deleting real terrain or
+        // sub-level sections that happen to share the clone's section coordinates.
+        if (!s.dedicatedChunks) {
+            for (int i = 0; i < s.fedSections.size(); i++) {
+                long packed = s.fedSections.getLong(i);
+                ipl.sable.mixin.IplRapier3DInvoker.ipl$removeChunk(s.destScene,
+                    SectionPos.x(packed), SectionPos.y(packed), SectionPos.z(packed), false);
+            }
         }
         ipl.sable.mixin.IplRapier3DInvoker.ipl$removeSubLevel(s.destScene, s.cloneId);
     }
@@ -466,6 +570,21 @@ public final class IplStraddleCloneBody {
             if (s.dest != steppingLevel || !s.pinned) continue;
             s.pinned = false;
             if (s.sub.isRemoved()) continue;
+
+            // Diagnostics (wall-past-the-plane bug): reliable in-log view of the native
+            // clip pass — how many solver contacts it judged/dropped for the REAL body,
+            // and the last contact point, comparable against [IPL-CLONE-CLIP]'s region.
+            long statNow = System.currentTimeMillis();
+            if (statNow - lastClipStatLogMs > 2000
+                && ipl.sable.natives.IplRapierNatives.isAvailable()) {
+                lastClipStatLogMs = statNow;
+                double[] cs = new double[5];
+                ipl.sable.natives.IplRapierNatives.getClipStats(s.parentScene, s.realId, cs);
+                LOG.info("[IPL-CLIP-STATS] realId={} seen={} dropped={} lastContact=({},{},{})",
+                    s.realId, (long) cs[0], (long) cs[1],
+                    String.format("%.2f", cs[2]), String.format("%.2f", cs[3]),
+                    String.format("%.2f", cs[4]));
+            }
 
             Rapier3D.getPose(s.destScene, s.cloneId, s.poseBuf);
             double dx = s.poseBuf[0] - s.targetPose[0] - s.destGravity.x * dt * dt * 0.5;

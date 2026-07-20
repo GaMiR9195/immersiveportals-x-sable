@@ -171,8 +171,14 @@ public final class IplClientHostedLookup {
 
             net.minecraft.world.level.Level parent =
                 ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
-            if (parent == null || parent == destLevel) continue; // native pass handles it
+            if (parent == null) continue;
             if (parent.dimension() == SableSubLevelDimension.SUBLEVELS) continue; // parent unset
+            // parent == destLevel is deliberately NOT skipped: a SAME-DIMENSION straddle
+            // projects into its own level — the native pass draws the source half at the
+            // real pose (clipped at the source plane), and this projection supplies the
+            // out-half at the mapped pose (clipped at the mapped plane). Non-straddling
+            // local ships fall out at the decision gate right below, exactly like any
+            // other non-straddler.
 
             ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
                 ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);

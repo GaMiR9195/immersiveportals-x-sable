@@ -62,14 +62,28 @@ public abstract class IplHostedSubLevelRenderSodiumMixin {
     @Shadow
     private ClientLevel level;
 
+    /**
+     * The dimension THIS pass is rendering. The shadowed {@code level} field belongs to the
+     * singleton SodiumWorldRenderer and tracks the player's dimension for the whole frame;
+     * IP swaps {@code Minecraft.level} (and the per-dimension LevelRenderer) around each
+     * portal-content render but never touches Sodium's world renderer. Querying with the
+     * stale field fed the camera dimension's hosted sub-levels into every portal pass —
+     * a source-dim ship near a portal showed up inside the portal view.
+     */
+    @Unique
+    private ClientLevel ipl$passLevel() {
+        ClientLevel passLevel = Minecraft.getInstance().level;
+        return passLevel != null ? passLevel : this.level;
+    }
+
     @Unique
     private List<ClientSubLevel> ipl$hosted() {
-        return IplClientHostedLookup.getHostedSubLevelsFor(this.level);
+        return IplClientHostedLookup.getHostedSubLevelsFor(ipl$passLevel());
     }
 
     @Unique
     private List<IplClientHostedLookup.StraddleProjection> ipl$projections() {
-        return IplClientHostedLookup.getStraddleProjectionsInto(this.level);
+        return IplClientHostedLookup.getStraddleProjectionsInto(ipl$passLevel());
     }
 
     // mirrors the vanilla mixin's ipl$cullHosted (Sable: sable$markGraphDirty)

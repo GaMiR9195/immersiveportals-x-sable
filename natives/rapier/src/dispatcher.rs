@@ -180,23 +180,52 @@ where
             if g1.is_static && !g2.is_static {
                 self.world_vs_world::<ContactData>(pos12, g1, g2, prediction, manifolds, false);
             } else if !g1.is_static && !g2.is_static {
+                // IPL: a same-dimension straddle puts a ship and its clone (or two clones
+                // of one ship) in ONE scene; registered pairs generate no contacts. Clear
+                // rather than keep the persisted manifolds — stale contacts must not
+                // survive the exclusion.
+                if let (Some(id1), Some(id2)) = (g1.id, g2.id) {
+                    let key = if id1 <= id2 { (id1, id2) } else { (id2, id1) };
+                    if self
+                        .sable_data
+                        .read()
+                        .unwrap()
+                        .ipl_excluded_pairs
+                        .contains(&key)
+                    {
+                        manifolds.clear();
+                        return Ok(());
+                    }
+                }
                 let swap = {
                     let sable_data = self.sable_data.read().unwrap();
-                    let body_1 = g1
-                        .id
-                        .map(|id| &sable_data.level_colliders[&(id as LevelColliderID)])
-                        .unwrap();
-                    let body_2 = g2
-                        .id
-                        .map(|id| &sable_data.level_colliders[&(id as LevelColliderID)])
-                        .unwrap();
+                    // IPL defensive: a pair can outlive one body by a beat (mid-tick
+                    // clone despawn) or reach here before stats/bounds landed. The old
+                    // `[]`-index + unwrap chain panicked across the FFI boundary (JVM
+                    // abort, no crash report) — skip the pair instead.
+                    let (Some(id1), Some(id2)) = (g1.id, g2.id) else {
+                        manifolds.clear();
+                        return Ok(());
+                    };
+                    let (Some(body_1), Some(body_2)) = (
+                        sable_data.level_colliders.get(&(id1 as LevelColliderID)),
+                        sable_data.level_colliders.get(&(id2 as LevelColliderID)),
+                    ) else {
+                        manifolds.clear();
+                        return Ok(());
+                    };
+                    let (Some(min_1), Some(max_1), Some(min_2), Some(max_2)) = (
+                        body_1.local_bounds_min,
+                        body_1.local_bounds_max,
+                        body_2.local_bounds_min,
+                        body_2.local_bounds_max,
+                    ) else {
+                        manifolds.clear();
+                        return Ok(());
+                    };
 
-                    let extents_1 = body_1.local_bounds_max.unwrap()
-                        - body_1.local_bounds_min.unwrap()
-                        + IVec3::ONE;
-                    let extents_2 = body_2.local_bounds_max.unwrap()
-                        - body_2.local_bounds_min.unwrap()
-                        + IVec3::ONE;
+                    let extents_1 = max_1 - min_1 + IVec3::ONE;
+                    let extents_2 = max_2 - min_2 + IVec3::ONE;
 
                     let volume_1 = extents_1.x * extents_1.y * extents_1.z;
                     let volume_2 = extents_2.x * extents_2.y * extents_2.z;
