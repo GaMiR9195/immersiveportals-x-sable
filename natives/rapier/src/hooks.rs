@@ -160,11 +160,19 @@ impl SablePhysicsHooks {
             if info.clip_regions.is_empty() {
                 continue;
             }
-            context
-                .solver_contacts
-                .retain(|c| !info.clip_regions.iter().any(|r| r.contains(c.point)));
-            if context.solver_contacts.is_empty() {
-                return;
+            // IPL fix (P2): NEUTRALIZE clipped contacts in place — never retain()/shrink
+            // the list. Partially-shrunk solver-contact lists are a state stock code
+            // never produces (its remove path only clears ALL), and sessions where the
+            // old retain() partially shrank manifolds died with 0xc0000005 wild jumps
+            // on solver worker threads. A far-separated zero-friction contact yields
+            // zero impulse: physically identical to removal, structurally inert.
+            for c in context.solver_contacts.iter_mut() {
+                if info.clip_regions.iter().any(|r| r.contains(c.point)) {
+                    c.dist = 10.0;
+                    c.friction = 0.0;
+                    c.restitution = 0.0;
+                    c.tangent_velocity = Vec3::ZERO;
+                }
             }
         }
     }
