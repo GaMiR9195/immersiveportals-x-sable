@@ -133,6 +133,9 @@ public final class IplParentDimSync {
             // space. A pass already in progress may otherwise render a stale source
             // projection as well as the newly native destination sub-level.
             setParent(clientSubLevel, parentDimId);
+            // A through-portal staff pick encoded its packets in the old target frame. The
+            // server now owns post-transit raw-goal conversion, matching direct grabbed ships.
+            IplStraddleStaffPick.onTransitHandoff(subLevelId);
             ipl.sable.render.SourceClipPortalFinder.clearCrossingLatch(clientSubLevel.getUniqueId());
             IplStraddleRenderCache.invalidateActivePasses();
             // Rebuild Sable's cached render pose from the mapped endpoints now. Both

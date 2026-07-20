@@ -126,6 +126,22 @@ also performed the behind-plane check too late, after other per-portal work.
 
 `jarJar` build completed successfully.
 
+## Sodium Portal Context Cache
+
+Sodium portal renders now reuse a bounded cache of per-dimension and portal-path
+contexts. The cache retains Sodium's visible render lists and camera history instead
+of rebuilding them from an empty context every portal frame.
+
+The return path no longer schedules an unnecessary Sodium terrain update, and portal
+rendering restores the previous `smartCull` value instead of always enabling it.
+
+### Files
+
+- `src/main/java/qouteall/imm_ptl/core/render/MyGameRenderer.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/sodium_compatibility/SodiumInterface.java`
+
+`jarJar` build completed successfully.
+
 ## Sodium Same-Dimension Portal Stability
 
 Sodium's per-region draw-command batches are now isolated by IP portal depth,

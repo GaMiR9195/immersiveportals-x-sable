@@ -267,6 +267,7 @@ public final class SableTransitController {
                 boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal);
                 if (flipped) {
                     ipl$beginExitLock(c.airship, c.portal);
+                    IplStaffPortalDragState.onTransitCompleted(c.airship.getUniqueId(), c.portal);
                 }
             } catch (Throwable t) {
                 LOG.error("[IPL-TRANSIT] uncaught exception executing transit for uuid={}",

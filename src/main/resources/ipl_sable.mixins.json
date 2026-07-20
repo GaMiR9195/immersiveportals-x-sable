@@ -30,7 +30,9 @@
     "IplHostedHoldingMixin",
     "IplHostedHoldingReadinessMixin",
     "IplStraddleInteractDistanceMixin",
-    "IplStaffDragGoalMixin",
+    "IplStaffDragSessionOverwriteMixin",
+    "IplPhysicsStaffHandlerRoutingMixin",
+    "IplStaffServerStateMixin",
     "IplHostingLevelNeverEmptyMixin",
     "IplHostedBeTickContextMixin",
     "IplHostedWorldFrameRouterMixin",
@@ -63,10 +65,12 @@
     "client.IplClientSubLevelRenderPoseAccessor",
     "client.IplSnapshotInterpolatorAccessor",
     "client.IplStaffPickMixin",
+    "client.IplStaffOutgoingDragMixin",
     "client.IplClipContextAccessor",
     "client.IplProjectionAwareClipMixin",
     "client.IplStraddleOutlineMixin",
-    "client.IplStaffRenderPoseMixin"
+    "client.IplStaffRenderPoseMixin",
+    "client.IplStaffBeamMixin"
   ],
   "injectors": {
     "defaultRequire": 0

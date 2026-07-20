@@ -28,6 +28,7 @@ import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
 
 import java.util.ArrayList;
@@ -378,17 +379,27 @@ public final class SableRehomeOps {
         // new full-sync is not sent until the tracking system's next tick. The handoff packet
         // moves their existing client object into the destination frame immediately; normal
         // tracking then retains in-range viewers and removes only viewers that truly left.
-        List<UUID> trackers = new ArrayList<>(hosted.getTrackingPlayers());
-        if (!trackers.isEmpty()) {
-            for (UUID trackerUuid : trackers) {
-                ServerPlayer player = server.getPlayerList().getPlayer(trackerUuid);
-                if (player == null) continue;
-                qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
-                    player,
-                    "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
-                    uuid.toString(), newParent.dimension().location().toString(), encodePortalTransform(portal)
-                );
-            }
+        // The old tracked set only contains source-side viewers. A cross-dimension exit can
+        // reveal the fully crossed body to destination portal viewers before the tracking tick
+        // adds them, so hand off to both sets now instead of leaving a one-way invisible ship.
+        java.util.Set<UUID> handoffRecipients = new java.util.HashSet<>(hosted.getTrackingPlayers());
+        handoffRecipients.addAll(IplStaffPortalDragState.getDraggingPlayers(uuid));
+        net.minecraft.world.level.ChunkPos destinationChunk = new net.minecraft.world.level.ChunkPos(
+            net.minecraft.core.BlockPos.containing(mappedPose.position().x(), mappedPose.position().y(), mappedPose.position().z())
+        );
+        for (ServerPlayer viewer : ImmPtlChunkTracking.getPlayersViewingChunk(
+            newParent.dimension(), destinationChunk.x, destinationChunk.z, false
+        )) {
+            handoffRecipients.add(viewer.getUUID());
+        }
+        for (UUID trackerUuid : handoffRecipients) {
+            ServerPlayer player = server.getPlayerList().getPlayer(trackerUuid);
+            if (player == null) continue;
+            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                player,
+                "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
+                uuid.toString(), newParent.dimension().location().toString(), encodePortalTransform(portal)
+            );
         }
 
         LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
