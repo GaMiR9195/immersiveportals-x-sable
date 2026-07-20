@@ -37,16 +37,14 @@ import java.util.Collection;
  *       stale equation) -- block entities render unclipped, so source-side
  *       chests visible past the portal plane in the dest-side half show up
  *       where they shouldn't.</li>
- *   <li>In portal-through render of the mirror, IP's slot 0 may apply but its
- *       direction doesn't include our mirror-flip via MirrorRegistry, so the
- *       mirror's block entities clip on the OPPOSITE side from where the
- *       chunks clip -- the "parity backwards" symptom the user reported.</li>
+ *   <li>In portal-through render, IP's slot 0 may apply a direction different
+ *       from the sub-level chunk clip, so block entities can be clipped on the
+ *       opposite side from the chunks.</li>
  * </ul>
  *
  * <p>Wrapping the per-sub-level call inside the loop lets us install the same
- * per-sub-level equation we use for chunks (with mirror flip applied for
- * kinematic mirrors via {@link SourceClipPortalFinder}), so block entities
- * follow the chunks visually.
+ * per-sub-level equation we use for chunks via {@link SourceClipPortalFinder},
+ * so block entities follow the chunks visually.
  *
  * <p>{@code @Pseudo} because Sable's class isn't on the compile classpath at
  * mixin-validation time.

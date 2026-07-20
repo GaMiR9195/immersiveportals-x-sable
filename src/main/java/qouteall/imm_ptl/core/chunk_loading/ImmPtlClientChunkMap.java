@@ -83,8 +83,7 @@ public class ImmPtlClientChunkMap extends ClientChunkCache {
 
         // Sable plot chunks are lifecycle-managed by their SubLevelContainer, never dropped
         // by view-range logic (mirrors Sable's own ClientChunkCacheMixin on the vanilla cache).
-        if (ipl.sable.dim.IplDimAgnostic.isEnabled()
-            && ipl.sable.client.IplPlotChunkRouting.isPlotBound(this.level, chunkPos.x, chunkPos.z)) {
+        if (ipl.sable.client.IplPlotChunkRouting.isPlotBound(this.level, chunkPos.x, chunkPos.z)) {
             return;
         }
 
@@ -130,8 +129,7 @@ public class ImmPtlClientChunkMap extends ClientChunkCache {
         // Sable's hook on the vanilla cache does: the section compiler's hasAllNeighbors()
         // check treats null as "not loaded" and silently cancels every compile task,
         // freezing hosted sub-level geometry at UNCOMPILED forever.
-        if (ipl.sable.dim.IplDimAgnostic.isEnabled()
-            && ipl.sable.client.IplPlotChunkRouting.isPlotBound(this.level, x, z)) {
+        if (ipl.sable.client.IplPlotChunkRouting.isPlotBound(this.level, x, z)) {
             LevelChunk plotChunk = ipl.sable.client.IplPlotChunkRouting.tryGetChunk(this.level, x, z);
             return plotChunk != null ? plotChunk : ipl$getPlotEmptyChunk();
         }
@@ -179,12 +177,10 @@ public class ImmPtlClientChunkMap extends ClientChunkCache {
         // Route Sable plot-grid chunks into the owning sub-level plot. Sable's own routing is
         // a mixin on the vanilla ClientChunkCache and never applies to this override — without
         // this, hosted sub-level chunks land in IP's flat map and the plot stays empty.
-        if (ipl.sable.dim.IplDimAgnostic.isEnabled()) {
-            LevelChunk routed = ipl.sable.client.IplPlotChunkRouting.tryReplaceWithPacketData(
-                this.level, x, z, buf, nbt, consumer);
-            if (routed != null) {
-                return routed;
-            }
+        LevelChunk routed = ipl.sable.client.IplPlotChunkRouting.tryReplaceWithPacketData(
+            this.level, x, z, buf, nbt, consumer);
+        if (routed != null) {
+            return routed;
         }
 
         long chunkPosLong = ChunkPos.asLong(x, z);

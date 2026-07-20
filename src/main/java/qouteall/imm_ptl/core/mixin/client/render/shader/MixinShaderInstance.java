@@ -46,6 +46,19 @@ public abstract class MixinShaderInstance implements IEShader {
             uniforms.add(ip_clippingEquation);
         }
     }
+
+    @Inject(
+        method = "Lnet/minecraft/client/renderer/ShaderInstance;updateLocations()V",
+        at = @At("TAIL")
+    )
+    private void onLoadJsonClippingUniform(CallbackInfo ci) {
+        if (ip_clippingEquation == null && name.equals("portal_area")) {
+            // portal_area declares its clipping uniform in its JSON asset because
+            // it cannot rely on the shader-source transformation list. JSON
+            // uniforms enter uniformMap during updateLocations(), hence TAIL.
+            ip_clippingEquation = getUniform("iportal_ClippingEquation");
+        }
+    }
     
     @Nullable
     @Override

@@ -46,7 +46,7 @@ public abstract class IplPlotChunkSendStampMixin {
         Operation<Void> original
     ) {
         Level level = chunk.getLevel();
-        if (IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(level)) {
+        if (IplDimAgnostic.isHostingLevel(level)) {
             PacketRedirection.withForceRedirect(
                 (ServerLevel) level, () -> original.call(listener, lightEngine, chunk));
         } else {

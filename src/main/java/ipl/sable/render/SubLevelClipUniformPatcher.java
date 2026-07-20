@@ -41,9 +41,9 @@ import qouteall.q_misc_util.my_util.Plane;
  * chain in {@code shader_transformation.yaml}. {@code n · worldPos + c > 0}
  * is the kept half-space.
  *
- * <p>{@code patchForSubLevel} also calls {@code upload()} explicitly because
- * Sable's render path doesn't re-apply the shader after our HEAD mixin runs --
- * setting the uniform without uploading would leave the GPU value stale.
+ * <p>{@code patchForSubLevel} uploads when a program is active. If a renderer
+ * has only selected a shader, the uniform remains dirty for its next apply;
+ * calling {@code glUniform} before that bind is invalid.
  */
 public final class SubLevelClipUniformPatcher {
 
@@ -251,9 +251,8 @@ public final class SubLevelClipUniformPatcher {
     /**
      * Compute the clip equation from {@code plane} (in camera-relative form) and
      * push to {@code ipl_subLevelClipEquation} on the currently-bound shader.
-     * Also calls {@code upload()} so the GPU sees the new value before the next
-     * draw call -- Sable's render path doesn't re-apply the shader between our
-     * HEAD inject and its draw, so a bare {@code set()} would never propagate.
+     * Upload only when its GL program is active; otherwise leave it dirty for
+     * ShaderInstance.apply rather than issuing glUniform with program zero.
      */
     public static void patchForSubLevel(ClientSubLevel sub, Plane plane) {
         ShaderInstance shader = RenderSystem.getShader();
@@ -310,12 +309,12 @@ public final class SubLevelClipUniformPatcher {
 
         float[] currentEq = IplProgramRegistry.isVanillaSubLevelInputShader(shader.getName())
             && eqVanillaInput != null ? eqVanillaInput : new float[]{nx, ny, nz, cw};
-        // Only touch the tracked shader's uniform when its program is ACTUALLY bound.
-        // RenderSystem.getShader() is CPU-side tracking: post/blit passes leave
-        // glUseProgram(0) while the tracked shader is still set, and upload() then
-        // raises GL_INVALID_OPERATION "No active program" on every frame, poisoning
-        // the GL state for the rest of the session (first seen on same-dimension
-        // straddles). The registry spray below reaches registered programs bind-free.
+        // IPL fix (P3): only touch the tracked shader's uniform when its program is
+        // ACTUALLY bound. RenderSystem.getShader() is CPU-side tracking — post/blit
+        // passes leave glUseProgram(0) while it's still set, and upload() then raises
+        // GL_INVALID_OPERATION "No active program" every frame, poisoning GL state
+        // (storms observed right before several native crashes). The registry spray
+        // below reaches registered programs bind-free.
         int boundProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
         if (boundProgram == shader.getId()) {
             uniform.set(currentEq[0], currentEq[1], currentEq[2], currentEq[3]);
@@ -488,8 +487,7 @@ public final class SubLevelClipUniformPatcher {
         if (shader == null) return;
         Uniform uniform = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform();
         if (uniform == null) return;
-        // Same bound-program guard as patchForSubLevel: never glUniform into an
-        // unbound program (GL_INVALID_OPERATION "No active program").
+        // Same bound-program guard as patchForSubLevel (IPL fix P3).
         if (GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM) != shader.getId()) return;
         uniform.set(0f, 0f, 0f, 1f);
         uniform.upload();

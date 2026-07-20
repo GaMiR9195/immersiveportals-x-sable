@@ -1,7 +1,6 @@
 package ipl.sable.render;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
-import ipl.sable.transit.MirrorRegistry;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
@@ -116,7 +115,6 @@ public final class SourceClipPortalFinder {
 
         AABB box = sub.boundingBox().toMojang();
         Vec3 center = box.getCenter();
-        boolean knownMirror = isKnownMirror(sub.getUniqueId());
 
         Portal best = null;
         double bestDist = Double.MAX_VALUE;
@@ -174,19 +172,6 @@ public final class SourceClipPortalFinder {
                 (center.z - origin.z) * portalNormal.z;
             Vec3 orientedNormal = centerDot < 0 ? portalNormal.scale(-1.0) : portalNormal;
 
-            // Legacy mirrors use the opposite semantic ownership from hosted
-            // source objects, so retain their existing final inversion.
-            //
-            // Detection: in singleplayer the integrated server's MirrorRegistry
-            // is in the same JVM as our client mixin, so we can do a read-only
-            // lookup by sub-level UUID. Concurrent modifications on the server
-            // thread are tolerable -- worst case we miss a transition tick and
-            // pick the wrong orientation for one frame. For multiplayer we'd need
-            // a sync packet; deferred until needed.
-            if (knownMirror) {
-                orientedNormal = orientedNormal.scale(-1.0);
-            }
-
             // Rect-clamped distance, NOT origin distance: a dimension-stack global portal's
             // origin sits at (0, seamY, 0) — origin distance would lose to any entity portal
             // for ships away from the world axis even when the ship straddles the seam.
@@ -242,23 +227,6 @@ public final class SourceClipPortalFinder {
     public static void clearCrossingLatch(UUID subLevelId) {
         CROSSING_LATCHES.remove(subLevelId);
         SubLevelPortalContactTracker.clearContact(subLevelId);
-    }
-
-    /**
-     * Singleplayer-only mirror detection: is {@code subLevelId} registered as a
-     * kinematic mirror's UUID in the server-side {@link MirrorRegistry}? Returns
-     * false on any throwable so multiplayer / dedicated-server setups (where the
-     * registry isn't in this JVM) fall through to "treat as source airship".
-     */
-    private static boolean isKnownMirror(UUID subLevelId) {
-        try {
-            for (MirrorRegistry.MirrorEntry entry : MirrorRegistry.all()) {
-                if (entry.mirrorUuid().equals(subLevelId)) return true;
-            }
-        } catch (Throwable t) {
-            // Registry unavailable or concurrent modification -- fall through.
-        }
-        return false;
     }
 
     /** Keep render-side portal companion selection identical to transit selection. */

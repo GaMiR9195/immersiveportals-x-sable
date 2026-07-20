@@ -6,6 +6,7 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.dim.IplDimAgnostic;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.q_misc_util.my_util.DQuaternion;
@@ -30,7 +31,7 @@ public final class IplStraddlePoseMap {
      */
     @Nullable
     public static BlockPos getOffsetInto(@Nullable SubLevel sub, @Nullable Level contextLevel) {
-        if (sub == null || contextLevel == null || !IplDimAgnostic.isEnabled()) return null;
+        if (sub == null || contextLevel == null) return null;
         if (!IplDimAgnostic.isHosted(sub)) return null;
         if (IplDimAgnostic.getParentLevel(sub) == contextLevel) return null; // native frame
 
@@ -49,13 +50,56 @@ public final class IplStraddlePoseMap {
      * renderer and collision mapping use). Server: an active terrain-clone session.
      */
     public static boolean isStraddling(@Nullable SubLevel sub, @Nullable Level contextLevel) {
-        if (sub == null || contextLevel == null || !IplDimAgnostic.isEnabled()) return false;
+        if (sub == null || contextLevel == null) return false;
         if (!IplDimAgnostic.isHosted(sub)) return false;
         if (contextLevel.isClientSide()) {
             return ipl.sable.client.IplClientHostedLookup.isClientStraddling(sub);
         }
         return IplStraddleCloneBody.hasSession(sub.getUniqueId())
             || IplStraddleTerrainClone.hasSession(sub.getUniqueId());
+    }
+
+    /**
+     * Entity-collision variant of {@link #getOffsetInto}. Same-dimension crossings have
+     * one Level for both source and destination, so the normal frame lookup deliberately
+     * returns null. Collision still needs the mapped pose when the entity is standing in
+     * the destination-side copy of that same scene.
+     */
+    @Nullable
+    public static BlockPos getCollisionOffsetInto(
+        @Nullable SubLevel sub, @Nullable Level contextLevel, AABB entityBounds
+    ) {
+        if (sub == null || contextLevel == null || entityBounds == null) return null;
+
+        BlockPos offset = getStraddleDestinationOffset(sub, contextLevel);
+        if (offset == null) return null;
+        if (IplDimAgnostic.getParentLevel(sub) != contextLevel) return offset;
+        return isInMappedCollisionHalf(sub, contextLevel, entityBounds.getCenter()) ? offset : null;
+    }
+
+    /** Destination offset even when source and destination share the same Level. */
+    @Nullable
+    public static BlockPos getStraddleDestinationOffset(
+        @Nullable SubLevel sub, @Nullable Level contextLevel
+    ) {
+        if (sub == null || contextLevel == null || !IplDimAgnostic.isHosted(sub)) return null;
+        if (contextLevel.isClientSide()) {
+            return ipl.sable.client.IplClientHostedLookup.getClientStraddleOffsetInto(sub, contextLevel);
+        }
+        BlockPos cloneOffset = IplStraddleCloneBody.getOffsetInto(sub, contextLevel);
+        if (cloneOffset != null) return cloneOffset;
+        return IplStraddleTerrainClone.getOffsetInto(sub, contextLevel);
+    }
+
+    /** Select the same-dimension source or mapped pose by the crossing plane, not AABB overlap. */
+    private static boolean isInMappedCollisionHalf(SubLevel sub, Level contextLevel, Vec3 position) {
+        if (contextLevel.isClientSide()) {
+            if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return false;
+            ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
+                ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
+            return decision != null && decision.plane().getDistanceTo(position) <= 0.0;
+        }
+        return IplStraddleCloneBody.isInMappedHalf(sub, contextLevel, position);
     }
 
     /** Copy of {@code pose} translated into the mapped frame. */

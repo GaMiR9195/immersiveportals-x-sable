@@ -63,7 +63,6 @@ public abstract class IplPlotBridgeMixin {
 
     @Unique
     private LevelPlot ipl$hostingPlot(int chunkX, int chunkZ) {
-        if (!IplDimAgnostic.isEnabled()) return null;
         Level self = this.getLevel();
         if (self == null || IplDimAgnostic.isHostingLevel(self)) {
             return null; // hosting container resolves its own plots; no recursion
@@ -88,7 +87,7 @@ public abstract class IplPlotBridgeMixin {
     private dev.ryanhcode.sable.sublevel.SubLevel ipl$bridgeSubLevelByUuid(
         dev.ryanhcode.sable.sublevel.SubLevel original, java.util.UUID uuid
     ) {
-        if (original != null || !IplDimAgnostic.isEnabled()) return original;
+        if (original != null) return original;
         Level self = this.getLevel();
         if (self == null || IplDimAgnostic.isHostingLevel(self)) return original;
         SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(self);

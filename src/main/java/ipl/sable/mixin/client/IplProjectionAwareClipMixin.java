@@ -46,7 +46,7 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
     public BlockHitResult clip(ClipContext ctx) {
         BlockHitResult base = BlockGetter.super.clip(ctx);
 
-        if (!IplDimAgnostic.isEnabled() || IPL$REENTRANT.get()) {
+        if (IPL$REENTRANT.get()) {
             return base;
         }
 

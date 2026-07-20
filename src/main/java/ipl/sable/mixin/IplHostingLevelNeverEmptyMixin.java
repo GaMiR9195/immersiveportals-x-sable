@@ -29,7 +29,7 @@ public abstract class IplHostingLevelNeverEmptyMixin {
     @Inject(method = "tick", at = @At("HEAD"))
     private void ipl$keepHostingLevelTicking(BooleanSupplier hasTimeLeft, CallbackInfo ci) {
         ServerLevel self = (ServerLevel) (Object) this;
-        if (IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(self)) {
+        if (IplDimAgnostic.isHostingLevel(self)) {
             self.resetEmptyTime();
         }
     }

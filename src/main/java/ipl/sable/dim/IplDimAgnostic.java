@@ -7,9 +7,9 @@ import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Master gate + helpers for the dim-agnostic sub-level model (REFACTOR_SPEC.md, Option B).
+ * Helpers for the mandatory hosted sub-level model.
  *
- * <p>When enabled, every {@code ServerSubLevel} is rehomed shortly after creation into the
+ * <p>Every {@code ServerSubLevel} is rehomed shortly after creation into the
  * {@code ipl_sable:sublevels} hosting dimension ({@link SableSubLevelDimension#SUBLEVELS}) by
  * {@link ipl.sable.transit.SableRehomeOps}. From then on:
  * <ul>
@@ -22,19 +22,10 @@ import org.jetbrains.annotations.Nullable;
  *       never move again.</li>
  * </ul>
  *
- * <p>Kill switch: {@code -Dipl.sable.dimAgnostic=false} reverts to the legacy
- * embedded-in-parent model (mirrors + copy transits) without rebuilding.
  */
 public final class IplDimAgnostic {
 
-    private static final boolean ENABLED =
-        !"false".equalsIgnoreCase(System.getProperty("ipl.sable.dimAgnostic", "true"));
-
     private IplDimAgnostic() {}
-
-    public static boolean isEnabled() {
-        return ENABLED;
-    }
 
     /** Is this level the dedicated hosting dimension? */
     public static boolean isHostingLevel(@Nullable Level level) {
@@ -52,8 +43,8 @@ public final class IplDimAgnostic {
 
     /**
      * The parent level of a hosted sub-level — where it visually appears and physically
-     * interacts. Falls back to {@code getLevel()} for non-hosted sub-levels (legacy model,
-     * where parent == hosting == container level).
+     * interacts. A freshly allocated sub-level may not have been stamped yet, in which case
+     * its current level is returned until rehoming completes.
      */
     public static Level getParentLevel(SubLevel subLevel) {
         Level parent = ((IplSubLevelDuck) subLevel).ipl$getParentLevel();

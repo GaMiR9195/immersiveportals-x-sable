@@ -39,7 +39,7 @@ public abstract class IplHostingLevelTickRedirectMixin {
     private void ipl$wrapHostingLevelTickInRedirect(
         ServerLevel level, BooleanSupplier hasTimeLeft, Operation<Void> original
     ) {
-        if (IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(level)) {
+        if (IplDimAgnostic.isHostingLevel(level)) {
             PacketRedirection.withForceRedirect(level, () -> original.call(level, hasTimeLeft));
         } else {
             original.call(level, hasTimeLeft);

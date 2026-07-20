@@ -2,7 +2,6 @@ package ipl.sable.mixin.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
-import ipl.sable.client.IplStraddleRenderState;
 import ipl.sable.render.IplProgramRegistry;
 import ipl.sable.render.SourceClipDiag;
 import ipl.sable.render.SourceClipPortalFinder;
@@ -20,9 +19,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.render.FrontClipping;
-import qouteall.imm_ptl.core.render.context_management.PortalRendering;
-import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.portal.PortalExtension;
 
 /**
  * Phase 3a: source-side render clipping for Sable sub-levels straddling a portal.
@@ -43,19 +39,9 @@ import qouteall.imm_ptl.core.portal.PortalExtension;
  * rendertype_cutout} shaders Sable uses for chunked rendering, so the clip equation
  * we install propagates into the actual fragment discard.
  *
- * <p><b>Guarded against IP's own use:</b> if IP is in the middle of rendering a
- * portal-through view ({@link PortalRendering#isRendering()}), IP has already
- * configured its own inner clipping for the cross-dim view (and that's what gives
- * the mirror its dest-side clip for free). We don't touch FrontClipping in that
- * path -- the existing state has to survive until IP itself tears it down.
- *
- * <p><b>Mirror side:</b> mirrors are kinematic sub-levels in the dest dim. When the
- * player is in the source dim looking through the portal at the mirror, IP's
- * portal-through pass already clips the mirror at the portal plane (because that's
- * what IP's clipping does for the whole dest-dim view). So this mixin only needs to
- * handle the source side; mirror clipping is free. If the player walks <i>into</i>
- * the dest dim and looks at the mirror from there, the mirror will straddle a
- * portal too (in that dim) and the same logic will pick the right plane.
+ * <p>Slot 1 remains active for the mapped projection as well as the normal source
+ * draw. IP slot 0 masks the portal aperture; this independent plane cuts the
+ * sub-level's own source/destination split.
  *
  * <p>{@code @Pseudo} because Sable's class is a runtime dep, not compile-time.
  * {@code remap = false} because Sable's identifiers aren't part of the MC mappings.
@@ -109,15 +95,6 @@ public abstract class SableSourceClipMixin {
             }
         }
 
-        // IP stores both faces of one physical portal as distinct entities. The
-        // finder may select the active portal's flipped face, which has the same
-        // route and aperture but is not the same Java object. Slot 0 already owns
-        // either face's portal pass, so slot 1 must stay off for both.
-        if (ipl$isProjectionThroughActivePortal()) {
-            SourceClipDiag.onVanillaCall(false);
-            return;
-        }
-
         SourceClipPortalFinder.ClipDecision decision =
             SourceClipPortalFinder.findStraddlingPortalPlane(getSubLevel());
         if (decision == null) {
@@ -126,12 +103,7 @@ public abstract class SableSourceClipMixin {
         }
 
         // Independent clip plane: write to our ipl_subLevelClipEquation uniform
-        // (gl_ClipDistance[1]), not IP's slot 0. That way our per-sub-level clip
-        // doesn't conflict with IP's own pipeline in scenarios where both want to
-        // be active (notably the portal-through render, where IP wants to clip
-        // the dest-dim view at the portal frame AND we additionally want to clip
-        // the mirror's near-portal half). Both planes evaluate per-vertex; a
-        // fragment is culled if either says so.
+        // (gl_ClipDistance[1]), not IP's slot 0.
         SubLevelClipUniformPatcher.patchForSubLevel(getSubLevel(), decision.plane());
 
         // Enable hardware respect for gl_ClipDistance[1] writes. GL_CLIP_DISTANCE1
@@ -141,19 +113,6 @@ public abstract class SableSourceClipMixin {
 
         this.ipl$installedClipThisCall = true;
         SourceClipDiag.onVanillaCall(true);
-    }
-
-    @Unique
-    private boolean ipl$isProjectionThroughActivePortal() {
-        if (!PortalRendering.isRendering()) return false;
-
-        Portal projectionPortal = IplStraddleRenderState.getPortalFor(getSubLevel());
-        if (projectionPortal == null) return false;
-
-        Portal activePortal = PortalRendering.getRenderingPortal();
-        return projectionPortal == activePortal
-            || projectionPortal == PortalExtension.get(activePortal).flippedPortal
-            || activePortal == PortalExtension.get(projectionPortal).flippedPortal;
     }
 
     @Inject(
@@ -192,4 +151,5 @@ public abstract class SableSourceClipMixin {
         GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
         SubLevelClipUniformPatcher.clearAndUpload();
     }
+
 }

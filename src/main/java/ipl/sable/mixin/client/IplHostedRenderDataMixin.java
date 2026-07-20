@@ -41,7 +41,7 @@ public abstract class IplHostedRenderDataMixin {
         LevelRenderer cameraWorldRenderer, Operation<SectionRenderDispatcher> original,
         @Local(argsOnly = true) ClientSubLevel subLevel
     ) {
-        if (IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(subLevel.getLevel())) {
+        if (IplDimAgnostic.isHostingLevel(subLevel.getLevel())) {
             org.slf4j.LoggerFactory.getLogger("ipl-hosted-gather").info(
                 "[IPL-HOSTED-RENDERDATA] sub-level {} render data created with sublevels-dim section dispatcher",
                 subLevel.getUniqueId());

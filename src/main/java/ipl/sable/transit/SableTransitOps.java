@@ -312,7 +312,7 @@ public final class SableTransitOps {
      * {@code getIndex}) are public, so we just replicate the algorithm.
      *
      * <p>Exposed package-private via {@link #findFirstEmptyPlotForMirror} for
-     * {@code MirrorOps} to reuse.
+     * hosted rehome operations to reuse.
      */
     static int @Nullable [] findFirstEmptyPlotForMirror(SubLevelContainer container) {
         return findFirstEmptyPlot(container);
@@ -357,7 +357,7 @@ public final class SableTransitOps {
      * is better than a hard fail and matches what a player would expect from a
      * "low ceiling" portal interaction.
      */
-    /** Exposed package-private wrapper so {@code MirrorOps} can call into the block-copy logic. */
+    /** Exposed package-private wrapper for hosted rehome block-copy operations. */
     static int copyPlotBlocksPublic(
         ServerLevelPlot src, ServerLevelPlot dst,
         ServerLevel srcLevel, ServerLevel dstLevel

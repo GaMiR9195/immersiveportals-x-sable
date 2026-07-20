@@ -12,9 +12,9 @@ issue_tracker_url="${issue_tracker_url}"
 # The modid of the mod
 modId="immersive_portals_core" #mandatory
 # The version number of the mod
-version="${mod_version}" #mandatory
+version="${fork_version}" #mandatory
 # A display name for the mod
-displayName="Immersive Portals" #mandatory
+displayName="Immersive Portals x Sable" #mandatory
 # A URL to query for updates for this mod. See the JSON update specification https://docs.neoforged.net/docs/misc/updatechecker/
 #updateJSONURL="https://change.me.example.invalid/updates.json" #optional
 # A URL for the "homepage" for this mod, displayed in the mod UI
@@ -32,9 +32,9 @@ description='''${mod_description}'''
 # The modid of the mod
 modId="q_misc_util" #mandatory
 # The version number of the mod
-version="${mod_version}" #mandatory
+version="${fork_version}" #mandatory
 # A display name for the mod
-displayName="Immersive Portals" #mandatory
+displayName="Immersive Portals x Sable" #mandatory
 # A URL to query for updates for this mod. See the JSON update specification https://docs.neoforged.net/docs/misc/updatechecker/
 #updateJSONURL="https://change.me.example.invalid/updates.json" #optional
 # A URL for the "homepage" for this mod, displayed in the mod UI
@@ -52,9 +52,9 @@ description='''${mod_description}'''
 # The modid of the mod
 modId="imm_ptl" #mandatory
 # The version number of the mod
-version="${mod_version}" #mandatory
+version="${fork_version}" #mandatory
 # A display name for the mod
-displayName="Immersive Portals" #mandatory
+displayName="Immersive Portals x Sable" #mandatory
 # A URL to query for updates for this mod. See the JSON update specification https://docs.neoforged.net/docs/misc/updatechecker/
 #updateJSONURL="https://change.me.example.invalid/updates.json" #optional
 # A URL for the "homepage" for this mod, displayed in the mod UI

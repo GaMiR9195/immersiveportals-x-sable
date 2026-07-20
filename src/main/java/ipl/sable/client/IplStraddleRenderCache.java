@@ -109,6 +109,21 @@ public final class IplStraddleRenderCache {
         else pass.decisions.put(sub, computed);
     }
 
+    /**
+     * A parent handoff can arrive inside a nested portal pass. Discard every active pass's
+     * source-frame lists so neither that pass nor an enclosing pass can reuse a projection.
+     */
+    public static void invalidateActivePasses() {
+        for (Pass pass : PASSES.get()) {
+            pass.hosted = null;
+            pass.projections = null;
+            pass.portalCandidates.clear();
+            pass.canonicalPortalFaces.clear();
+            pass.decisions.clear();
+            pass.noDecision.clear();
+        }
+    }
+
     @Nullable
     private static Pass current(@Nullable ClientLevel level) {
         ArrayDeque<Pass> passes = PASSES.get();

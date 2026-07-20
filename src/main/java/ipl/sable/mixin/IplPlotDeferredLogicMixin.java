@@ -61,7 +61,6 @@ public abstract class IplPlotDeferredLogicMixin implements LevelAccessor {
     /** The hosting level when {@code pos} is a hosted plot position reached from elsewhere. */
     @Unique
     private ServerLevel ipl$plotRouteTarget(BlockPos pos) {
-        if (!IplDimAgnostic.isEnabled()) return null;
         // Cheap reject: plot-grid coords are in the millions; world coords are not.
         if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return null;
 
@@ -140,8 +139,7 @@ public abstract class IplPlotDeferredLogicMixin implements LevelAccessor {
         double radius, ResourceKey<Level> dimension, Packet<?> packet,
         Operation<Void> original
     ) {
-        if (IplDimAgnostic.isEnabled()
-            && (Math.abs(x) > 1_000_000 || Math.abs(z) > 1_000_000)) {
+        if (Math.abs(x) > 1_000_000 || Math.abs(z) > 1_000_000) {
             ServerLevel self = (ServerLevel) (Object) this;
             SubLevelContainer container = SubLevelContainer.getContainer((Level) self);
             List<ServerPlayer> tracking = container == null ? List.of()

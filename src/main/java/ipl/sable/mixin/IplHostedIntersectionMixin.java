@@ -46,7 +46,7 @@ public abstract class IplHostedIntersectionMixin {
     private Iterable<SubLevel> ipl$includeHostedSubLevels(
         Iterable<SubLevel> original, Level level, BoundingBox3dc bounds
     ) {
-        if (!IplDimAgnostic.isEnabled() || IplDimAgnostic.isHostingLevel(level)) {
+        if (IplDimAgnostic.isHostingLevel(level)) {
             return original;
         }
 
@@ -76,7 +76,22 @@ public abstract class IplHostedIntersectionMixin {
                 continue;
             }
 
-            if (!sub.boundingBox().intersects(bounds)) continue;
+            // In a same-dimension crossing the source and destination share the
+            // Level object. Add whichever half reaches the query. Hosted ships are
+            // not in the parent level's native Sable container, so source bounds
+            // still need to be appended here for ordinary collision as well.
+            boolean intersectsSource = sub.boundingBox().intersects(bounds);
+            net.minecraft.core.BlockPos offset =
+                ipl.sable.transit.IplStraddlePoseMap.getStraddleDestinationOffset(sub, level);
+            boolean intersectsMapped = false;
+            if (offset != null) {
+                dev.ryanhcode.sable.companion.math.BoundingBox3d mapped =
+                    new dev.ryanhcode.sable.companion.math.BoundingBox3d();
+                mapped.set(sub.boundingBox());
+                mapped.move(offset.getX(), offset.getY(), offset.getZ());
+                intersectsMapped = mapped.intersects(bounds);
+            }
+            if (!intersectsSource && !intersectsMapped) continue;
             if (extra == null) extra = new ArrayList<>(4);
             extra.add(sub);
         }
@@ -167,8 +182,7 @@ public abstract class IplHostedIntersectionMixin {
         ServerLevel level, Operation<ServerSubLevelContainer> original,
         @com.llamalad7.mixinextras.sugar.Local(argsOnly = true) SubLevelAccess subLevel
     ) {
-        if (IplDimAgnostic.isEnabled()
-            && subLevel instanceof ServerSubLevel serverSubLevel
+        if (subLevel instanceof ServerSubLevel serverSubLevel
             && IplDimAgnostic.isHosted(serverSubLevel)) {
             return original.call(serverSubLevel.getLevel());
         }

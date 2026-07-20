@@ -24,6 +24,7 @@ import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -56,7 +57,8 @@ import java.util.Objects;
  *
  * <p>Priority 1010: applies after Sable's own render mixins (1002).
  */
-@Mixin(value = SodiumWorldRenderer.class, priority = 1010, remap = false)
+@Pseudo
+@Mixin(targets = "net.caffeinemc.mods.sodium.client.render.SodiumWorldRenderer", priority = 1010, remap = false)
 public abstract class IplHostedSubLevelRenderSodiumMixin {
 
     @Shadow
@@ -180,45 +182,83 @@ public abstract class IplHostedSubLevelRenderSodiumMixin {
         // Sub-level geometry draws through the vanilla ShaderInstance pipeline even under
         // Sodium (reach-around dispatcher), so set up vanilla render state around it.
         renderType.setupRenderState();
-        ShaderInstance shader = Objects.requireNonNull(RenderSystem.getShader(), "shader");
-        shader.setDefaultUniforms(VertexFormat.Mode.QUADS, modelView, projection, minecraft.getWindow());
-        shader.apply();
+        ShaderInstance shader = null;
+        try {
+            shader = Objects.requireNonNull(RenderSystem.getShader(), "shader");
+            shader.setDefaultUniforms(VertexFormat.Mode.QUADS, modelView, projection, minecraft.getWindow());
+            shader.apply();
 
-        if (!hosted.isEmpty()) {
-            dispatcher.renderSectionLayer(
-                hosted, renderType, shader, x, y, z, modelView, projection, partialTick);
-        }
-        for (IplClientHostedLookup.StraddleProjection proj : projections) {
-            IplStraddleRenderState.set(
-                proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
-            try {
+            if (!hosted.isEmpty()) {
+                ipl$updateCulling(hosted);
                 dispatcher.renderSectionLayer(
-                    List.of(proj.sub()), renderType, shader, x, y, z, modelView, projection, partialTick);
-            } finally {
-                IplStraddleRenderState.clear();
+                    hosted, renderType, shader, x, y, z, modelView, projection, partialTick);
             }
+            for (IplClientHostedLookup.StraddleProjection proj : projections) {
+                IplStraddleRenderState.set(
+                    proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
+                try {
+                    ipl$updateCulling(List.of(proj.sub()));
+                    dispatcher.renderSectionLayer(
+                        List.of(proj.sub()), renderType, shader, x, y, z, modelView, projection, partialTick);
+                } finally {
+                    IplStraddleRenderState.clear();
+                }
+            }
+        } finally {
+            if (shader != null) shader.clear();
+            renderType.clearRenderState();
         }
-
-        shader.clear();
-        renderType.clearRenderState();
 
         RenderType unwrapped = renderType;
         while (unwrapped instanceof VeilRenderType.RenderTypeWrapper wrapper) {
             unwrapped = wrapper.get();
         }
-        if (!(unwrapped instanceof VeilRenderType.LayeredRenderType layered) || hosted.isEmpty()) return;
+        if (!(unwrapped instanceof VeilRenderType.LayeredRenderType layered)
+            || hosted.isEmpty() && projections.isEmpty()) return;
 
         for (RenderType layer : layered.getLayers()) {
             layer.setupRenderState();
-            ShaderInstance layerShader = Objects.requireNonNull(RenderSystem.getShader(), "shader");
-            layerShader.setDefaultUniforms(VertexFormat.Mode.QUADS, modelView, projection, minecraft.getWindow());
-            layerShader.apply();
+            ShaderInstance layerShader = null;
+            try {
+                layerShader = Objects.requireNonNull(RenderSystem.getShader(), "shader");
+                layerShader.setDefaultUniforms(VertexFormat.Mode.QUADS, modelView, projection, minecraft.getWindow());
+                layerShader.apply();
 
-            dispatcher.renderSectionLayer(
-                hosted, renderType, layerShader, x, y, z, modelView, projection, partialTick);
-
-            layerShader.clear();
-            layer.clearRenderState();
+                if (!hosted.isEmpty()) {
+                    ipl$updateCulling(hosted);
+                    dispatcher.renderSectionLayer(
+                        hosted, layer, layerShader, x, y, z, modelView, projection, partialTick);
+                }
+                for (IplClientHostedLookup.StraddleProjection proj : projections) {
+                    IplStraddleRenderState.set(
+                        proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
+                    try {
+                        ipl$updateCulling(List.of(proj.sub()));
+                        dispatcher.renderSectionLayer(
+                            List.of(proj.sub()), layer, layerShader, x, y, z, modelView, projection, partialTick);
+                    } finally {
+                        IplStraddleRenderState.clear();
+                    }
+                }
+            } finally {
+                if (layerShader != null) layerShader.clear();
+                layer.clearRenderState();
+            }
         }
     }
+
+    @Unique
+    private void ipl$updateCulling(List<ClientSubLevel> sublevels) {
+        Frustum frustum = ((IEWorldRenderer) Minecraft.getInstance().levelRenderer).portal_getFrustum();
+        if (frustum == null) return;
+
+        Minecraft minecraft = Minecraft.getInstance();
+        Vec3 cameraPosition = minecraft.gameRenderer.getMainCamera().getPosition();
+        boolean spectator = minecraft.player != null && minecraft.player.isSpectator();
+        SubLevelRenderDispatcher.get().updateCulling(
+            sublevels, cameraPosition.x, cameraPosition.y, cameraPosition.z,
+            VeilRenderBridge.create(frustum), spectator
+        );
+    }
+
 }

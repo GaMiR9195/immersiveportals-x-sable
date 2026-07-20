@@ -118,7 +118,6 @@ public final class PortalCrossingDetector {
             && phase != CrossingPhase.APPROACHING
             && (intersectsAperture || previousIntersectsAperture
                 || sweptThroughPortalAperture(portal, previous, current));
-
         return new CrossingState(
             phase, current.maxDistance, current.minDistance, intersectsAperture,
             enteredFromSourceAperture

@@ -28,7 +28,7 @@ public abstract class IplHostedHoldingReadinessMixin {
     private static void ipl$hostedAlwaysReady(
         ServerLevel level, SubLevelData data, CallbackInfoReturnable<Boolean> cir
     ) {
-        if (IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(level)) {
+        if (IplDimAgnostic.isHostingLevel(level)) {
             cir.setReturnValue(true);
         }
     }

@@ -841,14 +841,12 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
         }
 
         main_level_chunks.insert(pack_section_pos(x, y, z), chunk);
-
         let chunk = main_level_chunks.get(&pack_section_pos(x, y, z)).unwrap();
         if global == 0 {
             if object_id != -1 {
                 let body = level_colliders
                     .get_mut(&(object_id as LevelColliderID))
                     .unwrap();
-
                 body.insert_chunk(chunk, x, y, z, collider_map);
             }
         } else {
