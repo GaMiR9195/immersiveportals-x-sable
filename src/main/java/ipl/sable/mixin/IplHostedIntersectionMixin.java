@@ -63,14 +63,10 @@ public abstract class IplHostedIntersectionMixin {
                 // Foreign ship straddling INTO this dimension: include it when its
                 // portal-MAPPED bounds intersect the query. Pose mapping for the collision
                 // math happens in IplStraddleCollisionPoseMixin.
-                net.minecraft.core.BlockPos offset =
-                    ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, level);
-                if (offset == null) continue;
-                dev.ryanhcode.sable.companion.math.BoundingBox3d mapped =
-                    new dev.ryanhcode.sable.companion.math.BoundingBox3d();
-                mapped.set(sub.boundingBox());
-                mapped.move(offset.getX(), offset.getY(), offset.getZ());
-                if (!mapped.intersects(bounds)) continue;
+                ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+                    ipl.sable.transit.IplStraddlePoseMap.getMappingInto(sub, level);
+                if (mapping == null) continue;
+                if (!mapping.mapAabb(sub.boundingBox()).intersects(bounds)) continue;
                 if (extra == null) extra = new ArrayList<>(4);
                 extra.add(sub);
                 continue;
@@ -81,16 +77,10 @@ public abstract class IplHostedIntersectionMixin {
             // not in the parent level's native Sable container, so source bounds
             // still need to be appended here for ordinary collision as well.
             boolean intersectsSource = sub.boundingBox().intersects(bounds);
-            net.minecraft.core.BlockPos offset =
-                ipl.sable.transit.IplStraddlePoseMap.getStraddleDestinationOffset(sub, level);
-            boolean intersectsMapped = false;
-            if (offset != null) {
-                dev.ryanhcode.sable.companion.math.BoundingBox3d mapped =
-                    new dev.ryanhcode.sable.companion.math.BoundingBox3d();
-                mapped.set(sub.boundingBox());
-                mapped.move(offset.getX(), offset.getY(), offset.getZ());
-                intersectsMapped = mapped.intersects(bounds);
-            }
+            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+                ipl.sable.transit.IplStraddlePoseMap.getStraddleDestinationMapping(sub, level);
+            boolean intersectsMapped = mapping != null
+                && mapping.mapAabb(sub.boundingBox()).intersects(bounds);
             if (!intersectsSource && !intersectsMapped) continue;
             if (extra == null) extra = new ArrayList<>(4);
             extra.add(sub);
@@ -146,9 +136,9 @@ public abstract class IplHostedIntersectionMixin {
         @com.llamalad7.mixinextras.sugar.Local(argsOnly = true) Level level
     ) {
         dev.ryanhcode.sable.companion.math.Pose3dc pose = original.call(ext, sub);
-        net.minecraft.core.BlockPos offset =
-            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, level);
-        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+            ipl.sable.transit.IplStraddlePoseMap.getMappingInto(sub, level);
+        return mapping != null ? mapping.mapPose(pose) : pose;
     }
 
     @WrapOperation(
@@ -165,9 +155,9 @@ public abstract class IplHostedIntersectionMixin {
         @com.llamalad7.mixinextras.sugar.Local(argsOnly = true) Level level
     ) {
         dev.ryanhcode.sable.companion.math.Pose3d pose = original.call(sub);
-        net.minecraft.core.BlockPos offset =
-            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, level);
-        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+            ipl.sable.transit.IplStraddlePoseMap.getMappingInto(sub, level);
+        return mapping != null ? mapping.mapPose(pose) : pose;
     }
 
     @WrapOperation(

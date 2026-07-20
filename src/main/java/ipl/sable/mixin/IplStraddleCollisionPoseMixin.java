@@ -47,9 +47,9 @@ public abstract class IplStraddleCollisionPoseMixin {
         @Local(argsOnly = true) Entity entity
     ) {
         Pose3d pose = original.call(sub);
-        BlockPos offset = IplStraddlePoseMap.getCollisionOffsetInto(
+        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.getCollisionMappingInto(
             sub, entity.level(), entity.getBoundingBox());
-        return offset != null ? IplStraddlePoseMap.mapped(pose, offset) : pose;
+        return mapping != null ? mapping.mapPose(pose) : pose;
     }
 
     @WrapOperation(
@@ -65,9 +65,9 @@ public abstract class IplStraddleCollisionPoseMixin {
         @Local(argsOnly = true) Entity entity
     ) {
         Pose3dc pose = original.call(sub);
-        BlockPos offset = IplStraddlePoseMap.getCollisionOffsetInto(
+        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.getCollisionMappingInto(
             sub, entity.level(), entity.getBoundingBox());
-        return offset != null ? IplStraddlePoseMap.mapped(pose, offset) : pose;
+        return mapping != null ? mapping.mapPose(pose) : pose;
     }
 
 }

@@ -102,7 +102,7 @@ public abstract class IplPlotBridgeMixin {
             // interactable here (the staff's drag packet resolves the target by UUID from
             // the player's level — without this, dragging the through-part silently
             // no-ops server-side while working fine from the parent side).
-            if (ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(hosted, self) != null) {
+            if (ipl.sable.transit.IplStraddlePoseMap.getMappingInto(hosted, self) != null) {
                 return hosted;
             }
         }

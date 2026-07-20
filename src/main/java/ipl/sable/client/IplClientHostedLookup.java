@@ -210,8 +210,12 @@ public final class IplClientHostedLookup {
         return ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub) != null;
     }
 
+    /**
+     * Full isometry mapping {@code sub}'s source frame into {@code destLevel} — the
+     * client collision/interaction mapping. Rotation-capable; scale stays gated at 1.
+     */
     @Nullable
-    public static net.minecraft.core.BlockPos getClientStraddleOffsetInto(
+    public static ipl.sable.transit.IplStraddlePoseMap.StraddleMapping getClientStraddleMappingInto(
         dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
     ) {
         if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return null;
@@ -222,10 +226,18 @@ public final class IplClientHostedLookup {
         qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
         if (portal.getDestDim() != destLevel.dimension()) return null;
 
-        if (!ipl.sable.transit.IplStraddlePoseMap.isApproxIdentity(portal.getRotationD())) return null;
         if (Math.abs(portal.getScaling() - 1.0) > 1e-9) return null; // scaled seams unsupported
-        return ipl.sable.transit.IplStraddlePoseMap.blockAligned(
-            portal.getDestPos().subtract(portal.getOriginPos()));
+        return ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(portal);
+    }
+
+    /** Legacy BlockPos view of {@link #getClientStraddleMappingInto}. */
+    @Nullable
+    public static net.minecraft.core.BlockPos getClientStraddleOffsetInto(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
+    ) {
+        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+            getClientStraddleMappingInto(sub, destLevel);
+        return mapping == null ? null : mapping.blockOffsetOrNull();
     }
 
     /** Client port of SableTransitOps.computeMappedPose (pose through the portal transform). */

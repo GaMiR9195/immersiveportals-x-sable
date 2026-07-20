@@ -327,10 +327,10 @@ public final class IplStraddleStaffPick {
                 renderLevel = qouteall.imm_ptl.core.render.context_management.PortalRendering
                     .getRenderingPortal().getDestinationWorld();
             }
-            net.minecraft.core.BlockPos offset = renderLevel == null ? null
-                : ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, renderLevel);
-            return offset == null ? new Pose3d(pose)
-                : ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset);
+            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping = renderLevel == null
+                ? null
+                : ipl.sable.transit.IplStraddlePoseMap.getMappingInto(sub, renderLevel);
+            return mapping == null ? new Pose3d(pose) : mapping.mapPose(pose);
         }
         Pose3d mapped = new Pose3d(pose);
         if (target.fromParentProjection()) {

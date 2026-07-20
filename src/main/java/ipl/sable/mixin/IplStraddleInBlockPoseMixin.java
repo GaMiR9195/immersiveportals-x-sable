@@ -54,8 +54,8 @@ public abstract class IplStraddleInBlockPoseMixin {
     private Pose3d ipl$mapEntityContextPose(SubLevel sub, Operation<Pose3d> original) {
         Pose3d pose = original.call(sub);
         Entity entity = (Entity) (Object) this;
-        BlockPos offset = IplStraddlePoseMap.getCollisionOffsetInto(
+        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.getCollisionMappingInto(
             sub, entity.level(), entity.getBoundingBox());
-        return offset != null ? IplStraddlePoseMap.mapped(pose, offset) : pose;
+        return mapping != null ? mapping.mapPose(pose) : pose;
     }
 }

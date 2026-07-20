@@ -49,7 +49,8 @@ import java.util.UUID;
  * pipeline's bakery and accelerator (under the hosting read override, where plot content
  * physically lives).
  *
- * <p>Scope (like the terrain clone): translation-only, scale-1, block-aligned portal
+ * <p>Scope: any scale-1 isometry pair (rotation fully supported — the clone's pose and
+ * the servo's correction mapping carry it; the section feed is plot-local). Legacy note:
  * pairs. Known limitations of this first cut: clone colliders are not clipped at the
  * portal plane (the not-yet-through hull part can touch dest-side geometry behind the
  * aperture — spec §2.5, phase 4 native work), feedback runs on pair-level force scalars
@@ -128,7 +129,8 @@ public final class IplStraddleCloneBody {
         final long destScene;
         final int realId;
         final int cloneId;
-        final BlockPos offset;
+        /** Full portal isometry source→dest (rotation-capable; scale gated at 1). */
+        final IplStraddlePoseMap.StraddleMapping mapping;
         /** The REAL body's aperture clip region for this portal (14 doubles), if natives allow. */
         double[] realClipRegion;
         /**
@@ -153,12 +155,12 @@ public final class IplStraddleCloneBody {
         org.joml.Vector3d destGravity = new org.joml.Vector3d(0, -9.8, 0);
 
         Session(ServerSubLevel sub, Portal portal, ServerLevel parent, ServerLevel dest,
-                BlockPos offset, long parentScene, long destScene) {
+                IplStraddlePoseMap.StraddleMapping mapping, long parentScene, long destScene) {
             this.sub = sub;
             this.portal = portal;
             this.parent = parent;
             this.dest = dest;
-            this.offset = offset;
+            this.mapping = mapping;
             this.parentScene = parentScene;
             this.destScene = destScene;
             this.realId = Rapier3D.getID(sub);
@@ -193,19 +195,18 @@ public final class IplStraddleCloneBody {
             return;
         }
 
-        // Translation-only, scale-1, block-aligned gates (same envelope as the terrain clone).
-        if (!IplStraddlePoseMap.isApproxIdentity(portal.getRotationD())
-            || Math.abs(portal.getScaling() - 1.0) > 1e-9) {
+        // Scale-1 gate only (spec §3: sub-level bodies traverse isometries). Rotation is
+        // fully supported: the clone's pose carries it, the section feed is plot-local,
+        // and the servo maps corrections through the portal isometry.
+        if (Math.abs(portal.getScaling() - 1.0) > 1e-9) {
             if (!loggedSkip) {
                 loggedSkip = true;
-                LOG.info("[IPL-CLONE] portal {} has rotation/scale; clone bodies support "
-                    + "translation-only scale-1 pairs — skipping (logged once)", portal.getUUID());
+                LOG.info("[IPL-CLONE] portal {} has scale != 1; clone bodies support "
+                    + "isometry pairs only — skipping (logged once)", portal.getUUID());
             }
             return;
         }
-        BlockPos offset = IplStraddlePoseMap.blockAligned(
-            portal.getDestPos().subtract(portal.getOriginPos()));
-        if (offset == null) return;
+        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.StraddleMapping.of(portal);
 
         // The real body must actually be in the parent scene — raw native reads against a
         // scene that doesn't hold the body are the hang/abort class the ownership guard
@@ -230,7 +231,7 @@ public final class IplStraddleCloneBody {
         long parentScene = ((IplRapierPipelineAccess) parentPipeline).ipl$sceneHandle();
         long destScene = ((IplRapierPipelineAccess) destPipeline).ipl$sceneHandle();
 
-        Session session = new Session(hosted, portal, parent, dest, offset, parentScene, destScene);
+        Session session = new Session(hosted, portal, parent, dest, mapping, parentScene, destScene);
         try {
             session.destGravity.set(
                 dev.ryanhcode.sable.physics.config.dimension_physics.DimensionPhysicsData
@@ -266,26 +267,38 @@ public final class IplStraddleCloneBody {
         if (ipl.sable.natives.IplRapierNatives.isAvailable()) {
             Vec3 origin = portal.getOriginPos();
 
-            session.realClipRegion = clipRegion(portal, origin, sourceToDest);
+            // Real body: source plane, source aperture axes.
+            session.realClipRegion = clipRegion(
+                origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
+                portal.getWidth() * 0.5, portal.getHeight() * 0.5);
             applyRealClipRegions(hosted, session.parentScene, session.realId);
 
-            Vec3 destPlanePoint = origin.add(offset.getX(), offset.getY(), offset.getZ());
-            double[] cloneRegion = clipRegion(portal, destPlanePoint, sourceToDest.scale(-1.0));
+            // Clone body: the DEST aperture — plane point, normal, and axes all mapped
+            // through the portal isometry (the native clip is an arbitrary-orientation OBB).
+            double[] cloneRegion = clipRegion(
+                mapping.mapPoint(origin),
+                mapping.mapVec(sourceToDest).scale(-1.0),
+                mapping.mapVec(portal.getAxisW()),
+                mapping.mapVec(portal.getAxisH()),
+                portal.getWidth() * 0.5, portal.getHeight() * 0.5);
             ipl.sable.natives.IplRapierNatives.setClipRegions(
                 session.destScene, session.cloneId, cloneRegion);
         }
 
-        LOG.info("[IPL-CLONE] start uuid={} portal={} offset={} cloneId={} destScene={} clipped={}",
-            hosted.getUniqueId(), portal.getUUID(), offset, session.cloneId, session.destScene,
+        LOG.info("[IPL-CLONE] start uuid={} portal={} dest={} rotated={} cloneId={} destScene={} clipped={}",
+            hosted.getUniqueId(), portal.getUUID(), portal.getDestPos(),
+            !mapping.isIdentityRotation(), session.cloneId, session.destScene,
             session.realClipRegion != null);
     }
 
-    private static double[] clipRegion(Portal portal, Vec3 point, Vec3 normal) {
+    private static double[] clipRegion(
+        Vec3 point, Vec3 normal, Vec3 axisW, Vec3 axisH, double halfW, double halfH
+    ) {
         return new double[]{
             point.x, point.y, point.z,
             normal.x, normal.y, normal.z,
-            portal.getAxisW().x, portal.getAxisW().y, portal.getAxisW().z, portal.getWidth() * 0.5,
-            portal.getAxisH().x, portal.getAxisH().y, portal.getAxisH().z, portal.getHeight() * 0.5
+            axisW.x, axisW.y, axisW.z, halfW,
+            axisH.x, axisH.y, axisH.z, halfH
         };
     }
 
@@ -360,19 +373,27 @@ public final class IplStraddleCloneBody {
     }
 
     /**
-     * The mapping offset of an active clone session of {@code sub} into {@code destLevel},
-     * or null. Feeds the frame mapping for entity collision/interaction on the through-part
-     * (same contract as {@code IplStraddleTerrainClone.getOffsetInto}).
+     * The active clone session's portal isometry mapping {@code sub}'s source frame into
+     * {@code destLevel}, or null. Feeds the frame mapping for entity collision /
+     * interaction on the through-part.
      */
-    public static BlockPos getOffsetInto(
+    public static IplStraddlePoseMap.StraddleMapping getMappingInto(
         dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
     ) {
         for (Session s : SESSIONS.values()) {
             if (s.dest == destLevel && s.sub.getUniqueId().equals(sub.getUniqueId())) {
-                return s.offset;
+                return s.mapping;
             }
         }
         return null;
+    }
+
+    /** Legacy BlockPos view of {@link #getMappingInto} (translation-only sessions). */
+    public static BlockPos getOffsetInto(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
+    ) {
+        IplStraddlePoseMap.StraddleMapping mapping = getMappingInto(sub, destLevel);
+        return mapping == null ? null : mapping.blockOffsetOrNull();
     }
 
     /** True when {@code position} is on the destination side of a same-dimension session. */
@@ -381,7 +402,11 @@ public final class IplStraddleCloneBody {
     ) {
         for (Session s : SESSIONS.values()) {
             if (s.dest == level && s.parent == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
-                return s.portal.getNormal().dot(position.subtract(s.portal.getOriginPos())) <= 0.0;
+                // Mapped dest-plane test + proximity disambiguation (shared with the
+                // client branch — see IplStraddlePoseMap.isInMappedHalf for why both
+                // conditions are needed on rotated pairs).
+                return IplStraddlePoseMap.isInMappedHalf(
+                    s.mapping, s.portal, s.sub.boundingBox(), position);
             }
         }
         return false;
@@ -396,11 +421,11 @@ public final class IplStraddleCloneBody {
      */
     public static void forEachSessionInto(
         ServerLevel destLevel,
-        java.util.function.BiConsumer<ServerSubLevel, BlockPos> visitor
+        java.util.function.BiConsumer<ServerSubLevel, IplStraddlePoseMap.StraddleMapping> visitor
     ) {
         for (Session s : SESSIONS.values()) {
             if (s.dest == destLevel && !s.sub.isRemoved()) {
-                visitor.accept(s.sub, s.offset);
+                visitor.accept(s.sub, s.mapping);
             }
         }
     }
@@ -414,12 +439,12 @@ public final class IplStraddleCloneBody {
         if (parentPipeline == null) return false;
 
         Pose3dc pose = s.sub.logicalPose();
+        Vec3 mappedPos = s.mapping.mapPoint(new Vec3(
+            pose.position().x(), pose.position().y(), pose.position().z()));
+        org.joml.Quaterniond mappedOrient = s.mapping.mapQuat(pose.orientation());
         double[] p7 = {
-            pose.position().x() + s.offset.getX(),
-            pose.position().y() + s.offset.getY(),
-            pose.position().z() + s.offset.getZ(),
-            pose.orientation().x(), pose.orientation().y(),
-            pose.orientation().z(), pose.orientation().w()
+            mappedPos.x, mappedPos.y, mappedPos.z,
+            mappedOrient.x, mappedOrient.y, mappedOrient.z, mappedOrient.w
         };
         ipl.sable.mixin.IplRapier3DInvoker.ipl$createSubLevel(s.destScene, s.cloneId, p7);
 
@@ -529,37 +554,44 @@ public final class IplStraddleCloneBody {
             }
 
             Pose3dc real = s.sub.logicalPose();
-            s.targetPose[0] = real.position().x() + s.offset.getX();
-            s.targetPose[1] = real.position().y() + s.offset.getY();
-            s.targetPose[2] = real.position().z() + s.offset.getZ();
-            s.targetPose[3] = real.orientation().x();
-            s.targetPose[4] = real.orientation().y();
-            s.targetPose[5] = real.orientation().z();
-            s.targetPose[6] = real.orientation().w();
+            Vec3 mappedPos = s.mapping.mapPoint(new Vec3(
+                real.position().x(), real.position().y(), real.position().z()));
+            Quaterniond mappedOrient = s.mapping.mapQuat(real.orientation());
+            s.targetPose[0] = mappedPos.x;
+            s.targetPose[1] = mappedPos.y;
+            s.targetPose[2] = mappedPos.z;
+            s.targetPose[3] = mappedOrient.x;
+            s.targetPose[4] = mappedOrient.y;
+            s.targetPose[5] = mappedOrient.z;
+            s.targetPose[6] = mappedOrient.w;
 
             ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(s.destScene, s.cloneId,
                 s.targetPose[0], s.targetPose[1], s.targetPose[2],
                 s.targetPose[3], s.targetPose[4], s.targetPose[5], s.targetPose[6]);
 
-            // Exact-set the clone's velocities to the real body's (translation-only
-            // portals: the frames align; addLinearAngularVelocities is a native set of
-            // current + delta).
+            // Exact-set the clone's velocities to the real body's, rotated into the DEST
+            // frame through the portal isometry (translation-only pairs degenerate to a
+            // copy; addLinearAngularVelocities is a native set of current + delta).
             ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(s.parentScene, s.realId, s.realLin);
             ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(s.parentScene, s.realId, s.realAng);
             ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(s.destScene, s.cloneId, s.cloneLin);
             ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(s.destScene, s.cloneId, s.cloneAng);
+            Vec3 mappedLin = s.mapping.mapVec(new Vec3(s.realLin[0], s.realLin[1], s.realLin[2]));
+            Vec3 mappedAng = s.mapping.mapVec(new Vec3(s.realAng[0], s.realAng[1], s.realAng[2]));
             Rapier3D.addLinearAngularVelocities(s.destScene, s.cloneId,
-                s.realLin[0] - s.cloneLin[0], s.realLin[1] - s.cloneLin[1],
-                s.realLin[2] - s.cloneLin[2],
-                s.realAng[0] - s.cloneAng[0], s.realAng[1] - s.cloneAng[1],
-                s.realAng[2] - s.cloneAng[2], true);
+                mappedLin.x - s.cloneLin[0], mappedLin.y - s.cloneLin[1],
+                mappedLin.z - s.cloneLin[2],
+                mappedAng.x - s.cloneAng[0], mappedAng.y - s.cloneAng[1],
+                mappedAng.z - s.cloneAng[2], true);
 
-            s.pinnedLin[0] = s.realLin[0];
-            s.pinnedLin[1] = s.realLin[1];
-            s.pinnedLin[2] = s.realLin[2];
-            s.pinnedAng[0] = s.realAng[0];
-            s.pinnedAng[1] = s.realAng[1];
-            s.pinnedAng[2] = s.realAng[2];
+            // The pinned baseline is the DEST-frame values (what the clone integrates
+            // from); postStep's delta measurement subtracts these in the dest frame.
+            s.pinnedLin[0] = mappedLin.x;
+            s.pinnedLin[1] = mappedLin.y;
+            s.pinnedLin[2] = mappedLin.z;
+            s.pinnedAng[0] = mappedAng.x;
+            s.pinnedAng[1] = mappedAng.y;
+            s.pinnedAng[2] = mappedAng.z;
             s.pinned = true;
         }
     }
@@ -649,16 +681,27 @@ public final class IplStraddleCloneBody {
                 dax *= f; day *= f; daz *= f;
             }
 
+            // Map the (capped, dest-frame) corrections back through the inverse portal
+            // isometry before touching the real body. Rotation preserves magnitudes, so
+            // the caps/deadbands above are frame-independent. Rotation delta conjugates:
+            // R⁻¹ · dq · R (angle preserved, axis rotated back).
+            Vec3 dPos = s.mapping.unmapVec(new Vec3(dx, dy, dz));
+            Vec3 dVel = s.mapping.unmapVec(new Vec3(dvx, dvy, dvz));
+            Vec3 dAng = s.mapping.unmapVec(new Vec3(dax, day, daz));
+            Quaterniond srcDq = s.mapping.unmapRotationDelta(dq);
+            double srcAxisLen = Math.sqrt(
+                srcDq.x * srcDq.x + srcDq.y * srcDq.y + srcDq.z * srcDq.z);
+
             // Apply clone contact response immediately, matching the original pre/post model.
             Rapier3D.getPose(s.parentScene, s.realId, s.poseBuf);
-            double nx = s.poseBuf[0] + (posMoved ? dx : 0.0);
-            double ny = s.poseBuf[1] + (posMoved ? dy : 0.0);
-            double nz = s.poseBuf[2] + (posMoved ? dz : 0.0);
+            double nx = s.poseBuf[0] + (posMoved ? dPos.x : 0.0);
+            double ny = s.poseBuf[1] + (posMoved ? dPos.y : 0.0);
+            double nz = s.poseBuf[2] + (posMoved ? dPos.z : 0.0);
             Quaterniond realRot = new Quaterniond(
                 s.poseBuf[3], s.poseBuf[4], s.poseBuf[5], s.poseBuf[6]);
-            if (rotMoved && axisLen > 1e-9) {
+            if (rotMoved && srcAxisLen > 1e-9) {
                 Quaterniond clampedDq = new Quaterniond().rotationAxis(appliedAngle,
-                    dq.x / axisLen, dq.y / axisLen, dq.z / axisLen);
+                    srcDq.x / srcAxisLen, srcDq.y / srcAxisLen, srcDq.z / srcAxisLen);
                 realRot = clampedDq.mul(realRot, new Quaterniond()).normalize();
             }
             if (posMoved || rotMoved) {
@@ -667,7 +710,7 @@ public final class IplStraddleCloneBody {
             }
             if (velMoved) {
                 Rapier3D.addLinearAngularVelocities(s.parentScene, s.realId,
-                    dvx, dvy, dvz, dax, day, daz, true);
+                    dVel.x, dVel.y, dVel.z, dAng.x, dAng.y, dAng.z, true);
             }
             Rapier3D.wakeUpObject(s.parentScene, s.realId);
 

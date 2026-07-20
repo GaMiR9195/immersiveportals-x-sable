@@ -74,12 +74,20 @@ public abstract class IplStraddleOnPosMixin {
         SubLevel owner = plot.getSubLevel();
         if (owner == null) return original;
 
-        BlockPos offset = IplStraddlePoseMap.getCollisionOffsetInto(
+        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.getCollisionMappingInto(
             owner, self.level(), self.getBoundingBox());
-        if (offset == null) return original;
+        if (mapping == null) return original;
 
-        // The unmapped-frame local position is off by exactly the portal offset.
-        return original.offset(-offset.getX(), -offset.getY(), -offset.getZ());
+        // The handler computed with the UNMAPPED pose; the plot-frame result is off by
+        // the world displacement the mapping applies at the ship's position:
+        // delta = map(posePos) - posePos (exactly the portal offset for translation
+        // pairs; position-dependent under rotation).
+        dev.ryanhcode.sable.companion.math.Pose3dc pose = owner.logicalPose();
+        net.minecraft.world.phys.Vec3 posePos = new net.minecraft.world.phys.Vec3(
+            pose.position().x(), pose.position().y(), pose.position().z());
+        net.minecraft.world.phys.Vec3 delta = mapping.mapPoint(posePos).subtract(posePos);
+        return original.offset(
+            -(int) Math.round(delta.x), -(int) Math.round(delta.y), -(int) Math.round(delta.z));
     }
 
     @org.spongepowered.asm.mixin.Unique
