@@ -127,6 +127,16 @@ public final class IplStraddlePoseMap {
             return out;
         }
 
+        /**
+         * The dest→source view of this isometry (endpoints swapped, rotation
+         * conjugated). {@code inverse().mapX ≡ unmapX} — lets role-parametrized code
+         * (the mirrored straddle servo) treat both authority directions uniformly.
+         */
+        public StraddleMapping inverse() {
+            return new StraddleMapping(
+                dest, origin, new org.joml.Quaterniond(inv), identityRotation);
+        }
+
         public boolean isIdentityRotation() {
             return identityRotation;
         }

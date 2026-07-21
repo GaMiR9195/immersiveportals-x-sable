@@ -133,6 +133,20 @@ public final class IplStraddleCloneBody {
      */
     private static final double ANGULAR_DAMP =
         Double.parseDouble(System.getProperty("ipl.sable.clone.angularDamp", "0.3"));
+    /**
+     * Authority swap (declarative-straddle phase 1): once the ship is majority-through,
+     * the CLONE becomes the freely-integrating authoritative body and the real body is
+     * servo-pinned to its unmapped pose — the dominant side's contacts are always
+     * first-class instead of squeezing through the capped transfer channel late in a
+     * crossing. Hysteresis prevents thrash at the midpoint; poses are continuous across
+     * a swap by construction (the pinned body already sits at the mapped pose).
+     */
+    private static final boolean AUTHORITY_SWAP =
+        !"false".equals(System.getProperty("ipl.sable.clone.authoritySwap"));
+    private static final double SWAP_UP =
+        Double.parseDouble(System.getProperty("ipl.sable.clone.authoritySwapUp", "0.6"));
+    private static final double SWAP_DOWN =
+        Double.parseDouble(System.getProperty("ipl.sable.clone.authoritySwapDown", "0.4"));
 
     private static final Map<StraddleKey, Session> SESSIONS = new HashMap<>();
 
@@ -157,8 +171,16 @@ public final class IplStraddleCloneBody {
         final int cloneId;
         /** Full portal isometry source→dest (rotation-capable; scale gated at 1). */
         final IplStraddlePoseMap.StraddleMapping mapping;
+        /** Cached dest→source view for the mirrored (dest-authority) servo direction. */
+        final IplStraddlePoseMap.StraddleMapping inverseMapping;
         /** Unit crossing direction at the source plane (for the crossing fraction). */
         final Vec3 sourceToDestN;
+        /**
+         * Which body integrates freely: false = real body (source authority, the
+         * original servo), true = clone (dest authority — the real body is pinned to
+         * the clone's unmapped pose instead). Swapped with hysteresis on destFraction.
+         */
+        boolean destAuthority = false;
         /**
          * Fraction of the ship's bounds past the portal plane (0 = all source-side,
          * 1 = all through). Refreshed each preStep; drives servo authority weighting.
@@ -184,8 +206,10 @@ public final class IplStraddleCloneBody {
         final double[] pinnedLin = new double[3];
         final double[] pinnedAng = new double[3];
         boolean pinned = false;
-        /** Dest dimension gravity (m/s²), analytically removed from the velocity delta. */
+        /** Gravity (m/s²) of each side, analytically removed from the pinned body's
+         *  velocity delta (which side applies depends on the authority direction). */
         org.joml.Vector3d destGravity = new org.joml.Vector3d(0, -9.8, 0);
+        org.joml.Vector3d sourceGravity = new org.joml.Vector3d(0, -9.8, 0);
 
         Session(ServerSubLevel sub, Portal portal, ServerLevel parent, ServerLevel dest,
                 IplStraddlePoseMap.StraddleMapping mapping, Vec3 sourceToDest,
@@ -195,6 +219,7 @@ public final class IplStraddleCloneBody {
             this.parent = parent;
             this.dest = dest;
             this.mapping = mapping;
+            this.inverseMapping = mapping.inverse();
             this.sourceToDestN = sourceToDest.normalize();
             this.parentScene = parentScene;
             this.destScene = destScene;
@@ -272,8 +297,11 @@ public final class IplStraddleCloneBody {
             session.destGravity.set(
                 dev.ryanhcode.sable.physics.config.dimension_physics.DimensionPhysicsData
                     .getGravity(dest));
+            session.sourceGravity.set(
+                dev.ryanhcode.sable.physics.config.dimension_physics.DimensionPhysicsData
+                    .getGravity(parent));
         } catch (Throwable t) {
-            // keep the (0, -9.8, 0) default
+            // keep the (0, -9.8, 0) defaults
         }
         if (!spawnClone(session)) return;
         SESSIONS.put(key, session);
@@ -603,15 +631,77 @@ public final class IplStraddleCloneBody {
     }
 
     // ------------------------------------------------------------------
-    // Position-based coupling: pin before the substep, measure after it.
+    // Authority-aware force routing (see IplAuthorityForceRoutingMixin): external
+    // inputs — physics actors (propellers, wheels), the staff, scripted impulses —
+    // target the REAL body through the pipeline API. Once authority has swapped,
+    // the real body is the pinned follower, and thrust fed to it would reach the
+    // ship only through the minority-weighted transfer channel (attenuated
+    // several-fold). Redirect such applications to the authoritative clone,
+    // vectors mapped through the portal isometry. Returns false (caller proceeds
+    // normally) whenever no dest-authority session owns the body.
     // ------------------------------------------------------------------
 
-    /** Pin every clone whose DEST scene is about to step to the portal-mapped pose. */
+    public static boolean redirectApplyForce(long scene, int bodyId,
+        double relX, double relY, double relZ, double fx, double fy, double fz) {
+        Session s = destAuthoritySession(scene, bodyId);
+        if (s == null) return false;
+        Vec3 rel = s.mapping.mapVec(new Vec3(relX, relY, relZ));
+        Vec3 f = s.mapping.mapVec(new Vec3(fx, fy, fz));
+        ipl.sable.mixin.IplRapier3DInvoker.ipl$applyForce(
+            s.destScene, s.cloneId, rel.x, rel.y, rel.z, f.x, f.y, f.z, true);
+        return true;
+    }
+
+    public static boolean redirectForceTorque(long scene, int bodyId,
+        double fx, double fy, double fz, double tx, double ty, double tz) {
+        Session s = destAuthoritySession(scene, bodyId);
+        if (s == null) return false;
+        Vec3 f = s.mapping.mapVec(new Vec3(fx, fy, fz));
+        Vec3 t = s.mapping.mapVec(new Vec3(tx, ty, tz));
+        ipl.sable.mixin.IplRapier3DInvoker.ipl$applyForceAndTorque(
+            s.destScene, s.cloneId, f.x, f.y, f.z, t.x, t.y, t.z, true);
+        return true;
+    }
+
+    public static boolean redirectAddVelocity(long scene, int bodyId,
+        double lx, double ly, double lz, double ax, double ay, double az) {
+        Session s = destAuthoritySession(scene, bodyId);
+        if (s == null) return false;
+        Vec3 lin = s.mapping.mapVec(new Vec3(lx, ly, lz));
+        Vec3 ang = s.mapping.mapVec(new Vec3(ax, ay, az));
+        Rapier3D.addLinearAngularVelocities(
+            s.destScene, s.cloneId, lin.x, lin.y, lin.z, ang.x, ang.y, ang.z, true);
+        return true;
+    }
+
+    private static Session destAuthoritySession(long scene, int bodyId) {
+        for (Session s : SESSIONS.values()) {
+            if (s.destAuthority && s.parentScene == scene && s.realId == bodyId) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    // ------------------------------------------------------------------
+    // Position-based coupling: pin before the substep, measure after it.
+    // Role-parametrized (declarative-straddle phase 1): the FREE body integrates
+    // under its own solver; the PINNED body is teleported to the mapped free pose
+    // each substep and its solver corrections are transferred back. Source
+    // authority: free = real, pinned = clone, direction = mapping. Dest authority
+    // (majority-through): free = clone, pinned = real, direction = inverse — the
+    // same math mirrored, so a swap needs no teleports (the pinned body already
+    // sits at the mapped pose) and Sable's pose readback of the real body stays
+    // faithful in both modes.
+    // ------------------------------------------------------------------
+
+    /** Pin every session whose PINNED body's scene is about to step. */
     public static void preStep(ServerLevel steppingLevel, double dt) {
         if (SESSIONS.isEmpty()) return;
 
         for (Session s : SESSIONS.values()) {
-            if (s.dest != steppingLevel) continue;
+            ServerLevel pinnedLevel = s.destAuthority ? s.parent : s.dest;
+            if (pinnedLevel != steppingLevel) continue;
             if (s.sub.isRemoved()) {
                 s.pinned = false;
                 continue;
@@ -619,10 +709,47 @@ public final class IplStraddleCloneBody {
 
             s.destFraction = destFraction(s);
 
-            Pose3dc real = s.sub.logicalPose();
-            Vec3 mappedPos = s.mapping.mapPoint(new Vec3(
-                real.position().x(), real.position().y(), real.position().z()));
-            Quaterniond mappedOrient = s.mapping.mapQuat(real.orientation());
+            // Authority hysteresis, decided before pinning so each pin/measure pair
+            // runs wholly in one mode. If the swap moves the pinned body to the other
+            // scene, skip this substep — that scene's next step picks the session up.
+            if (AUTHORITY_SWAP) {
+                boolean want = s.destAuthority
+                    ? s.destFraction >= SWAP_DOWN
+                    : s.destFraction > SWAP_UP;
+                if (want != s.destAuthority) {
+                    s.destAuthority = want;
+                    s.pinned = false;
+                    LOG.info("[IPL-CLONE] authority swap uuid={} -> {} (crossed={})",
+                        s.sub.getUniqueId(), want ? "DEST" : "SOURCE",
+                        String.format("%.2f", s.destFraction));
+                    if ((want ? s.parent : s.dest) != steppingLevel) continue;
+                }
+            }
+
+            long freeScene = s.destAuthority ? s.destScene : s.parentScene;
+            int freeId = s.destAuthority ? s.cloneId : s.realId;
+            long pinScene = s.destAuthority ? s.parentScene : s.destScene;
+            int pinId = s.destAuthority ? s.realId : s.cloneId;
+            IplStraddlePoseMap.StraddleMapping dir =
+                s.destAuthority ? s.inverseMapping : s.mapping;
+
+            // Free pose: the Java logical pose while the real body is authoritative
+            // (the canonical ship pose), the clone's native pose after the swap.
+            Vec3 freePos;
+            Quaterniond freeOrient;
+            if (s.destAuthority) {
+                Rapier3D.getPose(freeScene, freeId, s.poseBuf);
+                freePos = new Vec3(s.poseBuf[0], s.poseBuf[1], s.poseBuf[2]);
+                freeOrient = new Quaterniond(
+                    s.poseBuf[3], s.poseBuf[4], s.poseBuf[5], s.poseBuf[6]);
+            } else {
+                Pose3dc real = s.sub.logicalPose();
+                freePos = new Vec3(
+                    real.position().x(), real.position().y(), real.position().z());
+                freeOrient = new Quaterniond(real.orientation());
+            }
+            Vec3 mappedPos = dir.mapPoint(freePos);
+            Quaterniond mappedOrient = dir.mapQuat(freeOrient);
             s.targetPose[0] = mappedPos.x;
             s.targetPose[1] = mappedPos.y;
             s.targetPose[2] = mappedPos.z;
@@ -631,27 +758,28 @@ public final class IplStraddleCloneBody {
             s.targetPose[5] = mappedOrient.z;
             s.targetPose[6] = mappedOrient.w;
 
-            ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(s.destScene, s.cloneId,
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(pinScene, pinId,
                 s.targetPose[0], s.targetPose[1], s.targetPose[2],
                 s.targetPose[3], s.targetPose[4], s.targetPose[5], s.targetPose[6]);
 
-            // Exact-set the clone's velocities to the real body's, rotated into the DEST
-            // frame through the portal isometry (translation-only pairs degenerate to a
-            // copy; addLinearAngularVelocities is a native set of current + delta).
-            ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(s.parentScene, s.realId, s.realLin);
-            ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(s.parentScene, s.realId, s.realAng);
-            ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(s.destScene, s.cloneId, s.cloneLin);
-            ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(s.destScene, s.cloneId, s.cloneAng);
-            Vec3 mappedLin = s.mapping.mapVec(new Vec3(s.realLin[0], s.realLin[1], s.realLin[2]));
-            Vec3 mappedAng = s.mapping.mapVec(new Vec3(s.realAng[0], s.realAng[1], s.realAng[2]));
-            Rapier3D.addLinearAngularVelocities(s.destScene, s.cloneId,
+            // Exact-set the pinned body's velocities to the free body's, rotated into
+            // the pinned frame through the portal isometry (translation-only pairs
+            // degenerate to a copy). realLin/realAng buffers hold the FREE body's
+            // values; cloneLin/cloneAng the PINNED body's, regardless of mode.
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(freeScene, freeId, s.realLin);
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(freeScene, freeId, s.realAng);
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(pinScene, pinId, s.cloneLin);
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(pinScene, pinId, s.cloneAng);
+            Vec3 mappedLin = dir.mapVec(new Vec3(s.realLin[0], s.realLin[1], s.realLin[2]));
+            Vec3 mappedAng = dir.mapVec(new Vec3(s.realAng[0], s.realAng[1], s.realAng[2]));
+            Rapier3D.addLinearAngularVelocities(pinScene, pinId,
                 mappedLin.x - s.cloneLin[0], mappedLin.y - s.cloneLin[1],
                 mappedLin.z - s.cloneLin[2],
                 mappedAng.x - s.cloneAng[0], mappedAng.y - s.cloneAng[1],
                 mappedAng.z - s.cloneAng[2], true);
 
-            // The pinned baseline is the DEST-frame values (what the clone integrates
-            // from); postStep's delta measurement subtracts these in the dest frame.
+            // The pinned baseline is in the PINNED body's frame (what it integrates
+            // from); postStep's delta measurement subtracts these in that frame.
             s.pinnedLin[0] = mappedLin.x;
             s.pinnedLin[1] = mappedLin.y;
             s.pinnedLin[2] = mappedLin.z;
@@ -685,16 +813,31 @@ public final class IplStraddleCloneBody {
     }
 
     /**
-     * After the dest scene stepped, transfer its solver correction to the real body. Gravity's
-     * free-fall contribution is removed so a contact-free clone transfers nothing.
+     * After the PINNED body's scene stepped, transfer its solver correction to the free
+     * body (roles by authority — see preStep). Gravity's free-fall contribution is
+     * removed so a contact-free pinned body transfers nothing.
      */
     public static void postStep(ServerLevel steppingLevel, double dt) {
         if (SESSIONS.isEmpty()) return;
 
         for (Session s : SESSIONS.values()) {
-            if (s.dest != steppingLevel || !s.pinned) continue;
+            ServerLevel pinnedLevel = s.destAuthority ? s.parent : s.dest;
+            if (pinnedLevel != steppingLevel || !s.pinned) continue;
             s.pinned = false;
             if (s.sub.isRemoved()) continue;
+
+            long freeScene = s.destAuthority ? s.destScene : s.parentScene;
+            int freeId = s.destAuthority ? s.cloneId : s.realId;
+            long pinScene = s.destAuthority ? s.parentScene : s.destScene;
+            int pinId = s.destAuthority ? s.realId : s.cloneId;
+            IplStraddlePoseMap.StraddleMapping dir =
+                s.destAuthority ? s.inverseMapping : s.mapping;
+            org.joml.Vector3d pinnedGravity =
+                s.destAuthority ? s.sourceGravity : s.destGravity;
+            // Fraction of the ship on the PINNED body's side — the transfer authority:
+            // the smaller the pinned side, the gentler its solver's say over the ship.
+            double pinnedFraction =
+                s.destAuthority ? 1.0 - s.destFraction : s.destFraction;
 
             // Diagnostics (wall-past-the-plane bug): reliable in-log view of the native
             // clip pass — how many solver contacts it judged/dropped for the REAL body,
@@ -711,12 +854,12 @@ public final class IplStraddleCloneBody {
                     String.format("%.2f", cs[4]));
             }
 
-            Rapier3D.getPose(s.destScene, s.cloneId, s.poseBuf);
-            double dx = s.poseBuf[0] - s.targetPose[0] - s.destGravity.x * dt * dt * 0.5;
-            double dy = s.poseBuf[1] - s.targetPose[1] - s.destGravity.y * dt * dt * 0.5;
-            double dz = s.poseBuf[2] - s.targetPose[2] - s.destGravity.z * dt * dt * 0.5;
-            // The pin gives the clone the real body's velocity; subtract free integration
-            // to retain only the destination solver's contact correction.
+            Rapier3D.getPose(pinScene, pinId, s.poseBuf);
+            double dx = s.poseBuf[0] - s.targetPose[0] - pinnedGravity.x * dt * dt * 0.5;
+            double dy = s.poseBuf[1] - s.targetPose[1] - pinnedGravity.y * dt * dt * 0.5;
+            double dz = s.poseBuf[2] - s.targetPose[2] - pinnedGravity.z * dt * dt * 0.5;
+            // The pin gives the pinned body the free body's velocity; subtract free
+            // integration to retain only the pinned solver's contact correction.
             dx -= s.pinnedLin[0] * dt;
             dy -= s.pinnedLin[1] * dt;
             dz -= s.pinnedLin[2] * dt;
@@ -739,22 +882,22 @@ public final class IplStraddleCloneBody {
             double angle = axisLen > 1e-9
                 ? 2.0 * Math.acos(Math.min(1.0, Math.max(-1.0, dq.w))) : 0.0;
 
-            ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(s.destScene, s.cloneId, s.cloneLin);
-            ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(s.destScene, s.cloneId, s.cloneAng);
-            double dvx = s.cloneLin[0] - s.pinnedLin[0] - s.destGravity.x * dt;
-            double dvy = s.cloneLin[1] - s.pinnedLin[1] - s.destGravity.y * dt;
-            double dvz = s.cloneLin[2] - s.pinnedLin[2] - s.destGravity.z * dt;
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getLinearVelocity(pinScene, pinId, s.cloneLin);
+            ipl.sable.mixin.IplRapier3DInvoker.ipl$getAngularVelocity(pinScene, pinId, s.cloneAng);
+            double dvx = s.cloneLin[0] - s.pinnedLin[0] - pinnedGravity.x * dt;
+            double dvy = s.cloneLin[1] - s.pinnedLin[1] - pinnedGravity.y * dt;
+            double dvz = s.cloneLin[2] - s.pinnedLin[2] - pinnedGravity.z * dt;
             double dax = s.cloneAng[0] - s.pinnedAng[0];
             double day = s.cloneAng[1] - s.pinnedAng[1];
             double daz = s.cloneAng[2] - s.pinnedAng[2];
 
             // Straddle wobble damp: both solvers used to correct at FULL authority every
-            // substep — the dest solver shoves the real body, the source solver shoves
+            // substep — the pinned solver shoves the free body, the free solver shoves
             // back next substep, and the ship visibly hums mid-straddle. Velocity
-            // authority now follows the crossing fraction: the less of the ship is
-            // through, the gentler the dest solver's velocity say (position/rotation
+            // authority follows the pinned side's fraction: the less of the ship on the
+            // pinned side, the gentler its solver's velocity say (position/rotation
             // transfers below stay full — penetration must always resolve).
-            double authority = MIN_AUTHORITY + (1.0 - MIN_AUTHORITY) * s.destFraction;
+            double authority = MIN_AUTHORITY + (1.0 - MIN_AUTHORITY) * pinnedFraction;
             dvx *= authority; dvy *= authority; dvz *= authority;
             dax *= authority; day *= authority; daz *= authority;
             double dvMag = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
@@ -779,19 +922,20 @@ public final class IplStraddleCloneBody {
                 dax *= f; day *= f; daz *= f;
             }
 
-            // Map the (capped, dest-frame) corrections back through the inverse portal
-            // isometry before touching the real body. Rotation preserves magnitudes, so
+            // Map the (capped, pinned-frame) corrections back through the direction's
+            // inverse before touching the free body. Rotation preserves magnitudes, so
             // the caps/deadbands above are frame-independent. Rotation delta conjugates:
             // R⁻¹ · dq · R (angle preserved, axis rotated back).
-            Vec3 dPos = s.mapping.unmapVec(new Vec3(dx, dy, dz));
-            Vec3 dVel = s.mapping.unmapVec(new Vec3(dvx, dvy, dvz));
-            Vec3 dAng = s.mapping.unmapVec(new Vec3(dax, day, daz));
-            Quaterniond srcDq = s.mapping.unmapRotationDelta(dq);
+            Vec3 dPos = dir.unmapVec(new Vec3(dx, dy, dz));
+            Vec3 dVel = dir.unmapVec(new Vec3(dvx, dvy, dvz));
+            Vec3 dAng = dir.unmapVec(new Vec3(dax, day, daz));
+            Quaterniond srcDq = dir.unmapRotationDelta(dq);
             double srcAxisLen = Math.sqrt(
                 srcDq.x * srcDq.x + srcDq.y * srcDq.y + srcDq.z * srcDq.z);
 
-            // Apply clone contact response immediately, matching the original pre/post model.
-            Rapier3D.getPose(s.parentScene, s.realId, s.poseBuf);
+            // Apply the pinned solver's contact response to the free body immediately,
+            // matching the original pre/post model.
+            Rapier3D.getPose(freeScene, freeId, s.poseBuf);
             double nx = s.poseBuf[0] + (posMoved ? dPos.x : 0.0);
             double ny = s.poseBuf[1] + (posMoved ? dPos.y : 0.0);
             double nz = s.poseBuf[2] + (posMoved ? dPos.z : 0.0);
@@ -803,7 +947,7 @@ public final class IplStraddleCloneBody {
                 realRot = clampedDq.mul(realRot, new Quaterniond()).normalize();
             }
             if (posMoved || rotMoved) {
-                ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(s.parentScene, s.realId,
+                ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(freeScene, freeId,
                     nx, ny, nz, realRot.x, realRot.y, realRot.z, realRot.w);
             }
             double avx = velMoved ? dVel.x : 0.0;
@@ -817,7 +961,7 @@ public final class IplStraddleCloneBody {
             // constraint), so the minority side loses the argument instead of
             // restarting the cycle next substep. Uses the pre-step velocities
             // captured in preStep — stale by one solve, fine for a damping term.
-            double bleed = STRADDLE_DAMP * Math.max(0.0, 2.0 * s.destFraction - 1.0);
+            double bleed = STRADDLE_DAMP * Math.max(0.0, 2.0 * pinnedFraction - 1.0);
             if (velMoved && bleed > 0.0) {
                 double m = dVel.length();
                 if (m > 1e-9) {
@@ -856,16 +1000,16 @@ public final class IplStraddleCloneBody {
             }
             if (avx != 0.0 || avy != 0.0 || avz != 0.0
                 || aax != 0.0 || aay != 0.0 || aaz != 0.0) {
-                Rapier3D.addLinearAngularVelocities(s.parentScene, s.realId,
+                Rapier3D.addLinearAngularVelocities(freeScene, freeId,
                     avx, avy, avz, aax, aay, aaz, true);
             }
-            Rapier3D.wakeUpObject(s.parentScene, s.realId);
+            Rapier3D.wakeUpObject(freeScene, freeId);
 
             long now = System.currentTimeMillis();
             if (now - lastServoLogMs > 2000) {
                 lastServoLogMs = now;
-                LOG.info("[IPL-CLONE-PBC] cloneId={} dPos={} dAng={} dVel={} crossed={}",
-                    s.cloneId, String.format("%.3f", dist),
+                LOG.info("[IPL-CLONE-PBC] cloneId={} auth={} dPos={} dAng={} dVel={} crossed={}",
+                    s.cloneId, s.destAuthority ? "DEST" : "SOURCE", String.format("%.3f", dist),
                     String.format("%.3f", angle), String.format("%.2f", dvMag),
                     String.format("%.2f", s.destFraction));
             }

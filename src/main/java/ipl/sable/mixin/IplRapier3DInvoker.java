@@ -74,6 +74,22 @@ public interface IplRapier3DInvoker {
         throw new AssertionError();
     }
 
+    @Invoker(value = "applyForce", remap = false)
+    static void ipl$applyForce(
+        long sceneHandle, int bodyID, double x, double y, double z,
+        double fx, double fy, double fz, boolean wakeUp
+    ) {
+        throw new AssertionError();
+    }
+
+    @Invoker(value = "applyForceAndTorque", remap = false)
+    static void ipl$applyForceAndTorque(
+        long sceneHandle, int bodyID, double fx, double fy, double fz,
+        double tx, double ty, double tz, boolean wakeUp
+    ) {
+        throw new AssertionError();
+    }
+
     // Kinematic contraption family — used for the portal rim containment bodies
     // (world-anchored voxel bodies all ships bounce off; mountId -1 = static mount).
 

@@ -23,6 +23,7 @@
     "IplHostedTerrainChangeForwardMixin",
     "IplRapierBlockChangeReadFixMixin",
     "IplHostingLevelPlayerLookupMixin",
+    "IplAuthorityForceRoutingMixin",
     "IplStraddleBlockClipMixin",
     "IplStraddleCanFallMixin",
     "IplStraddleCollisionPoseMixin",
