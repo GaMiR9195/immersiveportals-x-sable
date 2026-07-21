@@ -47,26 +47,6 @@ public final class SableTransitController {
     /** Lateral-only output-aperture allowance for a construction's final edge. */
     private static final double EXIT_APERTURE_MARGIN = 0.5;
 
-    /**
-     * Per-(source, portal) locked source->dest normal for the crossing-phase
-     * evaluation, held for the duration of a contact session. This is the ONLY
-     * holder of crossing parity: clients mirror it via
-     * {@link IplStraddleSessionSync} instead of re-deriving it from geometry.
-     *
-     * <p>Locking matters because a free-rotating airship's AABB center can wobble
-     * across the plane mid-straddle; without the lock the oriented normal could
-     * flip and bounce the crossing phase. The entry is dropped when the pair is no
-     * longer near the portal (see the cleanup pass). Server-thread only, so a
-     * plain HashMap is fine.
-     */
-    private static final Map<StraddleKey, Vec3> lockedCrossingNormal = new HashMap<>();
-
-    /**
-     * A (subLevel, portal) key enters on STRADDLING and leaves when the ship backs out or
-     * completes the parent flip. It prevents a body parked beyond a portal from transiting.
-     */
-    private static final java.util.Set<StraddleKey> hostedStraddleLatch = new java.util.HashSet<>();
-
     /** Output aperture faces that cannot be re-entered before an exit completes. */
     private static final Map<UUID, java.util.Set<Portal>> pendingExitPortalsByAirship = new HashMap<>();
 
@@ -74,8 +54,6 @@ public final class SableTransitController {
 
     /** Clear hosted transit state when the server stops. */
     public static void onServerStopping(MinecraftServer server) {
-        lockedCrossingNormal.clear();
-        hostedStraddleLatch.clear();
         pendingExitPortalsByAirship.clear();
         IplStraddleSessionSync.clearAll();
         IplPortalRimManager.clearAll();
@@ -162,17 +140,17 @@ public final class SableTransitController {
             // must remain independent; UUID order makes equivalent companions stable.
             nearby.sort(Comparator.comparing(portal -> portal.getUUID().toString()));
 
-            // Edge-interval crossing model (replaces the old centroid-crossing +
-            // proximity-spawn gates). For each nearby portal we project the airship's
-            // OBB onto a per-session-locked source->dest normal and classify:
-            //   APPROACHING -> hide mirror (leading edge hasn't reached the plane)
-            //   STRADDLING  -> spawn/sync mirror (leading edge through, trailing not)
-            //   CROSSED     -> if a mirror exists (it straddled and is now fully
-            //                  through), swap; the mirror becomes the source.
-            // The mirror's existence IS the straddle latch: we only ever swap a
-            // (source, portal) pair that previously straddled and spawned a mirror,
-            // so a ship that backs out, or one teleported fully across without
-            // straddling, never spuriously swaps.
+            // DECLARATIVE session derivation (phase 2 of the declarative-straddle
+            // rework): a session exists iff the ship's OBB currently STRADDLES a
+            // portal's plane THROUGH its aperture — no entry events, no latches.
+            // Existing sessions are kept with a lateral aperture margin (hysteresis
+            // against grazing flap); new sessions additionally require the minority-
+            // face parity rule: of a pair of coincident opposite faces, only the one
+            // whose crossing direction puts LESS than half the ship "through" may
+            // open a session — with the majority-native invariant, the through part
+            // is always the minority, which makes parity geometric, not historical.
+            // Transit fires when a LIVE session reaches CROSSED (the session is the
+            // straddle memory), or on a genuine single-tick aperture crossing.
             boolean candidateAddedForAirship = false;
             for (Portal portal : nearby) {
                 if (!ipl$isCanonicalEntranceFace(portal, nearby)) continue;
@@ -184,64 +162,57 @@ public final class SableTransitController {
                 StraddleKey key = new StraddleKey(
                     airship.getUniqueId(), portalUuid
                 );
+                boolean haveSession = IplStraddleCloneBody.hasSessionKey(key)
+                    || IplStraddleTerrainClone.hasSessionKey(key);
 
-                Vec3 normal = ipl$lockedSourceToDestNormal(airship, portal);
-                PortalCrossingDetector.CrossingState state =
-                    PortalCrossingDetector.evaluate(airship, portal, normal);
+                Vec3 normal = portal.getNormal().scale(-1.0);
+                PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
+                    airship, portal, normal, haveSession ? EXIT_APERTURE_MARGIN : 0.0);
 
-                // A portal is a finite aperture, not its infinite supporting plane.
-                // Without this gate, brushing the plane several blocks beside the
-                // frame starts a hosted latch; a later fast move to the other side
-                // then incorrectly flips the construction into the destination.
-                if (state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
-                    && !state.intersectsPortalAperture()) {
-                    if (hostedStraddleLatch.remove(key)) {
-                        IplStraddleCloneBody.clear(key, "left-aperture");
-                        IplStraddleTerrainClone.clear(key);
-                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "left-aperture");
+                boolean straddlingAperture =
+                    state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
+                        && state.intersectsPortalAperture();
+
+                if (straddlingAperture && !haveSession) {
+                    // Minority-face parity: the opposite coincident face evaluates the
+                    // same geometry with the complementary fraction and claims it.
+                    if (ipl$crossedFraction(airship, portal, normal) > 0.5 + 1.0e-6) {
+                        continue;
+                    }
+                    IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
+                    haveSession = true;
+                }
+
+                if (straddlingAperture) {
+                    seenHostedKeys.add(key);
+                    if (IplStraddleCloneBody.isEnabled()) {
+                        IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
+                    } else {
+                        IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
                     }
                     continue;
                 }
 
-                // Starting a session requires an actual source-side aperture crossing
-                // during this physics step. A body already straddling nearby planes
-                // cannot claim several nearly-coplanar portal faces at once.
-                boolean canStartContact = state.enteredFromSourceAperture();
-
-                switch (state.phase()) {
-                    case CROSSED -> {
-                        boolean hadLatch = hostedStraddleLatch.remove(key);
-                        if (hadLatch) {
-                            IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
-                        }
-                        if (hadLatch || state.enteredFromSourceAperture()) {
-                            IplStraddleCloneBody.clear(key, "crossed");
-                            IplStraddleTerrainClone.clear(key);
-                            if (candidates == null) candidates = new ArrayList<>(1);
-                            candidates.add(new TransitCandidate(airship, portal));
-                            candidateAddedForAirship = true;
-                        }
+                if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
+                    && (haveSession || state.enteredFromSourceAperture())) {
+                    if (haveSession) {
+                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
                     }
-                    case STRADDLING -> {
-                        if (!hostedStraddleLatch.contains(key) && !canStartContact) continue;
-                        if (hostedStraddleLatch.add(key)) {
-                            IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
-                        }
-                        seenHostedKeys.add(key);
-                        if (IplStraddleCloneBody.isEnabled()) {
-                            IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
-                        } else {
-                            IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
-                        }
+                    IplStraddleCloneBody.clear(key, "crossed");
+                    IplStraddleTerrainClone.clear(key);
+                    if (candidates == null) candidates = new ArrayList<>(1);
+                    candidates.add(new TransitCandidate(airship, portal));
+                    candidateAddedForAirship = true;
+                } else {
+                    String reason = state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
+                        ? "backed-out" : "left-aperture";
+                    if (haveSession) {
+                        IplStraddleCloneBody.clear(key, reason);
+                        IplStraddleTerrainClone.clear(key);
                     }
-                    case APPROACHING -> {
-                        if (hostedStraddleLatch.remove(key)) {
-                            IplStraddleCloneBody.clear(key, "backed-out");
-                            IplStraddleTerrainClone.clear(key);
-                            IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "backed-out");
-                        }
-                        seenHostedKeys.add(key);
-                    }
+                    // Unconditional + idempotent: a synced session whose spawn kept
+                    // failing has no local session key but must still be retracted.
+                    IplStraddleSessionSync.onSessionEnd(level.getServer(), key, reason);
                 }
                 if (candidateAddedForAirship) break;
             }
@@ -251,19 +222,20 @@ public final class SableTransitController {
             }
         }
 
-        // Reap hosted latch/locked-normal state for pairs no longer near any portal. All
-        // hosted ships live in the hosting container, so only its tick does the cleanup.
+        // Reap sessions whose (ship, portal) pair wasn't derivable this tick at all —
+        // portal unloaded/removed, or the ship left every portal's neighborhood. All
+        // hosted ships live in the hosting container, so only its tick sweeps.
         if (IplDimAgnostic.isHostingLevel(level)) {
-            hostedStraddleLatch.removeIf(k -> {
+            java.util.Set<StraddleKey> live = new java.util.HashSet<>(
+                IplStraddleCloneBody.sessionKeys());
+            live.addAll(IplStraddleTerrainClone.sessionKeys());
+            for (StraddleKey k : live) {
                 if (!seenHostedKeys.contains(k)) {
                     IplStraddleCloneBody.clear(k, "reaped");
                     IplStraddleTerrainClone.clear(k);
                     IplStraddleSessionSync.onSessionEnd(level.getServer(), k, "reaped");
-                    return true;
                 }
-                return false;
-            });
-            lockedCrossingNormal.keySet().removeIf(k -> !seenHostedKeys.contains(k));
+            }
         }
 
         if (candidates == null) return;
@@ -271,9 +243,6 @@ public final class SableTransitController {
         for (TransitCandidate c : candidates) {
             UUID uuid = c.airship.getUniqueId();
             try {
-                lockedCrossingNormal.remove(
-                    new StraddleKey(uuid, c.portal.getUUID())
-                );
                 boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal);
                 if (flipped) {
                     ipl$beginExitLock(c.airship, c.portal);
@@ -287,25 +256,29 @@ public final class SableTransitController {
     }
 
     /**
-     * The source->dest normal to use for {@code airship}'s crossing evaluation
-     * against {@code portal}, locked for the duration of the contact session.
-     *
-     * <p>IP's portal normal points to the source/remaining side. Its opposite is
-     * therefore the fixed source-to-destination direction. Never infer it from
-     * the ship center: a straddling body has points on both sides, and coplanar
-     * flipped portal faces would otherwise steal one another's contact sessions.
+     * Fraction of the ship's AABB extent past the portal plane along
+     * {@code sourceToDest} — the minority-face parity test for NEW sessions: of two
+     * coincident opposite faces, only the one seeing less than half the ship
+     * "through" may open a session, so the majority side is always the native one.
+     * (Per-session normal locking is gone: the crossing direction is a constant of
+     * the portal FACE, {@code -getNormal()}, and face selection itself is what this
+     * rule pins down.)
      */
-    private static Vec3 ipl$lockedSourceToDestNormal(ServerSubLevel airship, Portal portal) {
-        StraddleKey key = new StraddleKey(airship.getUniqueId(), portal.getUUID());
-        Vec3 existing = lockedCrossingNormal.get(key);
-        if (existing != null) {
-            return existing;
-        }
-
-        Vec3 sourceToDest = portal.getNormal().scale(-1.0);
-
-        lockedCrossingNormal.put(key, sourceToDest);
-        return sourceToDest;
+    private static double ipl$crossedFraction(
+        ServerSubLevel airship, Portal portal, Vec3 sourceToDest
+    ) {
+        dev.ryanhcode.sable.companion.math.BoundingBox3dc box = airship.boundingBox();
+        Vec3 p = portal.getOriginPos();
+        double tc = ((box.minX() + box.maxX()) * 0.5 - p.x) * sourceToDest.x
+                  + ((box.minY() + box.maxY()) * 0.5 - p.y) * sourceToDest.y
+                  + ((box.minZ() + box.maxZ()) * 0.5 - p.z) * sourceToDest.z;
+        double r = (box.maxX() - box.minX()) * 0.5 * Math.abs(sourceToDest.x)
+                 + (box.maxY() - box.minY()) * 0.5 * Math.abs(sourceToDest.y)
+                 + (box.maxZ() - box.minZ()) * 0.5 * Math.abs(sourceToDest.z);
+        double tMin = tc - r, tMax = tc + r;
+        if (tMax <= 0.0) return 0.0;
+        if (tMin >= 0.0 || tMax - tMin < 1e-9) return 1.0;
+        return tMax / (tMax - tMin);
     }
 
     /**

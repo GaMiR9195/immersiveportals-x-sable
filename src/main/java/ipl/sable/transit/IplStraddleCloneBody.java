@@ -456,6 +456,15 @@ public final class IplStraddleCloneBody {
         return null;
     }
 
+    public static boolean hasSessionKey(StraddleKey key) {
+        return SESSIONS.containsKey(key);
+    }
+
+    /** Snapshot of active session keys (declarative lifecycle reap sweep). */
+    public static java.util.List<StraddleKey> sessionKeys() {
+        return new java.util.ArrayList<>(SESSIONS.keySet());
+    }
+
     /** Portal of the active session mapping this ship INTO {@code level} (dest side). */
     public static qouteall.imm_ptl.core.portal.Portal getSessionPortalInto(
         dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level

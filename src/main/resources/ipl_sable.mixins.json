@@ -48,6 +48,7 @@
   "client": [
     "client.VeilPacketContextLevelMixin",
     "client.SableAltContainerTickMixin",
+    "client.IplSectionOcclusionGuardMixin",
     "client.SableSourceClipMixin",
     "client.SableSourceClipSodiumMixin",
     "client.IplShaderInstanceClipMixin",

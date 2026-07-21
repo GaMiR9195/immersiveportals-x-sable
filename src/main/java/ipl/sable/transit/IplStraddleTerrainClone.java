@@ -79,6 +79,15 @@ public final class IplStraddleTerrainClone {
     }
 
     /** Whether any straddle session is active for this ship (server side). */
+    public static boolean hasSessionKey(StraddleKey key) {
+        return STATES.containsKey(key);
+    }
+
+    /** Snapshot of active session keys (declarative lifecycle reap sweep). */
+    public static java.util.List<StraddleKey> sessionKeys() {
+        return new java.util.ArrayList<>(STATES.keySet());
+    }
+
     public static boolean hasSession(java.util.UUID shipUuid) {
         for (CloneState state : STATES.values()) {
             if (state.shipUuid.equals(shipUuid)) return true;
