@@ -338,14 +338,17 @@ public final class IplStraddleCloneBody {
         } catch (Throwable t) {
             // keep the (0, -9.8, 0) defaults
         }
-        // Atlas M2 image mode: translation-only portals get an image collider on the
-        // REAL body instead of a clone (exact in-solver coupling). Falls back to the
-        // clone path if creation fails or the portal is rotated (Tier 2 pending).
-        if (IMAGE_COLLIDERS && mapping.isIdentityRotation()
-            && ipl.sable.natives.IplRapierNatives.isAvailable()) {
+        // Atlas image mode (M2 translation, M4 any fixed rotation): the session gets
+        // an image collider on the REAL body instead of a clone — exact in-solver
+        // coupling through the full portal isometry P = (R, t). Falls back to the
+        // clone path only if creation fails.
+        if (IMAGE_COLLIDERS && ipl.sable.natives.IplRapierNatives.isAvailable()) {
             Vec3 shift = mapping.mapPoint(Vec3.ZERO);
+            org.joml.Quaterniond rot = mapping.mapQuat(new org.joml.Quaterniond());
             long imageHandle = ipl.sable.natives.IplRapierNatives.createImageCollider(
-                session.destScene, session.realId, shift.x, shift.y, shift.z);
+                session.destScene, session.realId,
+                shift.x, shift.y, shift.z,
+                rot.x, rot.y, rot.z, rot.w);
             if (imageHandle >= 0) {
                 session.imageMode = true;
                 session.imageHandle = imageHandle;

@@ -198,10 +198,11 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_getClipStats<'loc
 // arms; there is no clone body, no servo, no feedback.
 // ---------------------------------------------------------------------------
 
-/// Create an image collider for `body_id` in the CALLING view's chart, offset by
-/// the portal translation `(dx, dy, dz)` (dest = P(source), so the prefix maps the
-/// body's pose into the far chart). Returns the packed collider handle
-/// (index << 32 | generation), or -1 if the body is unknown.
+/// Create an image collider for `body_id` in the CALLING view's chart, with the
+/// portal isometry `P = (R, t)`: translation `(dx, dy, dz)` and rotation quat
+/// `(qx, qy, qz, qw)` (identity for translation-only portals — Tier 1). The
+/// prefix maps the body's pose into the far chart. Returns the packed collider
+/// handle (index << 32 | generation), or -1 if the body is unknown.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollider<'local>(
     _env: JNIEnv<'local>,
@@ -211,6 +212,10 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
     dx: jdouble,
     dy: jdouble,
     dz: jdouble,
+    qx: jdouble,
+    qy: jdouble,
+    qz: jdouble,
+    qw: jdouble,
 ) -> jlong {
     use rapier3d::prelude::*;
 
@@ -266,7 +271,13 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
             .insert_with_parent(collider, body_handle, &mut sim_data.rigid_body_set);
     let prefix = rapier3d::math::Pose {
         translation: Vec3::new(dx as Real, dy as Real, dz as Real),
-        rotation: rapier3d::glamx::Quat::IDENTITY,
+        rotation: rapier3d::math::Rotation::from_xyzw(
+            qx as Real,
+            qy as Real,
+            qz as Real,
+            qw as Real,
+        )
+        .normalize(),
     };
     sim_data
         .collider_set

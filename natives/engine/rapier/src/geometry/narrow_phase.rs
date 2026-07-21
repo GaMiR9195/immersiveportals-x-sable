@@ -996,22 +996,23 @@ impl NarrowPhase {
                 let dominance1 = rb1.map(|rb| rb.dominance).unwrap_or(zero);
                 let dominance2 = rb2.map(|rb| rb.dominance).unwrap_or(zero);
 
-                // IPL atlas Tier 1: image colliders carry a translation-only portal
-                // prefix; its translation is stamped per manifold so the constraint
-                // builders (and the retention check below) use the MAPPED center of
-                // mass for lever arms. (Rotational prefixes are Tier 2.)
-                let portal_shift1 = co1
-                    .parent
-                    .as_ref()
-                    .and_then(|p| p.portal_prefix.as_ref())
+                // IPL atlas: image colliders carry a portal prefix P = (R, t),
+                // stamped per manifold so the constraint builders (and the retention
+                // check below) express the imaged body's state in the far frame.
+                let portal_iso1 = co1.parent.as_ref().and_then(|p| p.portal_prefix.as_ref());
+                let portal_iso2 = co2.parent.as_ref().and_then(|p| p.portal_prefix.as_ref());
+                let portal_shift1 = portal_iso1
                     .map(|p| p.translation)
                     .unwrap_or(crate::math::Vector::ZERO);
-                let portal_shift2 = co2
-                    .parent
-                    .as_ref()
-                    .and_then(|p| p.portal_prefix.as_ref())
+                let portal_shift2 = portal_iso2
                     .map(|p| p.translation)
                     .unwrap_or(crate::math::Vector::ZERO);
+                let portal_rot1 = portal_iso1
+                    .map(|p| p.rotation)
+                    .unwrap_or(crate::math::Rotation::IDENTITY);
+                let portal_rot2 = portal_iso2
+                    .map(|p| p.rotation)
+                    .unwrap_or(crate::math::Rotation::IDENTITY);
 
                 for manifold in &mut pair.manifolds {
                     let world_pos1 = manifold.subshape_pos1.prepend_to(&co1.pos);
@@ -1025,6 +1026,8 @@ impl NarrowPhase {
                     manifold.data.normal = world_pos1.rotation * manifold.local_n1;
                     manifold.data.portal_shift1 = portal_shift1;
                     manifold.data.portal_shift2 = portal_shift2;
+                    manifold.data.portal_rot1 = portal_rot1;
+                    manifold.data.portal_rot2 = portal_rot2;
 
                     // Generate solver contacts.
                     #[allow(unused_mut)] // Mut not needed in 2D.
@@ -1055,14 +1058,26 @@ impl NarrowPhase {
                         let keep_solver_contact = effective_contact_dist < prediction_distance || {
                             let world_pt1 = world_pos1 * contact.local_p1;
                             let world_pt2 = world_pos2 * contact.local_p2;
-                            // IPL atlas: for imaged colliders the angular lever arm
-                            // uses the MAPPED com — un-shift the point (translation
-                            // prefix) so `pt − com` is measured in the body's frame.
+                            // IPL atlas: for imaged colliders the point velocity is
+                            // the body's velocity at P⁻¹(pt), rotated into the far
+                            // frame — v_img(p) = R·v_body(P⁻¹ p).
                             let vel1 = rb1
-                                .map(|rb| rb.velocity_at_point(world_pt1 - portal_shift1))
+                                .map(|rb| {
+                                    portal_rot1
+                                        * rb.velocity_at_point(
+                                            portal_rot1.inverse()
+                                                * (world_pt1 - portal_shift1),
+                                        )
+                                })
                                 .unwrap_or_default();
                             let vel2 = rb2
-                                .map(|rb| rb.velocity_at_point(world_pt2 - portal_shift2))
+                                .map(|rb| {
+                                    portal_rot2
+                                        * rb.velocity_at_point(
+                                            portal_rot2.inverse()
+                                                * (world_pt2 - portal_shift2),
+                                        )
+                                })
                                 .unwrap_or_default();
                             effective_contact_dist + (vel2 - vel1).dot(manifold.data.normal) * dt
                                 < prediction_distance

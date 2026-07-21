@@ -346,13 +346,19 @@ pub struct ContactManifoldData {
     pub relative_dominance: i16,
     /// A user-defined piece of data.
     pub user_data: u32,
-    /// IPL atlas Tier 1: translation of collider 1's portal prefix (ZERO when the
-    /// collider is not an image). The constraint builders substitute the mapped
-    /// COM `world_com1 + portal_shift1` into the lever arms so an image's contacts
-    /// act on the parent body exactly. Translation-only; rotation is Tier 2.
+    /// IPL atlas: translation of collider 1's portal prefix (ZERO when the
+    /// collider is not an image). Together with `portal_rot1` this is the full
+    /// portal isometry `P = (R, t)`: the constraint builders express the imaged
+    /// body's state in the far frame (com → P(com), v → R·v, ω → R·ω,
+    /// I⁻¹ → R·I⁻¹·Rᵀ) so an image's contacts act on the parent body exactly.
     pub portal_shift1: Vector,
     /// Same as `portal_shift1`, for collider 2.
     pub portal_shift2: Vector,
+    /// IPL atlas Tier 2: rotation of collider 1's portal prefix (IDENTITY when
+    /// un-imaged or translation-only).
+    pub portal_rot1: crate::math::Rotation,
+    /// Same as `portal_rot1`, for collider 2.
+    pub portal_rot2: crate::math::Rotation,
 }
 
 /// A single solver contact.
@@ -614,6 +620,8 @@ impl ContactManifoldData {
             user_data: 0,
             portal_shift1: Vector::ZERO,
             portal_shift2: Vector::ZERO,
+            portal_rot1: crate::math::Rotation::IDENTITY,
+            portal_rot2: crate::math::Rotation::IDENTITY,
         }
     }
 

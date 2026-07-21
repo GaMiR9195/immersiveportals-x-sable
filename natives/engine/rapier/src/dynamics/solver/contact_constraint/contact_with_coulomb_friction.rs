@@ -37,11 +37,16 @@ impl<N: ScalarType> Default for CoulombContactPointInfos<N> {
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ContactWithCoulombFrictionBuilder {
     infos: [CoulombContactPointInfos<SimdReal>; MAX_MANIFOLD_POINTS],
-    /// IPL atlas Tier 1: per-lane portal translations of the two colliders
+    /// IPL atlas: per-lane portal translations of the two colliders
     /// (ZERO for un-imaged lanes). Local anchors are stored in the MAPPED frame
     /// (`point − shift`); `update` re-adds the shifts so `p1 − p2` is exact.
     portal_shift1: <SimdReal as ScalarType>::Vector,
     portal_shift2: <SimdReal as ScalarType>::Vector,
+    /// IPL atlas Tier 2: per-lane portal rotations (identity for un-imaged /
+    /// translation-only lanes) + a skip flag for the ordinary case.
+    portal_rot1: <SimdReal as ScalarType>::Rotation,
+    portal_rot2: <SimdReal as ScalarType>::Rotation,
+    portal_any_rot: bool,
 }
 
 impl ContactWithCoulombFrictionBuilder {
@@ -72,14 +77,15 @@ impl ContactWithCoulombFrictionBuilder {
             u32::MAX
         }];
 
-        let vels1 = solver_bodies.gather_vels(ids1);
-        let poses1 = solver_bodies.gather_poses(ids1);
-        let vels2 = solver_bodies.gather_vels(ids2);
-        let poses2 = solver_bodies.gather_poses(ids2);
+        let mut vels1 = solver_bodies.gather_vels(ids1);
+        let mut poses1 = solver_bodies.gather_poses(ids1);
+        let mut vels2 = solver_bodies.gather_vels(ids2);
+        let mut poses2 = solver_bodies.gather_poses(ids2);
 
-        // IPL atlas Tier 1: image colliders act on their parent body through a
-        // translation-only portal — lever arms use the MAPPED center of mass
-        // (world_com + portal_shift). Shifts are ZERO for ordinary contacts.
+        // IPL atlas: image colliders act on their parent body through a portal
+        // isometry P = (R, t). Express the imaged side's state in the far frame:
+        // com → P(com), v → R·v, ω → R·ω, I⁻¹ → R·I⁻¹·Rᵀ. Shifts are ZERO and R
+        // identity for ordinary contacts; Tier 1 (translation-only) has R = I.
         #[cfg(feature = "simd-is-enabled")]
         let portal_shift1 = <SimdReal as ScalarType>::Vector::from(gather![|ii| manifolds[ii]
             .data
@@ -94,6 +100,35 @@ impl ContactWithCoulombFrictionBuilder {
             .into()]);
         #[cfg(not(feature = "simd-is-enabled"))]
         let portal_shift2 = manifolds[0].data.portal_shift2;
+
+        // Tier 2: rotation-map the imaged side's gathered state (SIMD builds only —
+        // the non-SIMD fallback supports translation-only portals).
+        #[cfg(feature = "simd-is-enabled")]
+        let portal_any_rot = (0..SIMD_WIDTH).any(|ii| {
+            manifolds[ii].data.portal_rot1 != crate::math::Rotation::IDENTITY
+                || manifolds[ii].data.portal_rot2 != crate::math::Rotation::IDENTITY
+        });
+        #[cfg(not(feature = "simd-is-enabled"))]
+        let portal_any_rot = false;
+        #[cfg(feature = "simd-is-enabled")]
+        let (portal_rot1, portal_rot2) = if portal_any_rot {
+            let r1 = super::ipl_widen_rot(array![|ii| manifolds[ii].data.portal_rot1]);
+            let r2 = super::ipl_widen_rot(array![|ii| manifolds[ii].data.portal_rot2]);
+            vels1.linear = r1 * vels1.linear;
+            vels1.angular = r1 * vels1.angular;
+            poses1.rotation = r1 * poses1.rotation;
+            poses1.translation = r1 * poses1.translation;
+            poses1.ii = super::ipl_conjugate_ii(&r1, poses1.ii);
+            vels2.linear = r2 * vels2.linear;
+            vels2.angular = r2 * vels2.angular;
+            poses2.rotation = r2 * poses2.rotation;
+            poses2.translation = r2 * poses2.translation;
+            poses2.ii = super::ipl_conjugate_ii(&r2, poses2.ii);
+            (r1, r2)
+        } else {
+            let identity = na::UnitQuaternion::identity();
+            (identity, identity)
+        };
 
         let world_com1 = poses1.translation + portal_shift1;
         let world_com2 = poses2.translation + portal_shift2;
@@ -229,6 +264,22 @@ impl ContactWithCoulombFrictionBuilder {
 
         out_builder.portal_shift1 = portal_shift1;
         out_builder.portal_shift2 = portal_shift2;
+        out_builder.portal_any_rot = portal_any_rot;
+        out_constraint.portal_any_rot = portal_any_rot;
+        #[cfg(feature = "simd-is-enabled")]
+        {
+            out_builder.portal_rot1 = portal_rot1;
+            out_builder.portal_rot2 = portal_rot2;
+            out_constraint.portal_rot1 = portal_rot1;
+            out_constraint.portal_rot2 = portal_rot2;
+        }
+        #[cfg(not(feature = "simd-is-enabled"))]
+        {
+            out_builder.portal_rot1 = crate::math::Rotation::IDENTITY;
+            out_builder.portal_rot2 = crate::math::Rotation::IDENTITY;
+            out_constraint.portal_rot1 = crate::math::Rotation::IDENTITY;
+            out_constraint.portal_rot2 = crate::math::Rotation::IDENTITY;
+        }
 
         if BLOCK_SOLVER_ENABLED {
             // Coupling between consecutive pairs.
@@ -293,8 +344,16 @@ impl ContactWithCoulombFrictionBuilder {
         let max_corrective_velocity = SimdReal::splat(params.max_corrective_velocity());
         let warmstart_coeff = SimdReal::splat(params.warmstart_coefficient);
 
-        let poses1 = bodies.gather_poses(constraint.solver_vel1);
-        let poses2 = bodies.gather_poses(constraint.solver_vel2);
+        let mut poses1 = bodies.gather_poses(constraint.solver_vel1);
+        let mut poses2 = bodies.gather_poses(constraint.solver_vel2);
+        // IPL atlas Tier 2: rotation-map the poses so anchor reconstruction
+        // happens in the far frame (shift re-add below completes P).
+        if self.portal_any_rot {
+            poses1.rotation = self.portal_rot1 * poses1.rotation;
+            poses1.translation = self.portal_rot1 * poses1.translation;
+            poses2.rotation = self.portal_rot2 * poses2.rotation;
+            poses2.translation = self.portal_rot2 * poses2.translation;
+        }
         let all_infos = &self.infos[..constraint.num_contacts as usize];
         let normal_parts = &mut constraint.normal_part[..constraint.num_contacts as usize];
         let tangent_parts = &mut constraint.tangent_part[..constraint.num_contacts as usize];
@@ -369,12 +428,50 @@ pub(crate) struct ContactWithCoulombFriction<N: ScalarType> {
     pub manifold_id: [ContactManifoldIndex; SIMD_WIDTH],
     pub num_contacts: u8,
     pub manifold_contact_id: [[u8; SIMD_WIDTH]; MAX_MANIFOLD_POINTS],
+    /// IPL atlas Tier 2: portal rotations for the gather→map→solve→unmap→scatter
+    /// boundary (identity + flag false for ordinary contacts).
+    pub portal_rot1: N::Rotation,
+    pub portal_rot2: N::Rotation,
+    pub portal_any_rot: bool,
 }
 
 impl ContactWithCoulombFriction<SimdReal> {
+    /// IPL atlas Tier 2: map gathered velocities into the far (portal) frame.
+    #[inline(always)]
+    fn ipl_map_vels(
+        &self,
+        solver_vel1: &mut crate::dynamics::solver::solver_body::SolverVel<SimdReal>,
+        solver_vel2: &mut crate::dynamics::solver::solver_body::SolverVel<SimdReal>,
+    ) {
+        if self.portal_any_rot {
+            solver_vel1.linear = self.portal_rot1 * solver_vel1.linear;
+            solver_vel1.angular = self.portal_rot1 * solver_vel1.angular;
+            solver_vel2.linear = self.portal_rot2 * solver_vel2.linear;
+            solver_vel2.angular = self.portal_rot2 * solver_vel2.angular;
+        }
+    }
+
+    /// IPL atlas Tier 2: map solved velocities back into the bodies' home frames.
+    #[inline(always)]
+    fn ipl_unmap_vels(
+        &self,
+        solver_vel1: &mut crate::dynamics::solver::solver_body::SolverVel<SimdReal>,
+        solver_vel2: &mut crate::dynamics::solver::solver_body::SolverVel<SimdReal>,
+    ) {
+        if self.portal_any_rot {
+            let inv1 = self.portal_rot1.inverse();
+            let inv2 = self.portal_rot2.inverse();
+            solver_vel1.linear = inv1 * solver_vel1.linear;
+            solver_vel1.angular = inv1 * solver_vel1.angular;
+            solver_vel2.linear = inv2 * solver_vel2.linear;
+            solver_vel2.angular = inv2 * solver_vel2.angular;
+        }
+    }
+
     pub fn warmstart(&mut self, bodies: &mut SolverBodies) {
         let mut solver_vel1 = bodies.gather_vels(self.solver_vel1);
         let mut solver_vel2 = bodies.gather_vels(self.solver_vel2);
+        self.ipl_map_vels(&mut solver_vel1, &mut solver_vel2);
 
         let normal_parts = &mut self.normal_part[..self.num_contacts as usize];
         let tangent_parts = &mut self.tangent_part[..self.num_contacts as usize];
@@ -410,6 +507,7 @@ impl ContactWithCoulombFriction<SimdReal> {
             );
         }
 
+        self.ipl_unmap_vels(&mut solver_vel1, &mut solver_vel2);
         bodies.scatter_vels(self.solver_vel1, solver_vel1);
         bodies.scatter_vels(self.solver_vel2, solver_vel2);
     }
@@ -422,6 +520,7 @@ impl ContactWithCoulombFriction<SimdReal> {
     ) {
         let mut solver_vel1 = bodies.gather_vels(self.solver_vel1);
         let mut solver_vel2 = bodies.gather_vels(self.solver_vel2);
+        self.ipl_map_vels(&mut solver_vel1, &mut solver_vel2);
 
         let normal_parts = &mut self.normal_part[..self.num_contacts as usize];
         let tangent_parts = &mut self.tangent_part[..self.num_contacts as usize];
@@ -496,6 +595,7 @@ impl ContactWithCoulombFriction<SimdReal> {
             }
         }
 
+        self.ipl_unmap_vels(&mut solver_vel1, &mut solver_vel2);
         bodies.scatter_vels(self.solver_vel1, solver_vel1);
         bodies.scatter_vels(self.solver_vel2, solver_vel2);
     }

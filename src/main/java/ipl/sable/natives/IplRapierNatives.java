@@ -74,15 +74,18 @@ public final class IplRapierNatives {
 
     /**
      * Create an image collider for the body in the CALLING scene view's chart, portal
-     * translation {@code (dx,dy,dz)} (dest = source + shift; Tier 1 is translation-only).
-     * The image is extra geometry on the SAME rigid body: its contacts act on the body
-     * through the engine's mapped-COM lever arms — exact, in-solver, no servo.
+     * isometry {@code P = (R, t)}: translation {@code (dx,dy,dz)} plus rotation quat
+     * {@code (qx,qy,qz,qw)} (identity for translation-only portals). The image is extra
+     * geometry on the SAME rigid body: its contacts act on the body through the engine's
+     * portal-frame mapping — exact, in-solver, no servo, any fixed rotation (Tier 2).
      *
      * @return packed collider handle for {@link #removeImageCollider} /
      *         {@link #setImageClipRegions}, or -1 if the body is unknown.
      */
     public static native long createImageCollider(
-        long sceneHandle, int bodyId, double dx, double dy, double dz);
+        long sceneHandle, int bodyId,
+        double dx, double dy, double dz,
+        double qx, double qy, double qz, double qw);
 
     /** Remove an image collider created by {@link #createImageCollider}. */
     public static native void removeImageCollider(
