@@ -43,7 +43,12 @@
     "IplRapierPipelineAccess",
     "IplRapier3DInvoker",
     "IplCloneSubstepMixin",
-    "IplNativesOverrideMixin"
+    "IplNativesOverrideMixin",
+    "IplFusedStepMixin",
+    "IplPhysicsSystemFusionAccess",
+    "IplRapierStepArmMixin",
+    "IplWheelMountLevelFilterMixin",
+    "IplWheelMountInvoker"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
