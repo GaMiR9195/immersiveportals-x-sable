@@ -321,6 +321,10 @@ public final class IplStraddleCloneBody {
                 session.destScene, session.cloneId, cloneRegion);
         }
 
+        // Portal containment rims are ALWAYS-ON per portal entity (IplPortalRimManager)
+        // — session-scoped rims had a hole: a ship shearing in laterally never starts a
+        // session, so nothing existed yet to stop it.
+
         LOG.info("[IPL-CLONE] start uuid={} portal={} dest={} rotated={} cloneId={} destScene={} clipped={}",
             hosted.getUniqueId(), portal.getUUID(), portal.getDestPos(),
             !mapping.isIdentityRotation(), session.cloneId, session.destScene,

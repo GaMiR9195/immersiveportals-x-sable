@@ -78,6 +78,7 @@ public final class SableTransitController {
         hostedStraddleLatch.clear();
         pendingExitPortalsByAirship.clear();
         IplStraddleSessionSync.clearAll();
+        IplPortalRimManager.clearAll();
         IplStraddleCloneBody.clearAll();
         IplStraddleTerrainClone.clearAll();
         SableRehomeOps.resetBootRestore();
@@ -91,6 +92,8 @@ public final class SableTransitController {
     public static void onContainerTick(ServerSubLevelContainer container) {
         ServerLevel level = (ServerLevel) container.getLevel();
         if (level == null) return;
+        // Always-on portal containment rims track portal entity lifecycle per level.
+        IplPortalRimManager.tick(level);
         // Per-scene model: migrate any hosted body whose scene doesn't match its parent —
         // covers boot-restored ships whose parent resolved after the body was created
         // (fallback landed it in the hosting scene) and any missed flip path.
