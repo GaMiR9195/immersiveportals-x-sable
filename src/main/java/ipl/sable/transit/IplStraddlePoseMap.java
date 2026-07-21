@@ -236,6 +236,133 @@ public final class IplStraddlePoseMap {
         return mapping == null ? null : mapping.blockOffsetOrNull();
     }
 
+    /**
+     * Lateral slack around the aperture rectangle for {@link #getBlockCollisionKeepFilter}:
+     * block CENTERS of edge blocks flush with the portal frame sit up to half a block
+     * outside the exact aperture. Over-covering is safe — ship geometry past the plane
+     * outside the aperture column cannot exist mid-crossing (it would have been blocked).
+     */
+    private static final double APERTURE_CLIP_MARGIN = 0.5;
+
+    /**
+     * Plot-local block keep-filter for entity-vs-ship collision while the ship straddles
+     * a portal, or null when no clipping applies. Selects the frame the collision code
+     * uses for this entity (mapped pose iff {@link #getCollisionMappingInto} is non-null)
+     * and returns the matching half-filter. Legacy terrain-clone sessions expose no
+     * portal snapshot and keep full collision (pre-existing behavior).
+     */
+    @Nullable
+    public static java.util.function.Predicate<BlockPos> getBlockCollisionKeepFilter(
+        @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
+    ) {
+        if (sub == null || contextLevel == null || entityBounds == null) return null;
+        if (!IplDimAgnostic.isHosted(sub)) return null;
+        return getCollisionMappingInto(sub, contextLevel, entityBounds) != null
+            ? getMappedHalfKeepFilter(sub, contextLevel)
+            : getSourceHalfKeepFilter(sub, contextLevel);
+    }
+
+    /**
+     * Keep-filter for plot blocks reached through the ship's NATIVE frame (real pose):
+     * drops the through-half — past the portal plane, inside the aperture column only.
+     * A ship part reaching past the plane's lateral extension BESIDE the portal frame is
+     * still physically on this side and stays. This is the gameplay counterpart of the
+     * native aperture contact clip (spec §2.5). Null when the ship isn't straddling out
+     * of {@code contextLevel}.
+     */
+    @Nullable
+    public static java.util.function.Predicate<BlockPos> getSourceHalfKeepFilter(
+        @Nullable SubLevel sub, @Nullable Level contextLevel
+    ) {
+        if (sub == null || contextLevel == null || !IplDimAgnostic.isHosted(sub)) return null;
+        if (IplDimAgnostic.getParentLevel(sub) != contextLevel) return null;
+
+        qouteall.imm_ptl.core.portal.Portal portal;
+        if (contextLevel.isClientSide()) {
+            portal = ipl.sable.client.IplClientHostedLookup.getClientStraddlePortal(sub);
+        } else {
+            portal = IplStraddleCloneBody.getSessionPortalFrom(sub, contextLevel);
+        }
+        if (portal == null) return null;
+
+        // Source side keeps +portal normal (crossing direction is -normal, the same
+        // convention as isInMappedHalf and the transit controller's locked normal).
+        return buildKeepFilter(
+            sub.logicalPose(),
+            portal.getOriginPos(), portal.getNormal(),
+            portal.getAxisW(), portal.getAxisH(),
+            portal.getWidth() * 0.5 + APERTURE_CLIP_MARGIN,
+            portal.getHeight() * 0.5 + APERTURE_CLIP_MARGIN);
+    }
+
+    /**
+     * Keep-filter for plot blocks reached through the MAPPED frame (portal-mapped pose):
+     * drops the not-yet-through half. Plane-only, no aperture bound — unlike source-side
+     * wings (physically real beside the frame), the image before the destination plane
+     * is phantom everywhere: those blocks exist only at the native pose. Matches the
+     * projection's own render clip exactly. Null when the ship isn't straddling into
+     * {@code contextLevel}.
+     */
+    @Nullable
+    public static java.util.function.Predicate<BlockPos> getMappedHalfKeepFilter(
+        @Nullable SubLevel sub, @Nullable Level contextLevel
+    ) {
+        if (sub == null || contextLevel == null || !IplDimAgnostic.isHosted(sub)) return null;
+        StraddleMapping mapping = getStraddleDestinationMapping(sub, contextLevel);
+        if (mapping == null) return null;
+
+        qouteall.imm_ptl.core.portal.Portal portal;
+        if (contextLevel.isClientSide()) {
+            portal = ipl.sable.client.IplClientHostedLookup.getClientStraddlePortal(sub);
+            if (portal != null && portal.getDestDim() != contextLevel.dimension()) portal = null;
+        } else {
+            portal = IplStraddleCloneBody.getSessionPortalInto(sub, contextLevel);
+        }
+        if (portal == null) return null;
+
+        return buildKeepFilter(
+            mapping.mapPose(sub.logicalPose()),
+            mapping.mapPoint(portal.getOriginPos()),
+            mapping.mapVec(portal.getNormal().scale(-1.0)),
+            null, null, 0.0, 0.0);
+    }
+
+    /**
+     * Compile a world-frame half-space cut (optionally aperture-column-bounded) into a
+     * plot-local block-center predicate: transformed once, three dot products per block.
+     * Uses the end-of-tick pose rather than any substep lerp — within-tick ship motion
+     * is far below the block-center granularity this test operates at.
+     */
+    private static java.util.function.Predicate<BlockPos> buildKeepFilter(
+        Pose3dc pose, Vec3 point, Vec3 keepNormal,
+        @Nullable Vec3 axisW, @Nullable Vec3 axisH, double halfW, double halfH
+    ) {
+        org.joml.Vector3d lp = pose.transformPositionInverse(
+            new org.joml.Vector3d(point.x, point.y, point.z));
+        org.joml.Vector3d ln = pose.transformNormalInverse(
+            new org.joml.Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
+            new org.joml.Vector3d());
+        if (axisW == null || axisH == null) {
+            return pos -> (pos.getX() + 0.5 - lp.x) * ln.x
+                        + (pos.getY() + 0.5 - lp.y) * ln.y
+                        + (pos.getZ() + 0.5 - lp.z) * ln.z >= 0.0;
+        }
+        org.joml.Vector3d lw = pose.transformNormalInverse(
+            new org.joml.Vector3d(axisW.x, axisW.y, axisW.z), new org.joml.Vector3d());
+        org.joml.Vector3d lh = pose.transformNormalInverse(
+            new org.joml.Vector3d(axisH.x, axisH.y, axisH.z), new org.joml.Vector3d());
+        return pos -> {
+            double px = pos.getX() + 0.5 - lp.x;
+            double py = pos.getY() + 0.5 - lp.y;
+            double pz = pos.getZ() + 0.5 - lp.z;
+            double d = px * ln.x + py * ln.y + pz * ln.z;
+            if (d >= 0.0) return true;
+            double w = Math.abs(px * lw.x + py * lw.y + pz * lw.z);
+            double h = Math.abs(px * lh.x + py * lh.y + pz * lh.z);
+            return w > halfW || h > halfH;
+        };
+    }
+
     /** Select the same-dimension source or mapped pose by the crossing plane, not AABB overlap. */
     private static boolean isInMappedCollisionHalf(SubLevel sub, Level contextLevel, Vec3 position) {
         if (contextLevel.isClientSide()) {
@@ -261,13 +388,62 @@ public final class IplStraddlePoseMap {
         StraddleMapping mapping, qouteall.imm_ptl.core.portal.Portal portal,
         dev.ryanhcode.sable.companion.math.BoundingBox3dc shipBox, Vec3 position
     ) {
-        Vec3 destPlanePoint = mapping.mapPoint(portal.getOriginPos());
-        Vec3 destInward = mapping.mapVec(portal.getNormal().scale(-1.0));
+        Vec3 srcPlanePoint = portal.getOriginPos();
+        Vec3 inward = portal.getNormal().scale(-1.0);
+        Vec3 destPlanePoint = mapping.mapPoint(srcPlanePoint);
+        Vec3 destInward = mapping.mapVec(inward);
         if (destInward.dot(position.subtract(destPlanePoint)) < 0.0) return false;
 
-        double dMapped = distanceSqToBox(mapping.mapAabb(shipBox), position);
-        double dSource = distanceSqToBox(shipBox, position);
+        // Proximity against the CLIPPED halves, not the full boxes. Mid-crossing, the
+        // full-ship AABB and its mapped image overlap the seam region (close or rotated
+        // pairs especially), so an entity standing on real source-side deck sat inside
+        // BOTH boxes — the 0-vs-0 tie resolved to "mapped" and collision flipped to the
+        // wrong frame around halfway. The halves that physically exist are the real box
+        // BEFORE the source plane and the image PAST the dest plane; measure those.
+        dev.ryanhcode.sable.companion.math.BoundingBox3d srcHalf =
+            clipBoxKeeping(shipBox, srcPlanePoint, inward.scale(-1.0));
+        dev.ryanhcode.sable.companion.math.BoundingBox3d dstHalf =
+            clipBoxKeeping(mapping.mapAabb(shipBox), destPlanePoint, destInward);
+        double dSource = srcHalf == null ? Double.MAX_VALUE : distanceSqToBox(srcHalf, position);
+        double dMapped = dstHalf == null ? Double.MAX_VALUE : distanceSqToBox(dstHalf, position);
         return dMapped <= dSource;
+    }
+
+    /**
+     * Cut a box with a plane, keeping the side {@code keepNormal} points to; null when
+     * fully cut. Axis-aligned planes cut exactly; oblique planes conservatively (the
+     * behind-most corner is pushed onto the plane along the normal — same approximation
+     * ImmersivePortals' own CollisionHelper.clipBox uses).
+     */
+    @Nullable
+    private static dev.ryanhcode.sable.companion.math.BoundingBox3d clipBoxKeeping(
+        dev.ryanhcode.sable.companion.math.BoundingBox3dc box, Vec3 planePos, Vec3 keepNormal
+    ) {
+        Vec3 n = keepNormal.normalize();
+        double px = n.x > 0 ? box.minX() : box.maxX();
+        double py = n.y > 0 ? box.minY() : box.maxY();
+        double pz = n.z > 0 ? box.minZ() : box.maxZ();
+        double sx = n.x > 0 ? box.maxX() : box.minX();
+        double sy = n.y > 0 ? box.maxY() : box.minY();
+        double sz = n.z > 0 ? box.maxZ() : box.minZ();
+        double dPushed = (px - planePos.x) * n.x + (py - planePos.y) * n.y
+                       + (pz - planePos.z) * n.z;
+        dev.ryanhcode.sable.companion.math.BoundingBox3d out =
+            new dev.ryanhcode.sable.companion.math.BoundingBox3d();
+        if (dPushed >= 0.0) {
+            out.set(box);
+            return out;
+        }
+        double dStatic = (sx - planePos.x) * n.x + (sy - planePos.y) * n.y
+                       + (sz - planePos.z) * n.z;
+        if (dStatic <= 0.0) return null;
+        px -= dPushed * n.x;
+        py -= dPushed * n.y;
+        pz -= dPushed * n.z;
+        out.set(
+            Math.min(px, sx), Math.min(py, sy), Math.min(pz, sz),
+            Math.max(px, sx), Math.max(py, sy), Math.max(pz, sz));
+        return out;
     }
 
     private static double distanceSqToBox(

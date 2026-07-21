@@ -350,6 +350,10 @@ public abstract class SableCrossDimTrackingMixin {
                             parent.dimension().location().toString()
                         );
                     }
+                    // Straddle parity is server state (see IplStraddleSessionSync); a viewer
+                    // starting to track mid-crossing needs the current session snapshot too.
+                    ipl.sable.transit.IplStraddleSessionSync.sendSnapshotTo(
+                        viewer, serverSubLevel.getUniqueId());
                 }
             }
         }

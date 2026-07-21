@@ -107,6 +107,32 @@ public final class IplStraddleCloneBody {
     /** Max velocity correction copied per substep (m/s). */
     private static final double MAX_VEL_TRANSFER =
         Double.parseDouble(System.getProperty("ipl.sable.clone.maxVelTransfer", "3.0"));
+    /**
+     * Floor of the dest solver's velocity authority: velocity corrections are scaled by
+     * {@code minAuthority + (1 - minAuthority) * crossingFraction}, so a barely-poked-through
+     * ship gets a gentle nudge instead of a full-strength yank while a mostly-through ship
+     * gets (near) full dest authority. Position/rotation transfers are never scaled.
+     */
+    private static final double MIN_AUTHORITY =
+        Double.parseDouble(System.getProperty("ipl.sable.clone.minAuthority", "0.3"));
+    /**
+     * Wobble damp: once the ship is MAJORITY-through, the fraction of the real body's
+     * velocity opposing the transferred correction that is bled off per substep (ramps
+     * from 0 at half-crossed to this value at fully-crossed). Kills the source solver's
+     * re-fight of the dest correction instead of letting the two solvers alternate.
+     */
+    private static final double STRADDLE_DAMP =
+        Double.parseDouble(System.getProperty("ipl.sable.clone.straddleDamp", "0.5"));
+    /**
+     * Rock damp: while a ROTATION correction is actively firing, the fraction of the real
+     * body's angular velocity along the correction axis removed per substep. The rocking
+     * mode exchanges energy through the orientation-teleport channel, which the linear
+     * bleed never touches — and unlike the bleed it must damp BOTH signs, because a rock
+     * alternates direction every half-cycle. Crossing-independent: two-sided contact
+     * fights the orientation at any fraction.
+     */
+    private static final double ANGULAR_DAMP =
+        Double.parseDouble(System.getProperty("ipl.sable.clone.angularDamp", "0.3"));
 
     private static final Map<StraddleKey, Session> SESSIONS = new HashMap<>();
 
@@ -131,6 +157,13 @@ public final class IplStraddleCloneBody {
         final int cloneId;
         /** Full portal isometry source→dest (rotation-capable; scale gated at 1). */
         final IplStraddlePoseMap.StraddleMapping mapping;
+        /** Unit crossing direction at the source plane (for the crossing fraction). */
+        final Vec3 sourceToDestN;
+        /**
+         * Fraction of the ship's bounds past the portal plane (0 = all source-side,
+         * 1 = all through). Refreshed each preStep; drives servo authority weighting.
+         */
+        double destFraction = 0.5;
         /** The REAL body's aperture clip region for this portal (14 doubles), if natives allow. */
         double[] realClipRegion;
         /**
@@ -155,12 +188,14 @@ public final class IplStraddleCloneBody {
         org.joml.Vector3d destGravity = new org.joml.Vector3d(0, -9.8, 0);
 
         Session(ServerSubLevel sub, Portal portal, ServerLevel parent, ServerLevel dest,
-                IplStraddlePoseMap.StraddleMapping mapping, long parentScene, long destScene) {
+                IplStraddlePoseMap.StraddleMapping mapping, Vec3 sourceToDest,
+                long parentScene, long destScene) {
             this.sub = sub;
             this.portal = portal;
             this.parent = parent;
             this.dest = dest;
             this.mapping = mapping;
+            this.sourceToDestN = sourceToDest.normalize();
             this.parentScene = parentScene;
             this.destScene = destScene;
             this.realId = Rapier3D.getID(sub);
@@ -231,7 +266,8 @@ public final class IplStraddleCloneBody {
         long parentScene = ((IplRapierPipelineAccess) parentPipeline).ipl$sceneHandle();
         long destScene = ((IplRapierPipelineAccess) destPipeline).ipl$sceneHandle();
 
-        Session session = new Session(hosted, portal, parent, dest, mapping, parentScene, destScene);
+        Session session = new Session(
+            hosted, portal, parent, dest, mapping, sourceToDest, parentScene, destScene);
         try {
             session.destGravity.set(
                 dev.ryanhcode.sable.physics.config.dimension_physics.DimensionPhysicsData
@@ -383,6 +419,30 @@ public final class IplStraddleCloneBody {
         for (Session s : SESSIONS.values()) {
             if (s.dest == destLevel && s.sub.getUniqueId().equals(sub.getUniqueId())) {
                 return s.mapping;
+            }
+        }
+        return null;
+    }
+
+    /** Portal of the active session mapping this ship INTO {@code level} (dest side). */
+    public static qouteall.imm_ptl.core.portal.Portal getSessionPortalInto(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level
+    ) {
+        for (Session s : SESSIONS.values()) {
+            if (s.dest == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
+                return s.portal;
+            }
+        }
+        return null;
+    }
+
+    /** Portal of the active session this ship is exiting FROM {@code level} (source side). */
+    public static qouteall.imm_ptl.core.portal.Portal getSessionPortalFrom(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level
+    ) {
+        for (Session s : SESSIONS.values()) {
+            if (s.parent == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
+                return s.portal;
             }
         }
         return null;
@@ -553,6 +613,8 @@ public final class IplStraddleCloneBody {
                 continue;
             }
 
+            s.destFraction = destFraction(s);
+
             Pose3dc real = s.sub.logicalPose();
             Vec3 mappedPos = s.mapping.mapPoint(new Vec3(
                 real.position().x(), real.position().y(), real.position().z()));
@@ -594,6 +656,28 @@ public final class IplStraddleCloneBody {
             s.pinnedAng[2] = mappedAng.z;
             s.pinned = true;
         }
+    }
+
+    /**
+     * Fraction of the ship's bounds past the portal plane, measured as the ship AABB's
+     * extent along the crossing direction that lies dest-side of the plane. A 1-D proxy
+     * (ignores block density), but monotone with the actual crossing — all the authority
+     * weighting needs.
+     */
+    private static double destFraction(Session s) {
+        dev.ryanhcode.sable.companion.math.BoundingBox3dc box = s.sub.boundingBox();
+        Vec3 p = s.portal.getOriginPos();
+        Vec3 n = s.sourceToDestN;
+        double tc = ((box.minX() + box.maxX()) * 0.5 - p.x) * n.x
+                  + ((box.minY() + box.maxY()) * 0.5 - p.y) * n.y
+                  + ((box.minZ() + box.maxZ()) * 0.5 - p.z) * n.z;
+        double r = (box.maxX() - box.minX()) * 0.5 * Math.abs(n.x)
+                 + (box.maxY() - box.minY()) * 0.5 * Math.abs(n.y)
+                 + (box.maxZ() - box.minZ()) * 0.5 * Math.abs(n.z);
+        double tMin = tc - r, tMax = tc + r;
+        if (tMax <= 0.0) return 0.0;
+        if (tMin >= 0.0 || tMax - tMin < 1e-9) return 1.0;
+        return tMax / (tMax - tMin);
     }
 
     /**
@@ -659,6 +743,16 @@ public final class IplStraddleCloneBody {
             double dax = s.cloneAng[0] - s.pinnedAng[0];
             double day = s.cloneAng[1] - s.pinnedAng[1];
             double daz = s.cloneAng[2] - s.pinnedAng[2];
+
+            // Straddle wobble damp: both solvers used to correct at FULL authority every
+            // substep — the dest solver shoves the real body, the source solver shoves
+            // back next substep, and the ship visibly hums mid-straddle. Velocity
+            // authority now follows the crossing fraction: the less of the ship is
+            // through, the gentler the dest solver's velocity say (position/rotation
+            // transfers below stay full — penetration must always resolve).
+            double authority = MIN_AUTHORITY + (1.0 - MIN_AUTHORITY) * s.destFraction;
+            dvx *= authority; dvy *= authority; dvz *= authority;
+            dax *= authority; day *= authority; daz *= authority;
             double dvMag = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
             double daMag = Math.sqrt(dax * dax + day * day + daz * daz);
 
@@ -708,18 +802,68 @@ public final class IplStraddleCloneBody {
                 ipl.sable.mixin.IplRapier3DInvoker.ipl$teleportObject(s.parentScene, s.realId,
                     nx, ny, nz, realRot.x, realRot.y, realRot.z, realRot.w);
             }
-            if (velMoved) {
+            double avx = velMoved ? dVel.x : 0.0;
+            double avy = velMoved ? dVel.y : 0.0;
+            double avz = velMoved ? dVel.z : 0.0;
+            double aax = velMoved ? dAng.x : 0.0;
+            double aay = velMoved ? dAng.y : 0.0;
+            double aaz = velMoved ? dAng.z : 0.0;
+            // Majority-through: also bleed the real body's velocity component that
+            // OPPOSES the correction (the source solver's push back into the
+            // constraint), so the minority side loses the argument instead of
+            // restarting the cycle next substep. Uses the pre-step velocities
+            // captured in preStep — stale by one solve, fine for a damping term.
+            double bleed = STRADDLE_DAMP * Math.max(0.0, 2.0 * s.destFraction - 1.0);
+            if (velMoved && bleed > 0.0) {
+                double m = dVel.length();
+                if (m > 1e-9) {
+                    double ix = dVel.x / m, iy = dVel.y / m, iz = dVel.z / m;
+                    double along = s.realLin[0] * ix + s.realLin[1] * iy + s.realLin[2] * iz;
+                    if (along < 0.0) {
+                        avx -= along * bleed * ix;
+                        avy -= along * bleed * iy;
+                        avz -= along * bleed * iz;
+                    }
+                }
+                double ma = dAng.length();
+                if (ma > 1e-9) {
+                    double ix = dAng.x / ma, iy = dAng.y / ma, iz = dAng.z / ma;
+                    double along = s.realAng[0] * ix + s.realAng[1] * iy + s.realAng[2] * iz;
+                    if (along < 0.0) {
+                        aax -= along * bleed * ix;
+                        aay -= along * bleed * iy;
+                        aaz -= along * bleed * iz;
+                    }
+                }
+            }
+            // Rock damp: an active rotation correction means the two solvers are fighting
+            // the orientation; remove a slice of the angular velocity along the correction
+            // axis (both signs — the rock alternates every half-cycle, and each removal
+            // takes energy out of the mode). Runs even when the velocity deadband didn't
+            // trip: the rocking sustains itself through the orientation teleport alone.
+            if (ANGULAR_DAMP > 0.0 && rotMoved && srcAxisLen > 1e-9) {
+                double ix = srcDq.x / srcAxisLen;
+                double iy = srcDq.y / srcAxisLen;
+                double iz = srcDq.z / srcAxisLen;
+                double along = s.realAng[0] * ix + s.realAng[1] * iy + s.realAng[2] * iz;
+                aax -= ANGULAR_DAMP * along * ix;
+                aay -= ANGULAR_DAMP * along * iy;
+                aaz -= ANGULAR_DAMP * along * iz;
+            }
+            if (avx != 0.0 || avy != 0.0 || avz != 0.0
+                || aax != 0.0 || aay != 0.0 || aaz != 0.0) {
                 Rapier3D.addLinearAngularVelocities(s.parentScene, s.realId,
-                    dVel.x, dVel.y, dVel.z, dAng.x, dAng.y, dAng.z, true);
+                    avx, avy, avz, aax, aay, aaz, true);
             }
             Rapier3D.wakeUpObject(s.parentScene, s.realId);
 
             long now = System.currentTimeMillis();
             if (now - lastServoLogMs > 2000) {
                 lastServoLogMs = now;
-                LOG.info("[IPL-CLONE-PBC] cloneId={} dPos={} dAng={} dVel={}",
+                LOG.info("[IPL-CLONE-PBC] cloneId={} dPos={} dAng={} dVel={} crossed={}",
                     s.cloneId, String.format("%.3f", dist),
-                    String.format("%.3f", angle), String.format("%.2f", dvMag));
+                    String.format("%.3f", angle), String.format("%.2f", dvMag),
+                    String.format("%.2f", s.destFraction));
             }
         }
     }

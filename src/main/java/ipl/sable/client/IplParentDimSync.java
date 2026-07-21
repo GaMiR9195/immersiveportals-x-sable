@@ -136,7 +136,9 @@ public final class IplParentDimSync {
             // A through-portal staff pick encoded its packets in the old target frame. The
             // server now owns post-transit raw-goal conversion, matching direct grabbed ships.
             IplStraddleStaffPick.onTransitHandoff(subLevelId);
-            ipl.sable.render.SourceClipPortalFinder.clearCrossingLatch(clientSubLevel.getUniqueId());
+            // Straddle parity is server-synced state now (IplStraddleSessionStore); the
+            // "crossed" session-end snapshot precedes this handoff on the ordered channel,
+            // so there is no client-side latch left to clear here.
             IplStraddleRenderCache.invalidateActivePasses();
             // Rebuild Sable's cached render pose from the mapped endpoints now. Both
             // endpoints are the same handoff pose, so this produces no interpolated

@@ -49,18 +49,15 @@ public final class SableTransitController {
 
     /**
      * Per-(source, portal) locked source->dest normal for the crossing-phase
-     * evaluation, held for the duration of a contact session. Distinct from the
-     * client-side clip-normal tracker ({@code SubLevelPortalContactTracker}) on
-     * purpose: that one stores the clip normal (oriented toward the KEPT/source
-     * side) and is written from the render thread; this stores the opposite
-     * source->dest direction and is written from the server thread. Sharing one
-     * map would let the two sign conventions clobber each other in singleplayer
-     * (same JVM, same UUID key). Server-thread only, so a plain HashMap is fine.
+     * evaluation, held for the duration of a contact session. This is the ONLY
+     * holder of crossing parity: clients mirror it via
+     * {@link IplStraddleSessionSync} instead of re-deriving it from geometry.
      *
      * <p>Locking matters because a free-rotating airship's AABB center can wobble
      * across the plane mid-straddle; without the lock the oriented normal could
      * flip and bounce the crossing phase. The entry is dropped when the pair is no
-     * longer near the portal (see the cleanup pass).
+     * longer near the portal (see the cleanup pass). Server-thread only, so a
+     * plain HashMap is fine.
      */
     private static final Map<StraddleKey, Vec3> lockedCrossingNormal = new HashMap<>();
 
@@ -80,6 +77,7 @@ public final class SableTransitController {
         lockedCrossingNormal.clear();
         hostedStraddleLatch.clear();
         pendingExitPortalsByAirship.clear();
+        IplStraddleSessionSync.clearAll();
         IplStraddleCloneBody.clearAll();
         IplStraddleTerrainClone.clearAll();
         SableRehomeOps.resetBootRestore();
@@ -197,6 +195,7 @@ public final class SableTransitController {
                     if (hostedStraddleLatch.remove(key)) {
                         IplStraddleCloneBody.clear(key, "left-aperture");
                         IplStraddleTerrainClone.clear(key);
+                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "left-aperture");
                     }
                     continue;
                 }
@@ -208,7 +207,11 @@ public final class SableTransitController {
 
                 switch (state.phase()) {
                     case CROSSED -> {
-                        if (hostedStraddleLatch.remove(key) || state.enteredFromSourceAperture()) {
+                        boolean hadLatch = hostedStraddleLatch.remove(key);
+                        if (hadLatch) {
+                            IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
+                        }
+                        if (hadLatch || state.enteredFromSourceAperture()) {
                             IplStraddleCloneBody.clear(key, "crossed");
                             IplStraddleTerrainClone.clear(key);
                             if (candidates == null) candidates = new ArrayList<>(1);
@@ -218,7 +221,9 @@ public final class SableTransitController {
                     }
                     case STRADDLING -> {
                         if (!hostedStraddleLatch.contains(key) && !canStartContact) continue;
-                        hostedStraddleLatch.add(key);
+                        if (hostedStraddleLatch.add(key)) {
+                            IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
+                        }
                         seenHostedKeys.add(key);
                         if (IplStraddleCloneBody.isEnabled()) {
                             IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
@@ -230,6 +235,7 @@ public final class SableTransitController {
                         if (hostedStraddleLatch.remove(key)) {
                             IplStraddleCloneBody.clear(key, "backed-out");
                             IplStraddleTerrainClone.clear(key);
+                            IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "backed-out");
                         }
                         seenHostedKeys.add(key);
                     }
@@ -249,6 +255,7 @@ public final class SableTransitController {
                 if (!seenHostedKeys.contains(k)) {
                     IplStraddleCloneBody.clear(k, "reaped");
                     IplStraddleTerrainClone.clear(k);
+                    IplStraddleSessionSync.onSessionEnd(level.getServer(), k, "reaped");
                     return true;
                 }
                 return false;

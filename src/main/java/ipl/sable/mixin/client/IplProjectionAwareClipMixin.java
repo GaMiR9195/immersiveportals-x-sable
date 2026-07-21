@@ -51,6 +51,7 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
         }
 
         ClientLevel self = (ClientLevel) (Object) this;
+        base = ipl$dropClippedNativeHits(self, ctx, base);
         IPL$REENTRANT.set(true);
         try {
             IplStraddleStaffPick.ProjectionHit projectionHit =
@@ -68,6 +69,52 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
         } finally {
             IPL$REENTRANT.set(false);
         }
+    }
+
+    /**
+     * A stock (native-frame) hit on a straddling ship's THROUGH-half doesn't exist: those
+     * blocks render and are physically present only on the destination side (the
+     * projection path owns them there). Test the plot-space hit against the source-half
+     * keep filter — the same authority collision uses — and on a clipped hit re-cast with
+     * that ship ignored, so world blocks and other ships behind it can still be picked.
+     *
+     * <p>Ignoring the WHOLE ship on re-cast is sound along one ray: a ray that entered
+     * the drop region (past the plane, in-aperture) can never re-cross to the kept half,
+     * so any deeper same-ship hit would be dropped too. Bounded by the ship count.
+     */
+    private BlockHitResult ipl$dropClippedNativeHits(
+        ClientLevel level, ClipContext ctx, BlockHitResult base
+    ) {
+        for (int guard = 0; guard < 3; guard++) {
+            if (base == null || base.getType() != HitResult.Type.BLOCK) return base;
+            SubLevel owner = ipl$plotHitOwner(level, base);
+            if (owner == null) return base;
+            java.util.function.Predicate<net.minecraft.core.BlockPos> keep =
+                ipl.sable.transit.IplStraddlePoseMap.getSourceHalfKeepFilter(owner, level);
+            if (keep == null || keep.test(base.getBlockPos())) return base;
+
+            dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension ext =
+                (dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension) ctx;
+            java.util.function.Predicate<SubLevel> prev = ext.sable$getSubLevelIgnoring();
+            SubLevel clipped = owner;
+            ext.sable$setSubLevelIgnoring(
+                prev == null ? s -> s == clipped : s -> s == clipped || prev.test(s));
+            base = BlockGetter.super.clip(ctx);
+        }
+        return base;
+    }
+
+    /** Owner sub-level of a plot-space hit (coords in the millions), or null. */
+    private static SubLevel ipl$plotHitOwner(ClientLevel level, BlockHitResult hit) {
+        Vec3 loc = hit.getLocation();
+        if (Math.abs(loc.x) < 1_000_000 && Math.abs(loc.z) < 1_000_000) return null;
+        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
+            dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(
+                (net.minecraft.world.level.Level) level);
+        if (container == null) return null;
+        LevelPlot plot = container.getPlot(
+            hit.getBlockPos().getX() >> 4, hit.getBlockPos().getZ() >> 4);
+        return plot != null ? plot.getSubLevel() : null;
     }
 
     /**

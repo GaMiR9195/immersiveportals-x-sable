@@ -443,14 +443,35 @@ public final class IplStraddleStaffPick {
         for (IplClientHostedLookup.StraddleProjection projection : projections) {
             Pose3dc mapped = projection.mappedPose();
 
+            // The mapped image exists only past the destination plane (the projection's
+            // own render clip): shorten the ray to that half-space so hits can't land on
+            // the not-yet-through half, while a ray entering through the portal still
+            // reaches the emerged part behind the plane crossing.
+            Vec3 planePos = projection.destPlane().pos();
+            Vec3 planeNormal = projection.destPlane().normal();
+            double dFrom = from.subtract(planePos).dot(planeNormal);
+            double dTo = to.subtract(planePos).dot(planeNormal);
+            if (dFrom < 0.0 && dTo < 0.0) continue; // entirely on the phantom side
+            Vec3 segFrom = from;
+            Vec3 segTo = to;
+            if (dFrom < 0.0) {
+                segFrom = from.add(to.subtract(from).scale(dFrom / (dFrom - dTo)));
+            } else if (dTo < 0.0) {
+                segTo = from.add(to.subtract(from).scale(dFrom / (dFrom - dTo)));
+            }
+
+            // Distance frame anchor: the ORIGINAL ray origin, not the clipped segment
+            // start — distSq must stay comparable with the stock hit's measurement.
             Vector3d localStart = mapped.transformPositionInverse(
                 new Vector3d(from.x, from.y, from.z));
-            Vector3d localEnd = mapped.transformPositionInverse(
-                new Vector3d(to.x, to.y, to.z));
+            Vector3d segStart = mapped.transformPositionInverse(
+                new Vector3d(segFrom.x, segFrom.y, segFrom.z));
+            Vector3d segStop = mapped.transformPositionInverse(
+                new Vector3d(segTo.x, segTo.y, segTo.z));
 
             ClipContext localCtx = new ClipContext(
-                new Vec3(localStart.x, localStart.y, localStart.z),
-                new Vec3(localEnd.x, localEnd.y, localEnd.z),
+                new Vec3(segStart.x, segStart.y, segStart.z),
+                new Vec3(segStop.x, segStop.y, segStop.z),
                 access.ipl$getBlock(), access.ipl$getFluid(),
                 access.ipl$getCollisionContext());
             // The ray is already in plot space — suppress Sable's sub-level projection

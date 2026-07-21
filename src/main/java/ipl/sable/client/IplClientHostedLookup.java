@@ -230,6 +230,23 @@ public final class IplClientHostedLookup {
         return ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(portal);
     }
 
+    /**
+     * The straddle portal from the client-side finder (scale-gated like the mapping),
+     * or null. Feeds the entity-collision block clip, which needs the aperture geometry
+     * the bare {@code StraddleMapping} doesn't carry.
+     */
+    @Nullable
+    public static qouteall.imm_ptl.core.portal.Portal getClientStraddlePortal(
+        dev.ryanhcode.sable.sublevel.SubLevel sub
+    ) {
+        if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return null;
+        ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
+            ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
+        if (decision == null || decision.portal() == null) return null;
+        if (Math.abs(decision.portal().getScaling() - 1.0) > 1e-9) return null;
+        return decision.portal();
+    }
+
     /** Legacy BlockPos view of {@link #getClientStraddleMappingInto}. */
     @Nullable
     public static net.minecraft.core.BlockPos getClientStraddleOffsetInto(
