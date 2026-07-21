@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["marten", "rapier"]
+# The vendored engine fork is its own workspace (IPL atlas M2) — without the
+# exclude, cargo would claim its crates as members of THIS workspace and break
+# their workspace.package inheritance.
+exclude = ["engine"]
 
 [workspace.package]
 edition = "2024"

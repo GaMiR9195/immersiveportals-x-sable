@@ -899,7 +899,6 @@ dependencies = [
 [[package]]
 name = "rapier3d"
 version = "0.32.0"
-source = "git+https://github.com/ryanhcode/rapier?rev=38e92f117590862481a53df6fc69a5d893e29186#38e92f117590862481a53df6fc69a5d893e29186"
 dependencies = [
  "approx",
  "bitflags",
