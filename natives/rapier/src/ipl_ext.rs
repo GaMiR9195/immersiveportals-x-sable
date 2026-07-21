@@ -7,7 +7,7 @@
 
 use jni::JNIEnv;
 use jni::objects::{JClass, JDoubleArray};
-use jni::sys::{jboolean, jint, jlong};
+use jni::sys::{jboolean, jdouble, jint, jlong};
 use marten::Real;
 use rapier3d::math::Vec3;
 
@@ -189,4 +189,194 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_getClipStats<'loc
         f64::from_bits(info.ipl_last_contact[2].load(Ordering::Relaxed)),
     ];
     let _ = env.set_double_array_region(&out, 0, &vals);
+}
+
+// ---------------------------------------------------------------------------
+// Atlas M2 (spec v3 §2.2): image colliders — the body's geometry projected into
+// a far chart through a translation-only portal isometry (Tier 1). Contacts on
+// an image act on the parent body EXACTLY via the engine's mapped-COM lever
+// arms; there is no clone body, no servo, no feedback.
+// ---------------------------------------------------------------------------
+
+/// Create an image collider for `body_id` in the CALLING view's chart, offset by
+/// the portal translation `(dx, dy, dz)` (dest = P(source), so the prefix maps the
+/// body's pose into the far chart). Returns the packed collider handle
+/// (index << 32 | generation), or -1 if the body is unknown.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollider<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    dx: jdouble,
+    dy: jdouble,
+    dz: jdouble,
+) -> jlong {
+    use rapier3d::prelude::*;
+
+    if scene_handle == 0 || body_id < 0 {
+        return -1;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene.sable_data.write().unwrap();
+    let mut sim_data = scene.sim_data.write().unwrap();
+    let sim_data = &mut *sim_data;
+
+    let Some(body_handle) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied()
+    else {
+        eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} has no rigid body");
+        return -1;
+    };
+    let Some(info) = sable_data
+        .level_colliders
+        .get_mut(&(body_id as LevelColliderID))
+    else {
+        eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} unknown");
+        return -1;
+    };
+
+    // Mirror the native collider's shape (same id → same info lookups in the
+    // hooks/dispatcher), but tagged with the CALLING chart so it pairs with the
+    // far chart's terrain and bodies.
+    let native = sim_data
+        .collider_set
+        .get(info.collider)
+        .and_then(|c| c.shape().as_shape::<crate::collider::LevelCollider>())
+        .copied();
+    let Some(native_shape) = native else {
+        eprintln!("[ipl-natives] createImageCollider: body {body_id} has no LevelCollider shape");
+        return -1;
+    };
+    let image_shape = crate::collider::LevelCollider {
+        chart: scene.chart,
+        ..native_shape
+    };
+
+    let collider = ColliderBuilder::new(SharedShape::new(image_shape))
+        .friction(0.525)
+        .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+        .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS)
+        .density(0.0)
+        .collision_groups(crate::groups::level_group(scene.chart))
+        .build();
+
+    let handle =
+        sim_data
+            .collider_set
+            .insert_with_parent(collider, body_handle, &mut sim_data.rigid_body_set);
+    let prefix = rapier3d::math::Pose {
+        translation: Vec3::new(dx as Real, dy as Real, dz as Real),
+        rotation: rapier3d::glamx::Quat::IDENTITY,
+    };
+    sim_data
+        .collider_set
+        .get_mut(handle)
+        .unwrap()
+        .set_portal_prefix(Some(prefix));
+
+    info.image_colliders.push(handle);
+    eprintln!(
+        "[ipl-natives] image collider created: body {body_id} chart {} shift ({dx:.1},{dy:.1},{dz:.1})",
+        scene.chart
+    );
+
+    let (idx, generation) = handle.into_raw_parts();
+    ((idx as jlong) << 32) | (generation as jlong)
+}
+
+/// Remove an image collider previously created by `createImageCollider`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollider<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    packed_handle: jlong,
+) {
+    use rapier3d::prelude::ColliderHandle;
+
+    if scene_handle == 0 || packed_handle < 0 {
+        return;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene.sable_data.write().unwrap();
+    let mut sim_data = scene.sim_data.write().unwrap();
+    let sim_data = &mut *sim_data;
+
+    let handle = ColliderHandle::from_raw_parts(
+        (packed_handle >> 32) as u32,
+        (packed_handle & 0xFFFF_FFFF) as u32,
+    );
+
+    if let Some(info) = sable_data
+        .level_colliders
+        .get_mut(&(body_id as LevelColliderID))
+    {
+        info.image_colliders.retain(|h| *h != handle);
+        info.image_clip.remove(&handle);
+    }
+
+    sim_data.collider_set.remove(
+        handle,
+        &mut sim_data.island_manager,
+        &mut sim_data.rigid_body_set,
+        true,
+    );
+}
+
+/// Set (or clear, with an empty array) the clip regions of one IMAGE collider —
+/// the far side of the half-open aperture seam. Layout matches `setClipRegions`
+/// (N × 14 doubles).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegions<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    packed_handle: jlong,
+    data: JDoubleArray<'local>,
+) {
+    use rapier3d::prelude::ColliderHandle;
+
+    if scene_handle == 0 || packed_handle < 0 {
+        return;
+    }
+    let len = match env.get_array_length(&data) {
+        Ok(l) => l as usize,
+        Err(_) => return,
+    };
+    let mut values = vec![0.0f64; len];
+    if len > 0 && env.get_double_array_region(&data, 0, &mut values).is_err() {
+        return;
+    }
+
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene.sable_data.write().unwrap();
+    let Some(info) = sable_data
+        .level_colliders
+        .get_mut(&(body_id as LevelColliderID))
+    else {
+        return;
+    };
+
+    let handle = ColliderHandle::from_raw_parts(
+        (packed_handle >> 32) as u32,
+        (packed_handle & 0xFFFF_FFFF) as u32,
+    );
+    let mut regions = Vec::with_capacity(values.len() / 14);
+    for c in values.chunks_exact(14) {
+        regions.push(IplClipRegion {
+            point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
+            normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
+            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
+            half_w: c[9] as Real,
+            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
+            half_h: c[13] as Real,
+        });
+    }
+    if regions.is_empty() {
+        info.image_clip.remove(&handle);
+    } else {
+        info.image_clip.insert(handle, regions);
+    }
 }

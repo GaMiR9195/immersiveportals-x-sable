@@ -53,6 +53,7 @@ pub fn compute_buoyancy(scene: &PhysicsScene) {
             DEFAULT_COLLISION_PARALLEL_CUTOFF,
             true,
             &sable_data,
+            info.chart,
         );
         let vels: RigidBodyVelocity<Real> = *body.vels();
 

@@ -158,7 +158,14 @@ impl SablePhysicsHooks {
             let Some(info) = sable_data.level_colliders.get(&(id as LevelColliderID)) else {
                 continue;
             };
-            if info.clip_regions.is_empty() {
+            // Atlas M2: image colliders carry their OWN clip regions (far side of
+            // the half-open seam); the native set keeps the body regions.
+            let regions: &[crate::ipl_ext::IplClipRegion] = info
+                .image_clip
+                .get(&handle)
+                .map(|v| v.as_slice())
+                .unwrap_or(&info.clip_regions);
+            if regions.is_empty() {
                 continue;
             }
             // Diagnostics: record the last contact point this pass judged, and count
@@ -180,7 +187,7 @@ impl SablePhysicsHooks {
             let total = context.solver_contacts.len() as u64;
             let mut clipped = 0u64;
             for c in context.solver_contacts.iter_mut() {
-                if info.clip_regions.iter().any(|r| r.contains(c.point)) {
+                if regions.iter().any(|r| r.contains(c.point)) {
                     c.dist = 10.0;
                     c.friction = 0.0;
                     c.restitution = 0.0;

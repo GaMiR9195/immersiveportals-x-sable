@@ -59,6 +59,18 @@ pub fn update_collider_aabb(sim: &mut SimulationSceneData, info: &ActiveLevelCol
         cached_aabb: Some(new_aabb),
         ..existing
     }));
+
+    // Atlas M2: image colliders mirror the body's shape in far charts — keep
+    // their AABBs in sync (block updates mid-straddle change the bounds).
+    for handle in &info.image_colliders {
+        if let Some(image) = sim.collider_set.get_mut(*handle) {
+            let existing = *image.shape().as_shape::<LevelCollider>().unwrap();
+            image.set_shape(SharedShape::new(LevelCollider {
+                cached_aabb: Some(new_aabb),
+                ..existing
+            }));
+        }
+    }
 }
 
 impl RayCast for LevelCollider {

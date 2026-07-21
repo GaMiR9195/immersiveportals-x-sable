@@ -484,21 +484,27 @@ impl SableDispatcher {
         let center_of_mass_2 = collider_info_2.center_of_mass.unwrap();
 
         // Atlas: cross-chart pairs must not generate contacts (defense in depth —
-        // collision groups already reject them before the narrow phase). Clear like
+        // collision groups already reject them before the narrow phase). Pair
+        // admission compares SHAPE charts: an image collider carries the FAR chart
+        // on its shape while its body's info stays in the parent chart. Clear like
         // the exclusion path: stale persisted manifolds must not survive.
-        let chart_1 = collider_info_1.map_or(g1.chart, |i| i.chart);
-        let chart_2 = collider_info_2.chart;
-        if chart_1 != chart_2 {
+        if g1.chart != g2.chart {
             manifolds.clear();
             return;
         }
+
+        // Storage selection uses the BODY's chart (an image reads its parent
+        // body's sections — plot coords are pose-independent), falling back to the
+        // shape chart for the static terrain side.
+        let storage_chart_1 = collider_info_1.map_or(g1.chart, |i| i.chart);
+        let storage_chart_2 = collider_info_2.chart;
 
         let chunk_access_1: &dyn ChunkAccess = if let Some(info) = collider_info_1
             && info.has_own_chunks()
         {
             info
         } else {
-            let Some(chart_data) = sable_data.chart(chart_1) else {
+            let Some(chart_data) = sable_data.chart(storage_chart_1) else {
                 manifolds.clear();
                 return;
             };
@@ -508,7 +514,7 @@ impl SableDispatcher {
         let chunk_access_2: &dyn ChunkAccess = if collider_info_2.has_own_chunks() {
             collider_info_2
         } else {
-            let Some(chart_data) = sable_data.chart(chart_2) else {
+            let Some(chart_data) = sable_data.chart(storage_chart_2) else {
                 manifolds.clear();
                 return;
             };
@@ -529,6 +535,9 @@ impl SableDispatcher {
             256,
             false,
             &sable_data,
+            // Static-octree chart = the terrain side's SHAPE chart (dest chart for
+            // an image-vs-terrain pair). Unused when both sides are bodies.
+            g1.chart,
         );
 
         for (static_pos, dynamic_pos) in pairs.iter() {

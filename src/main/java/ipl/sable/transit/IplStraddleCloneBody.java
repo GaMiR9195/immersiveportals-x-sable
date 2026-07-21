@@ -89,6 +89,17 @@ public final class IplStraddleCloneBody {
     private static final boolean MULTI_STRADDLE =
         Boolean.parseBoolean(System.getProperty("ipl.sable.multiStraddle", "true"));
 
+    /**
+     * Atlas M2 (spec v3 §2.2-2.3): replace the dynamic clone body + servo with IMAGE
+     * COLLIDERS for translation-only portals — extra colliders on the REAL body,
+     * portal-prefixed into the far chart; their contacts act on the body exactly
+     * (in-solver mapped-COM lever arms). No servo, no feedback, no authority swap.
+     * Default OFF until in-game verified; rotated portals always keep the clone path
+     * (Tier 2). {@code -Dipl.sable.imageColliders=true} enables.
+     */
+    private static final boolean IMAGE_COLLIDERS =
+        Boolean.parseBoolean(System.getProperty("ipl.sable.imageColliders", "false"));
+
     // ------------------------------------------------------------------
     // Position-based coupling (replaces impulse feedback): the clone is PINNED to the
     // portal-mapped pose before each dest-scene substep; the solver then resolves its
@@ -191,6 +202,14 @@ public final class IplStraddleCloneBody {
         double destFraction = 0.5;
         /** The REAL body's aperture clip region for this portal (14 doubles), if natives allow. */
         double[] realClipRegion;
+        /**
+         * Atlas M2: this session runs in IMAGE mode — no clone body exists; instead
+         * {@code imageHandle} is an image collider of the REAL body in the dest
+         * chart. The servo/feedback/authority machinery skips image sessions
+         * entirely (coupling is exact, in-solver).
+         */
+        boolean imageMode = false;
+        long imageHandle = -1;
         /**
          * Clone sections live in the clone's private native chunk_map (freed with the body on
          * removeSubLevel). False only without the custom natives — then sections sit in the
@@ -318,14 +337,30 @@ public final class IplStraddleCloneBody {
         } catch (Throwable t) {
             // keep the (0, -9.8, 0) defaults
         }
-        if (!spawnClone(session)) return;
+        // Atlas M2 image mode: translation-only portals get an image collider on the
+        // REAL body instead of a clone (exact in-solver coupling). Falls back to the
+        // clone path if creation fails or the portal is rotated (Tier 2 pending).
+        if (IMAGE_COLLIDERS && mapping.isIdentityRotation()
+            && ipl.sable.natives.IplRapierNatives.isAvailable()) {
+            Vec3 shift = mapping.mapPoint(Vec3.ZERO);
+            long imageHandle = ipl.sable.natives.IplRapierNatives.createImageCollider(
+                session.destScene, session.realId, shift.x, shift.y, shift.z);
+            if (imageHandle >= 0) {
+                session.imageMode = true;
+                session.imageHandle = imageHandle;
+            }
+        }
+
+        if (!session.imageMode && !spawnClone(session)) return;
         SESSIONS.put(key, session);
 
         // The clone must never contact its own real body or sibling clones of the same
         // ship: through a same-dimension portal they share ONE scene and would
         // phantom-collide (clip regions only cover the aperture area). Registered in
         // every scene that could hold both ids — inert where one id is absent.
-        if (ipl.sable.natives.IplRapierNatives.isAvailable()) {
+        // (Image mode needs none of this: image and real colliders share ONE body, and
+        // the engine's same-parent narrow-phase filter excludes them by construction.)
+        if (!session.imageMode && ipl.sable.natives.IplRapierNatives.isAvailable()) {
             ipl.sable.natives.IplRapierNatives.setBodyPairExclusion(
                 session.destScene, session.realId, session.cloneId, true);
             for (Session t : SESSIONS.values()) {
@@ -360,8 +395,14 @@ public final class IplStraddleCloneBody {
                 mapping.mapVec(portal.getAxisW()),
                 mapping.mapVec(portal.getAxisH()),
                 portal.getWidth() * 0.5, portal.getHeight() * 0.5);
-            ipl.sable.natives.IplRapierNatives.setClipRegions(
-                session.destScene, session.cloneId, cloneRegion);
+            if (session.imageMode) {
+                // The image collider carries the far half of the half-open seam.
+                ipl.sable.natives.IplRapierNatives.setImageClipRegions(
+                    session.destScene, session.realId, session.imageHandle, cloneRegion);
+            } else {
+                ipl.sable.natives.IplRapierNatives.setClipRegions(
+                    session.destScene, session.cloneId, cloneRegion);
+            }
         }
 
         // Portal containment rims are ALWAYS-ON per portal entity (IplPortalRimManager)
@@ -414,6 +455,22 @@ public final class IplStraddleCloneBody {
     public static void clear(StraddleKey key, String reason) {
         Session session = SESSIONS.remove(key);
         if (session == null) return;
+        if (session.imageMode) {
+            // Atlas M2: retire the image collider; there is no clone, no section
+            // feed, and no pair exclusions to unwind.
+            if (ipl.sable.natives.IplRapierNatives.isAvailable()) {
+                ipl.sable.natives.IplRapierNatives.removeImageCollider(
+                    session.destScene, session.realId, session.imageHandle);
+            }
+            if (session.realClipRegion != null
+                && ipl.sable.natives.IplRapierNatives.isAvailable()
+                && !session.sub.isRemoved()) {
+                applyRealClipRegions(session.sub, session.parentScene, session.realId);
+            }
+            LOG.info("[IPL-IMAGE] end uuid={} imageHandle={} reason={}",
+                session.sub.getUniqueId(), session.imageHandle, reason);
+            return;
+        }
         despawn(session);
         // Drop this session's pair exclusions (ids are never reused, so stale entries
         // would only be inert bloat — but keep the set tight).
@@ -750,6 +807,9 @@ public final class IplStraddleCloneBody {
         if (SESSIONS.isEmpty()) return;
 
         for (Session s : SESSIONS.values()) {
+            // Atlas M2: image sessions have no clone to servo — coupling is
+            // in-solver via the image collider's mapped-COM lever arms.
+            if (s.imageMode) continue;
             ServerLevel pinnedLevel = s.destAuthority ? s.parent : s.dest;
             if (pinnedLevel != steppingLevel) continue;
             if (s.sub.isRemoved()) {
@@ -871,6 +931,7 @@ public final class IplStraddleCloneBody {
         if (SESSIONS.isEmpty()) return;
 
         for (Session s : SESSIONS.values()) {
+            if (s.imageMode) continue;
             ServerLevel pinnedLevel = s.destAuthority ? s.parent : s.dest;
             if (pinnedLevel != steppingLevel || !s.pinned) continue;
             s.pinned = false;

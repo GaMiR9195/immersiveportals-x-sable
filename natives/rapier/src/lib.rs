@@ -64,6 +64,13 @@ pub struct ActiveLevelColliderInfo {
     /// IPSable: aperture clip volumes (spec §2.5) — contacts inside any of these are
     /// dropped from this body's manifolds in `modify_solver_contacts`.
     pub clip_regions: Vec<crate::ipl_ext::IplClipRegion>,
+    /// Atlas M2: image colliders of this body (extra colliders with a portal
+    /// prefix, colliding in far charts). Tracked for removal and AABB refresh.
+    pub image_colliders: Vec<ColliderHandle>,
+    /// Atlas M2: per-image-collider clip regions (the far side keeps d >= 0 while
+    /// the native set keeps d < 0 — one body, two region sets). The clip hook
+    /// selects by collider handle, falling back to `clip_regions`.
+    pub image_clip: HashMap<ColliderHandle, Vec<crate::ipl_ext::IplClipRegion>>,
     /// IPSable diagnostics: clip-pass counters, mutated with atomics under the scene
     /// READ lock from the solver hook. Read back via `getClipStats`.
     pub ipl_clip_seen: std::sync::atomic::AtomicU64,
@@ -103,6 +110,8 @@ impl ActiveLevelColliderInfo {
             center_of_mass: None,
             octree: None,
             clip_regions: Vec::new(),
+            image_colliders: Vec::new(),
+            image_clip: HashMap::new(),
             ipl_clip_seen: std::sync::atomic::AtomicU64::new(0),
             ipl_clip_dropped: std::sync::atomic::AtomicU64::new(0),
             ipl_last_contact: [

@@ -22,6 +22,9 @@ pub fn find_collision_pairs(
     cutoff: usize,
     liquid: bool,
     sable_data: &SableSceneData,
+    // Atlas: which chart's STATIC octree to query when there is no other body.
+    // For an image collider this is the far chart, not the body's own chart.
+    static_chart: crate::scene::ChartId,
 ) -> Vec<(IVec3, IVec3)> {
     struct StackObject {
         index: u32,
@@ -86,7 +89,7 @@ pub fn find_collision_pairs(
                 transformed_center.into(),
                 radius,
                 sable_data,
-                sable_body.chart,
+                static_chart,
                 node >= 0,
                 liquid,
             );

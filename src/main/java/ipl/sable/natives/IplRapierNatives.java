@@ -67,4 +67,32 @@ public final class IplRapierNatives {
      * null scene or unknown body ({@code out} left untouched).
      */
     public static native void getClipStats(long sceneHandle, int bodyId, double[] out);
+
+    // ------------------------------------------------------------------
+    // Atlas M2 (spec v3 §2.2-2.3): image colliders — Tier-1 exact coupling.
+    // ------------------------------------------------------------------
+
+    /**
+     * Create an image collider for the body in the CALLING scene view's chart, portal
+     * translation {@code (dx,dy,dz)} (dest = source + shift; Tier 1 is translation-only).
+     * The image is extra geometry on the SAME rigid body: its contacts act on the body
+     * through the engine's mapped-COM lever arms — exact, in-solver, no servo.
+     *
+     * @return packed collider handle for {@link #removeImageCollider} /
+     *         {@link #setImageClipRegions}, or -1 if the body is unknown.
+     */
+    public static native long createImageCollider(
+        long sceneHandle, int bodyId, double dx, double dy, double dz);
+
+    /** Remove an image collider created by {@link #createImageCollider}. */
+    public static native void removeImageCollider(
+        long sceneHandle, int bodyId, long imageHandle);
+
+    /**
+     * Set (or clear, with an empty array) the clip regions of one IMAGE collider — the
+     * far side of the half-open aperture seam. Same 14-double layout as
+     * {@link #setClipRegions}.
+     */
+    public static native void setImageClipRegions(
+        long sceneHandle, int bodyId, long imageHandle, double[] regions);
 }
