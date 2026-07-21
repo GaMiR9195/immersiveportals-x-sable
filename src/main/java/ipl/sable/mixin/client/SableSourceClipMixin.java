@@ -95,16 +95,28 @@ public abstract class SableSourceClipMixin {
             }
         }
 
+        // The projection-driver branch supplies its own single plane; the source
+        // branch may carry SEVERAL (multi-straddle) — the shader min()s two cuts.
+        qouteall.q_misc_util.my_util.Plane primaryPlane;
+        qouteall.q_misc_util.my_util.Plane secondaryPlane = null;
         SourceClipPortalFinder.ClipDecision decision =
             SourceClipPortalFinder.findStraddlingPortalPlane(getSubLevel());
         if (decision == null) {
             SourceClipDiag.onVanillaCall(false);
             return;
         }
+        primaryPlane = decision.plane();
+        if (ipl.sable.client.IplStraddleRenderState.getPlaneFor(getSubLevel()) == null) {
+            java.util.List<SourceClipPortalFinder.ClipDecision> all =
+                SourceClipPortalFinder.findStraddlingPortalPlanes(getSubLevel());
+            if (all.size() > 1) {
+                secondaryPlane = all.get(1).plane();
+            }
+        }
 
-        // Independent clip plane: write to our ipl_subLevelClipEquation uniform
-        // (gl_ClipDistance[1]), not IP's slot 0.
-        SubLevelClipUniformPatcher.patchForSubLevel(getSubLevel(), decision.plane());
+        // Independent clip planes: write to our ipl_subLevelClipEquation[2] uniform
+        // (both min into gl_ClipDistance[1]), not IP's slot 0.
+        SubLevelClipUniformPatcher.patchForSubLevel(getSubLevel(), primaryPlane, secondaryPlane);
 
         // Enable hardware respect for gl_ClipDistance[1] writes. GL_CLIP_DISTANCE1
         // is 0x3001 in modern GL; some IDEs / compat shims expose it as

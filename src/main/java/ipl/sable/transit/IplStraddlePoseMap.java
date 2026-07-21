@@ -193,23 +193,111 @@ public final class IplStraddlePoseMap {
             || IplStraddleTerrainClone.hasSession(sub.getUniqueId());
     }
 
+    /** One straddle image's frame: the portal (null for legacy terrain-clone
+     *  translations) and its isometry. */
+    public record StraddleFrame(
+        @Nullable qouteall.imm_ptl.core.portal.Portal portal, StraddleMapping mapping
+    ) {}
+
+    /** Visit every straddle of {@code sub} mapping INTO {@code ctx} (dest side). */
+    public static void forEachStraddleInto(
+        SubLevel sub, Level ctx,
+        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal, StraddleMapping> visitor
+    ) {
+        if (sub == null || ctx == null || !IplDimAgnostic.isHosted(sub)) return;
+        if (ctx.isClientSide()) {
+            ipl.sable.client.IplClientHostedLookup.forEachClientStraddleInto(sub, ctx, visitor);
+            return;
+        }
+        IplStraddleCloneBody.forEachSessionInto(sub, ctx, visitor);
+        BlockPos terrainOffset = IplStraddleTerrainClone.getOffsetInto(sub, ctx);
+        if (terrainOffset != null) {
+            visitor.accept(null, StraddleMapping.ofTranslation(terrainOffset));
+        }
+    }
+
+    /** Visit every straddle of {@code sub} exiting FROM {@code ctx} (its parent side). */
+    public static void forEachStraddleFrom(
+        SubLevel sub, Level ctx,
+        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal, StraddleMapping> visitor
+    ) {
+        if (sub == null || ctx == null || !IplDimAgnostic.isHosted(sub)) return;
+        if (ctx.isClientSide()) {
+            ipl.sable.client.IplClientHostedLookup.forEachClientStraddleFrom(sub, ctx, visitor);
+            return;
+        }
+        IplStraddleCloneBody.forEachSessionFrom(sub, ctx, visitor);
+    }
+
+    /**
+     * The interaction frame for a position: null = the native/source frame; otherwise
+     * the (portal, mapping) of the NEAREST mapped image. Multi-straddle-aware: every
+     * session's image competes, each measured against its plane-CLIPPED half box (the
+     * half that physically exists), and the native candidate is the source box clipped
+     * by EVERY session's cut. Ties resolve to the mapped side (legacy behavior).
+     */
+    @Nullable
+    public static StraddleFrame chooseCollisionFrame(SubLevel sub, Level ctx, Vec3 position) {
+        if (sub == null || ctx == null || !IplDimAgnostic.isHosted(sub)) return null;
+
+        dev.ryanhcode.sable.companion.math.BoundingBox3dc shipBox = sub.boundingBox();
+        boolean nativeHere = IplDimAgnostic.getParentLevel(sub) == ctx;
+
+        double nativeDist = Double.MAX_VALUE;
+        if (nativeHere) {
+            dev.ryanhcode.sable.companion.math.BoundingBox3d src =
+                new dev.ryanhcode.sable.companion.math.BoundingBox3d();
+            src.set(shipBox);
+            dev.ryanhcode.sable.companion.math.BoundingBox3d[] srcRef = {src};
+            forEachStraddleFrom(sub, ctx, (portal, mapping) -> {
+                if (srcRef[0] == null || portal == null) return;
+                srcRef[0] = clipBoxKeeping(srcRef[0], portal.getOriginPos(), portal.getNormal());
+            });
+            nativeDist = srcRef[0] == null
+                ? Double.MAX_VALUE : distanceSqToBox(srcRef[0], position);
+        }
+
+        double[] best = {nativeDist};
+        StraddleFrame[] chosen = {null};
+        boolean nativeHereFinal = nativeHere;
+        forEachStraddleInto(sub, ctx, (portal, mapping) -> {
+            double d;
+            if (portal != null) {
+                Vec3 destPlanePoint = mapping.mapPoint(portal.getOriginPos());
+                Vec3 destInward = mapping.mapVec(portal.getNormal().scale(-1.0));
+                // Same-dimension: the image only claims positions past ITS dest plane.
+                if (nativeHereFinal
+                    && destInward.dot(position.subtract(destPlanePoint)) < 0.0) {
+                    return;
+                }
+                dev.ryanhcode.sable.companion.math.BoundingBox3d img =
+                    clipBoxKeeping(mapping.mapAabb(shipBox), destPlanePoint, destInward);
+                d = img == null ? Double.MAX_VALUE : distanceSqToBox(img, position);
+            } else {
+                d = distanceSqToBox(mapping.mapAabb(shipBox), position);
+            }
+            if (d <= best[0]) {
+                best[0] = d;
+                chosen[0] = new StraddleFrame(portal, mapping);
+            }
+        });
+        return chosen[0];
+    }
+
     /**
      * Entity-collision variant of {@link #getMappingInto}. Same-dimension crossings have
      * one Level for both source and destination, so the normal frame lookup deliberately
      * returns null. Collision still needs the mapped pose when the entity is standing in
-     * the destination-side copy of that same scene.
+     * the destination-side copy of that same scene. Multi-straddle: the nearest image's
+     * mapping (see {@link #chooseCollisionFrame}).
      */
     @Nullable
     public static StraddleMapping getCollisionMappingInto(
         @Nullable SubLevel sub, @Nullable Level contextLevel, AABB entityBounds
     ) {
         if (sub == null || contextLevel == null || entityBounds == null) return null;
-
-        StraddleMapping mapping = getStraddleDestinationMapping(sub, contextLevel);
-        if (mapping == null) return null;
-        if (IplDimAgnostic.getParentLevel(sub) != contextLevel) return mapping;
-        return isInMappedCollisionHalf(sub, contextLevel, entityBounds.getCenter())
-            ? mapping : null;
+        StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
+        return frame == null ? null : frame.mapping();
     }
 
     /** Legacy BlockPos view of {@link #getCollisionMappingInto}. */
@@ -270,9 +358,10 @@ public final class IplStraddlePoseMap {
     /**
      * Plot-local block keep-filter for entity-vs-ship collision while the ship straddles
      * a portal, or null when no clipping applies. Selects the frame the collision code
-     * uses for this entity (mapped pose iff {@link #getCollisionMappingInto} is non-null)
-     * and returns the matching half-filter. Legacy terrain-clone sessions expose no
-     * portal snapshot and keep full collision (pre-existing behavior).
+     * uses for this entity (the chosen image's mapped filter, or the AND of every
+     * source-side cut) — both from the same {@link #chooseCollisionFrame} the pose
+     * wraps use, so filter and pose can never disagree. Legacy terrain-clone sessions
+     * expose no portal snapshot and keep full collision (pre-existing behavior).
      */
     @Nullable
     public static java.util.function.Predicate<BlockPos> getBlockCollisionKeepFilter(
@@ -280,9 +369,17 @@ public final class IplStraddlePoseMap {
     ) {
         if (sub == null || contextLevel == null || entityBounds == null) return null;
         if (!IplDimAgnostic.isHosted(sub)) return null;
-        return getCollisionMappingInto(sub, contextLevel, entityBounds) != null
-            ? getMappedHalfKeepFilter(sub, contextLevel, SEAM_SUPPORT_MARGIN)
-            : getSourceHalfKeepFilter(sub, contextLevel, SEAM_SUPPORT_MARGIN);
+        StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
+        if (frame != null) {
+            if (frame.portal() == null) return null; // terrain-clone: no aperture data
+            return buildKeepFilter(
+                frame.mapping().mapPose(sub.logicalPose()),
+                frame.mapping().mapPoint(frame.portal().getOriginPos()),
+                frame.mapping().mapVec(frame.portal().getNormal().scale(-1.0)),
+                SEAM_SUPPORT_MARGIN,
+                null, null, 0.0, 0.0);
+        }
+        return getSourceHalfKeepFilter(sub, contextLevel, SEAM_SUPPORT_MARGIN);
     }
 
     /**
@@ -300,7 +397,11 @@ public final class IplStraddlePoseMap {
         return getSourceHalfKeepFilter(sub, contextLevel, 0.0);
     }
 
-    /** {@code planeMargin} extends the kept side past the plane (collision support slack). */
+    /**
+     * {@code planeMargin} extends the kept side past the plane (collision support
+     * slack). Multi-straddle: the AND of EVERY exiting session's cut — a block must be
+     * on the kept side of all of them to be physically present on the source side.
+     */
     @Nullable
     public static java.util.function.Predicate<BlockPos> getSourceHalfKeepFilter(
         @Nullable SubLevel sub, @Nullable Level contextLevel, double planeMargin
@@ -308,62 +409,27 @@ public final class IplStraddlePoseMap {
         if (sub == null || contextLevel == null || !IplDimAgnostic.isHosted(sub)) return null;
         if (IplDimAgnostic.getParentLevel(sub) != contextLevel) return null;
 
-        qouteall.imm_ptl.core.portal.Portal portal;
-        if (contextLevel.isClientSide()) {
-            portal = ipl.sable.client.IplClientHostedLookup.getClientStraddlePortal(sub);
-        } else {
-            portal = IplStraddleCloneBody.getSessionPortalFrom(sub, contextLevel);
-        }
-        if (portal == null) return null;
-
         // Source side keeps +portal normal (crossing direction is -normal, the same
-        // convention as isInMappedHalf and the transit controller's locked normal).
-        return buildKeepFilter(
-            sub.logicalPose(),
-            portal.getOriginPos(), portal.getNormal(), planeMargin,
-            portal.getAxisW(), portal.getAxisH(),
-            portal.getWidth() * 0.5 + APERTURE_CLIP_MARGIN,
-            portal.getHeight() * 0.5 + APERTURE_CLIP_MARGIN);
-    }
-
-    /**
-     * Keep-filter for plot blocks reached through the MAPPED frame (portal-mapped pose):
-     * drops the not-yet-through half. Plane-only, no aperture bound — unlike source-side
-     * wings (physically real beside the frame), the image before the destination plane
-     * is phantom everywhere: those blocks exist only at the native pose. Matches the
-     * projection's own render clip exactly. Null when the ship isn't straddling into
-     * {@code contextLevel}.
-     */
-    @Nullable
-    public static java.util.function.Predicate<BlockPos> getMappedHalfKeepFilter(
-        @Nullable SubLevel sub, @Nullable Level contextLevel
-    ) {
-        return getMappedHalfKeepFilter(sub, contextLevel, 0.0);
-    }
-
-    /** {@code planeMargin} extends the kept side past the plane (collision support slack). */
-    @Nullable
-    public static java.util.function.Predicate<BlockPos> getMappedHalfKeepFilter(
-        @Nullable SubLevel sub, @Nullable Level contextLevel, double planeMargin
-    ) {
-        if (sub == null || contextLevel == null || !IplDimAgnostic.isHosted(sub)) return null;
-        StraddleMapping mapping = getStraddleDestinationMapping(sub, contextLevel);
-        if (mapping == null) return null;
-
-        qouteall.imm_ptl.core.portal.Portal portal;
-        if (contextLevel.isClientSide()) {
-            portal = ipl.sable.client.IplClientHostedLookup.getClientStraddlePortal(sub);
-            if (portal != null && portal.getDestDim() != contextLevel.dimension()) portal = null;
-        } else {
-            portal = IplStraddleCloneBody.getSessionPortalInto(sub, contextLevel);
-        }
-        if (portal == null) return null;
-
-        return buildKeepFilter(
-            mapping.mapPose(sub.logicalPose()),
-            mapping.mapPoint(portal.getOriginPos()),
-            mapping.mapVec(portal.getNormal().scale(-1.0)), planeMargin,
-            null, null, 0.0, 0.0);
+        // convention as isInMappedHalf and the transit controller's parity rule).
+        Pose3dc pose = sub.logicalPose();
+        java.util.List<java.util.function.Predicate<BlockPos>> parts = new java.util.ArrayList<>(2);
+        forEachStraddleFrom(sub, contextLevel, (portal, mapping) -> {
+            if (portal == null) return;
+            parts.add(buildKeepFilter(
+                pose,
+                portal.getOriginPos(), portal.getNormal(), planeMargin,
+                portal.getAxisW(), portal.getAxisH(),
+                portal.getWidth() * 0.5 + APERTURE_CLIP_MARGIN,
+                portal.getHeight() * 0.5 + APERTURE_CLIP_MARGIN));
+        });
+        if (parts.isEmpty()) return null;
+        if (parts.size() == 1) return parts.get(0);
+        return pos -> {
+            for (java.util.function.Predicate<BlockPos> part : parts) {
+                if (!part.test(pos)) return false;
+            }
+            return true;
+        };
     }
 
     /**
@@ -436,20 +502,6 @@ public final class IplStraddlePoseMap {
                 return next;
             }
         };
-    }
-
-    /** Select the same-dimension source or mapped pose by the crossing plane, not AABB overlap. */
-    private static boolean isInMappedCollisionHalf(SubLevel sub, Level contextLevel, Vec3 position) {
-        if (contextLevel.isClientSide()) {
-            if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return false;
-            ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
-                ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
-            if (decision == null || decision.portal() == null) return false;
-            qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
-            return isInMappedHalf(
-                StraddleMapping.of(portal), portal, clientSub.boundingBox(), position);
-        }
-        return IplStraddleCloneBody.isInMappedHalf(sub, contextLevel, position);
     }
 
     /**

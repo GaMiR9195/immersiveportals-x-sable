@@ -173,28 +173,33 @@ public final class IplClientHostedLookup {
                 ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
             if (parent == null) continue;
             if (parent.dimension() == SableSubLevelDimension.SUBLEVELS) continue; // parent unset
-            ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
-                ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
-            if (decision == null || decision.portal() == null) continue;
-            if (decision.portal().getDestDim() != destLevel.dimension()) continue;
 
-            qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
+            // ONE projection per session portal (multi-straddle): a ship crossing two
+            // portals into this level projects two images, each with its own dest cut.
+            for (ipl.sable.render.SourceClipPortalFinder.ClipDecision decision :
+                    ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlanes(clientSub)) {
+                if (decision.portal() == null) continue;
+                if (decision.portal().getDestDim() != destLevel.dimension()) continue;
 
-            // Render the mapped half even when source and destination are the same level.
-            dev.ryanhcode.sable.companion.math.Pose3d mapped =
-                ipl$computeMappedPose(clientSub.renderPose(), portal);
+                qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
 
-            // Clip plane: the source plane keeps the source half; through the portal the
-            // kept half flips — n_dest = -R(n_src), anchored at the mapped plane point.
-            net.minecraft.world.phys.Vec3 srcPos = decision.plane().pos();
-            net.minecraft.world.phys.Vec3 srcNormal = decision.plane().normal();
-            net.minecraft.world.phys.Vec3 destPos = portal.transformPoint(srcPos);
-            net.minecraft.world.phys.Vec3 destNormal = portal.transformLocalVec(srcNormal).scale(-1.0);
-            qouteall.q_misc_util.my_util.Plane destPlane =
-                new qouteall.q_misc_util.my_util.Plane(destPos, destNormal);
+                // Render the mapped half even when source and destination are the same level.
+                dev.ryanhcode.sable.companion.math.Pose3d mapped =
+                    ipl$computeMappedPose(clientSub.renderPose(), portal);
 
-            if (out == null) out = new java.util.ArrayList<>(2);
-            out.add(new StraddleProjection(clientSub, portal, mapped, destPlane));
+                // Clip plane: the source plane keeps the source half; through the portal
+                // the kept half flips — n_dest = -R(n_src), anchored at the mapped point.
+                net.minecraft.world.phys.Vec3 srcPos = decision.plane().pos();
+                net.minecraft.world.phys.Vec3 srcNormal = decision.plane().normal();
+                net.minecraft.world.phys.Vec3 destPos = portal.transformPoint(srcPos);
+                net.minecraft.world.phys.Vec3 destNormal =
+                    portal.transformLocalVec(srcNormal).scale(-1.0);
+                qouteall.q_misc_util.my_util.Plane destPlane =
+                    new qouteall.q_misc_util.my_util.Plane(destPos, destNormal);
+
+                if (out == null) out = new java.util.ArrayList<>(2);
+                out.add(new StraddleProjection(clientSub, portal, mapped, destPlane));
+            }
         }
         return out == null ? java.util.List.of() : out;
     }
@@ -228,6 +233,41 @@ public final class IplClientHostedLookup {
 
         if (Math.abs(portal.getScaling() - 1.0) > 1e-9) return null; // scaled seams unsupported
         return ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(portal);
+    }
+
+    /**
+     * Visit EVERY straddle (portal, mapping) of {@code sub} whose DEST is
+     * {@code contextLevel} (multi-straddle collision family). Scale-gated per portal.
+     */
+    public static void forEachClientStraddleInto(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level contextLevel,
+        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal,
+            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping> visitor
+    ) {
+        if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return;
+        for (qouteall.imm_ptl.core.portal.Portal portal :
+                IplStraddleSessionStore.resolveAllPortals(clientSub)) {
+            if (portal.getDestDim() != contextLevel.dimension()) continue;
+            if (Math.abs(portal.getScaling() - 1.0) > 1e-9) continue;
+            visitor.accept(portal,
+                ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(portal));
+        }
+    }
+
+    /** Same, for sessions the ship exits FROM {@code contextLevel} (its parent side). */
+    public static void forEachClientStraddleFrom(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level contextLevel,
+        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal,
+            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping> visitor
+    ) {
+        if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return;
+        if (ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) != contextLevel) return;
+        for (qouteall.imm_ptl.core.portal.Portal portal :
+                IplStraddleSessionStore.resolveAllPortals(clientSub)) {
+            if (Math.abs(portal.getScaling() - 1.0) > 1e-9) continue;
+            visitor.accept(portal,
+                ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(portal));
+        }
     }
 
     /**

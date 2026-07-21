@@ -52,6 +52,10 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
     @Nullable
     private Uniform ipl$subLevelClipEquation;
 
+    @Unique
+    @Nullable
+    private Uniform ipl$subLevelClipEquation2;
+
     /**
      * Set of shader names whose GLSL source actually gets {@code ipl_subLevelClipEquation}
      * declared by our transformation entry. Must stay in sync with the affectedShaders
@@ -141,6 +145,17 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
             // SubLevelClipUniformPatcher.clearAndUpload restores on bracket exit.
             ipl$subLevelClipEquation.set(0f, 0f, 0f, 1f);
             uniforms.add(ipl$subLevelClipEquation);
+
+            // Element [1] of the array uniform: querying "name[1]" resolves the second
+            // element's own location (the base name resolves element [0] per GL spec).
+            // Neutral (0,0,0,1) start: min(d0, 1) = d0 — single-cut behavior until a
+            // multi-straddle bracket writes a real second plane.
+            ipl$subLevelClipEquation2 = new Uniform(
+                "ipl_subLevelClipEquation[1]",
+                7, 4, self
+            );
+            ipl$subLevelClipEquation2.set(0f, 0f, 0f, 1f);
+            uniforms.add(ipl$subLevelClipEquation2);
         }
     }
 
@@ -148,5 +163,11 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
     @Override
     public Uniform ipl$getSubLevelClipUniform() {
         return ipl$subLevelClipEquation;
+    }
+
+    @Nullable
+    @Override
+    public Uniform ipl$getSubLevelClipUniform2() {
+        return ipl$subLevelClipEquation2;
     }
 }

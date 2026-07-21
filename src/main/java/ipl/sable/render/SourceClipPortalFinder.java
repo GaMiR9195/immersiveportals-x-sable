@@ -71,4 +71,23 @@ public final class SourceClipPortalFinder {
         Vec3 keepNormal = portal.getNormal();
         return new ClipDecision(portal, new Plane(origin, keepNormal));
     }
+
+    /**
+     * ALL current straddle decisions for this sub (multi-straddle), session-start
+     * order. The source render's kept region is the INTERSECTION of every decision's
+     * half-space; the shader takes {@code min} over two cut planes, so brackets feed
+     * the first two (more than two simultaneous straddles logs and clips the rest as
+     * best-effort with the first pair).
+     */
+    public static java.util.List<ClipDecision> findStraddlingPortalPlanes(ClientSubLevel sub) {
+        if (sub == null) return java.util.List.of();
+        java.util.List<Portal> portals =
+            ipl.sable.client.IplStraddleSessionStore.resolveAllPortals(sub);
+        if (portals.isEmpty()) return java.util.List.of();
+        java.util.List<ClipDecision> out = new java.util.ArrayList<>(portals.size());
+        for (Portal portal : portals) {
+            out.add(new ClipDecision(portal, new Plane(portal.getOriginPos(), portal.getNormal())));
+        }
+        return out;
+    }
 }

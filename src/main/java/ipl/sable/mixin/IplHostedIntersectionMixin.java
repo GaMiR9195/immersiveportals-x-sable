@@ -60,28 +60,39 @@ public abstract class IplHostedIntersectionMixin {
             if (sub.isRemoved()) continue;
 
             if (IplDimAgnostic.getParentLevel(sub) != level) {
-                // Foreign ship straddling INTO this dimension: include it when its
-                // portal-MAPPED bounds intersect the query. Pose mapping for the collision
-                // math happens in IplStraddleCollisionPoseMixin.
-                ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
-                    ipl.sable.transit.IplStraddlePoseMap.getMappingInto(sub, level);
-                if (mapping == null) continue;
-                if (!mapping.mapAabb(sub.boundingBox()).intersects(bounds)) continue;
+                // Foreign ship straddling INTO this dimension: include it when ANY of
+                // its portal-MAPPED images intersects the query (multi-straddle). Pose
+                // mapping for the collision math happens in IplStraddleCollisionPoseMixin.
+                boolean[] hits = {false};
+                ipl.sable.transit.IplStraddlePoseMap.forEachStraddleInto(sub, level,
+                    (portal, mapping) -> {
+                        if (!hits[0] && mapping.mapAabb(sub.boundingBox()).intersects(bounds)) {
+                            hits[0] = true;
+                        }
+                    });
+                if (!hits[0]) continue;
                 if (extra == null) extra = new ArrayList<>(4);
                 extra.add(sub);
                 continue;
             }
 
             // In a same-dimension crossing the source and destination share the
-            // Level object. Add whichever half reaches the query. Hosted ships are
-            // not in the parent level's native Sable container, so source bounds
-            // still need to be appended here for ordinary collision as well.
+            // Level object. Add whichever half (of any session's image) reaches the
+            // query. Hosted ships are not in the parent level's native Sable
+            // container, so source bounds still need to be appended here for
+            // ordinary collision as well.
             boolean intersectsSource = sub.boundingBox().intersects(bounds);
-            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
-                ipl.sable.transit.IplStraddlePoseMap.getStraddleDestinationMapping(sub, level);
-            boolean intersectsMapped = mapping != null
-                && mapping.mapAabb(sub.boundingBox()).intersects(bounds);
-            if (!intersectsSource && !intersectsMapped) continue;
+            boolean[] mappedHits = {false};
+            if (!intersectsSource) {
+                ipl.sable.transit.IplStraddlePoseMap.forEachStraddleInto(sub, level,
+                    (portal, mapping) -> {
+                        if (!mappedHits[0]
+                            && mapping.mapAabb(sub.boundingBox()).intersects(bounds)) {
+                            mappedHits[0] = true;
+                        }
+                    });
+            }
+            if (!intersectsSource && !mappedHits[0]) continue;
             if (extra == null) extra = new ArrayList<>(4);
             extra.add(sub);
         }

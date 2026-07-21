@@ -22,4 +22,14 @@ import org.jetbrains.annotations.Nullable;
 public interface IplSubLevelClipShader {
     @Nullable
     Uniform ipl$getSubLevelClipUniform();
+
+    /**
+     * Element [1] of the (now array) clip-equation uniform — the SECOND cut plane
+     * for multi-straddle source rendering. The shader takes {@code min} of both
+     * plane distances into the same {@code gl_ClipDistance[1]}, so the kept region
+     * is the intersection of half-spaces with no extra GL state. Neutral value
+     * {@code (0,0,0,1)} disables the second cut.
+     */
+    @Nullable
+    Uniform ipl$getSubLevelClipUniform2();
 }

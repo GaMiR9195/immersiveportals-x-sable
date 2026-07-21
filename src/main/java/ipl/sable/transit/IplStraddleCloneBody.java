@@ -77,14 +77,17 @@ public final class IplStraddleCloneBody {
         !"false".equalsIgnoreCase(System.getProperty("ipl.sable.sameDimStraddle", "true"));
 
     /**
-     * Allow multiple simultaneous clone sessions for ONE ship (double straddle across two
-     * portals). Default OFF: each session runs its own PBC servo against the same real
-     * body, and two servos fight — the first in-game double straddle (two same-dim portals
-     * facing each other) oscillated and died in native code. One session per ship until a
-     * multi-session coupling is actually designed; the deepest/first straddle wins.
+     * Allow multiple simultaneous clone sessions for ONE ship (double straddle across
+     * two portals). Default ON since the declarative rework: the historical two-servo
+     * oscillation predates the crossing-fraction authority weighting — each session's
+     * transfer is now scaled by ITS OWN pinned-side fraction, so two straddles at
+     * fractions f₁, f₂ contribute proportionally instead of fighting at full strength,
+     * and the damps (bleed, rock) act per session on the shared free body. Rehome
+     * remains single-winner (first session past the threshold). Pair exclusions and
+     * clip-region unions were always session-plural.
      */
     private static final boolean MULTI_STRADDLE =
-        Boolean.parseBoolean(System.getProperty("ipl.sable.multiStraddle", "false"));
+        Boolean.parseBoolean(System.getProperty("ipl.sable.multiStraddle", "true"));
 
     // ------------------------------------------------------------------
     // Position-based coupling (replaces impulse feedback): the clone is PINNED to the
@@ -487,6 +490,32 @@ public final class IplStraddleCloneBody {
             }
         }
         return null;
+    }
+
+    /** Visit EVERY active session mapping this ship INTO {@code level} (multi-straddle). */
+    public static void forEachSessionInto(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level,
+        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal,
+            IplStraddlePoseMap.StraddleMapping> visitor
+    ) {
+        for (Session s : SESSIONS.values()) {
+            if (s.dest == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
+                visitor.accept(s.portal, s.mapping);
+            }
+        }
+    }
+
+    /** Visit EVERY active session this ship is exiting FROM {@code level} (multi-straddle). */
+    public static void forEachSessionFrom(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level,
+        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal,
+            IplStraddlePoseMap.StraddleMapping> visitor
+    ) {
+        for (Session s : SESSIONS.values()) {
+            if (s.parent == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
+                visitor.accept(s.portal, s.mapping);
+            }
+        }
     }
 
     /** Portal of the active session this ship is exiting FROM {@code level} (source side). */

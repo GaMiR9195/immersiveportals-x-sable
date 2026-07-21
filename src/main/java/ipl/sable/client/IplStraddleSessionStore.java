@@ -82,6 +82,23 @@ public final class IplStraddleSessionStore {
         return SESSIONS.containsKey(shipId);
     }
 
+    /** ALL resolvable session portals for this ship, session-start order (multi-straddle). */
+    public static List<Portal> resolveAllPortals(ClientSubLevel sub) {
+        if (sub == null) return List.of();
+        List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
+        if (portals == null) return List.of();
+        if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
+            return List.of();
+        }
+        List<Portal> out = new ArrayList<>(portals.size());
+        for (SessionPortal sessionPortal : portals) {
+            Portal live = findPortal(level, sessionPortal.portalId());
+            Portal resolved = live != null ? live : surrogate(sessionPortal, level);
+            if (resolved != null) out.add(resolved);
+        }
+        return out;
+    }
+
     /** Diagnostic: how a ship's session portal currently resolves. */
     public static String debugPortalKind(ClientSubLevel sub) {
         List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
