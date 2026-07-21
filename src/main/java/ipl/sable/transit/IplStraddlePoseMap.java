@@ -245,6 +245,19 @@ public final class IplStraddlePoseMap {
     private static final double APERTURE_CLIP_MARGIN = 0.5;
 
     /**
+     * Blocks. Plane slack for COLLISION filters only (raycast/wireframe stays strict).
+     * The filters cut by block CENTER but the collision frame is chosen by ENTITY
+     * center — without slack, an entity whose center hasn't crossed the plane, standing
+     * on a block whose center has, finds its support dropped by its own frame while the
+     * block's image exists only in the other frame: a half-block dead zone you fall
+     * through exactly at the portal plane. Keeping a one-block band alive in BOTH
+     * frames makes the seam load-bearing throughout the frame handoff; 0.9 covers the
+     * worst case (half block + player half-width, any plane orientation).
+     */
+    private static final double SEAM_SUPPORT_MARGIN =
+        Double.parseDouble(System.getProperty("ipl.sable.clip.seamSupportMargin", "0.9"));
+
+    /**
      * Plot-local block keep-filter for entity-vs-ship collision while the ship straddles
      * a portal, or null when no clipping applies. Selects the frame the collision code
      * uses for this entity (mapped pose iff {@link #getCollisionMappingInto} is non-null)
@@ -258,8 +271,8 @@ public final class IplStraddlePoseMap {
         if (sub == null || contextLevel == null || entityBounds == null) return null;
         if (!IplDimAgnostic.isHosted(sub)) return null;
         return getCollisionMappingInto(sub, contextLevel, entityBounds) != null
-            ? getMappedHalfKeepFilter(sub, contextLevel)
-            : getSourceHalfKeepFilter(sub, contextLevel);
+            ? getMappedHalfKeepFilter(sub, contextLevel, SEAM_SUPPORT_MARGIN)
+            : getSourceHalfKeepFilter(sub, contextLevel, SEAM_SUPPORT_MARGIN);
     }
 
     /**
@@ -273,6 +286,14 @@ public final class IplStraddlePoseMap {
     @Nullable
     public static java.util.function.Predicate<BlockPos> getSourceHalfKeepFilter(
         @Nullable SubLevel sub, @Nullable Level contextLevel
+    ) {
+        return getSourceHalfKeepFilter(sub, contextLevel, 0.0);
+    }
+
+    /** {@code planeMargin} extends the kept side past the plane (collision support slack). */
+    @Nullable
+    public static java.util.function.Predicate<BlockPos> getSourceHalfKeepFilter(
+        @Nullable SubLevel sub, @Nullable Level contextLevel, double planeMargin
     ) {
         if (sub == null || contextLevel == null || !IplDimAgnostic.isHosted(sub)) return null;
         if (IplDimAgnostic.getParentLevel(sub) != contextLevel) return null;
@@ -289,7 +310,7 @@ public final class IplStraddlePoseMap {
         // convention as isInMappedHalf and the transit controller's locked normal).
         return buildKeepFilter(
             sub.logicalPose(),
-            portal.getOriginPos(), portal.getNormal(),
+            portal.getOriginPos(), portal.getNormal(), planeMargin,
             portal.getAxisW(), portal.getAxisH(),
             portal.getWidth() * 0.5 + APERTURE_CLIP_MARGIN,
             portal.getHeight() * 0.5 + APERTURE_CLIP_MARGIN);
@@ -307,6 +328,14 @@ public final class IplStraddlePoseMap {
     public static java.util.function.Predicate<BlockPos> getMappedHalfKeepFilter(
         @Nullable SubLevel sub, @Nullable Level contextLevel
     ) {
+        return getMappedHalfKeepFilter(sub, contextLevel, 0.0);
+    }
+
+    /** {@code planeMargin} extends the kept side past the plane (collision support slack). */
+    @Nullable
+    public static java.util.function.Predicate<BlockPos> getMappedHalfKeepFilter(
+        @Nullable SubLevel sub, @Nullable Level contextLevel, double planeMargin
+    ) {
         if (sub == null || contextLevel == null || !IplDimAgnostic.isHosted(sub)) return null;
         StraddleMapping mapping = getStraddleDestinationMapping(sub, contextLevel);
         if (mapping == null) return null;
@@ -323,7 +352,7 @@ public final class IplStraddlePoseMap {
         return buildKeepFilter(
             mapping.mapPose(sub.logicalPose()),
             mapping.mapPoint(portal.getOriginPos()),
-            mapping.mapVec(portal.getNormal().scale(-1.0)),
+            mapping.mapVec(portal.getNormal().scale(-1.0)), planeMargin,
             null, null, 0.0, 0.0);
     }
 
@@ -334,7 +363,7 @@ public final class IplStraddlePoseMap {
      * is far below the block-center granularity this test operates at.
      */
     private static java.util.function.Predicate<BlockPos> buildKeepFilter(
-        Pose3dc pose, Vec3 point, Vec3 keepNormal,
+        Pose3dc pose, Vec3 point, Vec3 keepNormal, double planeMargin,
         @Nullable Vec3 axisW, @Nullable Vec3 axisH, double halfW, double halfH
     ) {
         org.joml.Vector3d lp = pose.transformPositionInverse(
@@ -342,10 +371,11 @@ public final class IplStraddlePoseMap {
         org.joml.Vector3d ln = pose.transformNormalInverse(
             new org.joml.Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
             new org.joml.Vector3d());
+        double keepThreshold = -planeMargin;
         if (axisW == null || axisH == null) {
             return pos -> (pos.getX() + 0.5 - lp.x) * ln.x
                         + (pos.getY() + 0.5 - lp.y) * ln.y
-                        + (pos.getZ() + 0.5 - lp.z) * ln.z >= 0.0;
+                        + (pos.getZ() + 0.5 - lp.z) * ln.z >= keepThreshold;
         }
         org.joml.Vector3d lw = pose.transformNormalInverse(
             new org.joml.Vector3d(axisW.x, axisW.y, axisW.z), new org.joml.Vector3d());
@@ -356,10 +386,45 @@ public final class IplStraddlePoseMap {
             double py = pos.getY() + 0.5 - lp.y;
             double pz = pos.getZ() + 0.5 - lp.z;
             double d = px * ln.x + py * ln.y + pz * ln.z;
-            if (d >= 0.0) return true;
+            if (d >= keepThreshold) return true;
             double w = Math.abs(px * lw.x + py * lw.y + pz * lw.z);
             double h = Math.abs(px * lh.x + py * lh.y + pz * lh.z);
             return w > halfW || h > halfH;
+        };
+    }
+
+    /**
+     * {@code all} filtered to positions passing {@code keep}. Lookahead advances the
+     * source iterator inside {@code hasNext} — the same timing as vanilla's
+     * {@code betweenClosed} AbstractIterator, so its MutableBlockPos reuse semantics
+     * are preserved for for-each consumers.
+     */
+    public static Iterable<BlockPos> filterBlocks(
+        Iterable<BlockPos> all, java.util.function.Predicate<BlockPos> keep
+    ) {
+        return () -> new java.util.Iterator<>() {
+            private final java.util.Iterator<BlockPos> in = all.iterator();
+            private BlockPos next;
+            private boolean hasNext;
+
+            @Override
+            public boolean hasNext() {
+                while (!hasNext && in.hasNext()) {
+                    BlockPos candidate = in.next();
+                    if (keep.test(candidate)) {
+                        next = candidate;
+                        hasNext = true;
+                    }
+                }
+                return hasNext;
+            }
+
+            @Override
+            public BlockPos next() {
+                if (!hasNext()) throw new java.util.NoSuchElementException();
+                hasNext = false;
+                return next;
+            }
         };
     }
 

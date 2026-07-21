@@ -78,16 +78,21 @@ public abstract class IplStraddleOnPosMixin {
             owner, self.level(), self.getBoundingBox());
         if (mapping == null) return original;
 
-        // The handler computed with the UNMAPPED pose; the plot-frame result is off by
-        // the world displacement the mapping applies at the ship's position:
-        // delta = map(posePos) - posePos (exactly the portal offset for translation
-        // pairs; position-dependent under rotation).
+        // The handler computed L = poseInv(W) with the UNMAPPED pose, where W is the
+        // rider's actual (mapped-frame) world position. The true plot position is
+        // mappedPoseInv(W) = poseInv(mapInv(W)), so round-trip the returned block
+        // center: L -> pose -> W -> unmap -> poseInv. Exact under rotation — the old
+        // shortcut (subtract the world portal delta) was only right for translation
+        // pairs, and its wrong Y on rotated crossings tripped travel's
+        // "chunk below not loaded" pin (dM.y = -0.098/tick: the eaten-jump bug).
         dev.ryanhcode.sable.companion.math.Pose3dc pose = owner.logicalPose();
-        net.minecraft.world.phys.Vec3 posePos = new net.minecraft.world.phys.Vec3(
-            pose.position().x(), pose.position().y(), pose.position().z());
-        net.minecraft.world.phys.Vec3 delta = mapping.mapPoint(posePos).subtract(posePos);
-        return original.offset(
-            -(int) Math.round(delta.x), -(int) Math.round(delta.y), -(int) Math.round(delta.z));
+        org.joml.Vector3d world = pose.transformPosition(new org.joml.Vector3d(
+            original.getX() + 0.5, original.getY() + 0.5, original.getZ() + 0.5));
+        net.minecraft.world.phys.Vec3 unmapped = mapping.unmapPoint(
+            new net.minecraft.world.phys.Vec3(world.x, world.y, world.z));
+        org.joml.Vector3d localTrue = pose.transformPositionInverse(
+            new org.joml.Vector3d(unmapped.x, unmapped.y, unmapped.z));
+        return BlockPos.containing(localTrue.x, localTrue.y, localTrue.z);
     }
 
     @org.spongepowered.asm.mixin.Unique
