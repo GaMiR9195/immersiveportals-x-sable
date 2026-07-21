@@ -50,6 +50,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
         let handle = sim_data.rigid_body_set.insert(rigid_body);
 
         // make a level collider
+        // Atlas: boxes are level-class in the calling chart (previously ungrouped =
+        // all/all, which would leak contacts across charts in the merged world).
         let collider = ColliderBuilder::new(SharedShape::cuboid(
             half_extent_x as Real,
             half_extent_y as Real,
@@ -57,6 +59,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
         ))
         .mass(mass as Real)
         .friction(0.45)
+        .collision_groups(crate::groups::level_group(scene.chart))
         .build();
 
         sim_data

@@ -302,12 +302,18 @@ impl SableDispatcher {
 
         let mut manifold_index = 0;
 
+        // Atlas: shared-storage reads go to the owning chart's chunk map — the body's
+        // chart if we have an info entry, else the static terrain shape's own chart.
+        let chart = collider_info.map_or(g1.chart, |i| i.chart);
         let chunk_access: &dyn ChunkAccess = if let Some(info) = collider_info
             && info.has_own_chunks()
         {
             info
         } else {
-            &*sable_data
+            let Some(chart_data) = sable_data.chart(chart) else {
+                return; // chart disposed mid-race — no chunks, no contacts
+            };
+            chart_data
         };
 
         for x in local_min.x..=local_max.x {
@@ -477,18 +483,36 @@ impl SableDispatcher {
         let center_of_mass_1 = collider_info_1.map_or(DVec3::ZERO, |b| b.center_of_mass.unwrap());
         let center_of_mass_2 = collider_info_2.center_of_mass.unwrap();
 
+        // Atlas: cross-chart pairs must not generate contacts (defense in depth —
+        // collision groups already reject them before the narrow phase). Clear like
+        // the exclusion path: stale persisted manifolds must not survive.
+        let chart_1 = collider_info_1.map_or(g1.chart, |i| i.chart);
+        let chart_2 = collider_info_2.chart;
+        if chart_1 != chart_2 {
+            manifolds.clear();
+            return;
+        }
+
         let chunk_access_1: &dyn ChunkAccess = if let Some(info) = collider_info_1
             && info.has_own_chunks()
         {
             info
         } else {
-            &*sable_data
+            let Some(chart_data) = sable_data.chart(chart_1) else {
+                manifolds.clear();
+                return;
+            };
+            chart_data
         };
 
         let chunk_access_2: &dyn ChunkAccess = if collider_info_2.has_own_chunks() {
             collider_info_2
         } else {
-            &*sable_data
+            let Some(chart_data) = sable_data.chart(chart_2) else {
+                manifolds.clear();
+                return;
+            };
+            chart_data
         };
 
         // let local_aabb = g2.compute_aabb(&pos12);

@@ -14,15 +14,20 @@ pub struct LevelCollider {
     pub id: Option<LevelColliderID>,
     pub is_static: bool,
     pub cached_aabb: Option<Aabb>,
+    /// IPL atlas: owning chart. Load-bearing for STATIC terrain colliders (one per
+    /// chart) — the dispatcher's terrain-vs-convex path has only the shapes in
+    /// scope, so the shape itself must know which chart's chunk maps to read.
+    pub chart: crate::scene::ChartId,
 }
 
 impl LevelCollider {
     #[must_use]
-    pub fn new(id: Option<LevelColliderID>, is_static: bool) -> Self {
+    pub fn new(id: Option<LevelColliderID>, is_static: bool, chart: crate::scene::ChartId) -> Self {
         Self {
             id,
             is_static,
             cached_aabb: None,
+            chart,
         }
     }
 

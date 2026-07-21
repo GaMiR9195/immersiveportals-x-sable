@@ -86,6 +86,7 @@ pub fn find_collision_pairs(
                 transformed_center.into(),
                 radius,
                 sable_data,
+                sable_body.chart,
                 node >= 0,
                 liquid,
             );
@@ -151,6 +152,7 @@ fn get_overlapping_nodes(
     pos: Vec3,
     dist: Real,
     sable_data: &SableSceneData,
+    chart: crate::scene::ChartId,
     cancel_early: bool,
     liquid: bool,
 ) -> (bool, Option<Vec<IVec3>>) {
@@ -222,7 +224,10 @@ fn get_overlapping_nodes(
     for ox in min_octree_pos.x..=max_octree_pos.x {
         for oy in min_octree_pos.y..=max_octree_pos.y {
             for oz in min_octree_pos.z..=max_octree_pos.z {
-                let chunk = sable_data.octree_chunks.get(&pack_section_pos(ox, oy, oz));
+                // Atlas: the static octree query reads the querying body's chart.
+                let chunk = sable_data
+                    .chart(chart)
+                    .and_then(|c| c.octree_chunks.get(&pack_section_pos(ox, oy, oz)));
                 let Some(chunk) = chunk else {
                     continue;
                 };

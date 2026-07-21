@@ -1,15 +1,20 @@
-use crate::collider::LevelCollider;
-use crate::scene::ReportedCollisionBuffer;
 use crate::ReportedCollision;
+use crate::collider::LevelCollider;
+use crate::scene::{ChartBuffers, SableSceneData};
 use rapier3d::dynamics::RigidBodySet;
 use rapier3d::geometry::{ColliderSet, CollisionEvent, ContactPair};
 use rapier3d::pipeline::EventHandler;
 use rapier3d::prelude::*;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone)]
 pub struct SableEventHandler {
-    pub reported_collisions: Arc<ReportedCollisionBuffer>,
+    /// IPL atlas: records are routed to the owning chart's buffer so each Java
+    /// pipeline's `clearCollisions` drains exactly its own dimension's records.
+    /// Chart lookup goes through the body's `ActiveLevelColliderInfo.chart`
+    /// (read lock — same threading model as the solver hooks).
+    pub sable_data: Arc<RwLock<SableSceneData>>,
+    pub chart_buffers: Arc<ChartBuffers>,
 }
 
 impl EventHandler for SableEventHandler {
@@ -65,8 +70,27 @@ impl EventHandler for SableEventHandler {
             }
         }
 
-        if !batch.is_empty() {
-            self.reported_collisions.borrow_mut().extend(batch);
+        if batch.is_empty() {
+            return;
+        }
+
+        // Route by the first contacting body that has an info entry (the static
+        // terrain collider has id None; a record with no resolvable chart — e.g. a
+        // body torn down mid-step — is dropped, matching the old per-scene
+        // behavior where such records could not exist).
+        let chart = {
+            let sable_data = self.sable_data.read().unwrap();
+            batch
+                .iter()
+                .find_map(|r| r.body_a.or(r.body_b))
+                .and_then(|id| sable_data.level_colliders.get(&id))
+                .map(|info| info.chart)
+        };
+        let Some(chart) = chart else {
+            return;
+        };
+        if let Some(buffer) = self.chart_buffers.get(&chart) {
+            buffer.borrow_mut().extend(batch);
         }
     }
 }

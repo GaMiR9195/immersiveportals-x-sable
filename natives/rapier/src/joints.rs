@@ -59,6 +59,17 @@ pub fn tick(scene: &PhysicsScene) {
 
     // update every joint
     for (_handle, joint) in sable_data.joint_set.joints.iter() {
+        // Atlas: each view maintains only its own chart's joints (chart derived from
+        // a member body; a joint with no sub-level bodies has no chart and is
+        // maintained by every view — the update is idempotent).
+        let joint_chart = joint
+            .id_a
+            .or(joint.id_b)
+            .and_then(|id| sable_data.level_colliders.get(&id))
+            .map(|info| info.chart);
+        if joint_chart.is_some() && joint_chart != Some(scene.chart) {
+            continue;
+        }
         let impulse_joint = sim.impulse_joint_set.get_mut(joint.handle, false).unwrap();
         impulse_joint.data.contacts_enabled = joint.contacts_enabled;
         if !joint.fixed && joint.rotation_a.is_none() {
