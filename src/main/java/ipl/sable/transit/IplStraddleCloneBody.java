@@ -94,11 +94,12 @@ public final class IplStraddleCloneBody {
      * COLLIDERS for translation-only portals — extra colliders on the REAL body,
      * portal-prefixed into the far chart; their contacts act on the body exactly
      * (in-solver mapped-COM lever arms). No servo, no feedback, no authority swap.
-     * Default OFF until in-game verified; rotated portals always keep the clone path
-     * (Tier 2). {@code -Dipl.sable.imageColliders=true} enables.
+     * Default ON since the M2 in-game verification (2026-07-21); rotated portals keep
+     * the clone path until Tier 2 lands. {@code -Dipl.sable.imageColliders=false}
+     * reverts translation portals to the v2 clone/servo path.
      */
     private static final boolean IMAGE_COLLIDERS =
-        Boolean.parseBoolean(System.getProperty("ipl.sable.imageColliders", "false"));
+        Boolean.parseBoolean(System.getProperty("ipl.sable.imageColliders", "true"));
 
     // ------------------------------------------------------------------
     // Position-based coupling (replaces impulse feedback): the clone is PINNED to the
