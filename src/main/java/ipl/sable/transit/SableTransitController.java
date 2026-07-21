@@ -11,7 +11,6 @@ import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.portal.PortalExtension;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -44,17 +43,29 @@ public final class SableTransitController {
     /** Inflation amount when querying for nearby portals -- how close before we consider one. */
     private static final double PORTAL_QUERY_INFLATION = 4.0;
 
-    /** Lateral-only output-aperture allowance for a construction's final edge. */
+    /** Lateral aperture keep-margin for EXISTING sessions (grazing-flap hysteresis). */
     private static final double EXIT_APERTURE_MARGIN = 0.5;
 
-    /** Output aperture faces that cannot be re-entered before an exit completes. */
-    private static final Map<UUID, java.util.Set<Portal>> pendingExitPortalsByAirship = new HashMap<>();
+    /**
+     * Majority rehome (declarative-straddle phase 3): the transit fires when a live
+     * session's crossing fraction exceeds this threshold, instead of waiting for the
+     * trailing edge to clear. The declarative recompute derives the mirrored session
+     * on the reverse portal next tick (the minority-face rule picks it), so the
+     * remaining part keeps physics/render/collision through the handoff — and the
+     * majority-native invariant that makes parity geometric is actively maintained.
+     * Matches the servo's authority-swap threshold; the swap remains as the fallback
+     * when the rehome can't execute. {@code -Dipl.sable.majorityRehome=false} restores
+     * rehome-at-fully-CROSSED.
+     */
+    private static final boolean MAJORITY_REHOME =
+        !"false".equals(System.getProperty("ipl.sable.majorityRehome"));
+    private static final double REHOME_FRACTION =
+        Double.parseDouble(System.getProperty("ipl.sable.rehomeFraction", "0.6"));
 
     private SableTransitController() {}
 
     /** Clear hosted transit state when the server stops. */
     public static void onServerStopping(MinecraftServer server) {
-        pendingExitPortalsByAirship.clear();
         IplStraddleSessionSync.clearAll();
         IplPortalRimManager.clearAll();
         IplStraddleCloneBody.clearAll();
@@ -154,9 +165,6 @@ public final class SableTransitController {
             boolean candidateAddedForAirship = false;
             for (Portal portal : nearby) {
                 if (!ipl$isCanonicalEntranceFace(portal, nearby)) continue;
-                if (hosted && ipl$isBlockedOutputPortal(airship, portal)) {
-                    continue;
-                }
 
                 UUID portalUuid = portal.getUUID();
                 StraddleKey key = new StraddleKey(
@@ -173,22 +181,42 @@ public final class SableTransitController {
                     state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
                         && state.intersectsPortalAperture();
 
-                if (straddlingAperture && !haveSession) {
-                    // Minority-face parity: the opposite coincident face evaluates the
-                    // same geometry with the complementary fraction and claims it.
-                    if (ipl$crossedFraction(airship, portal, normal) > 0.5 + 1.0e-6) {
+                if (straddlingAperture) {
+                    double fraction = ipl$crossedFraction(airship, portal, normal);
+
+                    // Minority-face parity: the opposite coincident face evaluates
+                    // the same geometry with the complementary fraction and claims it.
+                    if (!haveSession && fraction > 0.5 + 1.0e-6) {
                         continue;
                     }
-                    IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
-                    haveSession = true;
-                }
-
-                if (straddlingAperture) {
                     seenHostedKeys.add(key);
+
+                    // Majority rehome: past the threshold the dest side owns the ship —
+                    // flip NOW. The session is NOT cleared here: it dies only when the
+                    // transit actually succeeds (see the candidate execution). Clearing
+                    // first stranded ships whose transit failed once — past 0.5 the
+                    // minority rule refuses to re-open this face and would open the
+                    // OPPOSITE face with inverted parity instead, making forward travel
+                    // structurally impossible.
+                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION) {
+                        if (candidates == null) candidates = new ArrayList<>(1);
+                        candidates.add(new TransitCandidate(airship, portal, true));
+                        candidateAddedForAirship = true;
+                        break;
+                    }
+
+                    // Session first, sync second: the one-session-per-ship gate (and
+                    // any other spawn decline) must be able to veto BEFORE the client
+                    // hears about the session — announced-but-blocked sessions were
+                    // unreapable phantoms that left stale clip planes on the ship.
                     if (IplStraddleCloneBody.isEnabled()) {
                         IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
                     } else {
                         IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
+                    }
+                    if (!haveSession && (IplStraddleCloneBody.hasSessionKey(key)
+                        || IplStraddleTerrainClone.hasSessionKey(key))) {
+                        IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
                     }
                     continue;
                 }
@@ -201,7 +229,7 @@ public final class SableTransitController {
                     IplStraddleCloneBody.clear(key, "crossed");
                     IplStraddleTerrainClone.clear(key);
                     if (candidates == null) candidates = new ArrayList<>(1);
-                    candidates.add(new TransitCandidate(airship, portal));
+                    candidates.add(new TransitCandidate(airship, portal, false));
                     candidateAddedForAirship = true;
                 } else {
                     String reason = state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
@@ -229,6 +257,9 @@ public final class SableTransitController {
             java.util.Set<StraddleKey> live = new java.util.HashSet<>(
                 IplStraddleCloneBody.sessionKeys());
             live.addAll(IplStraddleTerrainClone.sessionKeys());
+            // Sync-advertised keys too: an advertised session without a physical
+            // backing must never outlive its geometry (stale clip planes client-side).
+            live.addAll(IplStraddleSessionSync.activeKeys());
             for (StraddleKey k : live) {
                 if (!seenHostedKeys.contains(k)) {
                     IplStraddleCloneBody.clear(k, "reaped");
@@ -245,8 +276,31 @@ public final class SableTransitController {
             try {
                 boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal);
                 if (flipped) {
-                    ipl$beginExitLock(c.airship, c.portal);
+                    // Rehome candidates keep their session until the transit SUCCEEDS
+                    // (a pre-cleared session on a failed transit strands the ship past
+                    // 0.5, where the minority rule can only re-open inverted parity).
+                    if (c.rehome()) {
+                        StraddleKey key = new StraddleKey(uuid, c.portal.getUUID());
+                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "rehomed");
+                        IplStraddleCloneBody.clear(key, "rehomed");
+                        IplStraddleTerrainClone.clear(key);
+                    }
+                    // No exit lock anymore (declarative phase 3): re-transiting the
+                    // reverse portal requires a genuine majority back-crossing — the
+                    // minority-face rule opens the reverse session at ~1-REHOME_FRACTION
+                    // and the ship must travel the full hysteresis band to flip again.
                     IplStaffPortalDragState.onTransitCompleted(c.airship.getUniqueId(), c.portal);
+                    // EAGER re-derivation: a majority rehome leaves the minority part
+                    // still straddling. Waiting for the next tick's recompute opened a
+                    // one-tick hole (no image, no clone, no collision in the old dim —
+                    // riders fell through). Deriving the reverse session NOW is the same
+                    // declarative rule, just evaluated immediately: the client receives
+                    // session-end + handoff + session-start in one packet flush.
+                    ipl$deriveReverseSessionNow(c.airship, c.portal);
+                } else if (c.rehome()) {
+                    LOG.warn("[IPL-TRANSIT] majority rehome transit declined for uuid={} "
+                        + "portal={} — session retained, retrying next tick",
+                        uuid, c.portal.getUUID());
                 }
             } catch (Throwable t) {
                 LOG.error("[IPL-TRANSIT] uncaught exception executing transit for uuid={}",
@@ -305,37 +359,58 @@ public final class SableTransitController {
     }
 
     /**
-     * Suppress only reverse-portal re-entry while its finite aperture still cuts
-     * the OBB. A different portal may be entered normally during that time.
+     * Evaluate the declarative session rule for the REVERSE portal immediately after a
+     * majority rehome, instead of waiting one tick for the normal recompute. Considers
+     * both faces of the reverse pair; the minority-face rule picks the correct one
+     * (the freshly-flipped ship sits at ~{@code 1 - REHOME_FRACTION} through it, and
+     * the opposite face fails the ≤0.5 test). Idempotent with the next tick's loop.
      */
-    private static boolean ipl$isBlockedOutputPortal(ServerSubLevel airship, Portal candidate) {
-        java.util.Set<Portal> outputs = pendingExitPortalsByAirship.get(airship.getUniqueId());
-        if (outputs == null || !outputs.contains(candidate)) return false;
+    private static void ipl$deriveReverseSessionNow(ServerSubLevel airship, Portal entrance) {
+        ServerLevel newParent = IplDimAgnostic.getServerParentLevel(airship);
+        if (newParent == null) return;
 
-        PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
-            airship, candidate, candidate.getNormal(), EXIT_APERTURE_MARGIN
-        );
-        if ((state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
-            && state.intersectsPortalAperture())) {
-            return true;
+        List<Portal> faces = new ArrayList<>(2);
+        Portal reverse = qouteall.imm_ptl.core.portal.PortalExtension.get(entrance).reversePortal;
+        if (reverse != null) faces.add(reverse);
+        if (reverse != null) {
+            Portal twin = qouteall.imm_ptl.core.portal.PortalExtension.get(reverse).flippedPortal;
+            if (twin != null) faces.add(twin);
         }
 
-        pendingExitPortalsByAirship.remove(airship.getUniqueId());
-        return false;
-    }
+        for (Portal face : faces) {
+            if (face.isRemoved() || !face.isTeleportable()) continue;
+            if (!ipl$isCanonicalEntranceFace(face, faces)) continue;
 
-    private static void ipl$beginExitLock(ServerSubLevel airship, Portal entrance) {
-        Portal output = PortalExtension.get(entrance).reversePortal;
-        if (output == null) return;
+            Vec3 normal = face.getNormal().scale(-1.0);
+            PortalCrossingDetector.CrossingState state =
+                PortalCrossingDetector.evaluate(airship, face, normal);
+            if (state.phase() != PortalCrossingDetector.CrossingPhase.STRADDLING
+                || !state.intersectsPortalAperture()) {
+                continue;
+            }
+            if (ipl$crossedFraction(airship, face, normal) > 0.5 + 1.0e-6) continue;
 
-        java.util.Set<Portal> outputFaces = new java.util.HashSet<>();
-        outputFaces.add(output);
-        Portal flipped = PortalExtension.get(output).flippedPortal;
-        if (flipped != null) {
-            outputFaces.add(flipped);
+            // Session first, sync second: the sync must never announce a session
+            // whose spawn was declined (e.g. the body's scene migration lands a tick
+            // later) — the next tick's recompute then derives it normally.
+            if (IplStraddleCloneBody.isEnabled()) {
+                IplStraddleCloneBody.onStraddleTick(airship, face, normal);
+            } else {
+                IplStraddleTerrainClone.onStraddleTick(airship, face, normal);
+            }
+            StraddleKey key = new StraddleKey(airship.getUniqueId(), face.getUUID());
+            if (IplStraddleCloneBody.hasSessionKey(key)
+                || IplStraddleTerrainClone.hasSessionKey(key)) {
+                IplStraddleSessionSync.onSessionStart(newParent.getServer(), airship, face);
+                LOG.info("[IPL-TRANSIT] eager reverse session uuid={} portal={}",
+                    airship.getUniqueId(), face.getUUID());
+            } else {
+                LOG.info("[IPL-TRANSIT] eager reverse session deferred for uuid={} "
+                    + "(spawn declined; next tick derives it)", airship.getUniqueId());
+            }
+            return;
         }
-        pendingExitPortalsByAirship.put(airship.getUniqueId(), outputFaces);
     }
 
-    private record TransitCandidate(ServerSubLevel airship, Portal portal) {}
+    private record TransitCandidate(ServerSubLevel airship, Portal portal, boolean rehome) {}
 }

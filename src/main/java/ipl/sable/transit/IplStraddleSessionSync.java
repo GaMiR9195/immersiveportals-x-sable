@@ -8,7 +8,6 @@ import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.UUID;
 
@@ -38,30 +37,71 @@ public final class IplStraddleSessionSync {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-straddle-session-sync");
 
-    /** Ship → active straddle-session portal ids, in session-start order. */
-    private static final Map<UUID, LinkedHashSet<UUID>> ACTIVE = new HashMap<>();
+    /**
+     * Ship → active straddle-session portals (id → serialized portal NBT, base64), in
+     * session-start order. The portal is carried IN the snapshot for the same reason
+     * the handoff packet carries the portal transform: IP only syncs portal entities
+     * relevant to each client's camera, and a cross-dimension reverse session names a
+     * portal entity from the OTHER dimension — waiting for that entity to sync left a
+     * multi-tick hole where the client could resolve nothing (invisible ship, riders
+     * falling through). The client builds a detached surrogate from the NBT and
+     * upgrades to the live entity whenever it is present.
+     */
+    private static final Map<UUID, java.util.LinkedHashMap<UUID, String>> ACTIVE = new HashMap<>();
 
     private IplStraddleSessionSync() {}
 
     /** The transit controller latched a new (ship, portal) straddle session. */
     public static void onSessionStart(MinecraftServer server, ServerSubLevel ship, Portal portal) {
         UUID shipId = ship.getUniqueId();
-        LinkedHashSet<UUID> portals = ACTIVE.computeIfAbsent(shipId, k -> new LinkedHashSet<>());
-        if (!portals.add(portal.getUUID())) return;
+        java.util.LinkedHashMap<UUID, String> portals =
+            ACTIVE.computeIfAbsent(shipId, k -> new java.util.LinkedHashMap<>());
+        if (portals.containsKey(portal.getUUID())) return;
+        portals.put(portal.getUUID(), encodePortal(portal));
 
         LOG.info("[IPL-STRADDLE-SYNC] start ship={} portal={}", shipId, portal.getUUID());
         broadcast(server, shipId);
     }
 
+    /** Global-portal-style serialization: full entity NBT + type id, base64-framed. */
+    private static String encodePortal(Portal portal) {
+        try {
+            net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
+            portal.saveWithoutId(tag);
+            tag.putString("entity_type",
+                net.minecraft.world.entity.EntityType.getKey(portal.getType()).toString());
+            return java.util.Base64.getEncoder().encodeToString(
+                tag.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Throwable t) {
+            LOG.error("[IPL-STRADDLE-SYNC] portal encode failed for {}", portal.getUUID(), t);
+            return "";
+        }
+    }
+
     /** A latched session ended (backed out, left aperture, crossed, or reaped). */
     public static void onSessionEnd(MinecraftServer server, StraddleKey key, String reason) {
-        LinkedHashSet<UUID> portals = ACTIVE.get(key.subLevelUuid());
-        if (portals == null || !portals.remove(key.portalUuid())) return;
+        java.util.LinkedHashMap<UUID, String> portals = ACTIVE.get(key.subLevelUuid());
+        if (portals == null || portals.remove(key.portalUuid()) == null) return;
         if (portals.isEmpty()) ACTIVE.remove(key.subLevelUuid());
 
         LOG.info("[IPL-STRADDLE-SYNC] end ship={} portal={} ({})",
             key.subLevelUuid(), key.portalUuid(), reason);
         broadcast(server, key.subLevelUuid());
+    }
+
+    /**
+     * Every (ship, portal) pair the sync currently advertises — swept by the
+     * declarative reap alongside the physical session keys, so an advertised session
+     * whose backing spawn never materialized cannot outlive its geometry.
+     */
+    public static java.util.List<StraddleKey> activeKeys() {
+        java.util.List<StraddleKey> out = new java.util.ArrayList<>();
+        for (Map.Entry<UUID, java.util.LinkedHashMap<UUID, String>> entry : ACTIVE.entrySet()) {
+            for (UUID portalId : entry.getValue().keySet()) {
+                out.add(new StraddleKey(entry.getKey(), portalId));
+            }
+        }
+        return out;
     }
 
     /** Track-start bootstrap: give one viewer the ship's current session snapshot. */
@@ -90,12 +130,12 @@ public final class IplStraddleSessionSync {
     }
 
     private static String encode(UUID shipId) {
-        LinkedHashSet<UUID> portals = ACTIVE.get(shipId);
+        java.util.LinkedHashMap<UUID, String> portals = ACTIVE.get(shipId);
         if (portals == null || portals.isEmpty()) return "";
         StringBuilder sb = new StringBuilder();
-        for (UUID portalId : portals) {
+        for (Map.Entry<UUID, String> entry : portals.entrySet()) {
             if (sb.length() > 0) sb.append(';');
-            sb.append(portalId);
+            sb.append(entry.getKey()).append(':').append(entry.getValue());
         }
         return sb.toString();
     }

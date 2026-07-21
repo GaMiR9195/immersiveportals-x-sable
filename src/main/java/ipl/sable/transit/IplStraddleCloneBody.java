@@ -278,10 +278,22 @@ public final class IplStraddleCloneBody {
         if (SESSIONS.containsKey(key)) return;
 
         // One clone session per ship (see MULTI_STRADDLE): a second portal's straddle
-        // waits until the active session clears.
+        // waits until the active session clears. Logged when it blocks a DIFFERENT
+        // portal — a session that outlives its straddle would silently kill all
+        // further travel for the ship, and this line is how that shows up.
         if (!MULTI_STRADDLE) {
             for (Session t : SESSIONS.values()) {
-                if (t.sub == hosted) return;
+                if (t.sub == hosted) {
+                    long now = System.currentTimeMillis();
+                    if (!t.portal.getUUID().equals(portal.getUUID())
+                        && now - lastFeedbackLogMs > 2000) {
+                        lastFeedbackLogMs = now;
+                        LOG.info("[IPL-CLONE] session for portal {} blocks new session on {} "
+                            + "(ship {})", t.portal.getUUID(), portal.getUUID(),
+                            hosted.getUniqueId());
+                    }
+                    return;
+                }
             }
         }
 

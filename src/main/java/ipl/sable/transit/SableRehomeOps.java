@@ -527,6 +527,13 @@ public final class SableRehomeOps {
      * Teleport entities standing on the hosted airship (bbox overlap in the PARENT dim — the
      * hosted variant of {@link SableTransitOps}'s rider teleport, which queries
      * {@code source.getLevel()} and would otherwise look in the hosting dim).
+     *
+     * <p>Partitioned by the crossing plane (declarative-straddle phase 3): with the
+     * rehome firing at MAJORITY-crossed, riders on the still-out minority part must NOT
+     * be yanked through — they keep standing on the reverse session's mapped image,
+     * which the through-part collision/interaction family already supports. Only riders
+     * whose center is past the plane map. At a fully-CROSSED transit every rider passes
+     * the test, so the fast-crossing fallback path is unchanged by construction.
      */
     private static int teleportRiders(
         ServerSubLevel hosted, ServerLevel oldParent, ServerLevel newParent, Portal portal
@@ -534,11 +541,19 @@ public final class SableRehomeOps {
         AABB queryBbox = hosted.boundingBox().toMojang().inflate(0.5);
         List<Entity> entities = oldParent.getEntitiesOfClass(Entity.class, queryBbox);
 
+        Vec3 planePoint = portal.getOriginPos();
+        Vec3 sourceToDest = portal.getNormal().scale(-1.0);
+
         int teleported = 0;
         for (Entity entity : entities) {
             if (entity instanceof Portal) continue;
             if (entity.isRemoved()) continue;
             if (entity.getVehicle() != null) continue;
+            // Bounding-box CENTER, matching the collision family's frame selection —
+            // a rider left behind must be the same rider collision hands the mapped image.
+            if (entity.getBoundingBox().getCenter().subtract(planePoint).dot(sourceToDest) < 0.0) {
+                continue; // still on the minority/native side of the plane
+            }
 
             Vec3 mappedPos = portal.transformPoint(entity.position());
             Vec3 mappedDelta = portal.transformLocalVec(entity.getDeltaMovement());

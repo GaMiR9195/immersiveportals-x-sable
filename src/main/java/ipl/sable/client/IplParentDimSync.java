@@ -46,6 +46,33 @@ public final class IplParentDimSync {
 
     private record PendingHandoff(String parentDimId, String portalTransform) {}
 
+    private static long ipl$lastDiagMs = 0;
+
+    /**
+     * Round-trip bring-up diagnostic: per hosted client ship, the exact links that can
+     * die independently — parent duck, render pose, session store, portal resolution.
+     * 5s cadence; remove after the declarative-straddle stack stabilizes.
+     */
+    public static void clientHeartbeat() {
+        long now = System.currentTimeMillis();
+        if (now - ipl$lastDiagMs < 5000) return;
+        ipl$lastDiagMs = now;
+
+        SubLevelContainer container = IplClientHostedLookup.getHostingContainerOrNull();
+        if (container == null) return;
+        for (SubLevel sub : container.getAllSubLevels()) {
+            if (!(sub instanceof ClientSubLevel clientSub) || sub.isRemoved()) continue;
+            Level parent = ipl.sable.dim.IplDimAgnostic.getParentLevel(sub);
+            var pos = clientSub.renderPose().position();
+            LOG.info("[IPL-CLIENT-DIAG] ship={} parent={} pose=({},{},{}) portal={}",
+                sub.getUniqueId(),
+                parent == null ? "NULL" : parent.dimension().location(),
+                String.format("%.1f", pos.x()), String.format("%.1f", pos.y()),
+                String.format("%.1f", pos.z()),
+                IplStraddleSessionStore.debugPortalKind(clientSub));
+        }
+    }
+
     /** Retries handoffs that arrived before their client sub-level was created. */
     public static void applyPendingHandoffs() {
         if (PENDING_HANDOFFS.isEmpty()) return;
@@ -145,6 +172,11 @@ public final class IplParentDimSync {
             // movement while avoiding a one-client-tick pose hold after the teleport.
             ((IplClientSubLevelRenderPoseAccessor) clientSubLevel)
                 .ipl$setLastRenderPosePartialTick(-1.0f);
+            LOG.info("[IPL-PARENT-SYNC] handoff applied for {} -> parent {} pose=({},{},{})",
+                subLevelId, parentDimId,
+                String.format("%.1f", pose.position().x()),
+                String.format("%.1f", pose.position().y()),
+                String.format("%.1f", pose.position().z()));
             return true;
         }
 
