@@ -111,9 +111,6 @@ public class IPModMain {
             ipl.sable.transit.IplShipPortalCommand.register(event.getDispatcher());
         });
 
-        // IPSable atlas M6: anchors persist on portal entity NBT across restarts.
-        ipl.sable.transit.IplShipPortalAnchor.registerPersistence();
-
         // @Nick1st moved to IPModEntry (those are registry functions)
 //        SubCommandArgumentType.init();
 //        TimingFunctionArgumentType.init();

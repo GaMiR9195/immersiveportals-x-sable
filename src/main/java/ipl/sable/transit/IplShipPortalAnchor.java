@@ -69,64 +69,102 @@ public final class IplShipPortalAnchor {
     private static final Map<UUID, Anchor> ANCHORS = new HashMap<>();
 
     /**
-     * Anchors restored from portal NBT whose ship hasn't resolved yet → remaining
-     * grace ticks. Boot ordering: a portal's chunk can load before Sable's hosting
-     * container finishes restoring its sub-levels — releasing on the first failed
-     * lookup would silently drop every persisted anchor. While pending, the anchor
-     * neither drives nor releases; on first resolve the carrier side effects and
-     * client sync are applied.
+     * Anchors restored from the world SavedData whose ship hasn't resolved yet →
+     * remaining grace ticks. Boot ordering: restore runs on the first server tick,
+     * typically before portal chunks load AND before Sable's hosting container
+     * finishes restoring its sub-levels — releasing on the first failed lookup would
+     * silently drop every persisted anchor. While pending, the anchor neither drives
+     * nor releases; on first resolve the carrier side effects and client sync apply.
      */
     private static final Map<UUID, Integer> RESTORE_PENDING = new HashMap<>();
     private static final int RESTORE_GRACE_TICKS = 1200; // 60s
 
-    private static final String NBT_KEY = "iplSableShipAnchor";
+    // ------------------------------------------------------------------
+    // Persistence: a SavedData on the overworld — STATEFUL, not derived-at-save
+    // from entity serialization. Vanilla owns WHEN to write (autosave, pause save,
+    // stop save); we own only WHAT. This kills the whole save-ordering trap class
+    // (the portal-NBT attempt lost every anchor because our stop cleanup cleared
+    // the map before stopServer's save serialized the portal entities) and makes
+    // restore independent of portal chunk-load timing.
 
-    /**
-     * Persist anchors on the PORTAL entity's NBT (the portal is the durable object;
-     * the ship is referenced by UUID). Registered once from IPModMain. Unanchored
-     * portals simply write no tag, so release paths need no save-side bookkeeping.
-     */
-    public static void registerPersistence() {
-        // A/B kill switch while the feature is young: -Dipl.sable.anchorPersistence=false
-        if ("false".equals(System.getProperty("ipl.sable.anchorPersistence"))) {
-            LOG.info("[IPL-SHIP-PORTAL] anchor persistence DISABLED by system property");
-            return;
+    private static final String SAVED_DATA_NAME = "ipl_sable_ship_portal_anchors";
+    /** A/B kill switch while the feature is young: -Dipl.sable.anchorPersistence=false */
+    private static final boolean PERSISTENCE_ENABLED =
+        !"false".equals(System.getProperty("ipl.sable.anchorPersistence"));
+    /** Which server instance the on-disk anchors were restored for. */
+    private static MinecraftServer restoredFor = null;
+
+    public static final class AnchorSavedData extends net.minecraft.world.level.saveddata.SavedData {
+
+        /** Parsed-but-not-yet-applied anchor tags from disk (applied on first tickAll). */
+        private net.minecraft.nbt.ListTag loaded = new net.minecraft.nbt.ListTag();
+
+        public static AnchorSavedData get(ServerLevel overworld) {
+            return overworld.getDataStorage().computeIfAbsent(
+                new net.minecraft.world.level.saveddata.SavedData.Factory<>(
+                    AnchorSavedData::new,
+                    (nbt, registries) -> {
+                        AnchorSavedData data = new AnchorSavedData();
+                        data.loaded = nbt.getList("anchors", 10).copy();
+                        return data;
+                    },
+                    null),
+                SAVED_DATA_NAME);
         }
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
-            de.nick1st.imm_ptl.events.WritePortalDataEvent.class, event -> {
-                if (event.portal.level() == null || event.portal.level().isClientSide()) return;
-                Anchor a = ANCHORS.get(event.portal.getUUID());
-                if (a == null) return;
+
+        @Override
+        public net.minecraft.nbt.CompoundTag save(
+            net.minecraft.nbt.CompoundTag tag, net.minecraft.core.HolderLookup.Provider registries
+        ) {
+            net.minecraft.nbt.ListTag list = new net.minecraft.nbt.ListTag();
+            for (Map.Entry<UUID, Anchor> entry : ANCHORS.entrySet()) {
+                Anchor a = entry.getValue();
                 net.minecraft.nbt.CompoundTag t = new net.minecraft.nbt.CompoundTag();
+                t.putUUID("portalId", entry.getKey());
                 t.putUUID("shipId", a.shipId());
+                t.putString("dim", a.portalDim().location().toString());
                 t.putDouble("plotX", a.plotPos().x);
                 t.putDouble("plotY", a.plotPos().y);
                 t.putDouble("plotZ", a.plotPos().z);
                 putQuat(t, "lo", a.localOrient());
                 putQuat(t, "dl", a.destLock());
-                event.tag.put(NBT_KEY, t);
-            });
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
-            de.nick1st.imm_ptl.events.ReadPortalDataEvent.class, event -> {
-                if (event.portal.level() == null || event.portal.level().isClientSide()) return;
-                if (!event.tag.contains(NBT_KEY)) return;
-                try {
-                    net.minecraft.nbt.CompoundTag t = event.tag.getCompound(NBT_KEY);
-                    ANCHORS.put(event.portal.getUUID(), new Anchor(
-                        t.getUUID("shipId"),
-                        event.portal.level().dimension(),
-                        new Vector3d(
-                            t.getDouble("plotX"), t.getDouble("plotY"), t.getDouble("plotZ")),
-                        getQuat(t, "lo"),
-                        getQuat(t, "dl")));
-                    RESTORE_PENDING.put(event.portal.getUUID(), RESTORE_GRACE_TICKS);
-                    LOG.info("[IPL-SHIP-PORTAL] restored anchor for portal {} (ship {}, pending resolve)",
-                        event.portal.getUUID(), t.getUUID("shipId"));
-                } catch (Throwable th) {
-                    LOG.error("[IPL-SHIP-PORTAL] bad persisted anchor on portal {}",
-                        event.portal.getUUID(), th);
-                }
-            });
+                list.add(t);
+            }
+            tag.put("anchors", list);
+            return tag;
+        }
+    }
+
+    /** Applied lazily on the first tickAll of a server instance. */
+    private static void restoreFromDisk(MinecraftServer server) {
+        AnchorSavedData data = AnchorSavedData.get(server.overworld());
+        for (int i = 0; i < data.loaded.size(); i++) {
+            try {
+                net.minecraft.nbt.CompoundTag t = data.loaded.getCompound(i);
+                UUID portalId = t.getUUID("portalId");
+                ANCHORS.put(portalId, new Anchor(
+                    t.getUUID("shipId"),
+                    ResourceKey.create(
+                        net.minecraft.core.registries.Registries.DIMENSION,
+                        net.minecraft.resources.ResourceLocation.parse(t.getString("dim"))),
+                    new Vector3d(
+                        t.getDouble("plotX"), t.getDouble("plotY"), t.getDouble("plotZ")),
+                    getQuat(t, "lo"),
+                    getQuat(t, "dl")));
+                RESTORE_PENDING.put(portalId, RESTORE_GRACE_TICKS);
+                LOG.info("[IPL-SHIP-PORTAL] restored anchor for portal {} (ship {}, pending resolve)",
+                    portalId, t.getUUID("shipId"));
+            } catch (Throwable th) {
+                LOG.error("[IPL-SHIP-PORTAL] bad persisted anchor entry {}", i, th);
+            }
+        }
+        data.loaded = new net.minecraft.nbt.ListTag();
+    }
+
+    /** Mark the anchor set changed — vanilla persists it at the next save point. */
+    private static void markDirty(MinecraftServer server) {
+        if (!PERSISTENCE_ENABLED || server == null) return;
+        AnchorSavedData.get(server.overworld()).setDirty();
     }
 
     private static void putQuat(net.minecraft.nbt.CompoundTag tag, String prefix, DQuaternion q) {
@@ -144,10 +182,11 @@ public final class IplShipPortalAnchor {
 
     private IplShipPortalAnchor() {}
 
-    /** Server stopping/starting: drop all runtime anchors (persisted state lives in portal NBT). */
+    /** Server stopped: drop runtime state (persisted state lives in the world's SavedData). */
     public static void clearAll() {
         ANCHORS.clear();
         RESTORE_PENDING.clear();
+        restoredFor = null;
     }
 
     public static boolean isAnchored(UUID portalId) {
@@ -258,6 +297,7 @@ public final class IplShipPortalAnchor {
 
         ANCHORS.put(portal.getUUID(), new Anchor(
             ship.getUniqueId(), level.dimension(), localPos, localOrient, destLock));
+        markDirty(level.getServer());
         applyCarrierSideEffects(portal, ship, true);
         syncToClients(level.getServer(), portal.getUUID());
         LOG.info("[IPL-SHIP-PORTAL] anchored portal {} to ship {} at plot ({}, {}, {})",
@@ -274,6 +314,7 @@ public final class IplShipPortalAnchor {
         if (removed == null) return "portal was not anchored";
         applyCarrierSideEffects(portal, null, false);
         if (portal.level() instanceof ServerLevel sl) {
+            markDirty(sl.getServer());
             syncClearToClients(sl.getServer(), portal.getUUID());
         }
         return "unanchored";
@@ -313,6 +354,10 @@ public final class IplShipPortalAnchor {
     private static int syncCounter = 0;
 
     public static void tickAll(MinecraftServer server) {
+        if (PERSISTENCE_ENABLED && restoredFor != server) {
+            restoredFor = server;
+            restoreFromDisk(server);
+        }
         if (ANCHORS.isEmpty()) return;
         // Late-joiner bootstrap: the anchor payload is tiny; rebroadcast on a slow
         // cadence instead of tracking per-player join state.
@@ -335,6 +380,7 @@ public final class IplShipPortalAnchor {
                 LOG.info("[IPL-SHIP-PORTAL] portal {} gone — anchor dropped", entry.getKey());
                 syncClearToClients(server, entry.getKey());
                 it.remove();
+                markDirty(server);
                 continue;
             }
 
@@ -351,6 +397,7 @@ public final class IplShipPortalAnchor {
                 applyCarrierSideEffects(portal, null, false);
                 syncClearToClients(server, entry.getKey());
                 it.remove();
+                markDirty(server);
                 continue;
             }
             if (RESTORE_PENDING.remove(entry.getKey()) != null) {
