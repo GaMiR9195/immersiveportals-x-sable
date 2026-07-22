@@ -85,7 +85,7 @@ public final class IplPortalRimManager {
 
             Entity entity = level.getEntity(entry.getKey());
             if (!(entity instanceof Portal portal) || portal.isRemoved()
-                || !portal.isTeleportable()) {
+                || !portal.isTeleportable() || hasBlockFrame(portal)) {
                 for (int id : rim.ids()) IplStraddlePortalRim.remove(scene, id);
                 LOG.info("[IPL-RIM] portal {} gone — rim removed", entry.getKey());
                 it.remove();
@@ -112,6 +112,7 @@ public final class IplPortalRimManager {
         for (Entity candidate : level.getAllEntities()) {
             if (!(candidate instanceof Portal portal) || !portal.isTeleportable()) continue;
             if (RIMS.containsKey(portal.getUUID())) continue;
+            if (hasBlockFrame(portal)) continue;
             if (portal.getWidth() <= 0 || portal.getHeight() <= 0
                 || portal.getWidth() > MAX_APERTURE || portal.getHeight() > MAX_APERTURE) {
                 continue;
@@ -168,6 +169,17 @@ public final class IplPortalRimManager {
         }
         LOG.info("[IPL-RIM] carrier exclusion {} for {} rim body(ies) vs carrier {}",
             on ? "ON" : "off", rimIds.length, carrier);
+    }
+
+    /**
+     * Framed portals (nether portals and every datapack custom-gen form — any
+     * {@code BreakablePortalEntity} carrying a block shape) need no rim: their
+     * physical frame blocks ARE the aperture containment, and a rim would just
+     * plant a redundant invisible wall over them.
+     */
+    private static boolean hasBlockFrame(Portal portal) {
+        return portal instanceof qouteall.imm_ptl.core.portal.nether_portal.BreakablePortalEntity breakable
+            && breakable.blockPortalShape != null;
     }
 
     private static IplStraddlePortalRim.RimGeometry geometryOf(Portal portal) {
