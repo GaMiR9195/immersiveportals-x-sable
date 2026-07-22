@@ -118,7 +118,14 @@ public final class IplShipNetherPortal {
             // from the primary; a second independent anchor would fight the rectify.
             if (isClusterAnchored(portal)) continue;
 
-            String result = IplShipPortalAnchor.anchorToShip(portal, ship);
+            // The portal entity's world pose is STALE by however far the ship
+            // fell/drifted between assembly and this (post-rehome) capture — but the
+            // assembly transform is a pure translation, so the aperture's plot
+            // position is exact: worldOrigin + delta. anchorToShipAtPlot also snaps
+            // the entity onto the ship's current pose.
+            net.minecraft.world.phys.Vec3 plotOrigin = portal.getOriginPos()
+                .add(delta.getX(), delta.getY(), delta.getZ());
+            String result = IplShipPortalAnchor.anchorToShipAtPlot(portal, ship, plotOrigin);
             LOG.info("[IPL-SHIP-PORTAL] assembly captured portal {}: {}",
                 portal.getUUID(), result);
         }

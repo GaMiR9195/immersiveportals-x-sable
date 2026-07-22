@@ -124,19 +124,51 @@ public final class IplShipPortalAnchor {
     }
 
     /**
-     * Anchor {@code portal} to a KNOWN ship (assembly attach, generated-on-ship nether
-     * portals) — same math as the command path, no proximity search.
+     * Anchor {@code portal} to a KNOWN ship (generated-on-ship nether portals) —
+     * same math as the command path, no proximity search. Requires the portal's
+     * CURRENT world pose to correspond to the ship's CURRENT pose (true when the
+     * portal was just posed from this ship, or the ship hasn't moved since).
      */
     public static String anchorToShip(Portal portal, ServerSubLevel ship) {
-        ServerLevel level = (ServerLevel) portal.level();
         Pose3dc pose = ship.logicalPose();
         Quaterniond shipRot = new Quaterniond(pose.orientation());
         Vec3 plotOrigin = pose.transformPositionInverse(portal.getOriginPos());
-        Vector3d localPos = new Vector3d(plotOrigin.x, plotOrigin.y, plotOrigin.z);
 
         DQuaternion shipD = new DQuaternion(shipRot.x, shipRot.y, shipRot.z, shipRot.w);
         DQuaternion o0 = portal.getOrientationRotation();
         DQuaternion localOrient = shipD.getConjugated().hamiltonProduct(o0);
+        return register(portal, ship, plotOrigin, localOrient);
+    }
+
+    /**
+     * Anchor with an EXACT plot-space origin — for portals whose world entity pose
+     * is STALE relative to the ship. Assembly capture is the canonical case: the
+     * capture waits for the rehome, and the assembled ship (a live physics body)
+     * falls/drifts meanwhile while the not-yet-anchored portal entity stays at its
+     * lit world position — deriving the anchor from that pose bakes the drift in
+     * (observed: aperture offset ~3.5 blocks from its frame). The assembly
+     * transform is a PURE TRANSLATION, so the caller knows the plot origin
+     * exactly, and the portal's unchanged world orientation IS its plot-frame
+     * orientation. The portal is snapped onto the ship's current pose immediately.
+     */
+    public static String anchorToShipAtPlot(Portal portal, ServerSubLevel ship, Vec3 plotOrigin) {
+        // Plot frame == the portal's (stale) world frame up to translation, so the
+        // plot-frame orientation is the portal's current orientation verbatim.
+        DQuaternion localOrient = portal.getOrientationRotation();
+        String result = register(portal, ship, plotOrigin, localOrient);
+        Anchor anchor = ANCHORS.get(portal.getUUID());
+        if (anchor != null) {
+            drivePortal(portal, ship, anchor); // snap out of the stale world pose now
+        }
+        return result;
+    }
+
+    private static String register(
+        Portal portal, ServerSubLevel ship, Vec3 plotOrigin, DQuaternion localOrient
+    ) {
+        if (!(portal.level() instanceof ServerLevel level)) return "server side only";
+        Vector3d localPos = new Vector3d(plotOrigin.x, plotOrigin.y, plotOrigin.z);
+        DQuaternion o0 = portal.getOrientationRotation();
         DQuaternion rt0 = portal.getRotation() == null ? DQuaternion.identity : portal.getRotation();
         DQuaternion destLock = rt0.hamiltonProduct(o0);
 
@@ -245,14 +277,25 @@ public final class IplShipPortalAnchor {
                     + oCur.getZ() * oNow.getZ() + oCur.getW() * oNow.getW()) < 1.0 - 1.0e-10;
             if (!moved) continue;
 
-            DQuaternion rtNow = a.destLock().hamiltonProduct(oNow.getConjugated());
-
-            portal.setOriginPos(originNow);
-            portal.setOrientationRotation(oNow);
-            portal.setRotation(rtNow);
-            portal.reloadAndSyncToClientNextTick();
-            PortalExtension.get(portal).rectifyClusterPortals(portal, true);
+            drivePortal(portal, ship, a);
         }
+    }
+
+    /** Re-pose {@code portal} from the ship's CURRENT pose (tick driver + anchor snap). */
+    private static void drivePortal(Portal portal, ServerSubLevel ship, Anchor a) {
+        Pose3dc pose = ship.logicalPose();
+        Quaterniond shipRot = new Quaterniond(pose.orientation());
+        Vec3 originNow = pose.transformPosition(
+            new Vec3(a.plotPos().x, a.plotPos().y, a.plotPos().z));
+        DQuaternion shipD = new DQuaternion(shipRot.x, shipRot.y, shipRot.z, shipRot.w);
+        DQuaternion oNow = shipD.hamiltonProduct(a.localOrient());
+        DQuaternion rtNow = a.destLock().hamiltonProduct(oNow.getConjugated());
+
+        portal.setOriginPos(originNow);
+        portal.setOrientationRotation(oNow);
+        portal.setRotation(rtNow);
+        portal.reloadAndSyncToClientNextTick();
+        PortalExtension.get(portal).rectifyClusterPortals(portal, true);
     }
 
     // ------------------------------------------------------------------
