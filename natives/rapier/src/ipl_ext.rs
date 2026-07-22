@@ -391,3 +391,47 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegio
         info.image_clip.insert(handle, regions);
     }
 }
+
+/// Atlas M5 (spec v3 §2.8): update an image collider's portal prefix — moving
+/// portals re-derive P = (R, t) per tick (animated portals, portals anchored to
+/// physics structures). The engine recomposes the collider pose and re-runs
+/// broad/narrow phase from the PARENT change flag.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImagePrefix<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    packed_handle: jlong,
+    dx: jdouble,
+    dy: jdouble,
+    dz: jdouble,
+    qx: jdouble,
+    qy: jdouble,
+    qz: jdouble,
+    qw: jdouble,
+) {
+    use rapier3d::prelude::ColliderHandle;
+
+    if scene_handle == 0 || packed_handle < 0 {
+        return;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sim_data = scene.sim_data.write().unwrap();
+    let handle = ColliderHandle::from_raw_parts(
+        (packed_handle >> 32) as u32,
+        (packed_handle & 0xFFFF_FFFF) as u32,
+    );
+    let Some(collider) = sim_data.collider_set.get_mut(handle) else {
+        return; // image already retired — a moving-portal refresh racing session end
+    };
+    collider.set_portal_prefix(Some(rapier3d::math::Pose {
+        translation: Vec3::new(dx as Real, dy as Real, dz as Real),
+        rotation: rapier3d::math::Rotation::from_xyzw(
+            qx as Real,
+            qy as Real,
+            qz as Real,
+            qw as Real,
+        )
+        .normalize(),
+    }));
+}

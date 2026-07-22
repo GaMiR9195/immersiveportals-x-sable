@@ -1,27 +1,14 @@
 package ipl.sable.transit;
 
-import dev.ryanhcode.sable.companion.math.BoundingBox3ic;
-import dev.ryanhcode.sable.companion.math.Pose3dc;
-import dev.ryanhcode.sable.physics.chunk.VoxelNeighborhoodState;
 import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
 import dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline;
-import dev.ryanhcode.sable.physics.impl.rapier.collider.RapierVoxelColliderData;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
-import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
-import dev.ryanhcode.sable.util.LevelAccelerator;
 import ipl.sable.dim.IplDimAgnostic;
 import ipl.sable.dim.IplSceneOwnership;
 import ipl.sable.mixin.IplRapierPipelineAccess;
-import it.unimi.dsi.fastutil.longs.LongArrayList;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.level.chunk.LevelChunk;
-import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Quaterniond;
-import org.joml.Vector3dc;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -71,10 +58,13 @@ public final class IplStraddleCloneBody {
         final long parentScene;
         final long destScene;
         final int realId;
-        /** Full portal isometry source→dest (rotation-capable; scale gated at 1). */
-        final IplStraddlePoseMap.StraddleMapping mapping;
-        /** Crossing direction at the source plane (kept for clip-region refresh, M5). */
-        final Vec3 sourceToDest;
+        /** Full portal isometry source→dest (rotation-capable; scale gated at 1).
+         *  MUTABLE since M5: moving portals re-derive it per tick. */
+        IplStraddlePoseMap.StraddleMapping mapping;
+        /** Crossing direction at the source plane (refreshed with the mapping). */
+        Vec3 sourceToDest;
+        /** Portal origin at the last clip-region computation (M5 movement detection). */
+        Vec3 lastOrigin = Vec3.ZERO;
         /** The REAL body's aperture clip region for this portal (14 doubles). */
         double[] realClipRegion;
         /** The image collider of the REAL body in the dest chart (atlas M2/M4). */
@@ -130,7 +120,11 @@ public final class IplStraddleCloneBody {
         if (IplSceneOwnership.getBodyHome(hosted) != parent) return;
 
         StraddleKey key = new StraddleKey(hosted.getUniqueId(), portal.getUUID());
-        if (SESSIONS.containsKey(key)) return;
+        Session existing = SESSIONS.get(key);
+        if (existing != null) {
+            refreshIfMoved(existing, portal, sourceToDest);
+            return;
+        }
 
         RapierPhysicsPipeline parentPipeline = IplSceneOwnership.pipelineOf(parent);
         RapierPhysicsPipeline destPipeline = IplSceneOwnership.pipelineOf(dest);
@@ -165,6 +159,7 @@ public final class IplStraddleCloneBody {
         //    dropped, so only the through-part is physically present dest-side.
         {
             Vec3 origin = portal.getOriginPos();
+            session.lastOrigin = origin;
             session.realClipRegion = clipRegion(
                 origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
                 portal.getWidth() * 0.5, portal.getHeight() * 0.5);
@@ -187,6 +182,53 @@ public final class IplStraddleCloneBody {
         LOG.info("[IPL-IMAGE] start uuid={} portal={} dest={} rotated={} imageHandle={} destScene={}",
             hosted.getUniqueId(), portal.getUUID(), portal.getDestPos(),
             !mapping.isIdentityRotation(), session.imageHandle, session.destScene);
+    }
+
+    /**
+     * Atlas M5 (spec v3 §2.8): moving portals. Re-derive the portal isometry each
+     * straddle tick; when the portal moved (isometry OR aperture geometry), push the
+     * fresh prefix to the image collider and rebuild both halves of the clip seam.
+     * Cheap when static (two pose comparisons). Per-TICK granularity: within a tick
+     * the isometry is frozen (kinematic-frame fiat, spec §2.8) — the frame-twist
+     * velocity term is the M5b follow-up.
+     */
+    private static void refreshIfMoved(Session s, Portal portal, Vec3 sourceToDest) {
+        if (s.sub.isRemoved()) return;
+        IplStraddlePoseMap.StraddleMapping fresh = IplStraddlePoseMap.StraddleMapping.of(portal);
+        Vec3 origin = portal.getOriginPos();
+
+        Vec3 newShift = fresh.mapPoint(Vec3.ZERO);
+        Vec3 oldShift = s.mapping.mapPoint(Vec3.ZERO);
+        org.joml.Quaterniond newRot = fresh.mapQuat(new org.joml.Quaterniond());
+        org.joml.Quaterniond oldRot = s.mapping.mapQuat(new org.joml.Quaterniond());
+        boolean isoMoved = oldShift.distanceToSqr(newShift) > 1.0e-10
+            || Math.abs(newRot.dot(oldRot)) < 1.0 - 1.0e-10;
+        boolean apertureMoved = s.lastOrigin.distanceToSqr(origin) > 1.0e-10;
+        if (!isoMoved && !apertureMoved) return;
+
+        s.mapping = fresh;
+        s.sourceToDest = sourceToDest;
+        s.lastOrigin = origin;
+
+        if (isoMoved) {
+            ipl.sable.natives.IplRapierNatives.setImagePrefix(
+                s.destScene, s.imageHandle,
+                newShift.x, newShift.y, newShift.z,
+                newRot.x, newRot.y, newRot.z, newRot.w);
+        }
+
+        s.realClipRegion = clipRegion(
+            origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
+            portal.getWidth() * 0.5, portal.getHeight() * 0.5);
+        applyRealClipRegions(s.sub, s.parentScene, s.realId);
+        double[] imageRegion = clipRegion(
+            fresh.mapPoint(origin),
+            fresh.mapVec(sourceToDest).scale(-1.0),
+            fresh.mapVec(portal.getAxisW()),
+            fresh.mapVec(portal.getAxisH()),
+            portal.getWidth() * 0.5, portal.getHeight() * 0.5);
+        ipl.sable.natives.IplRapierNatives.setImageClipRegions(
+            s.destScene, s.realId, s.imageHandle, imageRegion);
     }
 
     private static double[] clipRegion(

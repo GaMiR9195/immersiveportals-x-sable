@@ -87,6 +87,15 @@ public final class IplRapierNatives {
         double dx, double dy, double dz,
         double qx, double qy, double qz, double qw);
 
+    /**
+     * Atlas M5: update an image collider's portal isometry — moving portals (animated,
+     * or anchored to physics structures) re-derive {@code P = (R, t)} per tick.
+     */
+    public static native void setImagePrefix(
+        long sceneHandle, long imageHandle,
+        double dx, double dy, double dz,
+        double qx, double qy, double qz, double qw);
+
     /** Remove an image collider created by {@link #createImageCollider}. */
     public static native void removeImageCollider(
         long sceneHandle, int bodyId, long imageHandle);
