@@ -170,7 +170,7 @@ public final class SableTransitController {
                 UUID portalUuid = portal.getUUID();
                 // A carrier ignores its OWN anchored portal completely: no session,
                 // no crossing state, no transit (IplShipPortalAnchor).
-                if (IplShipPortalAnchor.isAnchorShip(portalUuid, airship.getUniqueId())) {
+                if (IplShipPortalAnchor.isAnchorShip(portal, airship.getUniqueId())) {
                     continue;
                 }
                 StraddleKey key = new StraddleKey(

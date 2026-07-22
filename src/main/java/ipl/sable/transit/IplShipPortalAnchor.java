@@ -83,6 +83,22 @@ public final class IplShipPortalAnchor {
         return a != null && a.shipId().equals(shipId);
     }
 
+    /**
+     * Cluster-aware self-traversal test — USE THIS for session/transit gating.
+     * Only the cluster PRIMARY lives in the anchor map, but bi-faced portals
+     * (nether portals, datapack custom-gen) have a flipped twin on the SAME
+     * plane with the opposite normal: gating by UUID alone lets the carrier
+     * open a straddle session against its own portal's other face — an image
+     * collider of itself through its own deck aperture (self-collision chaos).
+     */
+    public static boolean isAnchorShip(Portal portal, UUID shipId) {
+        if (isAnchorShip(portal.getUUID(), shipId)) return true;
+        PortalExtension ext = PortalExtension.get(portal);
+        return (ext.flippedPortal != null && isAnchorShip(ext.flippedPortal.getUUID(), shipId))
+            || (ext.reversePortal != null && isAnchorShip(ext.reversePortal.getUUID(), shipId))
+            || (ext.parallelPortal != null && isAnchorShip(ext.parallelPortal.getUUID(), shipId));
+    }
+
     public static int count() {
         return ANCHORS.size();
     }

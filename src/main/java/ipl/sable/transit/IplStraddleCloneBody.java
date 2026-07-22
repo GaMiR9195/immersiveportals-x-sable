@@ -94,7 +94,7 @@ public final class IplStraddleCloneBody {
         if (!isEnabled() || !IplDimAgnostic.isHosted(hosted)) return;
         // Never open a session for a ship straddling its OWN anchored portal
         // (defense in depth — the transit controller already skips the pair).
-        if (IplShipPortalAnchor.isAnchorShip(portal.getUUID(), hosted.getUniqueId())) return;
+        if (IplShipPortalAnchor.isAnchorShip(portal, hosted.getUniqueId())) return;
         // The atlas natives ARE the physics — without them there is no straddle
         // session at all (and the whole mod is inoperable anyway, see IplFusedStep).
         if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return;
