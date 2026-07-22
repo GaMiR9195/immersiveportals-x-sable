@@ -58,6 +58,17 @@ public abstract class IplStraddleOutlineMixin {
             SubLevel owner = dev.ryanhcode.sable.Sable.HELPER.getContaining(
                 this.level, blockTarget.getBlockPos());
             if (owner instanceof ClientSubLevel) {
+                // Only THROUGH-half blocks render their outline at the mapped pose;
+                // a source-half block's outline belongs at the ship's native pose
+                // (same plot-space cut as pick/interaction — keep-filter truth).
+                java.util.function.Predicate<net.minecraft.core.BlockPos> keep =
+                    ipl.sable.transit.IplStraddlePoseMap.getSourceHalfKeepFilter(
+                        owner, this.level);
+                boolean throughHalf = keep != null && !keep.test(blockTarget.getBlockPos());
+                if (!throughHalf) {
+                    return original.call(context, camera, target, deltaTracker,
+                        poseStack, bufferSource);
+                }
                 for (IplClientHostedLookup.StraddleProjection proj :
                         IplClientHostedLookup.getStraddleProjectionsInto(this.level)) {
                     if (proj.sub() == owner) {

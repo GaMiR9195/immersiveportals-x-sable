@@ -31,6 +31,35 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class IplStraddleProjectOutMixin {
 
     @Inject(
+        method = "distanceSquaredWithSubLevels(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/Position;Lnet/minecraft/core/Position;)D",
+        at = @At("RETURN"),
+        cancellable = true,
+        remap = false,
+        require = 0
+    )
+    private void ipl$frameAwareDistance(
+        Level level, Position a, Position b, CallbackInfoReturnable<Double> cir
+    ) {
+        boolean plotA = Math.abs(a.x()) >= 1_000_000;
+        boolean plotB = Math.abs(b.x()) >= 1_000_000;
+        if (!plotA && !plotB) return;
+
+        // The runtime companion's overload delegation does not reliably route this
+        // pair through the (remapping) 3-arg projection - recompute both endpoints
+        // through it DIRECTLY and take the min: a through-half plot point measures
+        // to its MAPPED world position (where it physically is), never the ghost.
+        ActiveSableCompanion self = (ActiveSableCompanion) (Object) this;
+        Vector3d worldA = self.projectOutOfSubLevel(
+            level, new Vector3d(a.x(), a.y(), a.z()), new Vector3d());
+        Vector3d worldB = self.projectOutOfSubLevel(
+            level, new Vector3d(b.x(), b.y(), b.z()), new Vector3d());
+        double remappedSq = worldA.distanceSquared(worldB);
+        if (remappedSq < cir.getReturnValue()) {
+            cir.setReturnValue(remappedSq);
+        }
+    }
+
+    @Inject(
         method = "projectOutOfSubLevel(Lnet/minecraft/world/level/Level;Lorg/joml/Vector3dc;Lorg/joml/Vector3d;)Lorg/joml/Vector3d;",
         at = @At("RETURN"),
         remap = false,
