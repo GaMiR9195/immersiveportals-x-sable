@@ -176,22 +176,31 @@ public final class IplShipPortalAnchor {
 
     // ------------------------------------------------------------------
 
+    /**
+     * Acceptance margin (blocks) between the portal origin and the ship's BOUNDS —
+     * measured to the box surface, not the center, so large hulls qualify. Generous
+     * by default: a deck-mounted portal floats a rim's width above the hull, and the
+     * origin of a wand-made portal can sit a few blocks off the frame.
+     */
+    private static final double ANCHOR_MARGIN =
+        Double.parseDouble(System.getProperty("ipl.sable.shipPortal.anchorMargin", "8.0"));
+
     private static ServerSubLevel findShipAt(ServerLevel level, Vec3 pos) {
         ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
         if (container == null) return null;
         ServerSubLevel best = null;
-        double bestDist = 8.0 * 8.0;
+        double bestDist = ANCHOR_MARGIN * ANCHOR_MARGIN;
         for (ServerSubLevel sub : container.getAllSubLevels()) {
             if (sub.isRemoved()) continue;
             var bb = sub.boundingBox();
-            boolean inside = pos.x >= bb.minX() && pos.x <= bb.maxX()
-                && pos.y >= bb.minY() && pos.y <= bb.maxY()
-                && pos.z >= bb.minZ() && pos.z <= bb.maxZ();
-            if (inside) return sub;
-            double cx = (bb.minX() + bb.maxX()) * 0.5;
-            double cy = (bb.minY() + bb.maxY()) * 0.5;
-            double cz = (bb.minZ() + bb.maxZ()) * 0.5;
-            double d = pos.distanceToSqr(cx, cy, cz);
+            // Distance from the origin to the closest point of the ship's AABB
+            // (zero when inside): a portal hovering just above a large deck is
+            // near the SURFACE while being far from the center.
+            double dx = Math.max(0.0, Math.max(bb.minX() - pos.x, pos.x - bb.maxX()));
+            double dy = Math.max(0.0, Math.max(bb.minY() - pos.y, pos.y - bb.maxY()));
+            double dz = Math.max(0.0, Math.max(bb.minZ() - pos.z, pos.z - bb.maxZ()));
+            double d = dx * dx + dy * dy + dz * dz;
+            if (d == 0.0) return sub;
             if (d < bestDist) {
                 bestDist = d;
                 best = sub;
