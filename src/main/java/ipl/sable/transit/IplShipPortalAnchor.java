@@ -119,6 +119,7 @@ public final class IplShipPortalAnchor {
         ANCHORS.put(portal.getUUID(), new Anchor(
             ship.getUniqueId(), level.dimension(), localPos, localOrient, destLock));
         applyCarrierSideEffects(portal, ship, true);
+        syncToClients(level.getServer(), portal.getUUID());
         LOG.info("[IPL-SHIP-PORTAL] anchored portal {} to ship {} at local ({}, {}, {})",
             portal.getUUID(), ship.getUniqueId(),
             String.format("%.2f", localPos.x), String.format("%.2f", localPos.y),
@@ -131,6 +132,9 @@ public final class IplShipPortalAnchor {
         Anchor removed = ANCHORS.remove(portal.getUUID());
         if (removed == null) return "portal was not anchored";
         applyCarrierSideEffects(portal, null, false);
+        if (portal.level() instanceof ServerLevel sl) {
+            syncClearToClients(sl.getServer(), portal.getUUID());
+        }
         return "unanchored";
     }
 
@@ -165,8 +169,17 @@ public final class IplShipPortalAnchor {
      * Drive all anchored portals from their ships' fresh physics poses. Called at the
      * end of the fused step (IplFusedStep), when this tick's poses are final.
      */
+    private static int syncCounter = 0;
+
     public static void tickAll(MinecraftServer server) {
         if (ANCHORS.isEmpty()) return;
+        // Late-joiner bootstrap: the anchor payload is tiny; rebroadcast on a slow
+        // cadence instead of tracking per-player join state.
+        if ((syncCounter++ % 100) == 0) {
+            for (UUID portalId : ANCHORS.keySet().toArray(new UUID[0])) {
+                syncToClients(server, portalId);
+            }
+        }
 
         Iterator<Map.Entry<UUID, Anchor>> it = ANCHORS.entrySet().iterator();
         while (it.hasNext()) {
@@ -179,6 +192,7 @@ public final class IplShipPortalAnchor {
             if (entity == null) continue; // unloaded — keep the anchor, skip this tick
             if (!(entity instanceof Portal portal) || portal.isRemoved()) {
                 LOG.info("[IPL-SHIP-PORTAL] portal {} gone — anchor dropped", entry.getKey());
+                syncClearToClients(server, entry.getKey());
                 it.remove();
                 continue;
             }
@@ -188,6 +202,7 @@ public final class IplShipPortalAnchor {
                 LOG.info("[IPL-SHIP-PORTAL] ship {} gone — portal {} released",
                     a.shipId(), entry.getKey());
                 applyCarrierSideEffects(portal, null, false);
+                syncClearToClients(server, entry.getKey());
                 it.remove();
                 continue;
             }
@@ -230,6 +245,46 @@ public final class IplShipPortalAnchor {
      */
     private static final double ANCHOR_MARGIN =
         Double.parseDouble(System.getProperty("ipl.sable.shipPortal.anchorMargin", "8.0"));
+
+    /**
+     * Atlas M6 WELD: mirror the anchor to clients — the client drives the portal's
+     * pose per FRAME from the ship's interpolated render pose, pixel-locking the
+     * aperture to the hull (see ipl.sable.client.IplClientShipPortalAnchor).
+     */
+    private static void syncToClients(MinecraftServer server, UUID portalId) {
+        Anchor a = ANCHORS.get(portalId);
+        if (a == null || server == null) return;
+        ServerLevel level = server.getLevel(a.portalDim());
+        String flippedId = "";
+        if (level != null && level.getEntity(portalId) instanceof Portal portal) {
+            Portal flipped = PortalExtension.get(portal).flippedPortal;
+            if (flipped != null) flippedId = flipped.getUUID().toString();
+        }
+        String localPos = a.localPos().x + "," + a.localPos().y + "," + a.localPos().z;
+        String localOrient = a.localOrient().getX() + "," + a.localOrient().getY() + ","
+            + a.localOrient().getZ() + "," + a.localOrient().getW();
+        String destLock = a.destLock().getX() + "," + a.destLock().getY() + ","
+            + a.destLock().getZ() + "," + a.destLock().getW();
+        for (net.minecraft.server.level.ServerPlayer player
+                : server.getPlayerList().getPlayers()) {
+            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                player,
+                "ipl.sable.client.IplClientShipPortalAnchor.RemoteCallables.set",
+                portalId.toString(), flippedId, a.shipId().toString(),
+                localPos, localOrient, destLock);
+        }
+    }
+
+    private static void syncClearToClients(MinecraftServer server, UUID portalId) {
+        if (server == null) return;
+        for (net.minecraft.server.level.ServerPlayer player
+                : server.getPlayerList().getPlayers()) {
+            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                player,
+                "ipl.sable.client.IplClientShipPortalAnchor.RemoteCallables.clear",
+                portalId.toString());
+        }
+    }
 
     /**
      * Find the ship nearest {@code pos} whose EFFECTIVE PARENT is {@code level}.
