@@ -144,6 +144,10 @@ public final class IplFusedStep {
             ((IplPhysicsSystemFusionAccess) e.sys()).ipl$setCurrentSubstep(substeps);
             runGuarded(e, () -> e.sys().getPipeline().postPhysicsTicks());
         }
+
+        // Atlas M6: ship-anchored portals follow their ships' just-published poses;
+        // straddle sessions then pick the moved portals up via the M5a refresh.
+        ipl.sable.transit.IplShipPortalAnchor.tickAll(server);
     }
 
     private static void preSubstepPhases(Entry e, double dt) {

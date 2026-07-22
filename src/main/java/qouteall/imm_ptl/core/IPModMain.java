@@ -107,6 +107,8 @@ public class IPModMain {
 
         NeoForge.EVENT_BUS.addListener(RegisterCommandsEvent.class, event -> {
             PortalCommand.register(event.getDispatcher(), event.getBuildContext());
+            // IPSable atlas M6: ship-anchored portals.
+            ipl.sable.transit.IplShipPortalCommand.register(event.getDispatcher());
         });
 
         // @Nick1st moved to IPModEntry (those are registry functions)
