@@ -979,3 +979,90 @@ threads the portal to the exiting part, never flips to the wrong face); rotate
 a held body through a rotated pair from both sides.
 
 No build or automated check was run for these changes.
+
+## Grab-Chain Follow-ups — Backside Entry + Beam Through The Paired Face
+
+### Symptoms
+
+- Grab a construction sitting at the OUT portal, reaching through the IN portal
+  (same-dimension pair), then drag it back out: it slid through the OUT plane and
+  nothing happened — no transit, the grab did nothing.
+- The exiting beam (staff → through the session portal → the emerged part) was
+  visible looking THROUGH the entrance portal but not through the paired OUT
+  portal.
+
+### Cause
+
+- **Backside entry blocked by free-body gates.** A body grabbed already-mostly-
+  through the OUT portal has crossed-fraction > 0.5 toward that face's
+  destination, so `SableTransitController`'s minority-face parity rule
+  (`!haveSession && fraction > 0.5 → continue`) refused to open a straddle
+  session on it — it assumes the opposite coincident face owns the straddle. With
+  no session, the CROSSED transit branch's other admission path,
+  `enteredFromSourceAperture`, was also false (the body started straddling, it
+  never APPROACHED from the source side). Both gates exist to disambiguate a FREE
+  body's ambiguous crossing history; for a deliberately dragged body they
+  combined to make the pull-back transit impossible.
+- **Beam emitted in one face's pass only.** The beam is drawn per portal render
+  pass; a through-portal segment was emitted only when IP's render path matched
+  the traversed portal's UUID exactly. The paired reverse/flipped face has a
+  different UUID, so viewing the same doorway through the OUT portal never emitted
+  the segment. The beam's catnip line geometry is also in no shader clip
+  transformation, so it was never eye-space clipped like portal content.
+
+### Implemented Change
+
+- **Chain-authorized held-body transit.** `IplGrabChain.authorizesTransit(sub,
+  portal)` returns true when the held body's grab chain already threads that
+  doorway — the portal itself or its reverse/flipped companion (matched by
+  `PortalExtension` id). The chain is the authoritative crossing history for a
+  held body, so when it names the doorway the drag is pulling the body back
+  through (or pushing through again), the free-body gates are bypassed: the
+  minority-face skip and the source-aperture requirement no longer apply. Transit
+  then appends/annihilates the chain and rebases goal + orientation in the same
+  tick (existing `onBodyTransit`), so the body lands native in the player's frame
+  with the constraint error invariant across the flip. Doorways the chain does
+  not name are untouched — free-body behavior is unchanged.
+- **Beam through either face + real eye-space clipping.** Per-pass segment
+  emission now frames a hop by EITHER face of its portal pair (reverse/flipped
+  companion identity), so the through-portal beam appears through the paired OUT
+  portal. Each emitted segment is then CPU-clipped to the active portal pass's
+  kept half-space — preferring IP's live `FrontClipping` equation (pixel-identical
+  to the content clip), falling back to the rendering portal's own
+  destination/content plane — so the beam is cut exactly like every other
+  through-portal fragment and cannot leak past a frame. This is the portal
+  clipping the raw line shader never received.
+
+### Where eye-space portal clipping lives (reference)
+
+- IP aperture clip (slot 0, `iportal_ClippingEquation` → `gl_ClipDistance[0]`):
+  `qouteall/imm_ptl/core/render/FrontClipping.java`, IP's `MixinShaderInstance`,
+  `assets/immersive_portals/shaders/core/portal_area.vsh`/`.json`, and
+  `assets/immersive_portals/shaders/shader_transformation.yaml`.
+- Sable straddle clip (slot 1, `ipl_subLevelClipEquation` → `gl_ClipDistance[1]`):
+  `ipl/sable/render/SubLevelClipUniformPatcher.java`,
+  `ipl/sable/render/SourceClipPortalFinder.java`; mixins
+  `ipl/sable/mixin/client/SableSourceClipMixin.java`,
+  `IplShaderInstanceClipMixin.java`; program classification in
+  `ipl/sable/render/IplProgramRegistry.java` + `IplProgramBindHook.java`.
+
+### Files
+
+- `src/main/java/ipl/sable/transit/IplGrabChain.java`
+  `authorizesTransit` — chain names the doorway, bypasses free-body gates.
+- `src/main/java/ipl/sable/transit/SableTransitController.java`
+  `chainTransit` wired into the minority-face skip and the CROSSED gate.
+- `src/main/java/ipl/sable/client/IplStaffPortalBeamRenderer.java`
+  `hopFramedBy` (paired-face pass match) + per-pass segment clip call.
+- `src/main/java/ipl/sable/client/IplStaffBeamRoutes.java`
+  `clipToPortalPass` — trims a segment to the active portal pass half-space.
+
+### Verification Needed
+
+Same-dimension pair: park a construction at the OUT portal, grab it through the
+IN portal, drag it back out — it must transit and come home (not slide through
+and stall). Beam: hold a construction straddling a portal and look at the exiting
+beam through BOTH the entrance and the paired exit portal — visible and correctly
+clipped through each, no leak past either frame.
+
+No build or automated check was run for these changes.

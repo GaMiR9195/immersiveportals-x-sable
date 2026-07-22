@@ -107,6 +107,44 @@ public final class IplGrabChain {
         return players;
     }
 
+    /**
+     * Does an active grab chain authorize this held body to transit {@code portal}?
+     *
+     * <p>The free-body straddle pipeline disambiguates a crossing from geometry alone —
+     * the minority-face parity rule (of two coincident faces, only the one <50% through
+     * opens a session) and the "entered from the source aperture" gate. Both are
+     * necessary because a free body's crossing history is ambiguous (60% through one way
+     * is 40% through the other). A HELD body is NOT ambiguous: the grab chain is an
+     * exact record of which portal frames sit between the player and the body. When the
+     * body straddles a portal that the chain already threads — the portal itself, or its
+     * reverse/flipped companion (the same doorway seen from the other side) — the drag is
+     * deliberately pulling the body back through that hop (or pushing it through again),
+     * and the transit must be allowed regardless of the free-body gates. The transit then
+     * appends/annihilates the chain in {@link #onBodyTransit}, so the body lands native in
+     * the player's frame with the constraint error invariant across the flip.
+     *
+     * <p>This authorizes ONLY doorways the chain names — it never opens transit on an
+     * unrelated portal, so it adds capability without loosening free-body behavior.
+     */
+    public static boolean authorizesTransit(UUID subId, Portal portal) {
+        Set<UUID> identities = new HashSet<>(4);
+        identities.add(portal.getUUID());
+        qouteall.imm_ptl.core.portal.PortalExtension ext =
+            qouteall.imm_ptl.core.portal.PortalExtension.get(portal);
+        if (ext.reversePortalId != null) identities.add(ext.reversePortalId);
+        if (ext.flippedPortalId != null) identities.add(ext.flippedPortalId);
+        if (ext.reversePortal != null) identities.add(ext.reversePortal.getUUID());
+        if (ext.flippedPortal != null) identities.add(ext.flippedPortal.getUUID());
+
+        for (Frame frame : FRAMES.values()) {
+            if (!frame.subId.equals(subId)) continue;
+            for (IplGrabLink link : frame.chain) {
+                if (identities.contains(link.portalId())) return true;
+            }
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // Frame-changing events.
     // ------------------------------------------------------------------

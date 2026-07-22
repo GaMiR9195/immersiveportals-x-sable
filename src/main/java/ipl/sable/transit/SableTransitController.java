@@ -182,6 +182,20 @@ public final class SableTransitController {
                 // the parent flip is an exact isometry, and the grab chain rebases the
                 // goal and held orientation through the same portal in the same tick, so
                 // the constraint error is invariant across the flip (no yank).
+                //
+                // When the grab chain ALREADY threads this doorway (or its reverse/flipped
+                // companion), the drag is deliberately pulling the body back through that
+                // hop — or pushing it through again. The free-body straddle gates (the
+                // minority-face parity skip and the "entered from source aperture"
+                // requirement) then do not apply: they disambiguate ambiguous free-body
+                // history, but the chain is the authoritative history here. Grabbing a body
+                // sitting mostly-through the OUT portal and pulling it back out was blocked
+                // precisely by those gates (>50% through => no new session; started
+                // straddling => never "entered from source"); the chain authorization is
+                // what lets that deliberate pull-back transit fire.
+                boolean chainTransit =
+                    IplGrabChain.authorizesTransit(airship.getUniqueId(), portal);
+
                 Vec3 normal = portal.getNormal().scale(-1.0);
                 PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
                     airship, portal, normal, haveSession ? EXIT_APERTURE_MARGIN : 0.0);
@@ -195,7 +209,9 @@ public final class SableTransitController {
 
                     // Minority-face parity: the opposite coincident face evaluates
                     // the same geometry with the complementary fraction and claims it.
-                    if (!haveSession && fraction > 0.5 + 1.0e-6) {
+                    // Bypassed when the grab chain authorizes this doorway — a held body
+                    // grabbed already-past-halfway is exactly the case parity would reject.
+                    if (!haveSession && fraction > 0.5 + 1.0e-6 && !chainTransit) {
                         continue;
                     }
                     seenHostedKeys.add(key);
@@ -231,7 +247,7 @@ public final class SableTransitController {
                 }
 
                 if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
-                    && (haveSession || state.enteredFromSourceAperture())) {
+                    && (haveSession || state.enteredFromSourceAperture() || chainTransit)) {
                     if (haveSession) {
                         IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
                     }
