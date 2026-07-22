@@ -53,10 +53,6 @@ public final class IplClientShipPortalAnchor {
     /** Portal UUID → anchor. Client thread only. */
     private static final Map<UUID, ClientAnchor> ANCHORS = new HashMap<>();
 
-    /** -Dipl.sable.shipPortalDebug=true: log welded vs frame-derived centers, 1/s. */
-    private static final boolean DEBUG = Boolean.getBoolean("ipl.sable.shipPortalDebug");
-    private static long lastDebugMs = 0;
-
     private static boolean registered = false;
 
     private IplClientShipPortalAnchor() {}
@@ -95,28 +91,6 @@ public final class IplClientShipPortalAnchor {
             DQuaternion shipD = new DQuaternion(shipRot.x, shipRot.y, shipRot.z, shipRot.w);
             DQuaternion oNow = shipD.hamiltonProduct(a.localOrient());
             DQuaternion rtNow = a.destLock().hamiltonProduct(oNow.getConjugated());
-
-            if (DEBUG && System.currentTimeMillis() - lastDebugMs > 1000) {
-                lastDebugMs = System.currentTimeMillis();
-                Vec3 preWeld = portal.getOriginPos();
-                String frameDerived = "n/a";
-                if (portal instanceof qouteall.imm_ptl.core.portal.nether_portal.BreakablePortalEntity b
-                    && b.blockPortalShape != null) {
-                    // TRUE geometric center of the (plot-space) inner area: blocks span
-                    // [min, max+1] per axis.
-                    var box = b.blockPortalShape.innerAreaBox;
-                    Vec3 plotCenter = new Vec3(
-                        (box.l.getX() + box.h.getX() + 1) * 0.5,
-                        (box.l.getY() + box.h.getY() + 1) * 0.5,
-                        (box.l.getZ() + box.h.getZ() + 1) * 0.5);
-                    Vec3 expected = pose.transformPosition(plotCenter);
-                    frameDerived = String.format("expected=%s delta=%s (plotCenter=%s ipCenterVec=%s)",
-                        expected, expected.subtract(originNow),
-                        plotCenter, box.getCenterVec());
-                }
-                LOG.info("[IPL-SHIP-PORTAL-DBG] portal={} preWeld={} welded={} plotPosStored={} | {}",
-                    entry.getKey(), preWeld, originNow, a.plotPos(), frameDerived);
-            }
 
             portal.setOriginPos(originNow);
             portal.setOrientationRotation(oNow);
