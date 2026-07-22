@@ -68,11 +68,81 @@ public final class IplShipPortalAnchor {
     /** Portal UUID → anchor. Server-thread only. */
     private static final Map<UUID, Anchor> ANCHORS = new HashMap<>();
 
+    /**
+     * Anchors restored from portal NBT whose ship hasn't resolved yet → remaining
+     * grace ticks. Boot ordering: a portal's chunk can load before Sable's hosting
+     * container finishes restoring its sub-levels — releasing on the first failed
+     * lookup would silently drop every persisted anchor. While pending, the anchor
+     * neither drives nor releases; on first resolve the carrier side effects and
+     * client sync are applied.
+     */
+    private static final Map<UUID, Integer> RESTORE_PENDING = new HashMap<>();
+    private static final int RESTORE_GRACE_TICKS = 1200; // 60s
+
+    private static final String NBT_KEY = "iplSableShipAnchor";
+
+    /**
+     * Persist anchors on the PORTAL entity's NBT (the portal is the durable object;
+     * the ship is referenced by UUID). Registered once from IPModMain. Unanchored
+     * portals simply write no tag, so release paths need no save-side bookkeeping.
+     */
+    public static void registerPersistence() {
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+            de.nick1st.imm_ptl.events.WritePortalDataEvent.class, event -> {
+                if (event.portal.level() == null || event.portal.level().isClientSide()) return;
+                Anchor a = ANCHORS.get(event.portal.getUUID());
+                if (a == null) return;
+                net.minecraft.nbt.CompoundTag t = new net.minecraft.nbt.CompoundTag();
+                t.putUUID("shipId", a.shipId());
+                t.putDouble("plotX", a.plotPos().x);
+                t.putDouble("plotY", a.plotPos().y);
+                t.putDouble("plotZ", a.plotPos().z);
+                putQuat(t, "lo", a.localOrient());
+                putQuat(t, "dl", a.destLock());
+                event.tag.put(NBT_KEY, t);
+            });
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+            de.nick1st.imm_ptl.events.ReadPortalDataEvent.class, event -> {
+                if (event.portal.level() == null || event.portal.level().isClientSide()) return;
+                if (!event.tag.contains(NBT_KEY)) return;
+                try {
+                    net.minecraft.nbt.CompoundTag t = event.tag.getCompound(NBT_KEY);
+                    ANCHORS.put(event.portal.getUUID(), new Anchor(
+                        t.getUUID("shipId"),
+                        event.portal.level().dimension(),
+                        new Vector3d(
+                            t.getDouble("plotX"), t.getDouble("plotY"), t.getDouble("plotZ")),
+                        getQuat(t, "lo"),
+                        getQuat(t, "dl")));
+                    RESTORE_PENDING.put(event.portal.getUUID(), RESTORE_GRACE_TICKS);
+                    LOG.info("[IPL-SHIP-PORTAL] restored anchor for portal {} (ship {}, pending resolve)",
+                        event.portal.getUUID(), t.getUUID("shipId"));
+                } catch (Throwable th) {
+                    LOG.error("[IPL-SHIP-PORTAL] bad persisted anchor on portal {}",
+                        event.portal.getUUID(), th);
+                }
+            });
+    }
+
+    private static void putQuat(net.minecraft.nbt.CompoundTag tag, String prefix, DQuaternion q) {
+        tag.putDouble(prefix + "X", q.getX());
+        tag.putDouble(prefix + "Y", q.getY());
+        tag.putDouble(prefix + "Z", q.getZ());
+        tag.putDouble(prefix + "W", q.getW());
+    }
+
+    private static DQuaternion getQuat(net.minecraft.nbt.CompoundTag tag, String prefix) {
+        return new DQuaternion(
+            tag.getDouble(prefix + "X"), tag.getDouble(prefix + "Y"),
+            tag.getDouble(prefix + "Z"), tag.getDouble(prefix + "W"));
+    }
+
     private IplShipPortalAnchor() {}
 
-    /** Server stopping/starting: drop all runtime anchors. */
+    /** Server stopping/starting: drop all runtime anchors (persisted state lives in portal NBT). */
     public static void clearAll() {
         ANCHORS.clear();
+        RESTORE_PENDING.clear();
     }
 
     public static boolean isAnchored(UUID portalId) {
@@ -195,6 +265,7 @@ public final class IplShipPortalAnchor {
     /** Detach the portal; it stays wherever the ship last carried it. */
     public static String unanchor(Portal portal) {
         Anchor removed = ANCHORS.remove(portal.getUUID());
+        RESTORE_PENDING.remove(portal.getUUID());
         if (removed == null) return "portal was not anchored";
         applyCarrierSideEffects(portal, null, false);
         if (portal.level() instanceof ServerLevel sl) {
@@ -264,12 +335,27 @@ public final class IplShipPortalAnchor {
 
             ServerSubLevel ship = findShip(server, a.shipId());
             if (ship == null || ship.isRemoved()) {
+                Integer grace = RESTORE_PENDING.get(entry.getKey());
+                if (grace != null && grace > 0) {
+                    RESTORE_PENDING.put(entry.getKey(), grace - 1);
+                    continue; // restored anchor, ship still loading — wait, don't drive
+                }
+                RESTORE_PENDING.remove(entry.getKey());
                 LOG.info("[IPL-SHIP-PORTAL] ship {} gone — portal {} released",
                     a.shipId(), entry.getKey());
                 applyCarrierSideEffects(portal, null, false);
                 syncClearToClients(server, entry.getKey());
                 it.remove();
                 continue;
+            }
+            if (RESTORE_PENDING.remove(entry.getKey()) != null) {
+                // Restored anchor's ship just resolved: finish what anchorToShip
+                // would have done live (deferred — the physics scene and container
+                // aren't available during entity NBT read at boot).
+                applyCarrierSideEffects(portal, ship, true);
+                syncToClients(server, entry.getKey());
+                LOG.info("[IPL-SHIP-PORTAL] restored anchor {} resolved to ship {}",
+                    entry.getKey(), a.shipId());
             }
 
             Pose3dc pose = ship.logicalPose();
