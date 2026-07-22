@@ -82,11 +82,15 @@ public final class IplShipPortalAnchor {
      */
     public static String anchor(Portal portal) {
         if (!(portal.level() instanceof ServerLevel level)) return "server side only";
-        ServerSubLevel ship = findShipAt(level, portal.getOriginPos());
+        ServerSubLevel ship = findShipAt(level, portal.getOriginPos(), ANCHOR_MARGIN);
         if (ship == null) {
             return "no sub-level under the portal origin (stand the portal on the ship)";
         }
+        return anchorToShip(portal, ship);
+    }
 
+    private static String anchorToShip(Portal portal, ServerSubLevel ship) {
+        ServerLevel level = (ServerLevel) portal.level();
         Pose3dc pose = ship.logicalPose();
         Quaterniond shipRot = new Quaterniond(pose.orientation());
         Vector3d localPos = new Vector3d(
@@ -120,7 +124,22 @@ public final class IplShipPortalAnchor {
      * Drive all anchored portals from their ships' fresh physics poses. Called at the
      * end of the fused step (IplFusedStep), when this tick's poses are final.
      */
+    /**
+     * Auto-anchor (default ON): a portal whose origin sits INSIDE an assembled
+     * ship's bounds — e.g. a lit nether portal frame that is part of the hull —
+     * anchors itself, no command needed. Strictly-inside only (small inflation),
+     * so ground portals NEXT to a parked ship are never grabbed.
+     */
+    private static final boolean AUTO_ANCHOR =
+        !"false".equals(System.getProperty("ipl.sable.shipPortal.autoAnchor"));
+    private static final double AUTO_ANCHOR_INFLATE = 1.0;
+    private static final int AUTO_SCAN_INTERVAL = 20;
+    private static int scanCounter = 0;
+
     public static void tickAll(MinecraftServer server) {
+        if (AUTO_ANCHOR && (scanCounter++ % AUTO_SCAN_INTERVAL) == 0) {
+            autoAnchorScan(server);
+        }
         if (ANCHORS.isEmpty()) return;
 
         Iterator<Map.Entry<UUID, Anchor>> it = ANCHORS.entrySet().iterator();
@@ -174,6 +193,23 @@ public final class IplShipPortalAnchor {
         }
     }
 
+    private static void autoAnchorScan(MinecraftServer server) {
+        for (ServerLevel level : server.getAllLevels()) {
+            if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) continue;
+            for (Entity candidate : level.getAllEntities()) {
+                if (!(candidate instanceof Portal portal) || portal.isRemoved()) continue;
+                if (ANCHORS.containsKey(portal.getUUID())) continue;
+                if (portal.getWidth() <= 0 || portal.getHeight() <= 0) continue;
+                ServerSubLevel ship =
+                    findShipAt(level, portal.getOriginPos(), AUTO_ANCHOR_INFLATE);
+                if (ship == null) continue;
+                LOG.info("[IPL-SHIP-PORTAL] auto-anchoring portal {} inside ship {}",
+                    portal.getUUID(), ship.getUniqueId());
+                anchorToShip(portal, ship);
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
 
     /**
@@ -185,25 +221,38 @@ public final class IplShipPortalAnchor {
     private static final double ANCHOR_MARGIN =
         Double.parseDouble(System.getProperty("ipl.sable.shipPortal.anchorMargin", "8.0"));
 
-    private static ServerSubLevel findShipAt(ServerLevel level, Vec3 pos) {
-        ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
-        if (container == null) return null;
+    /**
+     * Find the ship nearest {@code pos} whose EFFECTIVE PARENT is {@code level}.
+     * Hosted ships' gameplay state lives in the HOSTING dimension's container (the
+     * dim-agnostic architecture), so scanning only the portal's own level finds
+     * nothing — the same disease as Sable's nearby-sub-level commands. Enumerate
+     * every container and filter by parent instead.
+     */
+    private static ServerSubLevel findShipAt(ServerLevel level, Vec3 pos, double margin) {
         ServerSubLevel best = null;
-        double bestDist = ANCHOR_MARGIN * ANCHOR_MARGIN;
-        for (ServerSubLevel sub : container.getAllSubLevels()) {
-            if (sub.isRemoved()) continue;
-            var bb = sub.boundingBox();
-            // Distance from the origin to the closest point of the ship's AABB
-            // (zero when inside): a portal hovering just above a large deck is
-            // near the SURFACE while being far from the center.
-            double dx = Math.max(0.0, Math.max(bb.minX() - pos.x, pos.x - bb.maxX()));
-            double dy = Math.max(0.0, Math.max(bb.minY() - pos.y, pos.y - bb.maxY()));
-            double dz = Math.max(0.0, Math.max(bb.minZ() - pos.z, pos.z - bb.maxZ()));
-            double d = dx * dx + dy * dy + dz * dz;
-            if (d == 0.0) return sub;
-            if (d < bestDist) {
-                bestDist = d;
-                best = sub;
+        double bestDist = margin * margin;
+        for (ServerLevel any : level.getServer().getAllLevels()) {
+            ServerSubLevelContainer container = SubLevelContainer.getContainer(any);
+            if (container == null) continue;
+            for (ServerSubLevel sub : container.getAllSubLevels()) {
+                if (sub.isRemoved()) continue;
+                ServerLevel parent = ipl.sable.dim.IplDimAgnostic.isHosted(sub)
+                    ? ipl.sable.dim.IplDimAgnostic.getServerParentLevel(sub)
+                    : (sub.getLevel() instanceof ServerLevel sl ? sl : null);
+                if (parent != level) continue;
+                var bb = sub.boundingBox();
+                // Distance from the origin to the closest point of the ship's AABB
+                // (zero when inside): a portal hovering just above a large deck is
+                // near the SURFACE while being far from the center.
+                double dx = Math.max(0.0, Math.max(bb.minX() - pos.x, pos.x - bb.maxX()));
+                double dy = Math.max(0.0, Math.max(bb.minY() - pos.y, pos.y - bb.maxY()));
+                double dz = Math.max(0.0, Math.max(bb.minZ() - pos.z, pos.z - bb.maxZ()));
+                double d = dx * dx + dy * dy + dz * dz;
+                if (d == 0.0) return sub;
+                if (d < bestDist) {
+                    bestDist = d;
+                    best = sub;
+                }
             }
         }
         return best;
