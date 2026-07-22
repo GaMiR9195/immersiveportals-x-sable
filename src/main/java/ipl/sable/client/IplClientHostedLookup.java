@@ -151,7 +151,20 @@ public final class IplClientHostedLookup {
         return new StraddleProjection(clientSub, portal, mapped, destPlane);
     }
 
+    /** -Dipl.sable.pickDebug=true: log why projections are (not) produced, throttled. */
+    private static final boolean PICK_DEBUG = Boolean.getBoolean("ipl.sable.pickDebug");
+    private static long ipl$lastPickDebugMs = 0;
+
+    private static boolean ipl$pickDebugTick() {
+        if (!PICK_DEBUG) return false;
+        long now = System.currentTimeMillis();
+        if (now - ipl$lastPickDebugMs < 500) return false;
+        ipl$lastPickDebugMs = now;
+        return true;
+    }
+
     private static java.util.List<StraddleProjection> ipl$getStraddleProjectionsUncached(ClientLevel destLevel) {
+        boolean dbg = ipl$pickDebugTick();
         if (destLevel == null) {
             return java.util.List.of();
         }
@@ -160,19 +173,38 @@ public final class IplClientHostedLookup {
         }
         SubLevelContainer container = getHostingContainerOrNull();
         if (container == null) {
+            if (dbg) LOG.info("[IPL-PICK-DBG] projections: no hosting container");
             return java.util.List.of();
         }
 
         java.util.List<StraddleProjection> out = null;
         for (dev.ryanhcode.sable.sublevel.SubLevel sub : container.getAllSubLevels()) {
             if (sub.isRemoved()) continue;
-            if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) continue;
-            if (clientSub.getRenderData() == null) continue;
+            if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) {
+                if (dbg) LOG.info("[IPL-PICK-DBG] projections: {} not a ClientSubLevel", sub.getUniqueId());
+                continue;
+            }
+            if (clientSub.getRenderData() == null) {
+                if (dbg) LOG.info("[IPL-PICK-DBG] projections: {} renderData null", sub.getUniqueId());
+                continue;
+            }
 
             net.minecraft.world.level.Level parent =
                 ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
-            if (parent == null) continue;
-            if (parent.dimension() == SableSubLevelDimension.SUBLEVELS) continue; // parent unset
+            if (parent == null) {
+                if (dbg) LOG.info("[IPL-PICK-DBG] projections: {} parent null", sub.getUniqueId());
+                continue;
+            }
+            if (parent.dimension() == SableSubLevelDimension.SUBLEVELS) {
+                if (dbg) LOG.info("[IPL-PICK-DBG] projections: {} parent unset (hosting)", sub.getUniqueId());
+                continue; // parent unset
+            }
+            if (dbg) {
+                int planes = ipl.sable.render.SourceClipPortalFinder
+                    .findStraddlingPortalPlanes(clientSub).size();
+                LOG.info("[IPL-PICK-DBG] projections: {} candidate, straddlePlanes={} dest={}",
+                    sub.getUniqueId(), planes, destLevel.dimension().location());
+            }
 
             // ONE projection per session portal (multi-straddle): a ship crossing two
             // portals into this level projects two images, each with its own dest cut.

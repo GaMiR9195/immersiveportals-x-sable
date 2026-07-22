@@ -1,0 +1,70 @@
+package ipl.sable.mixin;
+
+import dev.ryanhcode.sable.ActiveSableCompanion;
+import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.transit.IplStraddlePoseMap;
+import net.minecraft.core.Position;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Vector3d;
+import org.joml.Vector3dc;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Pseudo;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+/**
+ * Atlas pick fix: {@code projectOutOfSubLevel} maps plot-space points to world via
+ * the ship's UNMAPPED pose — but a point on the THROUGH half of a straddling ship
+ * physically exists at its portal-MAPPED position. Without this, a projection pick
+ * hit measures its reach distance to the source-frame twin (often out of range or
+ * plain wrong), vanilla's {@code filterHitResult} clamps it to MISS, and Jade/
+ * interaction report whatever world block lies behind the apparition.
+ *
+ * <p>Remapping here heals every consumer at once — pick reach, interaction
+ * distance, Jade's ray, sound positions, rider eye positions — on BOTH sides
+ * (this companion is common code; the session lookup branches client/server).
+ */
+@Pseudo
+@Mixin(value = ActiveSableCompanion.class, remap = false)
+public abstract class IplStraddleProjectOutMixin {
+
+    @Inject(
+        method = "projectOutOfSubLevel(Lnet/minecraft/world/level/Level;Lorg/joml/Vector3dc;Lorg/joml/Vector3d;)Lorg/joml/Vector3d;",
+        at = @At("RETURN"),
+        remap = false,
+        require = 0
+    )
+    private void ipl$remapThroughHalf(
+        Level level, Vector3dc pos, Vector3d dest, CallbackInfoReturnable<Vector3d> cir
+    ) {
+        SubLevel owner = ((ActiveSableCompanion) (Object) this).getContaining(level, pos);
+        if (owner == null) return;
+        Vector3d out = cir.getReturnValue();
+        Vec3 remapped = IplStraddlePoseMap.remapThroughHalfProjection(
+            owner, level, new Vec3(out.x, out.y, out.z));
+        if (remapped != null) {
+            out.set(remapped.x, remapped.y, remapped.z);
+        }
+    }
+
+    @Inject(
+        method = "projectOutOfSubLevel(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/Position;)Lnet/minecraft/world/phys/Vec3;",
+        at = @At("RETURN"),
+        cancellable = true,
+        remap = false,
+        require = 0
+    )
+    private void ipl$remapThroughHalfVec(
+        Level level, Position pos, CallbackInfoReturnable<Vec3> cir
+    ) {
+        SubLevel owner = ((ActiveSableCompanion) (Object) this).getContaining(level, pos);
+        if (owner == null) return;
+        Vec3 remapped = IplStraddlePoseMap.remapThroughHalfProjection(
+            owner, level, cir.getReturnValue());
+        if (remapped != null) {
+            cir.setReturnValue(remapped);
+        }
+    }
+}

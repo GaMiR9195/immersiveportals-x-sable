@@ -42,6 +42,22 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
 
     private static final ThreadLocal<Boolean> IPL$REENTRANT = ThreadLocal.withInitial(() -> false);
 
+    private static final boolean IPL$PICK_DEBUG = Boolean.getBoolean("ipl.sable.pickDebug");
+    private static long ipl$lastDbgMs = 0;
+
+    private static boolean ipl$dbg() {
+        if (!IPL$PICK_DEBUG) return false;
+        long now = System.currentTimeMillis();
+        if (now - ipl$lastDbgMs < 500) return false;
+        ipl$lastDbgMs = now;
+        return true;
+    }
+
+    /** Same throttle window as ipl$dbg, but does not advance it (piggyback lines). */
+    private static boolean ipl$dbgNoThrottle() {
+        return IPL$PICK_DEBUG && System.currentTimeMillis() - ipl$lastDbgMs < 60;
+    }
+
     @Override
     public BlockHitResult clip(ClipContext ctx) {
         BlockHitResult base = BlockGetter.super.clip(ctx);
@@ -51,11 +67,26 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
         }
 
         ClientLevel self = (ClientLevel) (Object) this;
+        boolean dbg = ipl$dbg();
+        HitResult.Type baseTypeBefore = base == null ? null : base.getType();
         base = ipl$dropClippedNativeHits(self, ctx, base);
         IPL$REENTRANT.set(true);
         try {
             IplStraddleStaffPick.ProjectionHit projectionHit =
                 IplStraddleStaffPick.clipProjections(self, ctx);
+            if (dbg) {
+                double baseD = base != null && base.getType() == HitResult.Type.BLOCK
+                    ? ipl$frameDistanceSq(self, ctx.getFrom(), base.getLocation()) : -1;
+                org.slf4j.LoggerFactory.getLogger("ipl-pick-dbg").info(
+                    "[IPL-PICK-DBG] clip: baseBefore={} baseAfterDrop={}@{} baseDistSq={} projHit={} projDistSq={} projections={}",
+                    baseTypeBefore, base == null ? null : base.getType(),
+                    base == null ? "-" : base.getBlockPos(),
+                    String.format("%.2f", baseD),
+                    projectionHit == null ? "null" : "hit@" + projectionHit.hit().getBlockPos(),
+                    projectionHit == null ? "-" : String.format("%.2f", projectionHit.distSq()),
+                    ipl.sable.client.IplClientHostedLookup
+                        .getStraddleProjectionsInto(self).size());
+            }
             if (projectionHit == null) {
                 return base;
             }
@@ -88,10 +119,26 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
         for (int guard = 0; guard < 3; guard++) {
             if (base == null || base.getType() != HitResult.Type.BLOCK) return base;
             SubLevel owner = ipl$plotHitOwner(level, base);
-            if (owner == null) return base;
+            if (owner == null) {
+                if (ipl$dbgNoThrottle()) {
+                    org.slf4j.LoggerFactory.getLogger("ipl-pick-dbg").info(
+                        "[IPL-PICK-DBG] drop: hit@{} loc={} owner=NULL (worldFrame={})",
+                        base.getBlockPos(), base.getLocation(),
+                        Math.abs(base.getLocation().x) < 1_000_000);
+                }
+                return base;
+            }
             java.util.function.Predicate<net.minecraft.core.BlockPos> keep =
                 ipl.sable.transit.IplStraddlePoseMap.getSourceHalfKeepFilter(owner, level);
-            if (keep == null || keep.test(base.getBlockPos())) return base;
+            if (keep == null || keep.test(base.getBlockPos())) {
+                if (ipl$dbgNoThrottle()) {
+                    org.slf4j.LoggerFactory.getLogger("ipl-pick-dbg").info(
+                        "[IPL-PICK-DBG] drop: hit@{} owner={} keepFilter={} verdict=KEEP",
+                        base.getBlockPos(), owner.getUniqueId(),
+                        keep == null ? "NULL" : "present");
+                }
+                return base;
+            }
 
             dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension ext =
                 (dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension) ctx;
