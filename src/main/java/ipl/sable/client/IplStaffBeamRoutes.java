@@ -3,6 +3,7 @@ package ipl.sable.client;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.dim.IplDimAgnostic;
 import ipl.sable.transit.IplStraddlePoseMap;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
@@ -92,6 +93,22 @@ public final class IplStaffBeamRoutes {
 
     public static void forget(UUID owner) {
         LAST.remove(owner);
+    }
+
+    /**
+     * Where the local player's staff should AIM: the first endpoint the beam heads toward —
+     * the entrance aperture when the beam goes through a portal, or the joint itself for a
+     * direct grab. Stock aims straight at the native joint, which points the staff at empty
+     * space (or the wrong dimension) whenever the joint is reached through a portal. Returns
+     * null to fall back to stock aiming.
+     */
+    @Nullable
+    public static Vec3 staffAimPoint(Player player, ClientSubLevel sub, Vec3 localAnchor, float partialTick) {
+        Vec3 eye = player.getEyePosition(partialTick);
+        Route route = resolve(player.getUUID(), player.level(), eye, sub, localAnchor, partialTick);
+        if (route == null) return null;
+        List<Segment> segments = segments(route);
+        return segments.isEmpty() ? null : segments.get(0).end();
     }
 
     public static void clearAll() {

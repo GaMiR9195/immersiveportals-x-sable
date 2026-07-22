@@ -802,3 +802,29 @@ grabbed (not max), it must stay put and visible, and follow the cursor in its
 own dimension. Beam target must not flip between through-portal and direct.
 
 No build or automated check was run for these changes.
+
+## Staff Aim Follows The Beam
+
+### Symptom
+
+The held Creative Physics Staff pointed at the grabbed joint's native world
+position. For a joint reached through a portal (cross-dimension grab, or a
+same-dimension construction held inside the portal), that position is elsewhere,
+so the staff aimed at empty space and looked wrong.
+
+### Implemented Change
+
+`PhysicsStaffItemRenderer` computes its barrel aim from
+`renderPose().transformPosition(dragLocalAnchor)`. `IplStaffItemAimMixin` wraps
+that single call and returns the beam's first endpoint instead — the entrance
+aperture when the beam threads a portal, or the joint itself for a direct grab
+(identical to stock). The staff now looks into the portal exactly where the beam
+leaves, which also makes cross-dimension holds read correctly.
+
+### Files
+
+- `src/main/java/ipl/sable/mixin/client/IplStaffItemAimMixin.java`
+- `src/main/java/ipl/sable/client/IplStaffBeamRoutes.java` (staffAimPoint helper)
+- `src/main/resources/ipl_sable.mixins.json`
+
+No build or automated check was run for this change.

@@ -86,7 +86,8 @@
     "client.IplStraddleOutlineMixin",
     "client.IplStaffRenderPoseMixin",
     "client.IplStaffBeamMixin",
-    "client.IplStaffPortalBeamPassMixin"
+    "client.IplStaffPortalBeamPassMixin",
+    "client.IplStaffItemAimMixin"
   ],
   "injectors": {
     "defaultRequire": 0
