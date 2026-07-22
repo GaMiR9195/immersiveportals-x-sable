@@ -168,6 +168,11 @@ public final class SableTransitController {
                 if (!ipl$isCanonicalEntranceFace(portal, nearby)) continue;
 
                 UUID portalUuid = portal.getUUID();
+                // A carrier ignores its OWN anchored portal completely: no session,
+                // no crossing state, no transit (IplShipPortalAnchor).
+                if (IplShipPortalAnchor.isAnchorShip(portalUuid, airship.getUniqueId())) {
+                    continue;
+                }
                 StraddleKey key = new StraddleKey(
                     airship.getUniqueId(), portalUuid
                 );

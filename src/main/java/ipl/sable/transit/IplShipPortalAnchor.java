@@ -72,6 +72,17 @@ public final class IplShipPortalAnchor {
         return ANCHORS.containsKey(portalId);
     }
 
+    /**
+     * A ship must NEVER traverse (or straddle) its OWN anchored portal: the
+     * carrier's forward motion constantly "crosses" the deck aperture, and a
+     * self-transit would teleport the ship through a portal riding on itself.
+     * The transit controller skips the (carrier, portal) pair entirely.
+     */
+    public static boolean isAnchorShip(UUID portalId, UUID shipId) {
+        Anchor a = ANCHORS.get(portalId);
+        return a != null && a.shipId().equals(shipId);
+    }
+
     public static int count() {
         return ANCHORS.size();
     }
@@ -124,22 +135,7 @@ public final class IplShipPortalAnchor {
      * Drive all anchored portals from their ships' fresh physics poses. Called at the
      * end of the fused step (IplFusedStep), when this tick's poses are final.
      */
-    /**
-     * Auto-anchor (default ON): a portal whose origin sits INSIDE an assembled
-     * ship's bounds — e.g. a lit nether portal frame that is part of the hull —
-     * anchors itself, no command needed. Strictly-inside only (small inflation),
-     * so ground portals NEXT to a parked ship are never grabbed.
-     */
-    private static final boolean AUTO_ANCHOR =
-        !"false".equals(System.getProperty("ipl.sable.shipPortal.autoAnchor"));
-    private static final double AUTO_ANCHOR_INFLATE = 1.0;
-    private static final int AUTO_SCAN_INTERVAL = 20;
-    private static int scanCounter = 0;
-
     public static void tickAll(MinecraftServer server) {
-        if (AUTO_ANCHOR && (scanCounter++ % AUTO_SCAN_INTERVAL) == 0) {
-            autoAnchorScan(server);
-        }
         if (ANCHORS.isEmpty()) return;
 
         Iterator<Map.Entry<UUID, Anchor>> it = ANCHORS.entrySet().iterator();
@@ -190,23 +186,6 @@ public final class IplShipPortalAnchor {
             portal.setRotation(rtNow);
             portal.reloadAndSyncToClientNextTick();
             PortalExtension.get(portal).rectifyClusterPortals(portal, true);
-        }
-    }
-
-    private static void autoAnchorScan(MinecraftServer server) {
-        for (ServerLevel level : server.getAllLevels()) {
-            if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) continue;
-            for (Entity candidate : level.getAllEntities()) {
-                if (!(candidate instanceof Portal portal) || portal.isRemoved()) continue;
-                if (ANCHORS.containsKey(portal.getUUID())) continue;
-                if (portal.getWidth() <= 0 || portal.getHeight() <= 0) continue;
-                ServerSubLevel ship =
-                    findShipAt(level, portal.getOriginPos(), AUTO_ANCHOR_INFLATE);
-                if (ship == null) continue;
-                LOG.info("[IPL-SHIP-PORTAL] auto-anchoring portal {} inside ship {}",
-                    portal.getUUID(), ship.getUniqueId());
-                anchorToShip(portal, ship);
-            }
         }
     }
 
