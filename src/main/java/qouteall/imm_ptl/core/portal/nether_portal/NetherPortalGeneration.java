@@ -250,7 +250,7 @@ public class NetherPortalGeneration {
     private static final LimitedLogger limitedLogger = new LimitedLogger(50);
     
     public static boolean checkPortalGeneration(ServerLevel fromWorld, BlockPos startingPos) {
-        if (!fromWorld.hasChunkAt(startingPos)) {
+        if (!ipl.sable.SableBridge.hasChunkAtFrameAware(fromWorld, startingPos)) {
             Helper.log("Cancel Portal Generation Because Chunk Not Loaded");
             return false;
         }

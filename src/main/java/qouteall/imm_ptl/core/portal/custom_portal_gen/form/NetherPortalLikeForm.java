@@ -67,7 +67,15 @@ public abstract class NetherPortalLikeForm extends PortalGenForm {
             }
         }
         
-        BlockPos toPos = cpg.mapPosition(fromShape.innerAreaBox.getCenter(), fromWorld, toWorld);
+        // A plot-space frame (ship-borne) maps its destination from the ship's WORLD
+        // position — the raw plot center (~20.4M) would land the other side millions
+        // of blocks out.
+        BlockPos fromCenter = fromShape.innerAreaBox.getCenter();
+        net.minecraft.world.phys.Vec3 shipWorldCenter =
+            ipl.sable.SableBridge.shipFrameWorldCenter(fromWorld, fromCenter);
+        BlockPos toPos = cpg.mapPosition(
+            shipWorldCenter != null ? BlockPos.containing(shipWorldCenter) : fromCenter,
+            fromWorld, toWorld);
         
         FrameSearching.FrameSearchingFunc<PortalGenInfo> frameMatchingFunc =
             getFrameMatchingFunc(fromWorld, toWorld, fromShape);

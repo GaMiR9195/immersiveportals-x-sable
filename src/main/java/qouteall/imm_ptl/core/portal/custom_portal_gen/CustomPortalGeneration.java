@@ -244,7 +244,7 @@ public class CustomPortalGeneration {
             }
         }
         
-        if (!world.hasChunkAt(startPos)) {
+        if (!ipl.sable.SableBridge.hasChunkAtFrameAware(world, startPos)) {
             Helper.log("Skip custom portal generation because chunk not loaded");
             return false;
         }

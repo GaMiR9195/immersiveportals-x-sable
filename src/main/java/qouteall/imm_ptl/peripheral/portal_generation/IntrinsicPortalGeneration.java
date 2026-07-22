@@ -74,7 +74,13 @@ public class IntrinsicPortalGeneration {
         @Nullable Entity triggeringEntity
     ) {
         IPGlobal.NetherPortalMode mode = IPGlobal.netherPortalMode;
-        
+
+        // A frame on a Sable sub-level enters here with plot-space coords (and, on the
+        // fire-spread path, the plot-hosting dimension). Generation must run in the
+        // ship's PARENT level — the gameplay dimension — which the plot bridge lets
+        // read/write the plot-space frame blocks directly.
+        fromWorld = ipl.sable.SableBridge.effectivePortalGenLevel(fromWorld, firePos);
+
         if (mode == IPGlobal.NetherPortalMode.normal || mode == IPGlobal.NetherPortalMode.adaptive) {
             ResourceKey<Level> fromDimension = fromWorld.dimension();
             

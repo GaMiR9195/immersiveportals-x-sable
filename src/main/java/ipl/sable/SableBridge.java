@@ -246,4 +246,88 @@ public final class SableBridge {
         if (!PRESENT || entity == null) return NO_REMAP;
         return SableImpl.effectiveTrackingChunkPos(entity);
     }
+
+    // ------------------------------------------------------------------
+    // Ship-borne nether portals: IP's generation pipeline consults these so a
+    // frame built ON a sub-level (blocks in plot space) generates a working,
+    // ship-anchored portal. All are exact no-ops for non-plot inputs.
+
+    /**
+     * The level portal GENERATION should run in for a fire lit at {@code pos}.
+     * A plot-space position (frame on a sub-level) resolves to the owning ship's
+     * PARENT level — the dimension the ship visibly sails in — so the
+     * overworld↔nether dimension gates and the {@code from} dimension stamped on
+     * the resulting portals are the gameplay ones. The plot bridge makes the
+     * plot-space block reads (shape finding, integrity checks, placeholder
+     * fills) work from that parent level unchanged. Non-plot positions (or
+     * Sable absent) return {@code world} as-is.
+     */
+    public static net.minecraft.server.level.ServerLevel effectivePortalGenLevel(
+        net.minecraft.server.level.ServerLevel world, BlockPos pos
+    ) {
+        if (!PRESENT || !isPlotPos(pos)) return world;
+        return SableImpl.effectivePortalGenLevel(world, pos);
+    }
+
+    /**
+     * Chunk-presence test that understands plot coordinates: vanilla
+     * {@code hasChunkAt} for world positions; "does a live sub-level own this
+     * plot" for plot positions (the parent level's chunk map doesn't hold plot
+     * chunks — the hosting dimension does).
+     */
+    public static boolean hasChunkAtFrameAware(
+        net.minecraft.server.level.ServerLevel world, BlockPos pos
+    ) {
+        if (!PRESENT || !isPlotPos(pos)) return world.hasChunkAt(pos);
+        return SableImpl.subLevelAtPlotPos(world, pos) != null;
+    }
+
+    /**
+     * Where a plot-space frame center sits in the WORLD (through the owning
+     * ship's pose), for mapping the destination side of a generated portal —
+     * without this, a frame at plot coords ~20.4M maps to nether coords ~2.5M.
+     * Null when {@code pos} isn't plot-space or no ship owns the plot.
+     */
+    @Nullable
+    public static Vec3 shipFrameWorldCenter(
+        net.minecraft.server.level.ServerLevel world, BlockPos pos
+    ) {
+        if (!PRESENT || !isPlotPos(pos)) return null;
+        return SableImpl.shipFrameWorldCenter(world, pos);
+    }
+
+    /**
+     * Re-pose a template portal whose origin was initialized from a PLOT-space
+     * shape: position and orientation map through the owning ship's pose into
+     * the parent world, and the portal's transform rotation is re-derived so
+     * the (static) destination frame stays fixed — the same dest-lock math the
+     * ship-portal anchor uses per tick. No-op for world-space portals.
+     * Must run on the template BEFORE flipped/reverse portals are derived.
+     */
+    public static void mapShipFramePortalPose(qouteall.imm_ptl.core.portal.Portal portal) {
+        if (!PRESENT || portal == null || !isPlotPos(BlockPos.containing(portal.getOriginPos()))) {
+            return;
+        }
+        SableImpl.mapShipFramePortalPose(portal);
+    }
+
+    /**
+     * Anchor a freshly spawned breakable-portal cluster to the ship that owns
+     * its plot-space frame ({@code shapeAnchor} = the from-shape's anchor pos).
+     * Call on the cluster PRIMARY only — the anchor tick driver rectifies the
+     * other members. No-op for world-space shapes.
+     */
+    public static void anchorShipFramePortal(
+        qouteall.imm_ptl.core.portal.Portal portal, BlockPos shapeAnchor
+    ) {
+        if (!PRESENT || portal == null || shapeAnchor == null || !isPlotPos(shapeAnchor)) {
+            return;
+        }
+        SableImpl.anchorShipFramePortal(portal, shapeAnchor);
+    }
+
+    /** Sable's plot grid lives ~20M blocks out; nothing legitimate is past 1M. */
+    private static boolean isPlotPos(BlockPos pos) {
+        return Math.abs(pos.getX()) >= 1_000_000 || Math.abs(pos.getZ()) >= 1_000_000;
+    }
 }

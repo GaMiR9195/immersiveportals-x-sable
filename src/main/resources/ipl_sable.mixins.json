@@ -19,6 +19,7 @@
     "IplHostedTicketManagerMixin",
     "IplHostedIntersectionMixin",
     "IplStraddleProjectOutMixin",
+    "IplAssemblyPortalAttachMixin",
     "IplLevelAcceleratorOverrideMixin",
     "IplPlotBridgeMixin",
     "IplHostedTerrainChangeForwardMixin",

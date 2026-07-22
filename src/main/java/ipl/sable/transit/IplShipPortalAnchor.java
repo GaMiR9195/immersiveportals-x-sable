@@ -100,7 +100,11 @@ public final class IplShipPortalAnchor {
         return anchorToShip(portal, ship);
     }
 
-    private static String anchorToShip(Portal portal, ServerSubLevel ship) {
+    /**
+     * Anchor {@code portal} to a KNOWN ship (assembly attach, generated-on-ship nether
+     * portals) — same math as the command path, no proximity search.
+     */
+    public static String anchorToShip(Portal portal, ServerSubLevel ship) {
         ServerLevel level = (ServerLevel) portal.level();
         Pose3dc pose = ship.logicalPose();
         Quaterniond shipRot = new Quaterniond(pose.orientation());
