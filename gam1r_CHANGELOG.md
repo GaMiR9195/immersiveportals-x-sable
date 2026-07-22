@@ -851,3 +851,131 @@ True multi-aperture recursion (body imaged through several apertures at once)
 is NOT implemented — needs recursive image sessions first.
 
 No build or automated check was run.
+
+## Staff Drag/Beam Rewrite — Event-Sourced Grab Chain
+
+### Symptoms
+
+- Cross-dimension grabs drew a beam with the wrong node density: correct start,
+  correct end, wrong segment count.
+- Walking through a portal while holding flung the constraint goal for a tick
+  (worse for same-dimension portals, whose hops were never detected at all).
+- After dragging a construction fully through an entrance portal a few times, it
+  could never enter the paired exit portal — or any other portal — for the rest
+  of the grab.
+- Sequential multi-portal recursion (fully through one portal, then another,
+  then all the way back) was structurally impossible while held.
+- The beam sometimes pointed at the exit-side image while the construction was
+  clearly held inside the entrance.
+
+### Cause
+
+Grab frame state was scattered across independent heuristics that each guessed
+the answer from geometry snapshots: a distance-to-box goal chooser with sticky
+margins, a client-side session-portal latch racing `resolvePortal` order, a
+held-portal pin that was never released when the body left its aperture, a
+single-transit record that a second transit overwrote, nearest-portal-within-24-
+blocks inference after a dimension change (blind to same-dimension hops), and a
+staff freeze that suppressed same-dimension transit entirely — parking bodies in
+a state the rest of the pipeline never expected. Beam node density was seeded
+from `distanceSquaredWithSubLevels` across frames (garbage for a through-portal
+grab) and only corrected during render passes that actually drew a segment.
+
+### Implemented Change
+
+One concept replaces all of it: the **grab chain** — an ordered list of exact
+portal-isometry snapshots (`IplGrabLink`) from the dragging player's eye to the
+grabbed body's parent frame. It is event-sourced, never inferred:
+
+- **Grab start** seeds it from the pick raycast's exact portal path (client
+  sends identities; the server re-snapshots geometry itself). A click that
+  landed on a straddle IMAGE — resolved by testing both concrete candidate
+  positions against the actual ray, same-dimension included — seeds the session
+  portal's inverse link, so grabbing the emerged half never pulls it back in.
+- **Player teleports** prepend the crossed portal's inverse. The hook is IP's
+  own teleportation manager (server and client), which knows the exact portal —
+  same-dimension hops included. The stored player-relative cursor vector is
+  rotated through the portal at the same moment, so the folded goal is
+  continuous through the hop by construction; TCP ordering covers the packets.
+- **Body transits** append the crossed portal forward and reframe the held
+  orientation through its rotation — same-dimension transits included. A
+  revision/ack protocol premultiplies in-flight packet orientations until the
+  client processes the ordered rebase RPC, so a server-initiated flip can never
+  be stomped by a stale packet.
+- Adjacent links composing to the identity annihilate, so dragging or walking
+  back pops the chain. Sequential recursion at any depth is plain list algebra.
+
+The PD goal is a pure fold of the absolute cursor point through the chain.
+Straddle sessions never affect the goal — a straddling body's native pose is
+authoritative and the folded goal simply continues past the plane on image
+colliders. The staff freeze and held-portal pin are deleted: held bodies ride
+the standard declarative straddle/minority-face/majority-rehome pipeline, and
+because the goal, the held orientation, and the chain all rebase through the
+same portal in the same tick, the constraint error is invariant across a flip —
+transit while held is yank-free, and entering any subsequent portal works
+because nothing is pinned.
+
+The client mirrors the chain (server snapshots broadcast for every dragging
+player, plus zero-latency local prediction from the client teleport hook and
+the pick seed). The beam route is derived from that chain plus one refinement:
+when the grabbed anchor is past a live session portal's plane, the route gains
+that session link and targets the image — the beam threads the aperture to the
+exiting part, continuously, because native and image coincide exactly at the
+plane. The mouse-rotation axis uses the same route (axis = M⁻¹·R_route·a, with
+M the image rotation), so goal, beam, aim, and rotation share one frame source.
+Beam node density is fed the true physical route length at creation (pick-ray
+length), every client tick, and every render pass.
+
+### Files
+
+- `src/main/java/ipl/sable/transit/IplGrabLink.java` (new)
+  Exact portal-isometry snapshot links: forward/inverse capture, fold,
+  identity annihilation, wire encoding.
+- `src/main/java/ipl/sable/transit/IplGrabChain.java` (new)
+  Server-authoritative chains: seed/teleport/transit events, goal fold,
+  orientation ack protocol, snapshot broadcast. Replaces
+  `IplStaffPortalDragState` (deleted).
+- `src/main/java/ipl/sable/client/IplGrabChainClient.java` (new)
+  Client mirror: snapshots, local prediction, rebase handler + ack.
+- `src/main/java/ipl/sable/client/IplStaffBeamRoutes.java`
+  Chain-driven routes with the straddle image refinement; SESSION_PIN latch,
+  length comparisons, and transit-frame plumbing deleted; aperture clamp,
+  segment fractions, and retention kept; route-length feed for node density.
+- `src/main/java/ipl/sable/client/IplStraddleStaffPick.java`
+  Pick/capture only: geometric native-vs-image candidate resolution, chain
+  seeding, pick-distance store; all frame heuristics deleted.
+- `src/main/java/ipl/sable/transit/SableTransitController.java`
+  Staff freeze and held-portal pin removed; grab-chain rebase wired at transit.
+- `src/main/java/ipl/sable/mixin/IplStaffDragSessionOverwriteMixin.java`
+  Goal fold at the constraint; relative-goal rotation duck; chain cleanup when
+  Simulated removes a session without stopDragging.
+- `src/main/java/ipl/sable/mixin/IplStaffServerStateMixin.java`
+  Chain begin/end hooks; unacked-transit orientation compensation.
+- `src/main/java/ipl/sable/mixin/client/IplStaffPickMixin.java`
+  True beam length at creation; beam-owner binding.
+- `src/main/java/ipl/sable/mixin/client/IplStaffBeamMixin.java`
+  Per-tick true-length feed; noise rotation through link rotations.
+- `src/main/java/ipl/sable/client/IplStaffPortalBeamRenderer.java`
+  Segment dim/prefix matching against the new route shape.
+- `src/main/java/ipl/sable/client/IplParentDimSync.java`
+  Staff handoff plumbing removed (rebase RPC owns it).
+- `src/main/java/qouteall/imm_ptl/core/teleportation/ServerTeleportationManager.java`
+- `src/main/java/qouteall/imm_ptl/core/teleportation/ClientTeleportationManager.java`
+  Exact-portal player-crossing hooks.
+- `src/main/java/ipl/sable/duck/IplStaffDragSessionControl.java`
+- `src/main/java/ipl/sable/mixin/client/IplStaffOutgoingDragMixin.java` (deleted;
+  stock raw packets are correct — the server owns all frame mapping)
+- `src/main/resources/ipl_sable.mixins.json`
+
+### Verification Needed
+
+Runtime-check with a same-dimension pair and a cross-dimension pair: grab from
+another dimension (hold distance and beam node density correct); walk through
+the portal while holding, both directions, repeatedly (no fling, beam stable);
+drag fully through the entrance several times, then through the exit portal and
+other portals (no dead portals); sequential recursion through two-plus portals
+and all the way back; hold the joint inside the aperture from both sides (beam
+threads the portal to the exiting part, never flips to the wrong face); rotate
+a held body through a rotated pair from both sides.
+
+No build or automated check was run for these changes.

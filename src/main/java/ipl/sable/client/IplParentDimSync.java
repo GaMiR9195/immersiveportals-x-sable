@@ -156,19 +156,12 @@ public final class IplParentDimSync {
             clientSubLevel.updateLastPose();
             clientSubLevel.forceUpdateBounds();
 
-            Level oldParent = ipl.sable.dim.IplDimAgnostic.getParentLevel(clientSubLevel);
             // Do not expose the new parent until every client pose is in destination
             // space. A pass already in progress may otherwise render a stale source
             // projection as well as the newly native destination sub-level.
             setParent(clientSubLevel, parentDimId);
-            // A through-portal staff pick encoded its packets in the old target frame. The
-            // server now owns post-transit raw-goal conversion, matching direct grabbed ships.
-            if (oldParent != null) {
-                IplStraddleStaffPick.onTransitHandoff(
-                    subLevelId, oldParent.dimension(), parentKey(parentDimId),
-                    mapping.origin(), mapping.sourceNormal(), mapping.rotation(), mapping.portalId()
-                );
-            }
+            // Staff drag frame changes ride the dedicated grab-chain rebase RPC (ordered
+            // after this handoff on the same channel); nothing staff-related to do here.
             // Straddle parity is server-synced state now (IplStraddleSessionStore); the
             // "crossed" session-end snapshot precedes this handoff on the ordered channel,
             // so there is no client-side latch left to clear here.

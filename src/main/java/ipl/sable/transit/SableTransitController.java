@@ -66,6 +66,7 @@ public final class SableTransitController {
 
     /** Clear hosted transit state when the server stops. */
     public static void onServerStopping(MinecraftServer server) {
+        IplGrabChain.clearAll();
         IplStraddleSessionSync.clearAll();
         IplPortalRimManager.clearAll();
         IplStraddleCloneBody.clearAll();
@@ -173,33 +174,14 @@ public final class SableTransitController {
                 boolean haveSession = IplStraddleCloneBody.hasSessionKey(key)
                     || IplStraddleTerrainClone.hasSessionKey(key);
 
-                // STAFF FREEZE: while a creative-staff drag session owns this body, a
-                // same-dimension portal never transits it. The held construction simply
-                // straddles on its image colliders — it can go fully in and be pulled fully
-                // back out with its native pose (and rotation) untouched. Transit resumes
-                // with normal rules the tick after release. Cross-dimension behavior is
-                // deliberately unchanged (its handoff pipeline is verified).
-                boolean heldSameDim =
-                    portal.getDestDim().equals(portalQueryLevel.dimension())
-                        && IplStaffPortalDragState.isHeldByStaff(airship.getUniqueId());
-
-                // A held body is pinned to exactly ONE same-dimension portal for the whole
-                // grab. Any other face — a coincident reverse/flipped plane, or a second
-                // nearby portal — must never open or keep a competing session. That stray
-                // reverse-face session was what pulled a fully-inserted body sideways into
-                // the backward plane when the player tried to draw it back out.
-                if (heldSameDim) {
-                    UUID pinned = IplStaffPortalDragState.heldPortalId(airship.getUniqueId());
-                    if (pinned != null && !pinned.equals(portalUuid)) {
-                        if (haveSession) {
-                            IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "held-other-face");
-                            IplStraddleCloneBody.clear(key, "held-other-face");
-                            IplStraddleTerrainClone.clear(key);
-                        }
-                        continue;
-                    }
-                }
-
+                // Staff-held bodies ride the SAME declarative pipeline as free ones. The
+                // old staff freeze (no same-dim transit while held, plus a held-portal pin
+                // blocking every other face) made a fully-inserted body permanently unable
+                // to enter any OTHER portal for the rest of the grab and made sequential
+                // multi-portal drags structurally impossible. Transit while held is safe:
+                // the parent flip is an exact isometry, and the grab chain rebases the
+                // goal and held orientation through the same portal in the same tick, so
+                // the constraint error is invariant across the flip (no yank).
                 Vec3 normal = portal.getNormal().scale(-1.0);
                 PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
                     airship, portal, normal, haveSession ? EXIT_APERTURE_MARGIN : 0.0);
@@ -225,8 +207,7 @@ public final class SableTransitController {
                     // minority rule refuses to re-open this face and would open the
                     // OPPOSITE face with inverted parity instead, making forward travel
                     // structurally impossible.
-                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION
-                        && !heldSameDim) {
+                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION) {
                         if (candidates == null) candidates = new ArrayList<>(1);
                         candidates.add(new TransitCandidate(airship, portal, true));
                         candidateAddedForAirship = true;
@@ -246,34 +227,11 @@ public final class SableTransitController {
                         || IplStraddleTerrainClone.hasSessionKey(key))) {
                         IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
                     }
-                    if (heldSameDim) {
-                        IplStaffPortalDragState.pinHeldPortal(airship.getUniqueId(), portalUuid);
-                    }
                     continue;
                 }
 
                 if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
                     && (haveSession || state.enteredFromSourceAperture())) {
-                    // STAFF FREEZE, fully-through half of the rule: a held construction
-                    // that fully cleared a same-dimension aperture keeps its session (image
-                    // colliders, clip seam, projection) instead of transiting. The clip
-                    // plane fully hides the native half and the image is the whole visible
-                    // body, so render and collision stay correct while it is parked beyond
-                    // the plane or pulled back out. Release lets this branch fire normally.
-                    if (heldSameDim) {
-                        seenHostedKeys.add(key);
-                        if (IplStraddleCloneBody.isEnabled()) {
-                            IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
-                        } else {
-                            IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
-                        }
-                        if (!haveSession && (IplStraddleCloneBody.hasSessionKey(key)
-                            || IplStraddleTerrainClone.hasSessionKey(key))) {
-                            IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
-                        }
-                        IplStaffPortalDragState.pinHeldPortal(airship.getUniqueId(), portalUuid);
-                        continue;
-                    }
                     if (haveSession) {
                         IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
                     }
@@ -340,7 +298,9 @@ public final class SableTransitController {
                     // reverse portal requires a genuine majority back-crossing — the
                     // minority-face rule opens the reverse session at ~1-REHOME_FRACTION
                     // and the ship must travel the full hysteresis band to flip again.
-                    IplStaffPortalDragState.onTransitCompleted(c.airship.getUniqueId(), c.portal);
+                    // Grab chains of every player holding this body rebase through the
+                    // exact crossing portal (goal, orientation, beam — one event).
+                    IplGrabChain.onBodyTransit(level.getServer(), c.airship.getUniqueId(), c.portal);
                     // EAGER re-derivation: a majority rehome leaves the minority part
                     // still straddling. Waiting for the next tick's recompute opened a
                     // one-tick hole (no image, no clone, no collision in the old dim —

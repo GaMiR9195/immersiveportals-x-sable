@@ -2,46 +2,47 @@ package ipl.sable.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.dim.IplDimAgnostic;
-import ipl.sable.transit.IplStraddlePoseMap;
+import ipl.sable.transit.IplGrabLink;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Quaterniond;
+import org.joml.Vector3d;
+import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.portal.PortalExtension;
+import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.WeakHashMap;
 
 /**
- * Deterministic staff-beam geometry.
+ * Deterministic staff-beam geometry, driven by the grab chain.
  *
- * <p>One {@link Route} is resolved per beam per frame from stable inputs (staff tip, the
- * grabbed body's render pose, the live straddle session), then cut into world-tagged
- * {@link Segment}s at portal apertures. Design rules, each fixing a concrete failure of the
- * old implementation:
+ * <p>The beam is the visible expression of the SAME frame algebra the server uses for the
+ * PD goal: the owner's grab chain ({@link IplGrabChainClient}), plus one refinement for a
+ * straddling body — when the grabbed anchor is past a live straddle-session plane, its
+ * visible representation is the portal IMAGE, so the route gains that session link and
+ * targets the image. Both facts are event-sourced (chain) or server-synced (session
+ * store); nothing is chosen by comparing distances, latching first-seen portals, or
+ * testing which side the player "probably" works from. The old implementation's
+ * SESSION_PIN latch, per-frame length comparisons, and transit-frame plumbing are gone.
  *
- * <ul>
- *   <li><b>Never blank.</b> Aperture crossing uses IP's exact raytrace when the beam line
- *       passes through the portal quad, and otherwise CLAMPS the line-plane intersection
- *       into the aperture rectangle. A beam whose anchor sits deep inside/beyond a portal
- *       (or whose staff tip swings wide) bends at the aperture edge instead of
- *       disappearing.</li>
- *   <li><b>Retention.</b> While a drag is active, a transiently unresolvable route (session
- *       snapshot gap, portal entity not yet synced) reuses the last good geometry for a few
- *       ticks instead of flickering off.</li>
- *   <li><b>Light path.</b> For same-dimension sessions both the direct line and the
- *       through-portal split exist in one world; the shorter path wins, so the beam goes
- *       through the aperture exactly when the player is actually working through it, from
- *       either side (forward via the session portal, backward via its reverse).</li>
- *   <li><b>Anchor side is a plane test.</b> The beam targets the anchor's IMAGE iff the
- *       native anchor is past the portal plane in the crossing direction — the same seam the
- *       render clip uses, so the beam endpoint always lands on visible geometry. At the
- *       plane both representations coincide: switching routes is visually continuous.</li>
- * </ul>
+ * <p>Route transitions are continuous by construction: a chain link appears exactly when
+ * a teleport/transit event maps the endpoint through that same portal, and the image
+ * refinement toggles exactly at the session plane, where native and image coincide.
+ *
+ * <p>Kept from the previous implementation because they are exact, not heuristic:
+ * aperture clamping (a beam may bend at a portal edge but never vanish), segment
+ * cutting with shared fractions (noise animates continuously across worlds), and short
+ * retention across transient resolution gaps (session snapshot latency).
  */
 public final class IplStaffBeamRoutes {
 
@@ -52,31 +53,43 @@ public final class IplStaffBeamRoutes {
 
     private static final Map<UUID, Kept> LAST = new HashMap<>();
 
-    /**
-     * Sub-level -> the ONE session portal this client uses for beam/aim geometry, latched on
-     * first sight and sticky while any session exists (mirror of the server's held-portal
-     * pin). {@code resolvePortal} returns the first of possibly several session faces; if a
-     * coincident reverse face ever wins that race, the plane test flips and the beam points
-     * at the EXIT while the body is clearly held inside the entrance. The latch makes face
-     * choice a one-time decision instead of a per-frame race.
-     */
-    private static final Map<UUID, UUID> SESSION_PIN = new HashMap<>();
+    /** Owner -> latest true physical route length (feeds PhysicsBeam node density). */
+    private static final Map<UUID, Double> LENGTHS = new HashMap<>();
+
+    /** Beam object -> owner, registered by the renderer/creation hook (weak, identity). */
+    private static final Map<Object, UUID> BEAM_OWNERS = new WeakHashMap<>();
 
     private IplStaffBeamRoutes() {}
 
-    /** Whole physical beam path: staff world, staff tip, final-frame target, portals in order. */
-    public record Route(Level staffLevel, Vec3 staffStart, Vec3 target, List<Portal> portals) {}
+    /**
+     * Whole physical beam path.
+     *
+     * @param links         frame hops from the staff world to the target's frame
+     * @param target        beam endpoint, expressed in the FINAL frame (after all links)
+     * @param imageRotation rotation of the straddle-session image refinement when the
+     *                      target is an image, identity otherwise — combined with the
+     *                      chain fold it defines the mouse-rotation axis frame
+     */
+    public record Route(
+        Level staffLevel, Vec3 staffStart, Vec3 target,
+        List<IplGrabLink> links, Quaterniond imageRotation, UUID owner
+    ) {}
 
     /**
-     * One world-frame piece of a route. {@code world} is where this piece physically lies;
-     * fractions locate it on the whole beam for noise continuity; {@code prefix} is the
-     * portal chain traversed before this piece (noise vectors rotate through it).
+     * One world-frame piece of a route. {@code dim} is where this piece physically lies;
+     * fractions locate it on the whole beam for noise continuity; {@code noiseRotation}
+     * is the composed rotation of the links traversed before this piece (noise vectors
+     * rotate with the path); {@code prefixPortalIds} matches IP's render path by UUID.
      */
     public record Segment(
-        Level world, Vec3 start, Vec3 end,
+        ResourceKey<Level> dim, Vec3 start, Vec3 end,
         double startFraction, double endFraction,
-        double totalLength, List<Portal> prefix
+        double totalLength, Quaterniond noiseRotation, List<UUID> prefixPortalIds
     ) {}
+
+    // ------------------------------------------------------------------
+    // Resolution.
+    // ------------------------------------------------------------------
 
     /** Resolve with retention: build fresh, else bridge a short gap with the last geometry. */
     @Nullable
@@ -85,7 +98,7 @@ public final class IplStaffBeamRoutes {
         ClientSubLevel sub, Vec3 localAnchor, float partialTick
     ) {
         long now = staffLevel.getGameTime();
-        Route built = build(staffLevel, staffStart, sub, localAnchor, partialTick);
+        Route built = build(owner, staffLevel, staffStart, sub, localAnchor, partialTick);
         if (built != null) {
             LAST.put(owner, new Kept(built, now));
             return built;
@@ -97,20 +110,70 @@ public final class IplStaffBeamRoutes {
             LAST.remove(owner);
             return null;
         }
-        // Staff tip stays live during the bridge; target/portals hold the last good shape.
-        return new Route(staffLevel, staffStart, kept.route().target(), kept.route().portals());
+        // Staff tip stays live during the bridge; target/links hold the last good shape.
+        return new Route(staffLevel, staffStart, kept.route().target(),
+            kept.route().links(), kept.route().imageRotation(), owner);
     }
 
     public static void forget(UUID owner) {
         LAST.remove(owner);
+        LENGTHS.remove(owner);
+    }
+
+    public static void clearAll() {
+        LAST.clear();
+        LENGTHS.clear();
+    }
+
+    @Nullable
+    private static Route build(
+        UUID owner, Level staffLevel, Vec3 staffStart,
+        ClientSubLevel sub, Vec3 localAnchor, float partialTick
+    ) {
+        Level parent = IplDimAgnostic.getParentLevel(sub);
+        if (parent == null) return null;
+        Vec3 nativeAnchor = sub.renderPose(partialTick).transformPosition(localAnchor);
+
+        List<IplGrabLink> links = IplGrabChainClient.chainFor(owner, sub.getUniqueId());
+        Vec3 target = nativeAnchor;
+        Quaterniond imageRotation = new Quaterniond();
+        boolean targetsImage = false;
+
+        // Straddle refinement: while the body straddles a session portal and the grabbed
+        // anchor is past that portal's plane (crossing direction), the anchor's visible
+        // representation is the portal image — the beam must thread the aperture and end
+        // on visible geometry. At the plane both representations coincide, so toggling
+        // this refinement is visually continuous. Session order is server history
+        // (session-start order), not a per-frame race.
+        for (Portal session : IplStraddleSessionStore.resolveAllPortals(sub)) {
+            if (session.isRemoved()) continue;
+            if (!isPastPlane(session, nativeAnchor)) continue;
+            IplGrabLink sessionLink = IplGrabLink.forward(session);
+            links = IplGrabLink.append(links, sessionLink);
+            target = sessionLink.transform(nativeAnchor);
+            imageRotation = new Quaterniond(sessionLink.rotation());
+            targetsImage = true;
+            break;
+        }
+
+        // Frame-continuity validation: the route must start in the staff world and each
+        // link must continue where the previous one ended. A mismatch is a transient
+        // desync (snapshot in flight during a hop) — return null and let retention
+        // bridge it rather than drawing a wrong-frame beam.
+        ResourceKey<Level> at = staffLevel.dimension();
+        for (IplGrabLink link : links) {
+            if (!link.fromDim().equals(at)) return null;
+            at = link.toDim();
+        }
+        if (!targetsImage && !at.equals(parent.dimension())) return null;
+
+        return new Route(staffLevel, staffStart, target, links, imageRotation, owner);
     }
 
     /**
      * Where the local player's staff should AIM: the first endpoint the beam heads toward —
      * the entrance aperture when the beam goes through a portal, or the joint itself for a
-     * direct grab. Stock aims straight at the native joint, which points the staff at empty
-     * space (or the wrong dimension) whenever the joint is reached through a portal. Returns
-     * null to fall back to stock aiming.
+     * direct grab. Returns null to fall back to stock aiming.
      */
     @Nullable
     public static Vec3 staffAimPoint(Player player, ClientSubLevel sub, Vec3 localAnchor, float partialTick) {
@@ -121,134 +184,48 @@ public final class IplStaffBeamRoutes {
         return segments.isEmpty() ? null : segments.get(0).end();
     }
 
-    public static void clearAll() {
-        LAST.clear();
-        SESSION_PIN.clear();
-    }
-
-    /** Pinned session portal for this sub, latched on first sight while sessions exist. */
+    /**
+     * The frame conversion for the mouse-rotation axis of this grab: the composed route
+     * rotation (chain fold, then the image refinement inverse — see the derivation in
+     * {@code IplStraddleStaffPick.unmapStaffInputAxis}). Null when no route resolves.
+     */
     @Nullable
-    private static Portal pinnedSessionPortal(ClientSubLevel sub) {
-        List<Portal> portals = IplStraddleSessionStore.resolveAllPortals(sub);
-        if (portals.isEmpty()) {
-            SESSION_PIN.remove(sub.getUniqueId());
-            return null;
+    public static Quaterniond axisRotation(Player player, ClientSubLevel sub, Vec3 localAnchor) {
+        Route route = resolve(
+            player.getUUID(), player.level(), player.getEyePosition(), sub, localAnchor, 1.0f);
+        if (route == null) return null;
+        Quaterniond folded = new Quaterniond();
+        for (IplGrabLink link : route.links()) {
+            folded.premul(link.rotation());
         }
-        UUID pinned = SESSION_PIN.get(sub.getUniqueId());
-        if (pinned != null) {
-            for (Portal portal : portals) {
-                if (portal.getUUID().equals(pinned)) return portal;
-            }
-        }
-        Portal first = portals.get(0);
-        SESSION_PIN.put(sub.getUniqueId(), first.getUUID());
-        return first;
+        // axis_constraint = M^-1 * R_route * axis_player
+        return new Quaterniond(route.imageRotation()).conjugate().mul(folded);
     }
 
-    @Nullable
-    private static Route build(
-        Level staffLevel, Vec3 staffStart, ClientSubLevel sub, Vec3 localAnchor, float partialTick
-    ) {
-        Level parent = IplDimAgnostic.getParentLevel(sub);
-        if (parent == null) return null;
-        Vec3 nativeAnchor = sub.renderPose(partialTick).transformPosition(localAnchor);
-
-        // Cross-dimension post-transit window: the body already flipped to the target
-        // dimension while the player is still on the source side; route through the exact
-        // recorded crossing portal until the player follows or releases.
-        Portal transitPortal = IplStraddleStaffPick.transitRoutePortal(sub, staffLevel);
-        if (transitPortal != null) {
-            return new Route(staffLevel, staffStart, nativeAnchor, List.of(transitPortal));
-        }
-
-        Portal session = pinnedSessionPortal(sub);
-        if (session != null && !session.isRemoved()) {
-            IplStraddlePoseMap.StraddleMapping mapping =
-                IplStraddlePoseMap.StraddleMapping.of(session);
-            boolean anchorThrough = isPastPlane(session, nativeAnchor);
-            boolean sameDim = session.getDestDim().equals(session.level().dimension());
-            Vec3 mappedAnchor = mapping.mapPoint(nativeAnchor);
-
-            if (staffLevel == parent) {
-                if (sameDim) {
-                    // Deterministic route from geometry — never a per-frame length compare
-                    // (that was the target flip-flop). The beam ends at whichever
-                    // representation is VISIBLE for the grabbed anchor (image past the plane,
-                    // native otherwise), reached by the physically correct path for the
-                    // player's side. Transitions happen exactly at plane crossings, where the
-                    // two representations coincide, so they are visually continuous.
-                    boolean playerThrough = isPastPlane(session, staffStart);
-                    if (anchorThrough) {
-                        return playerThrough
-                            ? new Route(staffLevel, staffStart, mappedAnchor, List.of())
-                            : new Route(staffLevel, staffStart, mappedAnchor, List.of(session));
-                    }
-                    if (playerThrough) {
-                        Portal reverse = reverseOf(session, staffLevel);
-                        if (reverse != null) {
-                            return new Route(staffLevel, staffStart, nativeAnchor, List.of(reverse));
-                        }
-                    }
-                    return new Route(staffLevel, staffStart, nativeAnchor, List.of());
-                }
-                // Cross-dimension, viewed from the body's native side.
-                if (anchorThrough) {
-                    return new Route(staffLevel, staffStart, mappedAnchor, List.of(session));
-                }
-                return new Route(staffLevel, staffStart, nativeAnchor, List.of());
-            }
-
-            // Player stands in the session's destination world (cross-dimension exit side).
-            if (session.getDestinationWorld() == staffLevel) {
-                if (anchorThrough) {
-                    // The image is local to the player: straight beam to it.
-                    return new Route(staffLevel, staffStart, mappedAnchor, List.of());
-                }
-                Portal reverse = reverseOf(session, staffLevel);
-                if (reverse != null) {
-                    return new Route(staffLevel, staffStart, nativeAnchor, List.of(reverse));
-                }
-                return null; // retention bridges until the reverse portal syncs
-            }
-        }
-
-        // No session in play and the body is native to the player's world: straight beam.
-        if (staffLevel == parent) {
-            return new Route(staffLevel, staffStart, nativeAnchor, List.of());
-        }
-
-        // Remote grab through unrelated portals: replay the exact captured pick chain.
-        List<Portal> captured = IplStraddleStaffPick.capturedPortals(sub.getUniqueId(), staffLevel);
-        if (captured != null && !captured.isEmpty()) {
-            Level end = staffLevel;
-            for (Portal portal : captured) {
-                end = portal.getDestinationWorld();
-            }
-            if (end == parent) {
-                return new Route(staffLevel, staffStart, nativeAnchor, List.copyOf(captured));
-            }
-        }
-        return null;
-    }
+    // ------------------------------------------------------------------
+    // Segments.
+    // ------------------------------------------------------------------
 
     /**
      * Cut a route into per-world segments at portal apertures. Total length and fractions
-     * are shared so noise animates continuously across the whole beam.
+     * are shared so noise animates continuously across the whole beam. Also publishes the
+     * owner's true route length for PhysicsBeam node density.
      */
     public static List<Segment> segments(Route route) {
-        int count = route.portals().size();
+        List<IplGrabLink> links = route.links();
+        int count = links.size();
         Vec3[] starts = new Vec3[count + 1];
         Vec3[] ends = new Vec3[count + 1];
         double[] lengths = new double[count + 1];
 
         Vec3 cursor = route.staffStart();
         for (int i = 0; i < count; i++) {
-            Portal portal = route.portals().get(i);
-            Vec3 aperture = clampToAperture(portal, cursor, endpointInFrame(route, i));
+            IplGrabLink link = links.get(i);
+            Vec3 aperture = clampToAperture(link, cursor, endpointInFrame(route, i));
             starts[i] = cursor;
             ends[i] = aperture;
             lengths[i] = cursor.distanceTo(aperture);
-            cursor = portal.transformPoint(aperture);
+            cursor = link.transform(aperture);
         }
         starts[count] = cursor;
         ends[count] = route.target();
@@ -257,33 +234,58 @@ public final class IplStaffBeamRoutes {
         double total = 0.0;
         for (double length : lengths) total += length;
         if (total <= 1.0e-9) return List.of();
+        LENGTHS.put(route.owner(), total);
 
         List<Segment> segments = new ArrayList<>(count + 1);
-        Level world = route.staffLevel();
+        ResourceKey<Level> dim = route.staffLevel().dimension();
+        Quaterniond noiseRotation = new Quaterniond();
+        List<UUID> prefix = List.of();
         double before = 0.0;
         for (int i = 0; i <= count; i++) {
             segments.add(new Segment(
-                world, starts[i], ends[i],
+                dim, starts[i], ends[i],
                 before / total, (before + lengths[i]) / total,
-                total, List.copyOf(route.portals().subList(0, i))
+                total, new Quaterniond(noiseRotation), prefix
             ));
             before += lengths[i];
-            if (i < count) world = route.portals().get(i).getDestinationWorld();
+            if (i < count) {
+                IplGrabLink link = links.get(i);
+                dim = link.toDim();
+                noiseRotation = new Quaterniond(link.rotation()).mul(noiseRotation);
+                List<UUID> next = new ArrayList<>(prefix);
+                next.add(link.portalId());
+                prefix = List.copyOf(next);
+            }
         }
         return segments;
     }
 
-    /**
-     * Aperture point of the {@code from -> to} line on this portal. Exact quad raytrace when
-     * the line passes through; otherwise the line-plane intersection clamped into the
-     * aperture rectangle — a beam can bend at the portal edge but can never vanish.
-     */
-    public static Vec3 clampToAperture(Portal portal, Vec3 from, Vec3 to) {
-        Vec3 exact = portal.rayTrace(from, to);
-        if (exact != null) return exact;
+    /** Route target expressed in the frame BEFORE link {@code frame} (unfold the suffix). */
+    private static Vec3 endpointInFrame(Route route, int frame) {
+        Vec3 endpoint = route.target();
+        List<IplGrabLink> links = route.links();
+        for (int i = links.size() - 1; i >= frame; i--) {
+            endpoint = links.get(i).inverseTransform(endpoint);
+        }
+        return endpoint;
+    }
 
-        Vec3 origin = portal.getOriginPos();
-        Vec3 normal = portal.getNormal();
+    /**
+     * Aperture point of the {@code from -> to} line on this link's doorway. Uses the LIVE
+     * portal entity's exact quad raytrace when it is present and still where the snapshot
+     * says (a moved portal invalidates the snapshot's doorway, not the frame mapping);
+     * otherwise intersects the snapshot plane and clamps into the snapshot rectangle —
+     * a beam can bend at the portal edge but can never vanish.
+     */
+    public static Vec3 clampToAperture(IplGrabLink link, Vec3 from, Vec3 to) {
+        Portal live = findLivePortal(link);
+        if (live != null) {
+            Vec3 exact = live.rayTrace(from, to);
+            if (exact != null) return exact;
+        }
+
+        Vec3 origin = link.origin();
+        Vec3 normal = link.normal();
         Vec3 direction = to.subtract(from);
         double denom = direction.dot(normal);
         Vec3 planePoint;
@@ -293,12 +295,32 @@ public final class IplStaffBeamRoutes {
             double t = Math.clamp(origin.subtract(from).dot(normal) / denom, 0.0, 1.0);
             planePoint = from.add(direction.scale(t));
         }
-        Vec3 axisW = portal.getAxisW();
-        Vec3 axisH = portal.getAxisH();
         Vec3 rel = planePoint.subtract(origin);
-        double w = Math.clamp(rel.dot(axisW), -portal.getWidth() * 0.5, portal.getWidth() * 0.5);
-        double h = Math.clamp(rel.dot(axisH), -portal.getHeight() * 0.5, portal.getHeight() * 0.5);
-        return origin.add(axisW.scale(w)).add(axisH.scale(h));
+        double w = Math.clamp(rel.dot(link.axisW()), -link.width() * 0.5, link.width() * 0.5);
+        double h = Math.clamp(rel.dot(link.axisH()), -link.height() * 0.5, link.height() * 0.5);
+        return origin.add(link.axisW().scale(w)).add(link.axisH().scale(h));
+    }
+
+    /** Live portal for a link: matched by UUID AND verified against the snapshot origin. */
+    @Nullable
+    private static Portal findLivePortal(IplGrabLink link) {
+        for (ClientLevel level : ClientWorldLoader.getClientWorlds()) {
+            if (!level.dimension().equals(link.fromDim())) continue;
+            for (Entity entity : level.entitiesForRendering()) {
+                if (entity instanceof Portal portal && !portal.isRemoved()
+                    && portal.getUUID().equals(link.portalId())
+                    && portal.getOriginPos().distanceToSqr(link.origin()) < 0.25) {
+                    return portal;
+                }
+            }
+            for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
+                if (!portal.isRemoved() && portal.getUUID().equals(link.portalId())
+                    && portal.getOriginPos().distanceToSqr(link.origin()) < 0.25) {
+                    return portal;
+                }
+            }
+        }
+        return null;
     }
 
     /** True when {@code point} is past the portal plane in the crossing direction (-normal). */
@@ -306,21 +328,32 @@ public final class IplStaffBeamRoutes {
         return point.subtract(portal.getOriginPos()).dot(portal.getNormal()) < -1.0e-4;
     }
 
-    @Nullable
-    private static Portal reverseOf(Portal session, Level expectedLevel) {
-        Portal reverse = PortalExtension.get(session).reversePortal;
-        if (reverse == null || reverse.isRemoved() || reverse.level() != expectedLevel) {
-            return null;
-        }
-        return reverse;
+    // ------------------------------------------------------------------
+    // PhysicsBeam length feed (true node density, issue: wrong segment count).
+    // ------------------------------------------------------------------
+
+    /** Bind a beam object to its owner so the per-tick update can find its route length. */
+    public static void registerBeamOwner(Object beam, UUID owner) {
+        BEAM_OWNERS.put(beam, owner);
     }
 
-    /** Route target expressed in the frame BEFORE portal {@code frame} (unmap the suffix). */
-    private static Vec3 endpointInFrame(Route route, int frame) {
-        Vec3 endpoint = route.target();
-        for (int i = route.portals().size() - 1; i >= frame; i--) {
-            endpoint = route.portals().get(i).inverseTransformPoint(endpoint);
-        }
-        return endpoint;
+    /** The latest true route length for this beam object, or NaN when unknown. */
+    public static double knownLengthFor(Object beam) {
+        UUID owner = BEAM_OWNERS.get(beam);
+        if (owner == null) return Double.NaN;
+        Double length = LENGTHS.get(owner);
+        return length == null ? Double.NaN : length;
+    }
+
+    /** The latest true route length for this owner, or NaN when unknown. */
+    public static double knownLength(UUID owner) {
+        Double length = LENGTHS.get(owner);
+        return length == null ? Double.NaN : length;
+    }
+
+    /** Rotate a vector by a quaternion (helper for noise mapping in the render mixin). */
+    public static Vec3 rotate(Quaterniond rotation, Vec3 v) {
+        Vector3d out = rotation.transform(new Vector3d(v.x, v.y, v.z));
+        return new Vec3(out.x, out.y, out.z);
     }
 }

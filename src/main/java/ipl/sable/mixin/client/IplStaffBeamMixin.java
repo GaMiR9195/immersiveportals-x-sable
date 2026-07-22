@@ -9,6 +9,9 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.List;
 
@@ -29,6 +32,23 @@ public abstract class IplStaffBeamMixin {
     @Shadow(remap = false) private double length;
 
     /**
+     * Node density comes from {@code length} inside {@code update()}, which runs every
+     * client tick — not only when a segment was drawn. Stock seeds and maintains it from
+     * raw endpoint subtraction, which is garbage across frames (a cross-dimension grab
+     * produced a wrong node count: right start, right end, wrong beam). Feed the TRUE
+     * physical route length (published by the route builder, seeded from the pick ray at
+     * creation) before every node-count update. NaN means no route data — plain local
+     * beams keep stock behavior.
+     */
+    @Inject(method = "update", at = @At("HEAD"), remap = false, require = 0)
+    private void ipl$feedTrueLength(CallbackInfo ci) {
+        double known = IplStaffBeamRoutes.knownLengthFor(this);
+        if (!Double.isNaN(known)) {
+            this.length = known;
+        }
+    }
+
+    /**
      * @author IPL-Sable
      * @reason Render in actual IP pass frame, not stock main-world frame.
      */
@@ -42,10 +62,8 @@ public abstract class IplStaffBeamMixin {
             || IplStaffPortalBeamRenderer.getActiveSegment() == null) return;
 
         IplStaffBeamRoutes.Segment segment = IplStaffPortalBeamRenderer.getActiveSegment();
-        // Stock render() maintained this.length from its endpoints; update() derives node
-        // count and noise radius from it. Our overwrite must keep feeding it the TRUE
-        // physical beam length — the constructor seeds it from raw cross-frame coordinates
-        // (garbage for a cross-dimension grab: wrong node density, wrong beam look).
+        // update() derives node count and noise radius from this.length; keep it fed with
+        // the true physical beam length on the render path too.
         this.length = segment.totalLength();
         int nodeCount = this.nodes.size();
         if (nodeCount < 2 || segment.totalLength() <= 1.0e-9) {
@@ -73,10 +91,8 @@ public abstract class IplStaffBeamMixin {
         double span = segment.endFraction() - segment.startFraction();
         double local = span <= 1.0e-9 ? 0.0 : (fraction - segment.startFraction()) / span;
         Vec3 base = segment.start().lerp(segment.end(), Math.clamp(local, 0.0, 1.0));
-        Vec3 noise = ipl$noiseAt(fraction, partialTick);
-        for (qouteall.imm_ptl.core.portal.Portal portal : segment.prefix()) {
-            noise = portal.transformLocalVecNonScale(noise);
-        }
+        Vec3 noise = IplStaffBeamRoutes.rotate(
+            segment.noiseRotation(), ipl$noiseAt(fraction, partialTick));
         return base.add(noise);
     }
 

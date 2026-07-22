@@ -89,10 +89,12 @@ public final class IplStaffPortalBeamRenderer {
             IplPhysicsStaffBeamAccessorMixin access =
                 (IplPhysicsStaffBeamAccessorMixin) (Object) beam;
             Vec3 localAnchor = access.ipl$getPreviousEnd().lerp(access.ipl$getEnd(), partialTick);
-            ClientSubLevel sub = ipl$findHostedSubLevel(localAnchor);
+            ClientSubLevel sub = findHostedSubLevel(localAnchor);
             if (sub == null) continue;
 
             Vec3 staffStart = staffStart(owner, entry.getKey(), beam, mainPass, partialTick);
+
+            IplStaffBeamRoutes.registerBeamOwner(beam, entry.getKey());
 
             IplStaffBeamRoutes.Route route = IplStaffBeamRoutes.resolve(
                 entry.getKey(), owner.level(), staffStart, sub, localAnchor, partialTick
@@ -137,12 +139,12 @@ public final class IplStaffPortalBeamRenderer {
         IplStaffBeamRoutes.Segment segment, ClientLevel renderLevel,
         boolean mainPass, List<Portal> renderPath
     ) {
-        if (segment.world() != renderLevel) return false;
+        if (!segment.dim().equals(renderLevel.dimension())) return false;
         if (mainPass) return true;
-        List<Portal> prefix = segment.prefix();
+        List<java.util.UUID> prefix = segment.prefixPortalIds();
         if (renderPath.size() != prefix.size()) return false;
         for (int i = 0; i < prefix.size(); i++) {
-            if (!renderPath.get(i).getUUID().equals(prefix.get(i).getUUID())) return false;
+            if (!renderPath.get(i).getUUID().equals(prefix.get(i))) return false;
         }
         return true;
     }
@@ -184,7 +186,7 @@ public final class IplStaffPortalBeamRenderer {
     }
 
     /** Beam anchors are plot coordinates, so resolve through hosting container, never main world. */
-    private static ClientSubLevel ipl$findHostedSubLevel(Vec3 localAnchor) {
+    public static ClientSubLevel findHostedSubLevel(Vec3 localAnchor) {
         SubLevelContainer container = IplClientHostedLookup.getHostingContainerOrNull();
         if (container == null) return null;
         ChunkPos chunk = new ChunkPos(BlockPos.containing(localAnchor));

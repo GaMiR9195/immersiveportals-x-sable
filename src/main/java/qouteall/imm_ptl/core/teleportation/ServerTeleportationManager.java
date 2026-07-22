@@ -193,9 +193,13 @@ public class ServerTeleportationManager {
             recordLastPosition(player, dimensionBefore, oldFeetPos);
             
             teleportPlayer(player, dimensionTo, newEyePos);
-            
+
             portal.onEntityTeleportedOnServer(player);
-            
+
+            // IPL-Sable: a player holding a staff drag crossed this exact portal —
+            // update the grab chain the moment the frame changes (same-dim included).
+            ipl.sable.transit.IplGrabChain.onPlayerTeleported(player, portal);
+
             ScaleUtils.onServerEntityTeleported(player, portal);
             
             if (portal.getTeleportChangesGravity()) {

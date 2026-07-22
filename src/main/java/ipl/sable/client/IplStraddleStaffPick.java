@@ -3,8 +3,9 @@ package ipl.sable.client;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
+import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItem;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
@@ -12,13 +13,11 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
 import com.mojang.datafixers.util.Pair;
-import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
-import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItem;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,11 +36,14 @@ import java.util.UUID;
  * own convention for sub-level hits — so {@code getContainingClient(hit.getLocation())}
  * and everything downstream (drag anchors, lock points) work unchanged.
  *
- * <p>Distances compare correctly across frames because the mapping is rigid
- * (translation-only portal pairs preserve lengths).
- *
- * <p>Beam GEOMETRY lives in {@link IplStaffBeamRoutes}; this class owns pick/drag capture
- * state and exposes it to the route builder.
+ * <p>This class owns pick/drag CAPTURE state only. The frame algebra of an active drag
+ * lives in the grab chain ({@link IplGrabChainClient} / server {@code IplGrabChain});
+ * beam geometry lives in {@link IplStaffBeamRoutes}. The pick's job at grab start is to
+ * hand the chain its seed: the exact portal path the pick ray traversed, plus — when the
+ * click landed on a straddle IMAGE rather than the native half — the session portal whose
+ * inverse links the image's frame back to the body's parent frame. Which representation
+ * was clicked is resolved geometrically against the actual ray (both candidate positions
+ * are computed and the one the ray intersects wins), not guessed from player position.
  */
 public final class IplStraddleStaffPick {
 
@@ -51,23 +53,13 @@ public final class IplStraddleStaffPick {
     /** Locked drag frame. It never changes because a later hover happened to hit a portal. */
     private static final Map<UUID, PortalTarget> DRAG_TARGETS = new HashMap<>();
 
-    /** Most recent completed body crossing, retained while drag continues across its reverse. */
-    private static final Map<UUID, TransitFrame> TRANSIT_FRAMES = new HashMap<>();
-
-    /** Same-dimension mouse-axis chooser stickiness, keyed by grabbed sub-level. */
-    private static final Map<UUID, Boolean> SAME_DIM_AXIS_MAPPED = new HashMap<>();
-
-    /** Same-dimension chooser margin (client mirror of the server goal chooser). */
-    private static final double SAME_DIM_SWITCH_MARGIN = 1.5;
-
     /**
-     * VISIBLE ray length from eye to the picked point, captured at grab, keyed by sub-level.
+     * VISIBLE ray length from eye to the picked point, captured at pick, keyed by sub-level.
      * Stock derives the hold distance from {@code logicalPose} (the body's NATIVE position),
-     * which is a different coordinate space for a cross-dimension grab and a different location
-     * for a same-dimension image grab — producing a maxed-out or plain wrong hold distance that
-     * yanks the body somewhere it was never grabbed. The physical pick already walked the true
-     * distance the ray travelled; we hand that to the drag session instead. One-shot: consumed
-     * when the session is created.
+     * which is a different coordinate space for a cross-dimension grab and a different
+     * location for a same-dimension image grab. The physical pick already walked the true
+     * distance the ray travelled (rigid mappings preserve length); the drag session and the
+     * beam's initial node density both use it.
      */
     private static final Map<UUID, Double> GRAB_DISTANCE = new HashMap<>();
 
@@ -113,7 +105,8 @@ public final class IplStraddleStaffPick {
             from, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player
         ));
         ClientSubLevel sub = block.getType() == HitResult.Type.MISS ? null : getHitSubLevel(level, block);
-        double blockDistance = sub == null ? Double.MAX_VALUE : visibleHitDistance(level, from, to, sub, block);
+        VisibleHit visible = sub == null ? null : visibleHit(level, from, to, sub, block);
+        double blockDistance = visible == null ? Double.MAX_VALUE : visible.distance();
 
         Optional<Pair<Portal, qouteall.q_misc_util.my_util.RayTraceResult>> portalHit =
             qouteall.imm_ptl.core.portal.PortalUtils.raytracePortals(
@@ -122,10 +115,11 @@ public final class IplStraddleStaffPick {
         double portalDistance = portalHit.map(hit -> hit.getSecond().hitPos().distanceTo(from))
             .orElse(Double.MAX_VALUE);
 
-        if (sub != null && blockDistance <= portalDistance + 0.0001) {
+        if (visible != null && blockDistance <= portalDistance + 0.0001) {
             // traveled through prior frames + the visible reach within this frame = the true
             // ray length to the grabbed point (mappings are rigid, so lengths add).
-            return portalTargetForHit(sub, level, block, path, traveled + blockDistance);
+            return new PortalTarget(
+                sub, level, block, path, visible.imagePortal(), traveled + blockDistance);
         }
         if (block.getType() != HitResult.Type.MISS && portalDistance > blockDistance) {
             return null;
@@ -151,17 +145,22 @@ public final class IplStraddleStaffPick {
         );
     }
 
-    private static PortalTarget portalTargetForHit(
-        ClientSubLevel sub, Level level, BlockHitResult hit, List<Portal> path, double visibleDistance
-    ) {
-        return new PortalTarget(sub, level, hit, path, false, visibleDistance);
-    }
-
-    private static double visibleHitDistance(
+    /**
+     * Which visible representation of {@code sub} did this ray actually hit? Both concrete
+     * candidates are computed — the native pose (when the body is native to {@code level})
+     * and the straddle-session image (when one projects into {@code level}) — and the one
+     * geometrically ON the ray wins. Exact candidate resolution, not a side heuristic; for
+     * a same-dimension straddle both candidates exist and this is the only correct
+     * disambiguation of "grabbed the emerged half" vs "grabbed the native half".
+     */
+    @Nullable
+    private static VisibleHit visibleHit(
         Level level, Vec3 from, Vec3 to, ClientSubLevel sub, BlockHitResult hit
     ) {
         Vec3 nearest = null;
         double nearestError = Double.MAX_VALUE;
+        Portal imagePortal = null;
+
         if (ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) == level) {
             Vec3 candidate = sub.renderPose().transformPosition(hit.getLocation());
             nearest = candidate;
@@ -176,10 +175,13 @@ public final class IplStraddleStaffPick {
             if (error < nearestError) {
                 nearest = candidate;
                 nearestError = error;
+                imagePortal = projection.portal();
             }
         }
-        return nearest == null ? Double.MAX_VALUE : from.distanceTo(nearest);
+        return nearest == null ? null : new VisibleHit(from.distanceTo(nearest), imagePortal);
     }
+
+    private record VisibleHit(double distance, @Nullable Portal imagePortal) {}
 
     private static double rayErrorSq(Vec3 from, Vec3 to, Vec3 point) {
         Vec3 ray = to.subtract(from);
@@ -197,24 +199,26 @@ public final class IplStraddleStaffPick {
         return qouteall.imm_ptl.core.render.context_management.PortalRendering.getPortalPath();
     }
 
-    /** Lock portal path only after Simulated created a drag session for this selected ship. */
+    /**
+     * Simulated created a drag session for this selected ship: lock the captured pick and
+     * seed the grab chain from it (traversed portals forward, image session inverse).
+     */
     public static void beginDrag(ClientSubLevel sub) {
-        TRANSIT_FRAMES.remove(sub.getUniqueId());
-        SAME_DIM_AXIS_MAPPED.remove(sub.getUniqueId());
         PortalTarget selected = PENDING_TARGETS.remove(sub.getUniqueId());
         if (selected == null || selected.sub() != sub) {
             DRAG_TARGETS.remove(sub.getUniqueId());
+            IplGrabChainClient.seedLocal(sub.getUniqueId(), List.of(), null);
             return;
         }
         DRAG_TARGETS.put(sub.getUniqueId(), selected);
+        IplGrabChainClient.seedLocal(sub.getUniqueId(), selected.portals(), selected.imagePortal());
     }
 
     public static void clearDragTargets() {
         PENDING_TARGETS.clear();
         DRAG_TARGETS.clear();
-        TRANSIT_FRAMES.clear();
-        SAME_DIM_AXIS_MAPPED.clear();
         GRAB_DISTANCE.clear();
+        IplGrabChainClient.clearLocal();
         IplStaffBeamRoutes.clearAll();
     }
 
@@ -226,209 +230,107 @@ public final class IplStraddleStaffPick {
      */
     public static void applyGrabDistance(PhysicsStaffClientHandler handler,
                                          dev.ryanhcode.sable.sublevel.SubLevel sub) {
-        Double distance = GRAB_DISTANCE.remove(sub.getUniqueId());
+        Double distance = GRAB_DISTANCE.get(sub.getUniqueId());
         if (distance == null) return;
         PhysicsStaffClientHandler.ClientDragSession session = handler.getDragSession();
         if (session == null || !session.dragSubLevel().getUniqueId().equals(sub.getUniqueId())) return;
         session.setDistance(Math.clamp(distance, 2.0, PhysicsStaffItem.RANGE));
     }
 
-    /**
-     * Parent handoff changes the body's native frame. Keep exact crossing data while drag stays
-     * active: server maps raw cursor goals after this boundary, and mouse axes rotate with it.
-     */
-    public static void onTransitHandoff(
-        UUID subId, ResourceKey<Level> sourceDim, ResourceKey<Level> targetDim,
-        Vec3 origin, Vec3 sourceNormal, org.joml.Quaterniondc rotation, UUID portalId
-    ) {
-        PENDING_TARGETS.remove(subId);
-        DRAG_TARGETS.remove(subId);
-        // Same-dimension transits never happen while held (staff freeze); one arriving here
-        // means the drag already ended or is ending — record nothing, rotate nothing.
-        if (sourceDim.equals(targetDim)) {
-            TRANSIT_FRAMES.remove(subId);
-            SAME_DIM_AXIS_MAPPED.remove(subId);
-            return;
-        }
-        TRANSIT_FRAMES.put(subId, new TransitFrame(
-            sourceDim, targetDim, origin, sourceNormal,
-            new org.joml.Quaterniond(rotation), portalId
-        ));
-
-        dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler.ClientDragSession session =
-            dev.simulated_team.simulated.SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER.getDragSession();
-        if (session != null && session.dragSubLevel().getUniqueId().equals(subId)) {
-            session.dragOrientation().set(new org.joml.Quaterniond(rotation).mul(session.dragOrientation()));
-        }
+    /** True pick-ray length for this sub's last pick, or NaN (beam creation node density). */
+    public static double pickDistance(UUID subId) {
+        Double distance = GRAB_DISTANCE.get(subId);
+        return distance == null ? Double.NaN : distance;
     }
 
     /**
-     * Convert Simulated's outgoing relative drag vector before packet construction. The stock
-     * packet has no portal/frame field and server reconstructs its goal as `serverEye + vector`.
-     * The packet stays raw in the player's physical world frame for the entire drag; the
-     * server's geometric goal mapper owns every frame decision.
-     */
-    public static Vector3d mapOutgoingDragGoal(Player player, UUID subId, org.joml.Vector3dc relativeGoal) {
-        // Straddle sessions and completed transits are mapped SERVER-side (it owns that
-        // geometry); pre-mapping them too was the old double-transform flight bug. But a pure
-        // remote grab — body fully in another dimension, reached only through portals, no
-        // straddle session — is never mapped server-side, so the raw player-frame goal lands
-        // in the wrong dimension's coordinates and the body flies off (then vanishes until you
-        // follow it). For that case ONLY, walk the captured portal chain here so the goal
-        // arrives in the body's frame; the server passes it through untouched.
-        List<Portal> captured = capturedPortals(subId, player.level());
-        if (captured == null || captured.isEmpty()) return new Vector3d(relativeGoal);
-        if (IplStraddleSessionStore.hasSession(subId) || TRANSIT_FRAMES.containsKey(subId)) {
-            return new Vector3d(relativeGoal);
-        }
-        Vec3 eye = player.getEyePosition();
-        Vec3 absolute = eye.add(relativeGoal.x(), relativeGoal.y(), relativeGoal.z());
-        for (Portal portal : captured) absolute = portal.transformPoint(absolute);
-        // Server rebuilds goal as serverEye + this vector, so send it eye-relative.
-        return new Vector3d(absolute.x - eye.x, absolute.y - eye.y, absolute.z - eye.z);
-    }
-
-    /**
-     * Convert the staff's mouse pitch axis into the native body frame.
+     * Convert the staff's mouse pitch axis into the grabbed body's constraint frame.
      *
-     * <p>Same-dimension straddle: mirrors the server's geometric goal chooser — when the
-     * cursor works the body from the exit side of a ROTATED portal pair, the view axis maps
-     * back through the portal rotation; translation-only pairs need (and get) nothing.
-     *
-     * <p>Cross-dimension: unchanged — post-transit frames rotate by the recorded crossing,
-     * pre-transit far-side rotation uses the straddle mapping.
+     * <p>Derivation: the player rotates what they SEE. With E the beam route's frame fold
+     * (rotation composition of its links) and M the image-refinement rotation when the beam
+     * targets a straddle image (identity otherwise), the visible representation v relates to
+     * the native orientation o by v = M·o, and the axis the player means, expressed in the
+     * visible frame, is R_E·a. Solving ΔQ(axis_constraint)·o = M⁻¹·ΔQ(R_E·a)·M·o gives
+     * axis_constraint = M⁻¹·R_E·a — computed by {@link IplStaffBeamRoutes#axisRotation}
+     * from the same route the beam draws. One frame source for goal, beam, aim, and axis.
      */
     public static Vec3 unmapStaffInputAxis(Player player, ClientSubLevel sub, Vec3 axis) {
-        TransitFrame transit = TRANSIT_FRAMES.get(sub.getUniqueId());
-        if (transit != null && transit.bodyIsInTargetFrame(sub) && transit.playerIsInSourceFrame(player)) {
-            org.joml.Vector3d mapped = transit.rotation().transform(
-                new org.joml.Vector3d(axis.x, axis.y, axis.z));
-            return new Vec3(mapped.x, mapped.y, mapped.z);
-        }
-
-        Level parent = ipl.sable.dim.IplDimAgnostic.getParentLevel(sub);
-        Portal session = IplStraddleSessionStore.resolvePortal(sub);
-        if (session != null && parent == player.level()
-            && session.getDestDim().equals(session.level().dimension())) {
-            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
-                ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(session);
-            if (mapping.isIdentityRotation()) return axis;
-            return sameDimCursorMapped(player, sub, mapping) ? mapping.unmapVec(axis) : axis;
-        }
-
-        // Before a parent flip the real body remains in its source frame. A player can still
-        // walk through the aperture and rotate the held construction from the destination side,
-        // so convert that destination-world view axis back into the source body frame.
-        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
-            ipl.sable.transit.IplStraddlePoseMap.getMappingInto(sub, player.level());
-        if (mapping == null) {
-            mapping = ipl.sable.transit.IplStraddlePoseMap.getCollisionMappingInto(
-                sub, player.level(), player.getBoundingBox());
-        }
-        if (mapping != null) return mapping.unmapVec(axis);
-        return axis;
-    }
-
-    /** Client mirror of the server's same-dimension goal chooser, with its own stickiness. */
-    private static boolean sameDimCursorMapped(
-        Player player, ClientSubLevel sub,
-        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping
-    ) {
-        double distance = 10.0;
-        dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler.ClientDragSession session =
+        PhysicsStaffClientHandler.ClientDragSession session =
             dev.simulated_team.simulated.SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER.getDragSession();
-        if (session != null && session.dragSubLevel().getUniqueId().equals(sub.getUniqueId())) {
-            distance = session.distance();
-        }
-        Vec3 goal = player.getEyePosition().add(player.getLookAngle().scale(distance));
-        dev.ryanhcode.sable.companion.math.BoundingBox3dc body = sub.boundingBox();
-        double rawDistance = distanceToBox(body, goal);
-        double mappedDistance = distanceToBox(body, mapping.unmapPoint(goal));
-
-        Boolean previous = SAME_DIM_AXIS_MAPPED.get(sub.getUniqueId());
-        boolean useMapped;
-        if (previous != null && previous) {
-            useMapped = mappedDistance < rawDistance + SAME_DIM_SWITCH_MARGIN;
-        } else {
-            useMapped = mappedDistance + SAME_DIM_SWITCH_MARGIN < rawDistance;
-        }
-        SAME_DIM_AXIS_MAPPED.put(sub.getUniqueId(), useMapped);
-        return useMapped;
+        Vec3 localAnchor = session != null
+            && session.dragSubLevel().getUniqueId().equals(sub.getUniqueId())
+            ? new Vec3(session.dragLocalAnchor().x(), session.dragLocalAnchor().y(),
+                session.dragLocalAnchor().z())
+            : Vec3.ZERO;
+        Quaterniond rotation = IplStaffBeamRoutes.axisRotation(player, sub, localAnchor);
+        if (rotation == null) return axis;
+        Vector3d mapped = rotation.transform(new Vector3d(axis.x, axis.y, axis.z));
+        return new Vec3(mapped.x, mapped.y, mapped.z);
     }
-
-    private static double distanceToBox(
-        dev.ryanhcode.sable.companion.math.BoundingBox3dc box, Vec3 point
-    ) {
-        double x = Math.max(box.minX(), Math.min(box.maxX(), point.x));
-        double y = Math.max(box.minY(), Math.min(box.maxY(), point.y));
-        double z = Math.max(box.minZ(), Math.min(box.maxZ(), point.z));
-        double dx = point.x - x, dy = point.y - y, dz = point.z - z;
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
-    }
-
-    // ------------------------------------------------------------------
-    // Beam route builder inputs (geometry itself lives in IplStaffBeamRoutes).
-    // ------------------------------------------------------------------
 
     /**
-     * The recorded cross-dimension crossing portal for a body already in its target frame,
-     * when the staff is still in the crossing's source world. Null otherwise.
+     * Keep a local target's clicked representation too, not only portal-traversed ones. The
+     * same geometric candidate resolution as the through-portal pick decides whether the
+     * click landed on the native half or on a straddle image projected into this world —
+     * for a same-dimension straddle both exist, and grabbing the emerged half must link the
+     * image frame (its session portal's inverse), or the constraint would pull it back in.
      */
-    @Nullable
-    public static Portal transitRoutePortal(ClientSubLevel sub, Level staffLevel) {
-        TransitFrame transit = TRANSIT_FRAMES.get(sub.getUniqueId());
-        if (transit == null || !transit.bodyIsInTargetFrame(sub)
-            || !transit.sourceDim().equals(staffLevel.dimension())) {
-            return null;
+    public static void rememberLocalProjection(Player player, HitResult hit) {
+        if (!(player.level() instanceof ClientLevel level) || !(hit instanceof BlockHitResult blockHit)) return;
+        ClientSubLevel sub = getHitSubLevel(level, blockHit);
+        if (sub == null) return;
+
+        Vec3 eye = player.getEyePosition();
+        Vec3 end = eye.add(player.getViewVector(1.0f).scale(PhysicsStaffItem.RANGE));
+        VisibleHit visible = visibleHit(level, eye, end, sub, blockHit);
+        if (visible == null) {
+            PENDING_TARGETS.remove(sub.getUniqueId());
+            DRAG_TARGETS.remove(sub.getUniqueId());
+            GRAB_DISTANCE.remove(sub.getUniqueId());
+            return;
         }
-        return findPortal(transit.sourceDim(), transit.portalId());
+
+        if (visible.imagePortal() == null
+            && ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) == level) {
+            // Plain native grab in the body's own world: stock behavior, no capture.
+            PENDING_TARGETS.remove(sub.getUniqueId());
+            DRAG_TARGETS.remove(sub.getUniqueId());
+            GRAB_DISTANCE.remove(sub.getUniqueId());
+            return;
+        }
+
+        PENDING_TARGETS.put(sub.getUniqueId(), new PortalTarget(
+            sub, level, blockHit, List.of(), visible.imagePortal(), visible.distance()
+        ));
+        GRAB_DISTANCE.put(sub.getUniqueId(), visible.distance());
     }
 
-    /** Captured pick-time portal chain for this drag, when it starts in {@code staffLevel}. */
     @Nullable
-    public static List<Portal> capturedPortals(UUID subId, Level staffLevel) {
-        PortalTarget captured = DRAG_TARGETS.get(subId);
-        if (captured == null || captured.portals().isEmpty()) return null;
-        if (captured.portals().get(0).level() != staffLevel) return null;
-        return captured.portals();
-    }
-
-    @Nullable
-    private static Portal findPortal(ResourceKey<Level> levelKey, UUID portalId) {
-        ClientLevel main = net.minecraft.client.Minecraft.getInstance().level;
-        if (main != null && main.dimension().equals(levelKey)) {
-            for (net.minecraft.world.entity.Entity entity : main.entitiesForRendering()) {
-                if (entity instanceof Portal portal && !portal.isRemoved() && portal.getUUID().equals(portalId)) {
-                    return portal;
-                }
-            }
-            for (Portal portal : GlobalPortalStorage.getGlobalPortals(main)) {
-                if (!portal.isRemoved() && portal.getUUID().equals(portalId)) return portal;
-            }
-        }
-        for (ClientLevel level : qouteall.imm_ptl.core.ClientWorldLoader.getClientWorlds()) {
-            if (level == main) continue;
-            if (!level.dimension().equals(levelKey)) continue;
-            for (net.minecraft.world.entity.Entity entity : level.entitiesForRendering()) {
-                if (entity instanceof Portal portal && !portal.isRemoved() && portal.getUUID().equals(portalId)) {
-                    return portal;
-                }
-            }
-            for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
-                if (!portal.isRemoved() && portal.getUUID().equals(portalId)) return portal;
-            }
-        }
-        return null;
+    private static ClientSubLevel getHitSubLevel(net.minecraft.world.level.Level level, BlockHitResult hit) {
+        // Every hosted plot lives in the dedicated sublevels container. `level` is the visible
+        // source/destination world during portal recursion and has no plot ownership map; using
+        // it here lost the clicked plot anchor and made the constraint fall back to ship center.
+        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
+            IplClientHostedLookup.getHostingContainerOrNull();
+        if (container == null) return null;
+        net.minecraft.world.level.ChunkPos chunk = new net.minecraft.world.level.ChunkPos(
+            net.minecraft.core.BlockPos.containing(hit.getLocation())
+        );
+        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(chunk);
+        dev.ryanhcode.sable.sublevel.SubLevel sub = plot != null ? plot.getSubLevel() : null;
+        return sub instanceof ClientSubLevel clientSub ? clientSub : null;
     }
 
     /**
-     * Pose of a captured remote target in current staff render pass. Remove only the portal
-     * suffix not traversed by this render pass, so every recursive pass receives its target in
-     * its own world frame.
+     * Pose of a captured remote target in the current staff render pass. Remove only the
+     * portal suffix not traversed by this render pass, so every recursive pass receives its
+     * target in its own world frame. (Held staff ITEM rendering only; beam geometry is
+     * chain-driven in {@link IplStaffBeamRoutes}.)
      */
     public static Pose3d mapStaffRenderPose(ClientSubLevel sub, Pose3dc pose) {
         PortalTarget target = DRAG_TARGETS.get(sub.getUniqueId());
-        if (target == null || target.sub() != sub || target.portals().isEmpty()) {
+        if (target == null || target.sub() != sub
+            || (target.portals().isEmpty() && target.imagePortal() == null)) {
             net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
             net.minecraft.world.level.Level renderLevel = mc.level;
             if (qouteall.imm_ptl.core.render.context_management.PortalRendering.isRendering()) {
@@ -441,13 +343,15 @@ public final class IplStraddleStaffPick {
             return mapping == null ? new Pose3d(pose) : mapping.mapPose(pose);
         }
         Pose3d mapped = new Pose3d(pose);
-        if (target.fromParentProjection()) {
+        if (target.portals().isEmpty()) {
+            // Image grab: the visible representation in the image's world is the session
+            // portal's forward map of the native pose.
             net.minecraft.world.level.Level renderLevel = net.minecraft.client.Minecraft.getInstance().level;
             if (qouteall.imm_ptl.core.render.context_management.PortalRendering.isRendering()) {
                 renderLevel = qouteall.imm_ptl.core.render.context_management.PortalRendering
                     .getRenderingPortal().getDestinationWorld();
             }
-            Portal portal = target.portals().get(0);
+            Portal portal = target.imagePortal();
             if (renderLevel != null && portal.getDestDim() == renderLevel.dimension()) {
                 Vec3 position = portal.transformPoint(new Vec3(
                     mapped.position().x(), mapped.position().y(), mapped.position().z()
@@ -485,66 +389,14 @@ public final class IplStraddleStaffPick {
         return mapped;
     }
 
-    /** Keep a local projected target in its body frame too, not only portal-traversed ones. */
-    public static void rememberLocalProjection(Player player, HitResult hit) {
-        if (!(player.level() instanceof ClientLevel level) || !(hit instanceof BlockHitResult blockHit)) return;
-        ClientSubLevel sub = getHitSubLevel(level, blockHit);
-        if (sub == null) return;
-
-        if (ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) == level) {
-            PENDING_TARGETS.remove(sub.getUniqueId());
-            DRAG_TARGETS.remove(sub.getUniqueId());
-            GRAB_DISTANCE.remove(sub.getUniqueId());
-            return;
-        }
-        IplClientHostedLookup.StraddleProjection projection =
-            IplClientHostedLookup.getStraddleProjectionFor(sub);
-        if (projection != null && projection.portal().getDestDim() == level.dimension()) {
-            // Distance to the image the player actually clicked, not the hidden native pose.
-            double distance = player.getEyePosition().distanceTo(
-                projection.mappedPose().transformPosition(blockHit.getLocation()));
-            PENDING_TARGETS.put(sub.getUniqueId(), new PortalTarget(
-                sub, level, blockHit, List.of(projection.portal()), true, distance
-            ));
-            GRAB_DISTANCE.put(sub.getUniqueId(), distance);
-        }
-    }
-
-    @Nullable
-    private static ClientSubLevel getHitSubLevel(net.minecraft.world.level.Level level, BlockHitResult hit) {
-        // Every hosted plot lives in the dedicated sublevels container. `level` is the visible
-        // source/destination world during portal recursion and has no plot ownership map; using
-        // it here lost the clicked plot anchor and made the constraint fall back to ship center.
-        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
-            IplClientHostedLookup.getHostingContainerOrNull();
-        if (container == null) return null;
-        net.minecraft.world.level.ChunkPos chunk = new net.minecraft.world.level.ChunkPos(
-            net.minecraft.core.BlockPos.containing(hit.getLocation())
-        );
-        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(chunk);
-        dev.ryanhcode.sable.sublevel.SubLevel sub = plot != null ? plot.getSubLevel() : null;
-        return sub instanceof ClientSubLevel clientSub ? clientSub : null;
-    }
-
+    /**
+     * A captured pick target: the exact forward portal path the ray traversed, plus the
+     * straddle-session portal whose IMAGE was clicked (null when the native half was).
+     */
     public record PortalTarget(
         ClientSubLevel sub, net.minecraft.world.level.Level world, BlockHitResult hit,
-        List<Portal> portals, boolean fromParentProjection, double visibleDistance
+        List<Portal> portals, @Nullable Portal imagePortal, double visibleDistance
     ) {}
-
-    private record TransitFrame(
-        ResourceKey<Level> sourceDim, ResourceKey<Level> targetDim,
-        Vec3 origin, Vec3 sourceNormal, org.joml.Quaterniond rotation, UUID portalId
-    ) {
-        boolean bodyIsInTargetFrame(ClientSubLevel sub) {
-            Level parent = ipl.sable.dim.IplDimAgnostic.getParentLevel(sub);
-            return parent != null && targetDim.equals(parent.dimension());
-        }
-
-        boolean playerIsInSourceFrame(Player player) {
-            if (!sourceDim.equals(targetDim)) return sourceDim.equals(player.level().dimension());
-            return sourceNormal.dot(player.getEyePosition().subtract(origin)) >= 0.05;
-        }
-    }
 
     /** A projection hit: plot-coordinate BlockHitResult + ray distance² (frame-comparable). */
     public record ProjectionHit(BlockHitResult hit, double distSq) {}

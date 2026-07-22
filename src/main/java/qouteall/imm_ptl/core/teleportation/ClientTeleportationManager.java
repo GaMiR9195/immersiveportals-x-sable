@@ -365,7 +365,10 @@ public class ClientTeleportationManager {
         }
         
         ScaleUtilsClient.onClientPlayerTeleported(portal);
-        
+
+        // IPL-Sable: zero-latency grab-chain prediction for the local player's own hop.
+        ipl.sable.client.IplGrabChainClient.onLocalPlayerTeleported(portal);
+
         player.connection.send(new ServerboundCustomPayloadPacket(
             new ImmPtlNetworking.TeleportPacket(
                 PortalAPI.clientDimKeyToInt(fromDimension),

@@ -73,4 +73,38 @@ public abstract class IplStaffPickMixin {
     private void ipl$clearCaptureBeforeStop(CallbackInfo ci) {
         IplStraddleStaffPick.clearDragTargets();
     }
+
+    /**
+     * Beam node density derives from the length passed here: stock computes it with
+     * {@code distanceSquaredWithSubLevels} on raw endpoints, which is cross-frame garbage
+     * for a through-portal grab (wrong node count from the first frame). Seed the TRUE
+     * physical length instead — the resolved route length when one exists, else the pick
+     * ray's measured length — and bind the beam to its owner for the per-tick length feed.
+     */
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+        method = "updateBeam",
+        at = @At(
+            value = "NEW",
+            target = "dev/simulated_team/simulated/content/physics_staff/PhysicsStaffClientHandler$PhysicsBeam"
+        ),
+        require = 0
+    )
+    private dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler.PhysicsBeam ipl$seedBeamLength(
+        net.minecraft.world.phys.Vec3 start, net.minecraft.world.phys.Vec3 end, double length,
+        Operation<dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler.PhysicsBeam> original,
+        net.minecraft.world.level.Level level, java.util.UUID uuid,
+        net.minecraft.world.phys.Vec3 startArg, net.minecraft.world.phys.Vec3 endArg
+    ) {
+        double best = ipl.sable.client.IplStaffBeamRoutes.knownLength(uuid);
+        if (Double.isNaN(best)) {
+            ClientSubLevel sub = ipl.sable.client.IplStaffPortalBeamRenderer.findHostedSubLevel(end);
+            if (sub != null) {
+                best = IplStraddleStaffPick.pickDistance(sub.getUniqueId());
+            }
+        }
+        dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler.PhysicsBeam beam =
+            original.call(start, end, Double.isNaN(best) ? length : best);
+        ipl.sable.client.IplStaffBeamRoutes.registerBeamOwner(beam, uuid);
+        return beam;
+    }
 }
