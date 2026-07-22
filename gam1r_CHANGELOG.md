@@ -828,3 +828,26 @@ leaves, which also makes cross-dimension holds read correctly.
 - `src/main/resources/ipl_sable.mixins.json`
 
 No build or automated check was run for this change.
+
+## Staff Round 3 — Beam Length, Player Crossings, Face Pin (Client)
+
+- Beam node density: the overwritten beam render now feeds `PhysicsBeam.length`
+  the true physical route length each draw (stock did this from its endpoints;
+  a cross-dimension grab seeded it from cross-frame garbage, wrong beam look).
+- Walking through portals while holding: the server drag frame now tracks the
+  PLAYER's dimension hops. Each hop latches the nearest reverse portal in the
+  new level; the chain composes for repeated crossings and pops when walking
+  back. Cursor goals map through the chain to the body's parent frame — fixes
+  carrying a plain local grab through a portal (no straddle session to infer
+  from) and repeated in/out crossings. Falls back to the session-based branches
+  when the chain is empty or broken.
+- Beam/aim face pin: the client latches ONE session portal per grabbed body
+  (mirror of the server held-portal pin). resolvePortal's first-of-several race
+  could hand a coincident reverse face, flipping the plane test so the beam
+  pointed at the EXIT while the body was held inside the entrance.
+
+Files: `IplStaffBeamMixin`, `IplStaffPortalDragState`, `IplStaffBeamRoutes`.
+True multi-aperture recursion (body imaged through several apertures at once)
+is NOT implemented — needs recursive image sessions first.
+
+No build or automated check was run.

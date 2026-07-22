@@ -26,6 +26,7 @@ public abstract class IplStaffBeamMixin {
     @Shadow(remap = false) private LineOutline line;
     @Shadow(remap = false) private List<?> nodes;
     @Shadow(remap = false) private double currentNodeRadius;
+    @Shadow(remap = false) private double length;
 
     /**
      * @author IPL-Sable
@@ -41,6 +42,11 @@ public abstract class IplStaffBeamMixin {
             || IplStaffPortalBeamRenderer.getActiveSegment() == null) return;
 
         IplStaffBeamRoutes.Segment segment = IplStaffPortalBeamRenderer.getActiveSegment();
+        // Stock render() maintained this.length from its endpoints; update() derives node
+        // count and noise radius from it. Our overwrite must keep feeding it the TRUE
+        // physical beam length — the constructor seeds it from raw cross-frame coordinates
+        // (garbage for a cross-dimension grab: wrong node density, wrong beam look).
+        this.length = segment.totalLength();
         int nodeCount = this.nodes.size();
         if (nodeCount < 2 || segment.totalLength() <= 1.0e-9) {
             this.line.set(source, target).render(stack, buffer, camera, partialTick);

@@ -52,6 +52,16 @@ public final class IplStaffBeamRoutes {
 
     private static final Map<UUID, Kept> LAST = new HashMap<>();
 
+    /**
+     * Sub-level -> the ONE session portal this client uses for beam/aim geometry, latched on
+     * first sight and sticky while any session exists (mirror of the server's held-portal
+     * pin). {@code resolvePortal} returns the first of possibly several session faces; if a
+     * coincident reverse face ever wins that race, the plane test flips and the beam points
+     * at the EXIT while the body is clearly held inside the entrance. The latch makes face
+     * choice a one-time decision instead of a per-frame race.
+     */
+    private static final Map<UUID, UUID> SESSION_PIN = new HashMap<>();
+
     private IplStaffBeamRoutes() {}
 
     /** Whole physical beam path: staff world, staff tip, final-frame target, portals in order. */
@@ -113,6 +123,26 @@ public final class IplStaffBeamRoutes {
 
     public static void clearAll() {
         LAST.clear();
+        SESSION_PIN.clear();
+    }
+
+    /** Pinned session portal for this sub, latched on first sight while sessions exist. */
+    @Nullable
+    private static Portal pinnedSessionPortal(ClientSubLevel sub) {
+        List<Portal> portals = IplStraddleSessionStore.resolveAllPortals(sub);
+        if (portals.isEmpty()) {
+            SESSION_PIN.remove(sub.getUniqueId());
+            return null;
+        }
+        UUID pinned = SESSION_PIN.get(sub.getUniqueId());
+        if (pinned != null) {
+            for (Portal portal : portals) {
+                if (portal.getUUID().equals(pinned)) return portal;
+            }
+        }
+        Portal first = portals.get(0);
+        SESSION_PIN.put(sub.getUniqueId(), first.getUUID());
+        return first;
     }
 
     @Nullable
@@ -131,7 +161,7 @@ public final class IplStaffBeamRoutes {
             return new Route(staffLevel, staffStart, nativeAnchor, List.of(transitPortal));
         }
 
-        Portal session = IplStraddleSessionStore.resolvePortal(sub);
+        Portal session = pinnedSessionPortal(sub);
         if (session != null && !session.isRemoved()) {
             IplStraddlePoseMap.StraddleMapping mapping =
                 IplStraddlePoseMap.StraddleMapping.of(session);

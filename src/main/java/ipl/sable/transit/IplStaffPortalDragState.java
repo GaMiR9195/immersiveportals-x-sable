@@ -148,8 +148,20 @@ public final class IplStaffPortalDragState {
         ServerLevel parent = IplDimAgnostic.getServerParentLevel(sub);
         if (parent == null) return goal;
 
+        // Track the PLAYER's own dimension hops while holding (walking through portals with
+        // the grab active). Each hop records the reverse portal in the player's NEW level
+        // that maps back toward where they came from; the chain composes for repeated
+        // crossings ("in and out many times") and pops when they walk back.
+        trackPlayerCrossing(player, frame);
+
         // ---- Player and body parent in DIFFERENT dimensions (cross-dim only). ----
         if (!player.level().dimension().equals(parent.dimension())) {
+            // Primary: walk the recorded crossing chain from the player's frame back toward
+            // the body's parent frame. Handles a plain local grab carried through a portal
+            // (no straddle session to infer from) and repeated crossings.
+            Vec3 chainMapped = mapThroughPlayerChain(player, frame, parent, goal);
+            if (chainMapped != null) return chainMapped;
+
             if (!frame.completedTransit) {
                 // Before the parent flip the real body is still in its source frame. The
                 // player crossed the active straddle portal while pulling: bring the
@@ -200,6 +212,84 @@ public final class IplStaffPortalDragState {
     }
 
     /**
+     * Detect a player dimension hop while dragging and maintain the crossing chain. On a hop
+     * INTO a new dimension, latch the nearest portal in the new level that maps back to the
+     * previous one (the reverse of whatever they walked through). Walking back pops instead.
+     */
+    private static void trackPlayerCrossing(ServerPlayer player, Frame frame) {
+        ResourceKey<Level> now = player.level().dimension();
+        if (frame.lastPlayerDim == null) {
+            frame.lastPlayerDim = now;
+            return;
+        }
+        if (now.equals(frame.lastPlayerDim)) return;
+
+        Crossing top = frame.playerChain.peekFirst();
+        if (top != null && top.outDim().equals(now)) {
+            frame.playerChain.pollFirst(); // walked back through the last crossing
+        } else {
+            Portal back = nearestPortalTo(player, frame.lastPlayerDim);
+            if (back != null) {
+                frame.playerChain.addFirst(new Crossing(back.getUUID(), now, frame.lastPlayerDim));
+            }
+        }
+        frame.lastPlayerDim = now;
+    }
+
+    /** Nearest portal to the player (in their CURRENT level) whose destination is {@code dest}. */
+    private static Portal nearestPortalTo(ServerPlayer player, ResourceKey<Level> dest) {
+        ServerLevel level = (ServerLevel) player.level();
+        Portal best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (Portal portal : level.getEntitiesOfClass(
+            Portal.class, player.getBoundingBox().inflate(24.0), p -> dest.equals(p.getDestDim()))) {
+            double distance = portal.getDistanceToNearestPointInPortal(player.getEyePosition());
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = portal;
+            }
+        }
+        for (Portal portal : qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage
+            .getGlobalPortals(level)) {
+            if (!dest.equals(portal.getDestDim())) continue;
+            double distance = portal.getDistanceToNearestPointInPortal(player.getEyePosition());
+            if (distance < bestDistance && distance < 64.0) {
+                bestDistance = distance;
+                best = portal;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Map a player-frame goal through the recorded crossing chain until it reaches the body's
+     * parent dimension. Null when the chain is empty or never reaches the parent (legacy
+     * session-based branches take over).
+     */
+    private static Vec3 mapThroughPlayerChain(
+        ServerPlayer player, Frame frame, ServerLevel parent, Vec3 goal
+    ) {
+        if (frame.playerChain.isEmpty()) return null;
+        Vec3 mapped = goal;
+        ResourceKey<Level> at = player.level().dimension();
+        for (Crossing crossing : frame.playerChain) {
+            if (!crossing.inDim().equals(at)) return null; // chain broken (missed hop)
+            ServerLevel in = player.getServer().getLevel(crossing.inDim());
+            if (in == null
+                || !(McHelper.getEntityByUUID(in, crossing.portalId()) instanceof Portal portal)
+                || portal.isRemoved()) {
+                return null;
+            }
+            mapped = portal.transformPoint(mapped);
+            at = crossing.outDim();
+            if (at.equals(parent.dimension())) return mapped;
+        }
+        return null;
+    }
+
+    private record Crossing(UUID portalId, ResourceKey<Level> inDim, ResourceKey<Level> outDim) {}
+
+    /**
      * The active straddle session whose entrance AND exit live in {@code parent}, preferring
      * the pinned held portal so a stray reverse-face session can never steal the mapping.
      */
@@ -247,6 +337,10 @@ public final class IplStaffPortalDragState {
         boolean completedTransit;
         /** Same-dimension chooser stickiness; null until the first straddle decision. */
         Boolean sameDimGoalMapped;
+        /** Player's dimension last tick — hop detector for the crossing chain. */
+        ResourceKey<Level> lastPlayerDim;
+        /** Newest-first crossings the PLAYER made while holding; composes and pops. */
+        final java.util.ArrayDeque<Crossing> playerChain = new java.util.ArrayDeque<>(4);
 
         Frame(UUID subId, UUID playerId, ResourceKey<Level> sourceDim) {
             this.subId = subId;
