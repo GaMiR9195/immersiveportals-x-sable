@@ -89,6 +89,13 @@ final class SableImpl {
         return containing.getLevel().dimension();
     }
 
+    @Nullable
+    static net.minecraft.server.level.ServerLevel hostingLevelOf(
+        net.minecraft.server.level.ServerLevel any
+    ) {
+        return ipl.sable.dim.SableSubLevelDimension.getSableSubLevelsOrNull(any.getServer());
+    }
+
     /** The live ServerSubLevel owning the plot at {@code plotPos}, or null. */
     @Nullable
     static dev.ryanhcode.sable.sublevel.ServerSubLevel subLevelAtPlotPos(

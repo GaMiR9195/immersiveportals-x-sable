@@ -326,6 +326,22 @@ public final class SableBridge {
         SableImpl.anchorShipFramePortal(portal, shapeAnchor);
     }
 
+    /**
+     * The level that AUTHORITATIVELY stores the block at {@code pos}: the plot-hosting
+     * dimension for plot-space positions, {@code context} otherwise. Breakable-portal
+     * frame checks and placeholder writes go through this so a ship-borne portal's
+     * plot-space shape is read/written where the chunks actually live, independent of
+     * how much of the parent-level plot routing a given code path enjoys.
+     */
+    public static Level plotAwareLevel(Level context, @Nullable BlockPos pos) {
+        if (!PRESENT || pos == null || !isPlotPos(pos)) return context;
+        if (!(context instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
+            return context;
+        }
+        Level hosting = SableImpl.hostingLevelOf(serverLevel);
+        return hosting != null ? hosting : context;
+    }
+
     /** Sable's plot grid lives ~20M blocks out; nothing legitimate is past 1M. */
     private static boolean isPlotPos(BlockPos pos) {
         return Math.abs(pos.getX()) >= 1_000_000 || Math.abs(pos.getZ()) >= 1_000_000;

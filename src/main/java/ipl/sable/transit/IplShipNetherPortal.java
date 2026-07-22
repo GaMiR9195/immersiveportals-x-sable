@@ -9,6 +9,7 @@ import net.minecraft.world.phys.AABB;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.portal.PortalPlaceholderBlock;
 import qouteall.imm_ptl.core.portal.PortalExtension;
 import qouteall.imm_ptl.core.portal.nether_portal.BlockPortalShape;
 import qouteall.imm_ptl.core.portal.nether_portal.BreakablePortalEntity;
@@ -64,7 +65,9 @@ public final class IplShipNetherPortal {
             if (portal instanceof BreakablePortalEntity breakable
                 && breakable.blockPortalShape != null
                 && Math.abs(breakable.blockPortalShape.anchor.getX()) < 1_000_000) {
-                breakable.blockPortalShape = translate(breakable.blockPortalShape, delta);
+                BlockPortalShape worldShape = breakable.blockPortalShape;
+                breakable.blockPortalShape = translate(worldShape, delta);
+                reconcilePlaceholders(level, worldShape, breakable.blockPortalShape);
             }
 
             // One anchor per cluster: the tick driver rectifies flipped/reverse/parallel
@@ -84,6 +87,33 @@ public final class IplShipNetherPortal {
         return (ext.flippedPortal != null && IplShipPortalAnchor.isAnchored(ext.flippedPortal.getUUID()))
             || (ext.reversePortal != null && IplShipPortalAnchor.isAnchored(ext.reversePortal.getUUID()))
             || (ext.parallelPortal != null && IplShipPortalAnchor.isAnchored(ext.parallelPortal.getUUID()));
+    }
+
+    /**
+     * The glue gather may not carry the invisible {@code PortalPlaceholderBlock} area
+     * blocks into the plot (gather predicates vary) — the integrity sweep would then
+     * see air and break the portal within ~12s. Make the plot side whole and clear
+     * anything left behind in the world. Idempotent (runs once per face).
+     */
+    private static void reconcilePlaceholders(
+        ServerLevel parent, BlockPortalShape worldShape, BlockPortalShape plotShape
+    ) {
+        ServerLevel hosting =
+            ipl.sable.dim.SableSubLevelDimension.getSableSubLevelsOrNull(parent.getServer());
+        if (hosting == null) return;
+        for (BlockPos plotPos : plotShape.area) {
+            if (hosting.getBlockState(plotPos).getBlock() != PortalPlaceholderBlock.instance) {
+                hosting.setBlockAndUpdate(plotPos,
+                    PortalPlaceholderBlock.instance.defaultBlockState()
+                        .setValue(PortalPlaceholderBlock.AXIS, plotShape.axis));
+            }
+        }
+        for (BlockPos worldPos : worldShape.area) {
+            if (parent.getBlockState(worldPos).getBlock() == PortalPlaceholderBlock.instance) {
+                parent.setBlockAndUpdate(worldPos,
+                    net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+            }
+        }
     }
 
     private static BlockPortalShape translate(BlockPortalShape shape, Vec3i delta) {

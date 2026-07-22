@@ -60,10 +60,12 @@ public abstract class NetherPortalLikeForm extends PortalGenForm {
             return false;
         }
         
-        // clear the area
+        // clear the area (plot-space frames write through the hosting level)
+        net.minecraft.world.level.Level frameLevel =
+            ipl.sable.SableBridge.plotAwareLevel(fromWorld, fromShape.anchor);
         if (generateFrameIfNotFound) {
             for (BlockPos areaPos : fromShape.area) {
-                fromWorld.setBlockAndUpdate(areaPos, Blocks.AIR.defaultBlockState());
+                frameLevel.setBlockAndUpdate(areaPos, Blocks.AIR.defaultBlockState());
             }
         }
         
@@ -106,7 +108,7 @@ public abstract class NetherPortalLikeForm extends PortalGenForm {
             () -> {
                 // check portal integrity while loading chunk
                 return fromShape.frameAreaWithoutCorner.stream().allMatch(
-                    bp -> !fromWorld.isEmptyBlock(bp)
+                    bp -> !frameLevel.isEmptyBlock(bp)
                 );
             },
             frameMatchingFunc
