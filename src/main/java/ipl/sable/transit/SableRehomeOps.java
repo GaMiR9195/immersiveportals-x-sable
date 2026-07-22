@@ -305,6 +305,10 @@ public final class SableRehomeOps {
         }
 
         LOG.info("[IPL-REHOME] complete uuid={} blocks={} entities={}", uuid, blocksCopied, entitiesMoved);
+
+        // The hosted twin now owns its FINAL plot slot — safe to run any assembly
+        // portal capture that was queued against the pre-rehome ship.
+        IplShipNetherPortal.onRehomeComplete(hosted, parentLevel);
     }
 
     /**

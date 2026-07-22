@@ -41,12 +41,28 @@ public final class IplShipNetherPortal {
 
     private IplShipNetherPortal() {}
 
+    private record Pending(
+        net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dim,
+        BlockPos anchor,
+        BoundingBox3ic bounds
+    ) {}
+
+    /** Ship UUID → capture waiting for the rehome. Server thread only. */
+    private static final java.util.Map<java.util.UUID, Pending> PENDING = new java.util.HashMap<>();
+
+    public static void clearPending() {
+        PENDING.clear();
+    }
+
     /**
-     * Post-{@code assembleBlocks}: attach every portal whose origin the assembly
-     * swallowed. Shapes translate world→plot by (plotAnchor − anchor) — the assembly
-     * transform is a pure translation ({@code angle=0, Rotation.NONE}).
+     * Post-{@code assembleBlocks}: QUEUE the portal capture. A fresh assembly still
+     * lives in the parent level's embedded plot; SableRehomeOps moves it to the
+     * hosting dimension — INTO A DIFFERENT PLOT SLOT — a tick later. Capturing now
+     * would bake pre-rehome plot coordinates into the anchor, the shape translation
+     * and the placeholder writes (~2048 blocks off after the move: vanishing frames,
+     * integrity breaks). Capture runs from the rehome-complete hook instead.
      */
-    public static void attachOnAssembly(
+    public static void queueAssemblyCapture(
         ServerLevel level, BlockPos anchor, BoundingBox3ic bounds, ServerSubLevel ship
     ) {
         if (ship == null || ship.isRemoved() || bounds == null) return;
@@ -54,6 +70,34 @@ public final class IplShipNetherPortal {
         // coords; ship-on-ship portal capture is out of scope.
         if (Math.abs(anchor.getX()) >= 1_000_000 || Math.abs(anchor.getZ()) >= 1_000_000) return;
 
+        if (ipl.sable.dim.IplDimAgnostic.isHosted(ship)) {
+            captureNow(level, anchor, bounds, ship);
+            return;
+        }
+        PENDING.put(ship.getUniqueId(), new Pending(level.dimension(), anchor, bounds));
+    }
+
+    /**
+     * Rehome finished: the hosted twin owns its FINAL plot slot; plot coordinates
+     * computed from here on stay valid. Consumes the pending capture, if any.
+     */
+    public static void onRehomeComplete(ServerSubLevel hosted, ServerLevel parentLevel) {
+        Pending pending = PENDING.remove(hosted.getUniqueId());
+        if (pending == null) return;
+        if (parentLevel == null || parentLevel.dimension() != pending.dim()) return;
+        captureNow(parentLevel, pending.anchor(), pending.bounds(), hosted);
+    }
+
+    /**
+     * Attach every portal whose origin the assembly swallowed. Shapes translate
+     * world→plot by (plotAnchor − anchor) — the assembly transform is a pure
+     * translation ({@code angle=0, Rotation.NONE}), and the rehome's slot move
+     * preserves block offsets relative to the plot center.
+     */
+    private static void captureNow(
+        ServerLevel level, BlockPos anchor, BoundingBox3ic bounds, ServerSubLevel ship
+    ) {
+        if (ship.isRemoved()) return;
         BlockPos plotAnchor = ship.getPlot().getCenterBlock();
         Vec3i delta = plotAnchor.subtract(anchor);
         AABB box = bounds.toAABB().inflate(1.0);

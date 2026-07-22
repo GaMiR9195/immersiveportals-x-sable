@@ -30,6 +30,6 @@ public abstract class IplAssemblyPortalAttachMixin {
         ServerLevel level, BlockPos anchor, Iterable<BlockPos> blocks, BoundingBox3ic bounds,
         CallbackInfoReturnable<ServerSubLevel> cir
     ) {
-        IplShipNetherPortal.attachOnAssembly(level, anchor, bounds, cir.getReturnValue());
+        IplShipNetherPortal.queueAssemblyCapture(level, anchor, bounds, cir.getReturnValue());
     }
 }

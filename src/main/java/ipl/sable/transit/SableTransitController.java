@@ -70,6 +70,7 @@ public final class SableTransitController {
         IplPortalRimManager.clearAll();
         IplStraddleCloneBody.clearAll();
         IplShipPortalAnchor.clearAll();
+        IplShipNetherPortal.clearPending();
         IplStraddleTerrainClone.clearAll();
         SableRehomeOps.resetBootRestore();
         ipl.sable.dim.IplSceneOwnership.clearAll();
