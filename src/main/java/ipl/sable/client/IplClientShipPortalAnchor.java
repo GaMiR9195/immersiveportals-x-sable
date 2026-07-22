@@ -7,8 +7,6 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.client.event.RenderFrameEvent;
-import net.neoforged.neoforge.common.NeoForge;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import org.slf4j.Logger;
@@ -62,8 +60,16 @@ public final class IplClientShipPortalAnchor {
     private static void ensureRegistered() {
         if (registered) return;
         registered = true;
-        NeoForge.EVENT_BUS.addListener(RenderFrameEvent.Pre.class,
-            event -> driveAll());
+        // ORDERING IS THE WELD: IP's ClientPortalAnimationManagement.update() runs at
+        // the head of GameRenderer.render, and an anchored portal always has a fresh
+        // 1-tick default animation chasing the latest SERVER-tick pose — any earlier
+        // hook (RenderFrameEvent.Pre) gets overwritten and the aperture renders AHEAD
+        // of the snapshot-interpolated hull, 20Hz-stepped. IP emits this signal at the
+        // END of update(), right before teleportation management and rendering — the
+        // one point where our write is final for the frame (and teleport math sees
+        // the welded pose too).
+        qouteall.imm_ptl.core.portal.animation.ClientPortalAnimationManagement
+            .clientAnimationUpdateSignal.connect(IplClientShipPortalAnchor::driveAll);
     }
 
     private static void driveAll() {
