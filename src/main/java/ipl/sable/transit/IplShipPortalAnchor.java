@@ -110,6 +110,15 @@ public final class IplShipPortalAnchor {
         return ANCHORS.size();
     }
 
+    /** UUIDs of all portals anchored to {@code shipId} (cluster primaries only). */
+    public static java.util.List<UUID> anchoredPortalsOf(UUID shipId) {
+        java.util.List<UUID> out = new java.util.ArrayList<>();
+        for (Map.Entry<UUID, Anchor> entry : ANCHORS.entrySet()) {
+            if (entry.getValue().shipId().equals(shipId)) out.add(entry.getKey());
+        }
+        return out;
+    }
+
     /**
      * Anchor {@code portal} to the sub-level whose bounds contain its origin (or the
      * nearest within 8 blocks). Returns a human-readable result message.

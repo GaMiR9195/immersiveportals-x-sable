@@ -20,6 +20,8 @@
     "IplHostedIntersectionMixin",
     "IplStraddleProjectOutMixin",
     "IplAssemblyPortalAttachMixin",
+    "IplSubLevelSelectorBridgeMixin",
+    "IplAssemblerDisassemblyParentMixin",
     "IplLevelAcceleratorOverrideMixin",
     "IplPlotBridgeMixin",
     "IplHostedTerrainChangeForwardMixin",
