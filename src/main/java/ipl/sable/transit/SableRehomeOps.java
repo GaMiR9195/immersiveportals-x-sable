@@ -28,6 +28,7 @@ import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
 
 import java.util.ArrayList;
@@ -81,13 +82,7 @@ public final class SableRehomeOps {
      * </ul>
      */
     public static void sweep(ServerSubLevelContainer container) {
-        if (!IplDimAgnostic.isEnabled()) return;
         if (!(container.getLevel() instanceof ServerLevel level)) return;
-
-        if (!loggedEnabled) {
-            loggedEnabled = true;
-            LOG.info("[IPL-REHOME] dim-agnostic mode ENABLED (disable with -Dipl.sable.dimAgnostic=false)");
-        }
 
         if (IplDimAgnostic.isHostingLevel(level)) {
             bootRestoreHosted(container, level);
@@ -101,7 +96,6 @@ public final class SableRehomeOps {
         for (SubLevel subLevel : container.getAllSubLevels()) {
             if (!(subLevel instanceof ServerSubLevel airship)) continue;
             if (airship.isRemoved()) continue;
-            if (isMirror(airship)) continue;
 
             try {
                 rehome(airship, container, level, hosting);
@@ -385,17 +379,27 @@ public final class SableRehomeOps {
         // new full-sync is not sent until the tracking system's next tick. The handoff packet
         // moves their existing client object into the destination frame immediately; normal
         // tracking then retains in-range viewers and removes only viewers that truly left.
-        List<UUID> trackers = new ArrayList<>(hosted.getTrackingPlayers());
-        if (!trackers.isEmpty()) {
-            for (UUID trackerUuid : trackers) {
-                ServerPlayer player = server.getPlayerList().getPlayer(trackerUuid);
-                if (player == null) continue;
-                qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
-                    player,
-                    "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
-                    uuid.toString(), newParent.dimension().location().toString(), encodePortalTransform(portal)
-                );
-            }
+        // The old tracked set only contains source-side viewers. A cross-dimension exit can
+        // reveal the fully crossed body to destination portal viewers before the tracking tick
+        // adds them, so hand off to both sets now instead of leaving a one-way invisible ship.
+        java.util.Set<UUID> handoffRecipients = new java.util.HashSet<>(hosted.getTrackingPlayers());
+        handoffRecipients.addAll(IplStaffPortalDragState.getDraggingPlayers(uuid));
+        net.minecraft.world.level.ChunkPos destinationChunk = new net.minecraft.world.level.ChunkPos(
+            net.minecraft.core.BlockPos.containing(mappedPose.position().x(), mappedPose.position().y(), mappedPose.position().z())
+        );
+        for (ServerPlayer viewer : ImmPtlChunkTracking.getPlayersViewingChunk(
+            newParent.dimension(), destinationChunk.x, destinationChunk.z, false
+        )) {
+            handoffRecipients.add(viewer.getUUID());
+        }
+        for (UUID trackerUuid : handoffRecipients) {
+            ServerPlayer player = server.getPlayerList().getPlayer(trackerUuid);
+            if (player == null) continue;
+            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                player,
+                "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
+                uuid.toString(), newParent.dimension().location().toString(), encodePortalTransform(portal)
+            );
         }
 
         LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
@@ -523,6 +527,13 @@ public final class SableRehomeOps {
      * Teleport entities standing on the hosted airship (bbox overlap in the PARENT dim — the
      * hosted variant of {@link SableTransitOps}'s rider teleport, which queries
      * {@code source.getLevel()} and would otherwise look in the hosting dim).
+     *
+     * <p>Partitioned by the crossing plane (declarative-straddle phase 3): with the
+     * rehome firing at MAJORITY-crossed, riders on the still-out minority part must NOT
+     * be yanked through — they keep standing on the reverse session's mapped image,
+     * which the through-part collision/interaction family already supports. Only riders
+     * whose center is past the plane map. At a fully-CROSSED transit every rider passes
+     * the test, so the fast-crossing fallback path is unchanged by construction.
      */
     private static int teleportRiders(
         ServerSubLevel hosted, ServerLevel oldParent, ServerLevel newParent, Portal portal
@@ -530,11 +541,19 @@ public final class SableRehomeOps {
         AABB queryBbox = hosted.boundingBox().toMojang().inflate(0.5);
         List<Entity> entities = oldParent.getEntitiesOfClass(Entity.class, queryBbox);
 
+        Vec3 planePoint = portal.getOriginPos();
+        Vec3 sourceToDest = portal.getNormal().scale(-1.0);
+
         int teleported = 0;
         for (Entity entity : entities) {
             if (entity instanceof Portal) continue;
             if (entity.isRemoved()) continue;
             if (entity.getVehicle() != null) continue;
+            // Bounding-box CENTER, matching the collision family's frame selection —
+            // a rider left behind must be the same rider collision hands the mapped image.
+            if (entity.getBoundingBox().getCenter().subtract(planePoint).dot(sourceToDest) < 0.0) {
+                continue; // still on the minority/native side of the plane
+            }
 
             Vec3 mappedPos = portal.transformPoint(entity.position());
             Vec3 mappedDelta = portal.transformLocalVec(entity.getDeltaMovement());
@@ -553,12 +572,4 @@ public final class SableRehomeOps {
         return teleported;
     }
 
-    /** Mirror detection shared with the transit controller. */
-    static boolean isMirror(ServerSubLevel subLevel) {
-        if (subLevel instanceof ipl.sable.iface.IplKinematicSubLevelHolder kh && kh.ipl$isKinematicMirror()) {
-            return true;
-        }
-        CompoundTag userData = subLevel.getUserDataTag();
-        return userData != null && userData.getBoolean("ipl_mirror");
-    }
 }

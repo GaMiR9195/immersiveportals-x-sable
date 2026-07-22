@@ -43,21 +43,24 @@ import java.util.function.BiConsumer;
  */
 public final class IplSubLevelUniformRegistry {
 
-    /** Map: GL program id -> resolved location of {@code ipl_subLevelClipEquation}. */
-    private static final ConcurrentMap<Integer, Integer> SUB_LEVEL_LOC_BY_PROGRAM =
+    /**
+     * Map: GL program id -> resolved locations {@code [element0, element1]} of the
+     * {@code ipl_subLevelClipEquation[2]} array uniform. Element 1 may be -1 on
+     * drivers/programs where the compiler eliminated it; uploads skip it then.
+     */
+    private static final ConcurrentMap<Integer, int[]> SUB_LEVEL_LOC_BY_PROGRAM =
         new ConcurrentHashMap<>();
 
     private IplSubLevelUniformRegistry() {}
 
     /**
-     * Register a program's slot-1 location. Idempotent; safe to call
-     * repeatedly with the same {@code (programId, loc)} pair. Negative
-     * locations are ignored (the program doesn't actually carry our
+     * Register a program's slot-1 locations. Idempotent; safe to call repeatedly.
+     * Negative element-0 locations are ignored (the program doesn't carry our
      * uniform, e.g., GUI / blit shaders).
      */
-    public static void register(int programId, int subLevelLoc) {
+    public static void register(int programId, int subLevelLoc, int subLevelLoc2) {
         if (subLevelLoc >= 0) {
-            SUB_LEVEL_LOC_BY_PROGRAM.put(programId, subLevelLoc);
+            SUB_LEVEL_LOC_BY_PROGRAM.put(programId, new int[]{subLevelLoc, subLevelLoc2});
         }
     }
 
@@ -71,11 +74,11 @@ public final class IplSubLevelUniformRegistry {
     }
 
     /**
-     * Invoke {@code action} once per (programId, subLevelLoc) currently
+     * Invoke {@code action} once per (programId, [loc0, loc1]) currently
      * registered. Iteration is weakly consistent: concurrent registers
      * mid-iteration won't throw, but may or may not be observed.
      */
-    public static void forEach(BiConsumer<Integer, Integer> action) {
+    public static void forEach(BiConsumer<Integer, int[]> action) {
         SUB_LEVEL_LOC_BY_PROGRAM.forEach(action);
     }
 

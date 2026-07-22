@@ -55,7 +55,7 @@ public abstract class IplHostedTicketManagerMixin {
         boolean original, ServerLevel level, int x, int z
     ) {
         if (original) return true;
-        return IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(level);
+        return IplDimAgnostic.isHostingLevel(level);
     }
 
     @Unique
@@ -84,7 +84,7 @@ public abstract class IplHostedTicketManagerMixin {
         if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
             return;
         }
-        if (!IplDimAgnostic.isEnabled() || !IplDimAgnostic.isHostingLevel(level)) {
+        if (!IplDimAgnostic.isHostingLevel(level)) {
             return;
         }
 
@@ -224,10 +224,10 @@ public abstract class IplHostedTicketManagerMixin {
         // the straddler's parent is still the source side, and the clone is pure native
         // state no container knows about.
         int[] cloneRegions = {0};
-        ipl.sable.transit.IplStraddleCloneBody.forEachSessionInto(level, (ship, offset) -> {
-            BoundingBox3d cb = new BoundingBox3d();
-            cb.set(ship.boundingBox());
-            cb.move(offset.getX(), offset.getY(), offset.getZ());
+        ipl.sable.transit.IplStraddleCloneBody.forEachSessionInto(level, (ship, mapping) -> {
+            // Enclosing AABB of the portal-mapped ship bounds (rotation-capable: the 8
+            // corners go through the full isometry).
+            BoundingBox3d cb = mapping.mapAabb(ship.boundingBox());
             cb.expand(1.0, cb);
             ipl$enrollSections(level, pipeline, cb, gameTime);
             cloneRegions[0]++;

@@ -92,6 +92,89 @@ halves must meet at the physical portal plane without an empty diagonal strip.
 
 No build or automated check was run for this change.
 
+## Nested Portal Aperture Culling
+
+### Symptom
+
+While rendering through portal B, portal A in B's destination world could render over
+B even when A was fully behind B's destination clip plane and therefore could not be
+physically visible to the player.
+
+### Cause
+
+`portal_area` lost its slot-0 clipping injection after it was removed from the shader
+transformation list. Its stencil mask was drawn without the active destination plane,
+so the occlusion query could start a recursive render for portal A. Portal collection
+also performed the behind-plane check too late, after other per-portal work.
+
+### Implemented Change
+
+- `portal_area.vsh` now writes `gl_ClipDistance[0]` using
+  `iportal_ClippingEquation`; its JSON declares the uniform.
+- `MixinShaderInstance` adopts that JSON uniform after shader locations are loaded.
+- `PortalRenderer` rejects portals fully behind the active clip plane while building
+  the render candidate list, before frustum tests, stencil drawing, occlusion queries,
+  or recursive world rendering.
+- A `-0.01` tolerance preserves portals that are coplanar with the destination plane.
+
+### Files
+
+- `src/main/java/qouteall/imm_ptl/core/render/renderer/PortalRenderer.java`
+- `src/main/java/qouteall/imm_ptl/core/mixin/client/render/shader/MixinShaderInstance.java`
+- `src/main/resources/assets/immersive_portals/shaders/core/portal_area.vsh`
+- `src/main/resources/assets/immersive_portals/shaders/core/portal_area.json`
+
+`jarJar` build completed successfully.
+
+## Sodium Portal Context Cache
+
+Sodium portal renders now reuse a bounded cache of per-dimension and portal-path
+contexts. The cache retains Sodium's visible render lists and camera history instead
+of rebuilding them from an empty context every portal frame.
+
+The return path no longer schedules an unnecessary Sodium terrain update, and portal
+rendering restores the previous `smartCull` value instead of always enabling it.
+
+### Files
+
+- `src/main/java/qouteall/imm_ptl/core/render/MyGameRenderer.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/sodium_compatibility/SodiumInterface.java`
+
+`jarJar` build completed successfully.
+
+## Sodium Same-Dimension Portal Stability
+
+Sodium's per-region draw-command batches are now isolated by IP portal depth,
+matching its per-depth visible `ChunkRenderList` state. The portal-depth batch
+storage is sparse; clear and deletion paths skip empty depth slots.
+
+When Sodium resets a portal `ChunkRenderList`, the matching batch slot is found
+by list identity rather than the currently active portal depth. A shallower list
+can be reset while a deeper portal render is active, and clearing by active
+depth would otherwise invalidate the wrong commands.
+
+Sodium rendering contexts retain and swap `lastCameraPos`. A same-dimension
+context switch therefore does not appear to Sodium as a camera movement and does
+not trigger unnecessary terrain updates. New contexts start with the active
+portal camera position.
+
+The Sodium 0.8.12 viewport hook now uses `isBoxVisible` and `testSection`,
+converting the section center into padded section bounds before IP frustum
+culling.
+
+### Files
+
+- `src/main/java/qouteall/imm_ptl/core/compat/mixin/sodium/MixinSodiumRenderRegion.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/mixin/sodium/MixinSodiumChunkRenderList.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/sodium_compatibility/IESodiumRenderRegion.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/mixin/sodium/IESodiumWorldRenderer.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/mixin/sodium/MixinSodiumViewport.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/sodium_compatibility/SodiumInterface.java`
+- `src/main/java/qouteall/imm_ptl/core/compat/sodium_compatibility/SodiumRenderingContext.java`
+- `src/main/java/qouteall/imm_ptl/core/render/MyGameRenderer.java`
+
+No build or automated check was run for these changes.
+
 ## Source-Side Hosted Block Entity Clipping
 
 ### Symptom
@@ -374,6 +457,44 @@ destination draw cannot reuse a source-space cached pose.
 Runtime-check a smoothly moving construction crossing a portal while observing
 from the destination side. The projection must remain visible until native
 single-frame source-pose stutter.
+
+### Follow-up: Nested Render Cache Invalidation
+
+The handoff now maps all client pose state before exposing the destination
+parent. This prevents a render pass from seeing destination ownership paired
+with a source-frame interpolation timeline.
+
+It also invalidates every active `IplStraddleRenderCache` pass after the parent
+switch. IP can perform nested portal renders; invalidating only the innermost
+pass allowed an enclosing pass to reuse a source-frame projection after the
+same handoff. The next lookup rebuilds hosted and projection lists from the
+destination parent, avoiding a stale projection or double-draw at portal exit.
+
+### Files
+
+- `src/main/java/ipl/sable/client/IplParentDimSync.java`
+  Commits mapped client state before parent visibility and clears active render
+  caches after handoff.
+- `src/main/java/ipl/sable/client/IplStraddleRenderCache.java`
+  Invalidates all nested render-pass cache entries.
+
+### Follow-up: Remove One-Tick Render Hold
+
+The previous exact-pose bridge held the construction still until the next
+`ClientSubLevel.tick`. That is a visible one-tick pause after native destination
+rendering takes over, especially at speed. It is removed.
+
+The handoff already maps every buffered snapshot, running snapshot, logical
+pose, and last pose. It now only invalidates Sable's per-partial-tick cache.
+Sable immediately rebuilds from two identical mapped handoff endpoints, then
+continues normally from destination snapshots on the following tick.
+
+### Files
+
+- `src/main/java/ipl/sable/client/IplParentDimSync.java`
+  Invalidates cached pose without holding native movement.
+- `src/main/java/ipl/sable/mixin/client/IplClientSubLevelPoseOverrideMixin.java`
+  Removes handoff-only pose override.
 
 No build or automated check was run for this change.
 

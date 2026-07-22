@@ -13,7 +13,6 @@ use rapier3d::prelude::{
 };
 
 use crate::config::{JOINT_SPRING_DAMPING_RATIO, JOINT_SPRING_FREQUENCY};
-use crate::groups::ROPE_GROUP;
 use crate::scene::{LevelColliderID, PhysicsScene, SableSceneData, SimulationSceneData};
 use crate::with_handle;
 
@@ -35,6 +34,10 @@ struct RopeStrand {
 
     start_attachment: Option<RopeAttachment>,
     end_attachment: Option<RopeAttachment>,
+
+    /// IPL atlas: owning chart — per-level `tick` maintains only its own strands,
+    /// and new points get the chart's rope collision group.
+    chart: crate::scene::ChartId,
 }
 #[derive(Default)]
 pub struct RopeMap {
@@ -50,6 +53,10 @@ pub fn tick(scene: &PhysicsScene) {
     let mut dead_end_attachments = Vec::new();
 
     for (id, rope) in sable_data.rope_map.ropes.iter() {
+        // Atlas: this view's tick maintains only its own chart's strands.
+        if rope.chart != scene.chart {
+            continue;
+        }
         if let Some(attachment) = &rope.start_attachment {
             if !sim.impulse_joint_set.contains(attachment.joint) {
                 dead_start_attachments.push(id.clone());
@@ -136,6 +143,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
                 universal_drag,
                 coordinate,
                 point_radius as Real,
+                scene.chart,
             );
 
             vec.push(handle);
@@ -167,6 +175,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
             start_attachment: None,
             end_attachment: None,
             joints,
+            chart: scene.chart,
         };
 
         sable_data.rope_map.counting_id += 1;
@@ -226,6 +235,7 @@ fn create_rope_body(
     universal_drag: Real,
     coordinate: Vec3,
     point_radius: Real,
+    chart: crate::scene::ChartId,
 ) -> RigidBodyHandle {
     let mut rigid_body = RigidBodyBuilder::dynamic()
         .translation(coordinate)
@@ -243,7 +253,7 @@ fn create_rope_body(
     ))
     .friction(0.15)
     .mass(0.35)
-    .collision_groups(ROPE_GROUP)
+    .collision_groups(crate::groups::rope_group(chart))
     .build();
 
     sim_data
@@ -427,11 +437,13 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
         old_joint.set_limits(JointAxis::LinX, [0.0, 1.0]);
         old_joint.set_motor_position(JointAxis::LinX, 1.0, MIN_BOUND_STIFFNESS, MIN_BOUND_DAMPING);
 
+        let strand_chart = strand.chart;
         let handle = create_rope_body(
             &mut sim_data,
             universal_drag,
             Vec3::new(x as Real, y as Real, z as Real),
             point_radius,
+            strand_chart,
         );
         strand.joints.insert(
             0,

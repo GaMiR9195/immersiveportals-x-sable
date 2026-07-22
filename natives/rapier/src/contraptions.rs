@@ -12,7 +12,6 @@ use rapier3d::pipeline::{ActiveEvents, ActiveHooks};
 use rapier3d::prelude::{RigidBodyHandle, RigidBodyVelocity};
 
 use crate::collider::LevelCollider;
-use crate::groups::LEVEL_GROUP;
 use crate::scene::{LevelColliderID, SableSceneData};
 use crate::{ActiveLevelColliderInfo, with_handle};
 
@@ -80,14 +79,14 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
             panic!("woops!")
         };
 
-        let level_collider = LevelCollider::new(Some(id as LevelColliderID), false);
+        let level_collider = LevelCollider::new(Some(id as LevelColliderID), false, scene.chart);
 
         let collider = ColliderBuilder::new(SharedShape::new(level_collider))
             .friction(0.45)
             .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
             .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS)
             .density(0.0)
-            .collision_groups(LEVEL_GROUP)
+            .collision_groups(crate::groups::level_group(scene.chart))
             .build();
 
         let collider_handle = sim_data.collider_set.insert_with_parent(
@@ -96,7 +95,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
             &mut sim_data.rigid_body_set,
         );
 
-        let mut info = ActiveLevelColliderInfo::new(collider_handle);
+        let mut info = ActiveLevelColliderInfo::new(collider_handle, scene.chart);
         if should_be_static {
             info.static_mount = Some(mount_rigid_body);
         }

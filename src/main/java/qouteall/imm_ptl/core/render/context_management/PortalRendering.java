@@ -79,6 +79,14 @@ public class PortalRendering {
     public static @NotNull Portal getRenderingPortal() {
         return portalLayers.peek();
     }
+
+    /**
+     * Portal sequence from the player's world to the world currently being rendered.
+     * Render-only helpers use this to continue geometry through every recursive layer.
+     */
+    public static List<Portal> getPortalPath() {
+        return List.copyOf(portalLayers);
+    }
     
     public static void onBeginPortalWorldRendering() {
         List<WeakReference<Portal>> currRenderInfo = portalLayers.stream().map(

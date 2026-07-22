@@ -39,8 +39,7 @@ public abstract class IplHostingLevelPlayerLookupMixin implements EntityGetter {
         if (original != null) return original;
 
         ServerLevel self = (ServerLevel) (Object) this;
-        if (IplDimAgnostic.isEnabled()
-            && IplDimAgnostic.isHostingLevel((Level) self)
+        if (IplDimAgnostic.isHostingLevel((Level) self)
             && self.getServer() != null) {
             Player resolved = self.getServer().getPlayerList().getPlayer(uuid);
             long now = System.currentTimeMillis();

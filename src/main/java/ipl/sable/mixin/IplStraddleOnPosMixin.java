@@ -60,8 +60,6 @@ public abstract class IplStraddleOnPosMixin {
     )
     private BlockPos ipl$correctOnPosFrame(BlockPos original) {
         Entity self = (Entity) (Object) this;
-        if (!ipl.sable.dim.IplDimAgnostic.isEnabled()) return original;
-
         // Cheap reject: plot-grid coords are in the millions; world coords are not.
         if (Math.abs(original.getX()) < 1_000_000 && Math.abs(original.getZ()) < 1_000_000) {
             return original;
@@ -76,11 +74,25 @@ public abstract class IplStraddleOnPosMixin {
         SubLevel owner = plot.getSubLevel();
         if (owner == null) return original;
 
-        BlockPos offset = IplStraddlePoseMap.getOffsetInto(owner, self.level());
-        if (offset == null) return original;
+        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.getCollisionMappingInto(
+            owner, self.level(), self.getBoundingBox());
+        if (mapping == null) return original;
 
-        // The unmapped-frame local position is off by exactly the portal offset.
-        return original.offset(-offset.getX(), -offset.getY(), -offset.getZ());
+        // The handler computed L = poseInv(W) with the UNMAPPED pose, where W is the
+        // rider's actual (mapped-frame) world position. The true plot position is
+        // mappedPoseInv(W) = poseInv(mapInv(W)), so round-trip the returned block
+        // center: L -> pose -> W -> unmap -> poseInv. Exact under rotation — the old
+        // shortcut (subtract the world portal delta) was only right for translation
+        // pairs, and its wrong Y on rotated crossings tripped travel's
+        // "chunk below not loaded" pin (dM.y = -0.098/tick: the eaten-jump bug).
+        dev.ryanhcode.sable.companion.math.Pose3dc pose = owner.logicalPose();
+        org.joml.Vector3d world = pose.transformPosition(new org.joml.Vector3d(
+            original.getX() + 0.5, original.getY() + 0.5, original.getZ() + 0.5));
+        net.minecraft.world.phys.Vec3 unmapped = mapping.unmapPoint(
+            new net.minecraft.world.phys.Vec3(world.x, world.y, world.z));
+        org.joml.Vector3d localTrue = pose.transformPositionInverse(
+            new org.joml.Vector3d(unmapped.x, unmapped.y, unmapped.z));
+        return BlockPos.containing(localTrue.x, localTrue.y, localTrue.z);
     }
 
     @org.spongepowered.asm.mixin.Unique

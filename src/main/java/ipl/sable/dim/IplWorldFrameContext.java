@@ -55,7 +55,7 @@ public final class IplWorldFrameContext {
      */
     @Nullable
     public static ServerLevel resolveParentForPlotBe(Level level, BlockPos pos) {
-        if (!IplDimAgnostic.isEnabled() || !IplDimAgnostic.isHostingLevel(level)) return null;
+        if (!IplDimAgnostic.isHostingLevel(level)) return null;
         if (!(level instanceof ServerLevel hosting)) return null;
         // Plot-grid coords are in the millions; nothing else on the hosting level ticks.
         if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return null;

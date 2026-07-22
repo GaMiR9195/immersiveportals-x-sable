@@ -29,7 +29,6 @@ use crate::collider::{LevelCollider, update_collider_aabb};
 use crate::dispatcher::SableDispatcher;
 use crate::event_handler::SableEventHandler;
 use crate::glamx::IVec3;
-use crate::groups::LEVEL_GROUP;
 use crate::joints::SableJointSet;
 use crate::rope::RopeMap;
 use crate::scene::{
@@ -52,6 +51,9 @@ use scene::{LevelColliderID, PhysicsScene, ReportedCollisionBuffer};
 #[derive(Debug)]
 pub struct ActiveLevelColliderInfo {
     pub collider: ColliderHandle,
+    /// IPL atlas: which chart (dimension frame) this body lives in. Drives chunk-map
+    /// selection in the dispatcher, buoyancy scoping, and collision-report routing.
+    pub chart: scene::ChartId,
     pub static_mount: Option<RigidBodyHandle>,
     pub fake_velocities: Option<RigidBodyVelocity<Real>>,
     pub local_bounds_min: Option<IVec3>,
@@ -62,6 +64,19 @@ pub struct ActiveLevelColliderInfo {
     /// IPSable: aperture clip volumes (spec §2.5) — contacts inside any of these are
     /// dropped from this body's manifolds in `modify_solver_contacts`.
     pub clip_regions: Vec<crate::ipl_ext::IplClipRegion>,
+    /// Atlas M2: image colliders of this body (extra colliders with a portal
+    /// prefix, colliding in far charts). Tracked for removal and AABB refresh.
+    pub image_colliders: Vec<ColliderHandle>,
+    /// Atlas M2: per-image-collider clip regions (the far side keeps d >= 0 while
+    /// the native set keeps d < 0 — one body, two region sets). The clip hook
+    /// selects by collider handle, falling back to `clip_regions`.
+    pub image_clip: HashMap<ColliderHandle, Vec<crate::ipl_ext::IplClipRegion>>,
+    /// IPSable diagnostics: clip-pass counters, mutated with atomics under the scene
+    /// READ lock from the solver hook. Read back via `getClipStats`.
+    pub ipl_clip_seen: std::sync::atomic::AtomicU64,
+    pub ipl_clip_dropped: std::sync::atomic::AtomicU64,
+    /// Last solver-contact point seen by the clip pass for this body (f64 bit patterns).
+    pub ipl_last_contact: [std::sync::atomic::AtomicU64; 3],
 }
 
 impl ChunkAccess for ActiveLevelColliderInfo {
@@ -83,9 +98,10 @@ impl ChunkAccess for ActiveLevelColliderInfo {
 impl ActiveLevelColliderInfo {
     /// Creates a new handle for a sable object with rigidbody and collider handles
     #[must_use]
-    pub fn new(collider: ColliderHandle) -> Self {
+    pub fn new(collider: ColliderHandle, chart: scene::ChartId) -> Self {
         Self {
             collider,
+            chart,
             static_mount: None,
             fake_velocities: None,
             chunk_map: None,
@@ -94,6 +110,15 @@ impl ActiveLevelColliderInfo {
             center_of_mass: None,
             octree: None,
             clip_regions: Vec::new(),
+            image_colliders: Vec::new(),
+            image_clip: HashMap::new(),
+            ipl_clip_seen: std::sync::atomic::AtomicU64::new(0),
+            ipl_clip_dropped: std::sync::atomic::AtomicU64::new(0),
+            ipl_last_contact: [
+                std::sync::atomic::AtomicU64::new(0),
+                std::sync::atomic::AtomicU64::new(0),
+                std::sync::atomic::AtomicU64::new(0),
+            ],
         }
     }
 
@@ -359,33 +384,43 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ini
         })
     });
 
-    let ground = RigidBodyBuilder::fixed();
-
-    let collider = ColliderBuilder::new(SharedShape::new(LevelCollider::new(None, true)))
-        .collision_groups(LEVEL_GROUP)
-        .build();
-
-    let sable_data = Arc::new(RwLock::new(SableSceneData {
-        main_level_chunks: HashMap::<i64, ChunkSection>::new(),
-        octree_chunks: HashMap::<i64, OctreeChunkSection>::new(),
-        joint_set: SableJointSet::new(),
-        rope_map: RopeMap::default(),
-        level_colliders: HashMap::<LevelColliderID, ActiveLevelColliderInfo>::new(),
-        rigid_bodies: HashMap::<LevelColliderID, RigidBodyHandle>::new(),
-    }));
-    let manifold_info_map = Arc::new(SableManifoldInfoMap::default());
-    let reported_collisions = Arc::new(ReportedCollisionBuffer::new());
+    let gravity = Vec3::new(x as Real, y as Real, z as Real);
     let current_step_vm = Some(Arc::new(unsafe {
         JavaVM::from_raw(env.get_java_vm().unwrap().get_java_vm_pointer()).unwrap()
     }));
 
-    let dispatcher = SableDispatcher {
-        sable_data: Arc::clone(&sable_data),
-        manifold_info_map: Arc::clone(&manifold_info_map),
-    };
+    // IPL atlas (spec v3 §2.1): all "scenes" are chart views of ONE world. The first
+    // initialize creates the world (sim sets, terrain collider, ground body); every
+    // call mints a new chart with its own report buffer. The registry holds a Weak so
+    // the world dies with its last view (server restart in one JVM gets a fresh world).
+    let mut registry = ipl_world_registry().lock().unwrap();
+    let world = if let Some(world) = registry.upgrade() {
+        if (world.world_gravity - gravity).length() > 1e-6 {
+            info!(
+                "IPL atlas: chart gravity {:?} differs from world gravity {:?} — the world \
+                 steps with the FIRST chart's gravity (assert-uniform, spec v3 §5)",
+                gravity, world.world_gravity
+            );
+        }
+        world
+    } else {
+        let sable_data = Arc::new(RwLock::new(SableSceneData {
+            charts: HashMap::new(),
+            joint_set: SableJointSet::new(),
+            rope_map: RopeMap::default(),
+            level_colliders: HashMap::<LevelColliderID, ActiveLevelColliderInfo>::new(),
+            rigid_bodies: HashMap::<LevelColliderID, RigidBodyHandle>::new(),
+            ipl_excluded_pairs: std::collections::HashSet::new(),
+        }));
+        let manifold_info_map = Arc::new(SableManifoldInfoMap::default());
+        let chart_buffers: Arc<scene::ChartBuffers> = Arc::new(scene::ChartBuffers::default());
 
-    let mut scene = PhysicsScene {
-        sim_data: RwLock::new(SimulationSceneData {
+        let dispatcher = SableDispatcher {
+            sable_data: Arc::clone(&sable_data),
+            manifold_info_map: Arc::clone(&manifold_info_map),
+        };
+
+        let sim_data = Arc::new(RwLock::new(SimulationSceneData {
             pipeline: PhysicsPipeline::new(),
             rigid_body_set: RigidBodySet::new(),
             collider_set: ColliderSet::new(),
@@ -403,27 +438,79 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ini
                 current_step_vm: current_step_vm.clone(),
             },
             event_handler: SableEventHandler {
-                reported_collisions: Arc::clone(&reported_collisions),
+                sable_data: Arc::clone(&sable_data),
+                chart_buffers: Arc::clone(&chart_buffers),
             },
-        }),
-        sable_data,
-        ground_handle: None,
-        reported_collisions,
-        current_step_vm,
-        gravity: Vec3::new(x as Real, y as Real, z as Real),
-        universal_drag: universal_drag as Real,
-        manifold_info_map,
+        }));
+
+        let ground_handle = {
+            let mut sim = sim_data.write().unwrap();
+            sim.rigid_body_set.insert(RigidBodyBuilder::fixed())
+        };
+
+        let world = Arc::new(scene::WorldCore {
+            sim_data,
+            sable_data,
+            manifold_info_map,
+            chart_buffers,
+            ground_handle,
+            world_gravity: gravity,
+            next_chart: std::sync::atomic::AtomicUsize::new(0),
+        });
+        *registry = Arc::downgrade(&world);
+        info!("IPL atlas: world created");
+        world
     };
+    drop(registry);
 
+    let chart = world
+        .next_chart
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed) as scene::ChartId;
+    let reported_collisions = Arc::new(ReportedCollisionBuffer::new());
+    world
+        .chart_buffers
+        .insert(chart, Arc::clone(&reported_collisions));
     {
-        let mut sim_data = scene.sim_data.write().unwrap();
-        sim_data.collider_set.insert(collider);
-
-        scene.ground_handle = Some(sim_data.rigid_body_set.insert(ground));
+        // Pre-create the chart's storage so read paths see an (empty) chart.
+        world.sable_data.write().unwrap().chart_mut(chart);
     }
 
-    info!("Rapier scene initialized");
+    // Per-chart static terrain collider: the shape carries the chart id (the
+    // dispatcher's terrain-vs-convex path only sees shapes), and its groups make
+    // cross-chart terrain pairs impossible.
+    let terrain_collider = {
+        let mut sim = world.sim_data.write().unwrap();
+        let terrain =
+            ColliderBuilder::new(SharedShape::new(LevelCollider::new(None, true, chart)))
+                .collision_groups(groups::terrain_group(chart))
+                .build();
+        sim.collider_set.insert(terrain)
+    };
+
+    let scene = PhysicsScene {
+        terrain_collider: Some(terrain_collider),
+        sim_data: Arc::clone(&world.sim_data),
+        sable_data: Arc::clone(&world.sable_data),
+        manifold_info_map: Arc::clone(&world.manifold_info_map),
+        ground_handle: Some(world.ground_handle),
+        world,
+        reported_collisions,
+        current_step_vm,
+        gravity,
+        universal_drag: universal_drag as Real,
+        chart,
+    };
+
+    info!("Rapier scene initialized (atlas chart {chart})");
     Arc::into_raw(Arc::new(scene)) as jlong
+}
+
+/// Registry of the singleton world (Weak — the world lives exactly as long as its
+/// chart views).
+fn ipl_world_registry() -> &'static std::sync::Mutex<std::sync::Weak<scene::WorldCore>> {
+    static REGISTRY: OnceLock<std::sync::Mutex<std::sync::Weak<scene::WorldCore>>> =
+        OnceLock::new();
+    REGISTRY.get_or_init(|| std::sync::Mutex::new(std::sync::Weak::new()))
 }
 
 #[unsafe(no_mangle)]
@@ -434,7 +521,24 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_dis
 ) {
     if handle != 0 {
         unsafe {
-            drop(Arc::from_raw(handle as *const PhysicsScene));
+            let scene = Arc::from_raw(handle as *const PhysicsScene);
+            // IPL atlas: retire the chart — unregister its report buffer, remove its
+            // terrain collider, and drop its storage so a dead chart can't receive
+            // routed records or leak chunks. Bodies are removed by Java via
+            // removeSubLevel before dispose (stock flow).
+            scene.world.chart_buffers.remove(&scene.chart);
+            if let Some(terrain) = scene.terrain_collider {
+                let mut sim = scene.sim_data.write().unwrap();
+                let sim = &mut *sim;
+                sim.collider_set.remove(
+                    terrain,
+                    &mut sim.island_manager,
+                    &mut sim.rigid_body_set,
+                    false,
+                );
+            }
+            scene.sable_data.write().unwrap().charts.remove(&scene.chart);
+            drop(scene);
         }
     }
 }
@@ -493,7 +597,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ste
 
             scene.manifold_info_map.clear();
 
-            let gravity = scene.gravity;
+            // Atlas: the world steps with the world gravity (assert-uniform, v3 §5).
+            let gravity = scene.world.world_gravity;
             let mut sim = scene.sim_data.write().unwrap();
             let sim = &mut *sim;
 
@@ -594,15 +699,18 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
         let mut sable_data = scene.sable_data.write().unwrap();
         let SableSceneData {
             level_colliders,
-            main_level_chunks,
+            charts,
             ..
         } = &mut *sable_data;
 
         let info = level_colliders.get_mut(&(id as LevelColliderID)).unwrap();
+        // Atlas: read the body's sections from ITS chart's map (the body may live in
+        // a different chart than the calling view during clone feeds).
+        let chart_chunks = &charts.entry(info.chart).or_default().main_level_chunks;
         info.set_local_bounds(
             IVec3::new(min_x, min_y, min_z),
             IVec3::new(max_x, max_y, max_z),
-            main_level_chunks,
+            chart_chunks,
             collider_map,
         );
         let mut sim_data = scene.sim_data.write().unwrap();
@@ -658,12 +766,13 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
         let collider = ColliderBuilder::new(SharedShape::new(LevelCollider::new(
             Some(id as LevelColliderID),
             false,
+            scene.chart,
         )))
         .friction(0.525)
         .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
         .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS)
         .density(0.0)
-        .collision_groups(LEVEL_GROUP)
+        .collision_groups(groups::level_group(scene.chart))
         .build();
 
         let collider_handle = sim_data.collider_set.insert_with_parent(
@@ -674,7 +783,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
 
         sable_data.level_colliders.insert(
             id as LevelColliderID,
-            ActiveLevelColliderInfo::new(collider_handle),
+            ActiveLevelColliderInfo::new(collider_handle, scene.chart),
         );
 
         sable_data
@@ -799,21 +908,45 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
         let collider_map = &physics_state.voxel_collider_map;
         let mut sable_data = scene.sable_data.write().unwrap();
         let SableSceneData {
-            main_level_chunks,
+            charts,
             level_colliders,
-            octree_chunks,
             ..
         } = &mut *sable_data;
+        // Atlas: writes land in the calling view's chart.
+        let scene::ChartData {
+            main_level_chunks,
+            octree_chunks,
+            ..
+        } = charts.entry(scene.chart).or_default();
+
+        // IPL dedicated chunks: a body that owns private section storage keeps its copied
+        // sections out of the scene-wide map. In a same-dimension straddle the clone and
+        // the real body share one scene while describing identical ship-local section
+        // coordinates at different poses — routing the clone through main_level_chunks
+        // let either body's uploads/cleanup corrupt the other's collision source.
+        if global == 0 && object_id != -1 {
+            // Defensive: a feed racing a despawned clone must not panic across JNI
+            // (a panic here aborts the JVM). Missing body falls through to the shared
+            // path, preserving stock behavior for normal bodies.
+            if let Some(body) = level_colliders.get_mut(&(object_id as LevelColliderID)) {
+                if body.has_own_chunks() {
+                    body.insert_chunk(&chunk, x, y, z, collider_map);
+                    body.chunk_map
+                        .as_mut()
+                        .unwrap()
+                        .insert(pack_section_pos(x, y, z), chunk);
+                    return;
+                }
+            }
+        }
 
         main_level_chunks.insert(pack_section_pos(x, y, z), chunk);
-
         let chunk = main_level_chunks.get(&pack_section_pos(x, y, z)).unwrap();
         if global == 0 {
             if object_id != -1 {
                 let body = level_colliders
                     .get_mut(&(object_id as LevelColliderID))
                     .unwrap();
-
                 body.insert_chunk(chunk, x, y, z, collider_map);
             }
         } else {
@@ -909,13 +1042,14 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
         let physics_state = get_physics_state();
         let collider_map = &physics_state.voxel_collider_map;
         let mut sable_data = scene.sable_data.write().unwrap();
+        let chart_data = sable_data.chart_mut(scene.chart);
 
-        sable_data
+        chart_data
             .main_level_chunks
             .remove(&pack_section_pos(x, y, z));
 
         if global > 0 {
-            let octree_chunk = sable_data.octree_chunks.get_mut(&pack_section_pos(
+            let octree_chunk = chart_data.octree_chunks.get_mut(&pack_section_pos(
                 (x << CHUNK_SHIFT) >> OCTREE_CHUNK_SHIFT,
                 (y << CHUNK_SHIFT) >> OCTREE_CHUNK_SHIFT,
                 (z << CHUNK_SHIFT) >> OCTREE_CHUNK_SHIFT,
@@ -952,7 +1086,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
                 }
 
                 if octree_chunk.octree.buffer[0] == 0 && octree_chunk.liquid_octree.buffer[0] == 0 {
-                    sable_data.octree_chunks.remove(&pack_section_pos(
+                    chart_data.octree_chunks.remove(&pack_section_pos(
                         (x << CHUNK_SHIFT) >> OCTREE_CHUNK_SHIFT,
                         (y << CHUNK_SHIFT) >> OCTREE_CHUNK_SHIFT,
                         (z << CHUNK_SHIFT) >> OCTREE_CHUNK_SHIFT,
@@ -981,11 +1115,15 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cha
         let collider_map = &physics_state.voxel_collider_map;
         let mut sable_data = scene.sable_data.write().unwrap();
         let SableSceneData {
-            main_level_chunks,
+            charts,
             level_colliders,
-            octree_chunks,
             ..
         } = &mut *sable_data;
+        let scene::ChartData {
+            main_level_chunks,
+            octree_chunks,
+            ..
+        } = charts.entry(scene.chart).or_default();
 
         let chunk = main_level_chunks.get_mut(&pack_section_pos(x >> 4, y >> 4, z >> 4));
 
@@ -999,7 +1137,9 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cha
 
             let mut any = false;
             for (_, sable_body) in level_colliders.iter_mut() {
-                if sable_body.contains(x, y, z) {
+                // Atlas: only bodies of the calling chart may own this block —
+                // coordinates are only meaningful within one chart's frame.
+                if sable_body.chart == scene.chart && sable_body.contains(x, y, z) {
                     sable_body.insert_block(x, y, z, &block_state, true, collider_map);
                     any = true;
                     break;

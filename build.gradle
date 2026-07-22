@@ -26,17 +26,6 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 // so Gradle never probes the wrong host and resolution stays deterministic.
 repositories {
     mavenLocal()
-    // GitVerse mirrors Maven Central only. Keep mod-specific repositories below:
-    // artifacts such as Sable are not published to Central and cannot resolve here.
-    maven {
-        name = "GitVerseMavenCentral"
-        url = "https://mvn-mirror.gitverse.ru"
-        content {
-            excludeGroupByRegex "dev\\.ryanhcode.*"
-            excludeGroup "dev.eriksonn.aeronautics"
-            excludeGroup "dev.simulated_team.simulated"
-        }
-    }
     exclusiveContent {
         forRepository {
             maven {
@@ -107,16 +96,19 @@ repositories {
     exclusiveContent {
         forRepositories(
             mavenLocal(),
-            // Aeronautics, Simulated and Offroad.
+            // Sable, its companion, Offroad, plus Create Aeronautics + Simulated
             maven {
                 name = "RyanHCode"
                 url = "https://maven.ryanhcode.dev/releases"
             }
         )
         filter {
+            // dev.ryanhcode.* (Sable core/rapier/companion) must resolve from
+            // maven.ryanhcode.dev for builds without a pre-populated mavenLocal;
+            // mavenLocal is listed first above, so local overrides still win.
+            includeGroupByRegex "dev\\.ryanhcode.*"
             includeGroup "dev.eriksonn.aeronautics"
             includeGroup "dev.simulated_team.simulated"
-            includeGroup "dev.ryanhcode.offroad"
         }
     }
     exclusiveContent {
@@ -301,7 +293,7 @@ tasks.withType(ProcessResources).configureEach {
             minecraft_version   : minecraft_version, minecraft_version_range: minecraft_version_range,
             neo_version         : neo_version, neo_version_range: neo_version_range, issue_tracker_url: issue_tracker_url,
             loader_version_range: loader_version_range,
-            mod_id              : mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_id              : mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version, fork_version: fork_version,
             mod_authors         : mod_authors, mod_description: mod_description, pack_format_number: pack_format_number,
     ]
     inputs.properties replaceProperties

@@ -32,13 +32,14 @@ configs:
         replacement: |-
           out float gl_ClipDistance[2];
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation;
+          uniform vec4 ipl_subLevelClipEquation[2];
           void main() {
               vec3 _ipl_worldPos = Position.xyz + ChunkOffset;
               gl_ClipDistance[0] = dot(_ipl_worldPos, iportal_ClippingEquation.xyz) +
                   iportal_ClippingEquation.w;
-              gl_ClipDistance[1] = dot(_ipl_worldPos, ipl_subLevelClipEquation.xyz) +
-                  ipl_subLevelClipEquation.w;
+              gl_ClipDistance[1] = min(
+                  dot(_ipl_worldPos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
+                  dot(_ipl_worldPos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
     debugOutput: false
   - comment: |-
       For iris+sodium shaderpack-style terrain. Slot-1 added so cog block
@@ -64,7 +65,7 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation;
+          uniform vec4 ipl_subLevelClipEquation[2];
           void main() {
       - pattern: "\\}(?![\\S\\s]*\\})"
         # match the last } ([\S\s] matches any character). use the modelview-transformed coordinate
@@ -72,7 +73,9 @@ configs:
           {
               vec3 _ipl_eye = (iris_ModelViewMatrix * getVertexPosition()).xyz;
               gl_ClipDistance[0] = dot(_ipl_eye, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
-              gl_ClipDistance[1] = dot(_ipl_eye, ipl_subLevelClipEquation.xyz) + ipl_subLevelClipEquation.w;
+              gl_ClipDistance[1] = min(
+                  dot(_ipl_eye, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
+                  dot(_ipl_eye, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
           }
           }
     debugOutput: false
@@ -115,11 +118,13 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation;
+          uniform vec4 ipl_subLevelClipEquation[2];
           void main() {
               vec3 _ipl_worldPos = (gbufferModelViewInverse * iris_ModelViewMat * vec4(iris_Position + iris_ChunkOffset, 1.0)).xyz;
               gl_ClipDistance[0] = dot(_ipl_worldPos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
-              gl_ClipDistance[1] = dot(_ipl_worldPos, ipl_subLevelClipEquation.xyz) + ipl_subLevelClipEquation.w;
+              gl_ClipDistance[1] = min(
+                  dot(_ipl_worldPos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
+                  dot(_ipl_worldPos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
     debugOutput: false
   - comment: |-
       Iris-rewritten vanilla rendertype_entity shaders. When Iris is loaded
@@ -165,7 +170,7 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation;
+          uniform vec4 ipl_subLevelClipEquation[2];
           void main() {
               vec3 _ipl_eyePos = (iris_ModelViewMat * vec4(iris_Position, 1.0)).xyz;
               // Slot 0 (IP portal clip): eye-space dot. IP writes the
@@ -185,7 +190,9 @@ configs:
               // matches what SubLevelClipUniformPatcher publishes via
               // currentSubLevelEqWorld.
               vec3 _ipl_worldRel = (gbufferModelViewInverse * vec4(_ipl_eyePos, 1.0)).xyz;
-              gl_ClipDistance[1] = dot(_ipl_worldRel, ipl_subLevelClipEquation.xyz) + ipl_subLevelClipEquation.w;
+              gl_ClipDistance[1] = min(
+                  dot(_ipl_worldRel, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
+                  dot(_ipl_worldRel, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
     debugOutput: false
   - comment: |-
       Veil-managed Simulated / Aeronautics block-entity shaders. These are
@@ -237,11 +244,13 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation;
+          uniform vec4 ipl_subLevelClipEquation[2];
           void main() {
               vec3 _ipl_eyePos = (ModelViewMat * vec4(Position.xyz, 1.0)).xyz;
               gl_ClipDistance[0] = dot(_ipl_eyePos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
-              gl_ClipDistance[1] = dot(_ipl_eyePos, ipl_subLevelClipEquation.xyz) + ipl_subLevelClipEquation.w;
+              gl_ClipDistance[1] = min(
+                  dot(_ipl_eyePos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
+                  dot(_ipl_eyePos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
     debugOutput: false
   - comment: For sodium
     type: vs

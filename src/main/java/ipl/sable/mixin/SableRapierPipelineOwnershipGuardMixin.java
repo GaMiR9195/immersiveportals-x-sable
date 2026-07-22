@@ -125,7 +125,6 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
      * back to the computed owner. Per-scene off: the hosting level, as before.
      */
     private RapierPhysicsPipeline ipl$forwardTarget(PhysicsPipelineBody body) {
-        if (!ipl.sable.dim.IplDimAgnostic.isEnabled()) return null;
         if (!(body instanceof ServerSubLevel sub)) return null;
         if (!ipl.sable.dim.IplDimAgnostic.isHosted(sub)) return null;
         ServerLevel sceneLevel = ipl$sceneLevelOf(sub);
@@ -219,7 +218,7 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
 
     @Inject(method = "addLinearAndAngularVelocity", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardAddVelocity(PhysicsPipelineBody body, Vector3dc linearVelocity, Vector3dc angularVelocity,
-                                      CallbackInfo ci) {
+                                       CallbackInfo ci) {
         if (ipl$notOwned(body)) {
             RapierPhysicsPipeline target = ipl$forwardTarget(body);
             if (target != null) target.addLinearAndAngularVelocity(body, linearVelocity, angularVelocity);

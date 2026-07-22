@@ -46,7 +46,7 @@ public abstract class IplHostedIntersectionMixin {
     private Iterable<SubLevel> ipl$includeHostedSubLevels(
         Iterable<SubLevel> original, Level level, BoundingBox3dc bounds
     ) {
-        if (!IplDimAgnostic.isEnabled() || IplDimAgnostic.isHostingLevel(level)) {
+        if (IplDimAgnostic.isHostingLevel(level)) {
             return original;
         }
 
@@ -60,23 +60,39 @@ public abstract class IplHostedIntersectionMixin {
             if (sub.isRemoved()) continue;
 
             if (IplDimAgnostic.getParentLevel(sub) != level) {
-                // Foreign ship straddling INTO this dimension: include it when its
-                // portal-MAPPED bounds intersect the query. Pose mapping for the collision
-                // math happens in IplStraddleCollisionPoseMixin.
-                net.minecraft.core.BlockPos offset =
-                    ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, level);
-                if (offset == null) continue;
-                dev.ryanhcode.sable.companion.math.BoundingBox3d mapped =
-                    new dev.ryanhcode.sable.companion.math.BoundingBox3d();
-                mapped.set(sub.boundingBox());
-                mapped.move(offset.getX(), offset.getY(), offset.getZ());
-                if (!mapped.intersects(bounds)) continue;
+                // Foreign ship straddling INTO this dimension: include it when ANY of
+                // its portal-MAPPED images intersects the query (multi-straddle). Pose
+                // mapping for the collision math happens in IplStraddleCollisionPoseMixin.
+                boolean[] hits = {false};
+                ipl.sable.transit.IplStraddlePoseMap.forEachStraddleInto(sub, level,
+                    (portal, mapping) -> {
+                        if (!hits[0] && mapping.mapAabb(sub.boundingBox()).intersects(bounds)) {
+                            hits[0] = true;
+                        }
+                    });
+                if (!hits[0]) continue;
                 if (extra == null) extra = new ArrayList<>(4);
                 extra.add(sub);
                 continue;
             }
 
-            if (!sub.boundingBox().intersects(bounds)) continue;
+            // In a same-dimension crossing the source and destination share the
+            // Level object. Add whichever half (of any session's image) reaches the
+            // query. Hosted ships are not in the parent level's native Sable
+            // container, so source bounds still need to be appended here for
+            // ordinary collision as well.
+            boolean intersectsSource = sub.boundingBox().intersects(bounds);
+            boolean[] mappedHits = {false};
+            if (!intersectsSource) {
+                ipl.sable.transit.IplStraddlePoseMap.forEachStraddleInto(sub, level,
+                    (portal, mapping) -> {
+                        if (!mappedHits[0]
+                            && mapping.mapAabb(sub.boundingBox()).intersects(bounds)) {
+                            mappedHits[0] = true;
+                        }
+                    });
+            }
+            if (!intersectsSource && !mappedHits[0]) continue;
             if (extra == null) extra = new ArrayList<>(4);
             extra.add(sub);
         }
@@ -131,9 +147,9 @@ public abstract class IplHostedIntersectionMixin {
         @com.llamalad7.mixinextras.sugar.Local(argsOnly = true) Level level
     ) {
         dev.ryanhcode.sable.companion.math.Pose3dc pose = original.call(ext, sub);
-        net.minecraft.core.BlockPos offset =
-            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, level);
-        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+            ipl.sable.transit.IplStraddlePoseMap.getMappingInto(sub, level);
+        return mapping != null ? mapping.mapPose(pose) : pose;
     }
 
     @WrapOperation(
@@ -150,9 +166,9 @@ public abstract class IplHostedIntersectionMixin {
         @com.llamalad7.mixinextras.sugar.Local(argsOnly = true) Level level
     ) {
         dev.ryanhcode.sable.companion.math.Pose3d pose = original.call(sub);
-        net.minecraft.core.BlockPos offset =
-            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, level);
-        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+            ipl.sable.transit.IplStraddlePoseMap.getMappingInto(sub, level);
+        return mapping != null ? mapping.mapPose(pose) : pose;
     }
 
     @WrapOperation(
@@ -167,8 +183,7 @@ public abstract class IplHostedIntersectionMixin {
         ServerLevel level, Operation<ServerSubLevelContainer> original,
         @com.llamalad7.mixinextras.sugar.Local(argsOnly = true) SubLevelAccess subLevel
     ) {
-        if (IplDimAgnostic.isEnabled()
-            && subLevel instanceof ServerSubLevel serverSubLevel
+        if (subLevel instanceof ServerSubLevel serverSubLevel
             && IplDimAgnostic.isHosted(serverSubLevel)) {
             return original.call(serverSubLevel.getLevel());
         }

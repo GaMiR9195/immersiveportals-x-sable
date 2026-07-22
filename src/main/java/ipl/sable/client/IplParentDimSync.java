@@ -20,6 +20,9 @@ import qouteall.imm_ptl.core.ClientWorldLoader;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -36,7 +39,60 @@ public final class IplParentDimSync {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-parent-sync");
 
+    /** RPC delivery can precede the redirected full-sync that creates the client sub-level. */
+    private static final Map<UUID, PendingHandoff> PENDING_HANDOFFS = new HashMap<>();
+
     private IplParentDimSync() {}
+
+    private record PendingHandoff(String parentDimId, String portalTransform) {}
+
+    private static long ipl$lastDiagMs = 0;
+
+    /**
+     * Round-trip bring-up diagnostic: per hosted client ship, the exact links that can
+     * die independently — parent duck, render pose, session store, portal resolution.
+     * 5s cadence; remove after the declarative-straddle stack stabilizes.
+     */
+    public static void clientHeartbeat() {
+        long now = System.currentTimeMillis();
+        if (now - ipl$lastDiagMs < 5000) return;
+        ipl$lastDiagMs = now;
+
+        SubLevelContainer container = IplClientHostedLookup.getHostingContainerOrNull();
+        if (container == null) return;
+        for (SubLevel sub : container.getAllSubLevels()) {
+            if (!(sub instanceof ClientSubLevel clientSub) || sub.isRemoved()) continue;
+            Level parent = ipl.sable.dim.IplDimAgnostic.getParentLevel(sub);
+            var pos = clientSub.renderPose().position();
+            LOG.info("[IPL-CLIENT-DIAG] ship={} parent={} pose=({},{},{}) portal={}",
+                sub.getUniqueId(),
+                parent == null ? "NULL" : parent.dimension().location(),
+                String.format("%.1f", pos.x()), String.format("%.1f", pos.y()),
+                String.format("%.1f", pos.z()),
+                IplStraddleSessionStore.debugPortalKind(clientSub));
+        }
+    }
+
+    /** Retries handoffs that arrived before their client sub-level was created. */
+    public static void applyPendingHandoffs() {
+        if (PENDING_HANDOFFS.isEmpty()) return;
+
+        Iterator<Map.Entry<UUID, PendingHandoff>> iterator = PENDING_HANDOFFS.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, PendingHandoff> entry = iterator.next();
+            PendingHandoff pending = entry.getValue();
+            try {
+                if (RemoteCallables.applyHandoff(
+                    entry.getKey(), pending.parentDimId(), pending.portalTransform()
+                )) {
+                    iterator.remove();
+                }
+            } catch (Throwable t) {
+                iterator.remove();
+                LOG.error("[IPL-PARENT-SYNC] failed deferred handoff for {}", entry.getKey(), t);
+            }
+        }
+    }
 
     public static final class RemoteCallables {
 
@@ -62,44 +118,66 @@ public final class IplParentDimSync {
          */
         public static void handoff(String subLevelUuid, String parentDimId, String portalTransform) {
             try {
-                SubLevel subLevel = findHostedSubLevel(subLevelUuid, parentDimId);
-                if (!(subLevel instanceof ClientSubLevel clientSubLevel)) return;
-
-                // Projection rendering uses this exact delayed pose and portal transform. The
-                // server includes it because a fast crossing can finish before IP tracks the
-                // source portal entity for this client.
-                Pose3d sourcePose = new Pose3d(clientSubLevel.renderPose());
-                PortalMapping mapping = PortalMapping.decode(portalTransform);
-                Pose3d pose = mapping.mapPose(sourcePose);
-
-                setParent(clientSubLevel, parentDimId);
-                ipl.sable.render.SourceClipPortalFinder.clearCrossingLatch(clientSubLevel.getUniqueId());
-
-                SubLevelSnapshotInterpolator interpolator = clientSubLevel.getInterpolator();
-                // Do not clear the delayed snapshot timeline. The first post-flip movement
-                // packet would then replace the visual pose with a newer server pose, causing
-                // a second jump. Mapping every buffered snapshot keeps interpolation continuous
-                // until destination-space packets naturally extend the same timeline.
-                synchronized (interpolator.buffer) {
-                    for (int i = 0; i < interpolator.buffer.size(); i++) {
-                        SubLevelSnapshotInterpolator.Snapshot snapshot = interpolator.buffer.get(i);
-                        interpolator.buffer.set(i, new SubLevelSnapshotInterpolator.Snapshot(
-                            snapshot.gameTick(), mapping.mapPose(new Pose3d(snapshot.pose()))
-                        ));
-                    }
+                UUID subLevelId = UUID.fromString(subLevelUuid);
+                if (!applyHandoff(subLevelId, parentDimId, portalTransform)) {
+                    PENDING_HANDOFFS.put(subLevelId, new PendingHandoff(parentDimId, portalTransform));
                 }
-                ((IplSnapshotInterpolatorAccessor) interpolator).ipl$getRunningSnapshot().set(pose);
-                clientSubLevel.logicalPose().set(pose);
-                clientSubLevel.updateLastPose();
-                clientSubLevel.forceUpdateBounds();
-                // Handoff may arrive between projection and native draws in the same partial
-                // tick. Without this, renderPose() returns its source-frame cache once before
-                // observing the mapped logical/last poses.
-                ((IplClientSubLevelRenderPoseAccessor) clientSubLevel)
-                    .ipl$setLastRenderPosePartialTick(-1.0f);
             } catch (Throwable t) {
                 LOG.error("[IPL-PARENT-SYNC] failed to hand off hosted sub-level {}", subLevelUuid, t);
             }
+        }
+
+        private static boolean applyHandoff(UUID subLevelId, String parentDimId, String portalTransform) {
+            SubLevel subLevel = findHostedSubLevel(subLevelId.toString(), parentDimId);
+            if (!(subLevel instanceof ClientSubLevel clientSubLevel)) return false;
+
+            // Projection rendering uses this exact delayed pose and portal transform. The
+            // server includes it because a fast crossing can finish before IP tracks the
+            // source portal entity for this client.
+            Pose3d sourcePose = new Pose3d(clientSubLevel.renderPose());
+            PortalMapping mapping = PortalMapping.decode(portalTransform);
+            Pose3d pose = mapping.mapPose(sourcePose);
+
+            SubLevelSnapshotInterpolator interpolator = clientSubLevel.getInterpolator();
+            // Do not clear the delayed snapshot timeline. The first post-flip movement
+            // packet would then replace the visual pose with a newer server pose, causing
+            // a second jump. Mapping every buffered snapshot keeps interpolation continuous
+            // until destination-space packets naturally extend the same timeline.
+            synchronized (interpolator.buffer) {
+                for (int i = 0; i < interpolator.buffer.size(); i++) {
+                    SubLevelSnapshotInterpolator.Snapshot snapshot = interpolator.buffer.get(i);
+                    interpolator.buffer.set(i, new SubLevelSnapshotInterpolator.Snapshot(
+                        snapshot.gameTick(), mapping.mapPose(new Pose3d(snapshot.pose()))
+                    ));
+                }
+            }
+            ((IplSnapshotInterpolatorAccessor) interpolator).ipl$getRunningSnapshot().set(pose);
+            clientSubLevel.logicalPose().set(pose);
+            clientSubLevel.updateLastPose();
+            clientSubLevel.forceUpdateBounds();
+
+            // Do not expose the new parent until every client pose is in destination
+            // space. A pass already in progress may otherwise render a stale source
+            // projection as well as the newly native destination sub-level.
+            setParent(clientSubLevel, parentDimId);
+            // A through-portal staff pick encoded its packets in the old target frame. The
+            // server now owns post-transit raw-goal conversion, matching direct grabbed ships.
+            IplStraddleStaffPick.onTransitHandoff(subLevelId);
+            // Straddle parity is server-synced state now (IplStraddleSessionStore); the
+            // "crossed" session-end snapshot precedes this handoff on the ordered channel,
+            // so there is no client-side latch left to clear here.
+            IplStraddleRenderCache.invalidateActivePasses();
+            // Rebuild Sable's cached render pose from the mapped endpoints now. Both
+            // endpoints are the same handoff pose, so this produces no interpolated
+            // movement while avoiding a one-client-tick pose hold after the teleport.
+            ((IplClientSubLevelRenderPoseAccessor) clientSubLevel)
+                .ipl$setLastRenderPosePartialTick(-1.0f);
+            LOG.info("[IPL-PARENT-SYNC] handoff applied for {} -> parent {} pose=({},{},{})",
+                subLevelId, parentDimId,
+                String.format("%.1f", pose.position().x()),
+                String.format("%.1f", pose.position().y()),
+                String.format("%.1f", pose.position().z()));
+            return true;
         }
 
         /**

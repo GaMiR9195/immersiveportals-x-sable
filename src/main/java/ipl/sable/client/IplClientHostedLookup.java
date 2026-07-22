@@ -63,7 +63,7 @@ public final class IplClientHostedLookup {
     private static java.util.List<dev.ryanhcode.sable.sublevel.ClientSubLevel> ipl$getHostedSubLevelsUncached(
         @Nullable ClientLevel level
     ) {
-        if (level == null || !ipl.sable.dim.IplDimAgnostic.isEnabled()) {
+        if (level == null) {
             return java.util.List.of();
         }
         if (level.dimension() == SableSubLevelDimension.SUBLEVELS) {
@@ -152,7 +152,7 @@ public final class IplClientHostedLookup {
     }
 
     private static java.util.List<StraddleProjection> ipl$getStraddleProjectionsUncached(ClientLevel destLevel) {
-        if (destLevel == null || !ipl.sable.dim.IplDimAgnostic.isEnabled()) {
+        if (destLevel == null) {
             return java.util.List.of();
         }
         if (destLevel.dimension() == SableSubLevelDimension.SUBLEVELS) {
@@ -171,31 +171,35 @@ public final class IplClientHostedLookup {
 
             net.minecraft.world.level.Level parent =
                 ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
-            if (parent == null || parent == destLevel) continue; // native pass handles it
+            if (parent == null) continue;
             if (parent.dimension() == SableSubLevelDimension.SUBLEVELS) continue; // parent unset
 
-            ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
-                ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
-            if (decision == null || decision.portal() == null) continue;
-            if (decision.portal().getDestDim() != destLevel.dimension()) continue;
+            // ONE projection per session portal (multi-straddle): a ship crossing two
+            // portals into this level projects two images, each with its own dest cut.
+            for (ipl.sable.render.SourceClipPortalFinder.ClipDecision decision :
+                    ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlanes(clientSub)) {
+                if (decision.portal() == null) continue;
+                if (decision.portal().getDestDim() != destLevel.dimension()) continue;
 
-            qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
+                qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
 
-            // Pose: portal-map the current interpolated render pose.
-            dev.ryanhcode.sable.companion.math.Pose3d mapped =
-                ipl$computeMappedPose(clientSub.renderPose(), portal);
+                // Render the mapped half even when source and destination are the same level.
+                dev.ryanhcode.sable.companion.math.Pose3d mapped =
+                    ipl$computeMappedPose(clientSub.renderPose(), portal);
 
-            // Clip plane: the source plane keeps the source half; through the portal the
-            // kept half flips — n_dest = -R(n_src), anchored at the mapped plane point.
-            net.minecraft.world.phys.Vec3 srcPos = decision.plane().pos();
-            net.minecraft.world.phys.Vec3 srcNormal = decision.plane().normal();
-            net.minecraft.world.phys.Vec3 destPos = portal.transformPoint(srcPos);
-            net.minecraft.world.phys.Vec3 destNormal = portal.transformLocalVec(srcNormal).scale(-1.0);
-            qouteall.q_misc_util.my_util.Plane destPlane =
-                new qouteall.q_misc_util.my_util.Plane(destPos, destNormal);
+                // Clip plane: the source plane keeps the source half; through the portal
+                // the kept half flips — n_dest = -R(n_src), anchored at the mapped point.
+                net.minecraft.world.phys.Vec3 srcPos = decision.plane().pos();
+                net.minecraft.world.phys.Vec3 srcNormal = decision.plane().normal();
+                net.minecraft.world.phys.Vec3 destPos = portal.transformPoint(srcPos);
+                net.minecraft.world.phys.Vec3 destNormal =
+                    portal.transformLocalVec(srcNormal).scale(-1.0);
+                qouteall.q_misc_util.my_util.Plane destPlane =
+                    new qouteall.q_misc_util.my_util.Plane(destPos, destNormal);
 
-            if (out == null) out = new java.util.ArrayList<>(2);
-            out.add(new StraddleProjection(clientSub, portal, mapped, destPlane));
+                if (out == null) out = new java.util.ArrayList<>(2);
+                out.add(new StraddleProjection(clientSub, portal, mapped, destPlane));
+            }
         }
         return out == null ? java.util.List.of() : out;
     }
@@ -211,8 +215,12 @@ public final class IplClientHostedLookup {
         return ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub) != null;
     }
 
+    /**
+     * Full isometry mapping {@code sub}'s source frame into {@code destLevel} — the
+     * client collision/interaction mapping. Rotation-capable; scale stays gated at 1.
+     */
     @Nullable
-    public static net.minecraft.core.BlockPos getClientStraddleOffsetInto(
+    public static ipl.sable.transit.IplStraddlePoseMap.StraddleMapping getClientStraddleMappingInto(
         dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
     ) {
         if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return null;
@@ -223,10 +231,70 @@ public final class IplClientHostedLookup {
         qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
         if (portal.getDestDim() != destLevel.dimension()) return null;
 
-        if (!ipl.sable.transit.IplStraddlePoseMap.isApproxIdentity(portal.getRotationD())) return null;
         if (Math.abs(portal.getScaling() - 1.0) > 1e-9) return null; // scaled seams unsupported
-        return ipl.sable.transit.IplStraddlePoseMap.blockAligned(
-            portal.getDestPos().subtract(portal.getOriginPos()));
+        return ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(portal);
+    }
+
+    /**
+     * Visit EVERY straddle (portal, mapping) of {@code sub} whose DEST is
+     * {@code contextLevel} (multi-straddle collision family). Scale-gated per portal.
+     */
+    public static void forEachClientStraddleInto(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level contextLevel,
+        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal,
+            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping> visitor
+    ) {
+        if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return;
+        for (qouteall.imm_ptl.core.portal.Portal portal :
+                IplStraddleSessionStore.resolveAllPortals(clientSub)) {
+            if (portal.getDestDim() != contextLevel.dimension()) continue;
+            if (Math.abs(portal.getScaling() - 1.0) > 1e-9) continue;
+            visitor.accept(portal,
+                ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(portal));
+        }
+    }
+
+    /** Same, for sessions the ship exits FROM {@code contextLevel} (its parent side). */
+    public static void forEachClientStraddleFrom(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level contextLevel,
+        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal,
+            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping> visitor
+    ) {
+        if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return;
+        if (ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) != contextLevel) return;
+        for (qouteall.imm_ptl.core.portal.Portal portal :
+                IplStraddleSessionStore.resolveAllPortals(clientSub)) {
+            if (Math.abs(portal.getScaling() - 1.0) > 1e-9) continue;
+            visitor.accept(portal,
+                ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(portal));
+        }
+    }
+
+    /**
+     * The straddle portal from the client-side finder (scale-gated like the mapping),
+     * or null. Feeds the entity-collision block clip, which needs the aperture geometry
+     * the bare {@code StraddleMapping} doesn't carry.
+     */
+    @Nullable
+    public static qouteall.imm_ptl.core.portal.Portal getClientStraddlePortal(
+        dev.ryanhcode.sable.sublevel.SubLevel sub
+    ) {
+        if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return null;
+        ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
+            ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
+        if (decision == null || decision.portal() == null) return null;
+        if (Math.abs(decision.portal().getScaling() - 1.0) > 1e-9) return null;
+        return decision.portal();
+    }
+
+    /** Legacy BlockPos view of {@link #getClientStraddleMappingInto}. */
+    @Nullable
+    public static net.minecraft.core.BlockPos getClientStraddleOffsetInto(
+        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
+    ) {
+        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+            getClientStraddleMappingInto(sub, destLevel);
+        return mapping == null ? null : mapping.blockOffsetOrNull();
     }
 
     /** Client port of SableTransitOps.computeMappedPose (pose through the portal transform). */

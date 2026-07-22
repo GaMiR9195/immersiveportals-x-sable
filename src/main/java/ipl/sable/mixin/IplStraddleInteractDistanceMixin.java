@@ -37,17 +37,17 @@ public abstract class IplStraddleInteractDistanceMixin {
     private void ipl$canInteractWithMappedBlock(
         BlockPos pos, double slop, CallbackInfoReturnable<Boolean> cir
     ) {
-        if (!IplDimAgnostic.isEnabled()) return;
         if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return;
 
         Player self = (Player) (Object) this;
         SubLevel owner = dev.ryanhcode.sable.Sable.HELPER.getContaining(self.level(), pos);
         if (owner == null) return;
 
-        BlockPos offset = IplStraddlePoseMap.getOffsetInto(owner, self.level());
-        if (offset == null) return; // native frame — Sable's own handler covers it
+        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.getCollisionMappingInto(
+            owner, self.level(), self.getBoundingBox());
+        if (mapping == null) return; // native frame — Sable's own handler covers it
 
-        Pose3d mapped = IplStraddlePoseMap.mapped(owner.logicalPose(), offset);
+        Pose3d mapped = mapping.mapPose(owner.logicalPose());
         Vec3 eyeLocal = mapped.transformPositionInverse(self.getEyePosition());
         double range = this.blockInteractionRange() + slop;
         if (new AABB(pos).distanceToSqr(eyeLocal) < range * range) {

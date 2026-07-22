@@ -63,7 +63,6 @@ public abstract class IplPlotBridgeMixin {
 
     @Unique
     private LevelPlot ipl$hostingPlot(int chunkX, int chunkZ) {
-        if (!IplDimAgnostic.isEnabled()) return null;
         Level self = this.getLevel();
         if (self == null || IplDimAgnostic.isHostingLevel(self)) {
             return null; // hosting container resolves its own plots; no recursion
@@ -88,7 +87,7 @@ public abstract class IplPlotBridgeMixin {
     private dev.ryanhcode.sable.sublevel.SubLevel ipl$bridgeSubLevelByUuid(
         dev.ryanhcode.sable.sublevel.SubLevel original, java.util.UUID uuid
     ) {
-        if (original != null || !IplDimAgnostic.isEnabled()) return original;
+        if (original != null) return original;
         Level self = this.getLevel();
         if (self == null || IplDimAgnostic.isHostingLevel(self)) return original;
         SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(self);
@@ -103,7 +102,7 @@ public abstract class IplPlotBridgeMixin {
             // interactable here (the staff's drag packet resolves the target by UUID from
             // the player's level — without this, dragging the through-part silently
             // no-ops server-side while working fine from the parent side).
-            if (ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(hosted, self) != null) {
+            if (ipl.sable.transit.IplStraddlePoseMap.getMappingInto(hosted, self) != null) {
                 return hosted;
             }
         }

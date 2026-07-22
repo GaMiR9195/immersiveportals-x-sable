@@ -180,23 +180,52 @@ where
             if g1.is_static && !g2.is_static {
                 self.world_vs_world::<ContactData>(pos12, g1, g2, prediction, manifolds, false);
             } else if !g1.is_static && !g2.is_static {
+                // IPL: a same-dimension straddle puts a ship and its clone (or two clones
+                // of one ship) in ONE scene; registered pairs generate no contacts. Clear
+                // rather than keep the persisted manifolds — stale contacts must not
+                // survive the exclusion.
+                if let (Some(id1), Some(id2)) = (g1.id, g2.id) {
+                    let key = if id1 <= id2 { (id1, id2) } else { (id2, id1) };
+                    if self
+                        .sable_data
+                        .read()
+                        .unwrap()
+                        .ipl_excluded_pairs
+                        .contains(&key)
+                    {
+                        manifolds.clear();
+                        return Ok(());
+                    }
+                }
                 let swap = {
                     let sable_data = self.sable_data.read().unwrap();
-                    let body_1 = g1
-                        .id
-                        .map(|id| &sable_data.level_colliders[&(id as LevelColliderID)])
-                        .unwrap();
-                    let body_2 = g2
-                        .id
-                        .map(|id| &sable_data.level_colliders[&(id as LevelColliderID)])
-                        .unwrap();
+                    // IPL defensive: a pair can outlive one body by a beat (mid-tick
+                    // clone despawn) or reach here before stats/bounds landed. The old
+                    // `[]`-index + unwrap chain panicked across the FFI boundary (JVM
+                    // abort, no crash report) — skip the pair instead.
+                    let (Some(id1), Some(id2)) = (g1.id, g2.id) else {
+                        manifolds.clear();
+                        return Ok(());
+                    };
+                    let (Some(body_1), Some(body_2)) = (
+                        sable_data.level_colliders.get(&(id1 as LevelColliderID)),
+                        sable_data.level_colliders.get(&(id2 as LevelColliderID)),
+                    ) else {
+                        manifolds.clear();
+                        return Ok(());
+                    };
+                    let (Some(min_1), Some(max_1), Some(min_2), Some(max_2)) = (
+                        body_1.local_bounds_min,
+                        body_1.local_bounds_max,
+                        body_2.local_bounds_min,
+                        body_2.local_bounds_max,
+                    ) else {
+                        manifolds.clear();
+                        return Ok(());
+                    };
 
-                    let extents_1 = body_1.local_bounds_max.unwrap()
-                        - body_1.local_bounds_min.unwrap()
-                        + IVec3::ONE;
-                    let extents_2 = body_2.local_bounds_max.unwrap()
-                        - body_2.local_bounds_min.unwrap()
-                        + IVec3::ONE;
+                    let extents_1 = max_1 - min_1 + IVec3::ONE;
+                    let extents_2 = max_2 - min_2 + IVec3::ONE;
 
                     let volume_1 = extents_1.x * extents_1.y * extents_1.z;
                     let volume_2 = extents_2.x * extents_2.y * extents_2.z;
@@ -273,12 +302,18 @@ impl SableDispatcher {
 
         let mut manifold_index = 0;
 
+        // Atlas: shared-storage reads go to the owning chart's chunk map — the body's
+        // chart if we have an info entry, else the static terrain shape's own chart.
+        let chart = collider_info.map_or(g1.chart, |i| i.chart);
         let chunk_access: &dyn ChunkAccess = if let Some(info) = collider_info
             && info.has_own_chunks()
         {
             info
         } else {
-            &*sable_data
+            let Some(chart_data) = sable_data.chart(chart) else {
+                return; // chart disposed mid-race — no chunks, no contacts
+            };
+            chart_data
         };
 
         for x in local_min.x..=local_max.x {
@@ -448,18 +483,42 @@ impl SableDispatcher {
         let center_of_mass_1 = collider_info_1.map_or(DVec3::ZERO, |b| b.center_of_mass.unwrap());
         let center_of_mass_2 = collider_info_2.center_of_mass.unwrap();
 
+        // Atlas: cross-chart pairs must not generate contacts (defense in depth —
+        // collision groups already reject them before the narrow phase). Pair
+        // admission compares SHAPE charts: an image collider carries the FAR chart
+        // on its shape while its body's info stays in the parent chart. Clear like
+        // the exclusion path: stale persisted manifolds must not survive.
+        if g1.chart != g2.chart {
+            manifolds.clear();
+            return;
+        }
+
+        // Storage selection uses the BODY's chart (an image reads its parent
+        // body's sections — plot coords are pose-independent), falling back to the
+        // shape chart for the static terrain side.
+        let storage_chart_1 = collider_info_1.map_or(g1.chart, |i| i.chart);
+        let storage_chart_2 = collider_info_2.chart;
+
         let chunk_access_1: &dyn ChunkAccess = if let Some(info) = collider_info_1
             && info.has_own_chunks()
         {
             info
         } else {
-            &*sable_data
+            let Some(chart_data) = sable_data.chart(storage_chart_1) else {
+                manifolds.clear();
+                return;
+            };
+            chart_data
         };
 
         let chunk_access_2: &dyn ChunkAccess = if collider_info_2.has_own_chunks() {
             collider_info_2
         } else {
-            &*sable_data
+            let Some(chart_data) = sable_data.chart(storage_chart_2) else {
+                manifolds.clear();
+                return;
+            };
+            chart_data
         };
 
         // let local_aabb = g2.compute_aabb(&pos12);
@@ -476,6 +535,9 @@ impl SableDispatcher {
             256,
             false,
             &sable_data,
+            // Static-octree chart = the terrain side's SHAPE chart (dest chart for
+            // an image-vs-terrain pair). Unused when both sides are bodies.
+            g1.chart,
         );
 
         for (static_pos, dynamic_pos) in pairs.iter() {

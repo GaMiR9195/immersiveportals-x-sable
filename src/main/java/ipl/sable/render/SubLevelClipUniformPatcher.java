@@ -11,6 +11,7 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL41;
 import org.slf4j.Logger;
@@ -40,9 +41,9 @@ import qouteall.q_misc_util.my_util.Plane;
  * chain in {@code shader_transformation.yaml}. {@code n · worldPos + c > 0}
  * is the kept half-space.
  *
- * <p>{@code patchForSubLevel} also calls {@code upload()} explicitly because
- * Sable's render path doesn't re-apply the shader after our HEAD mixin runs --
- * setting the uniform without uploading would leave the GPU value stale.
+ * <p>{@code patchForSubLevel} uploads when a program is active. If a renderer
+ * has only selected a shader, the uniform remains dirty for its next apply;
+ * calling {@code glUniform} before that bind is invalid.
  */
 public final class SubLevelClipUniformPatcher {
 
@@ -235,6 +236,27 @@ public final class SubLevelClipUniformPatcher {
         return currentSubLevelEqVanillaInput;
     }
 
+    /**
+     * Second cut plane (multi-straddle), same spaces as the primaries; null means
+     * "no second cut" and uploaders write the neutral {@code (0,0,0,1)}. The shader
+     * takes {@code min} of both plane distances into {@code gl_ClipDistance[1]}.
+     */
+    private static volatile float[] currentSubLevelEqWorld2 = null;
+    private static volatile float[] currentSubLevelEqEye2 = null;
+    private static volatile float[] currentSubLevelEqVanillaInput2 = null;
+
+    public static float[] getCurrentSubLevelEqWorld2() {
+        return currentSubLevelEqWorld2;
+    }
+
+    public static float[] getCurrentSubLevelEqEye2() {
+        return currentSubLevelEqEye2;
+    }
+
+    public static float[] getCurrentSubLevelEqVanillaInput2() {
+        return currentSubLevelEqVanillaInput2;
+    }
+
     /** Sub-level-local equation, persistent across bracket exit (with freshness check). */
     public static float[] getLatestSubLevelEqLocal() {
         if (ipl$latestIsStale()) return null;
@@ -250,11 +272,21 @@ public final class SubLevelClipUniformPatcher {
     /**
      * Compute the clip equation from {@code plane} (in camera-relative form) and
      * push to {@code ipl_subLevelClipEquation} on the currently-bound shader.
-     * Also calls {@code upload()} so the GPU sees the new value before the next
-     * draw call -- Sable's render path doesn't re-apply the shader between our
-     * HEAD inject and its draw, so a bare {@code set()} would never propagate.
+     * Upload only when its GL program is active; otherwise leave it dirty for
+     * ShaderInstance.apply rather than issuing glUniform with program zero.
      */
     public static void patchForSubLevel(ClientSubLevel sub, Plane plane) {
+        patchForSubLevel(sub, plane, null);
+    }
+
+    /**
+     * Two-plane variant (multi-straddle): {@code plane2} is the SECOND cut, or null
+     * for single-cut behavior. Both flow into the same {@code gl_ClipDistance[1]}
+     * via the shader-side {@code min}.
+     */
+    public static void patchForSubLevel(
+        ClientSubLevel sub, Plane plane, @org.jetbrains.annotations.Nullable Plane plane2
+    ) {
         ShaderInstance shader = RenderSystem.getShader();
         if (shader == null) {
             logEarlyReturn("RenderSystem.getShader() null");
@@ -307,10 +339,57 @@ public final class SubLevelClipUniformPatcher {
         }
         currentSubLevelEqVanillaInput = eqVanillaInput;
 
+        // Second cut (multi-straddle): same three spaces, from plane2's geometry.
+        float[] eqWorld2 = null;
+        float[] eqVanillaInput2 = null;
+        if (plane2 != null) {
+            Vec3 n2 = plane2.normal();
+            Vec3 p2 = plane2.pos();
+            double c2 = -(n2.x * (p2.x - cameraPos.x)
+                        + n2.y * (p2.y - cameraPos.y)
+                        + n2.z * (p2.z - cameraPos.z));
+            eqWorld2 = new float[]{(float) n2.x, (float) n2.y, (float) n2.z, (float) c2};
+            if (sub != null) {
+                try {
+                    Vec3 nInput2 = sub.renderPose().transformNormalInverse(n2);
+                    eqVanillaInput2 = new float[]{
+                        (float) nInput2.x, (float) nInput2.y, (float) nInput2.z, (float) c2};
+                } catch (Exception e) {
+                    // world fallback below
+                }
+            }
+        }
+        currentSubLevelEqWorld2 = eqWorld2;
+        currentSubLevelEqVanillaInput2 = eqVanillaInput2;
+
         float[] currentEq = IplProgramRegistry.isVanillaSubLevelInputShader(shader.getName())
             && eqVanillaInput != null ? eqVanillaInput : new float[]{nx, ny, nz, cw};
-        uniform.set(currentEq[0], currentEq[1], currentEq[2], currentEq[3]);
-        uniform.upload();
+        boolean vanillaInputShader = IplProgramRegistry.isVanillaSubLevelInputShader(shader.getName());
+        float[] currentEq2 = plane2 == null ? null
+            : (vanillaInputShader && eqVanillaInput2 != null ? eqVanillaInput2 : eqWorld2);
+        // IPL fix (P3): only touch the tracked shader's uniform when its program is
+        // ACTUALLY bound. RenderSystem.getShader() is CPU-side tracking — post/blit
+        // passes leave glUseProgram(0) while it's still set, and upload() then raises
+        // GL_INVALID_OPERATION "No active program" every frame, poisoning GL state
+        // (storms observed right before several native crashes). The registry spray
+        // below reaches registered programs bind-free.
+        int boundProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+        if (boundProgram == shader.getId()) {
+            uniform.set(currentEq[0], currentEq[1], currentEq[2], currentEq[3]);
+            uniform.upload();
+            Uniform uniform2 = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform2();
+            if (uniform2 != null) {
+                if (currentEq2 != null) {
+                    uniform2.set(currentEq2[0], currentEq2[1], currentEq2[2], currentEq2[3]);
+                } else {
+                    uniform2.set(0f, 0f, 0f, 1f);
+                }
+                uniform2.upload();
+            }
+        } else {
+            logEarlyReturn(
+                "shader '" + shader.getName() + "' tracked but not bound — registry spray only");
+        }
 
         // Publish world-space equation for chunk shaders (iris+sodium
         // terrain_*) that dot against a world-space position chain.
@@ -336,6 +415,13 @@ public final class SubLevelClipUniformPatcher {
         float[] eqEye = new float[]{nEye.x, nEye.y, nEye.z, cw};
         currentSubLevelEqEye = eqEye;
         latestSubLevelEqEye = eqEye;
+        if (eqWorld2 != null) {
+            Vector3f nEye2 = worldToView.transform(
+                new Vector3f(eqWorld2[0], eqWorld2[1], eqWorld2[2]));
+            currentSubLevelEqEye2 = new float[]{nEye2.x, nEye2.y, nEye2.z, eqWorld2[3]};
+        } else {
+            currentSubLevelEqEye2 = null;
+        }
 
         // Retain the local form for shader paths that explicitly recover plot
         // coordinates. Vanilla entity/text shaders do not use it: their emitted
@@ -372,18 +458,32 @@ public final class SubLevelClipUniformPatcher {
         // bind state (GL 4.1+).
         final float[] eqW = currentSubLevelEqWorld;
         final float[] eqV = currentSubLevelEqVanillaInput;
-        IplSubLevelUniformRegistry.forEach((programId, loc) -> {
+        final float[] eqW2 = currentSubLevelEqWorld2;
+        final float[] eqV2 = currentSubLevelEqVanillaInput2;
+        final float[] eqE2 = currentSubLevelEqEye2;
+        IplSubLevelUniformRegistry.forEach((programId, locs) -> {
             // Entity-style programs evaluate their transformed BE vertices in
             // eye space. Chunks use world/input space.
             float[] eq;
+            float[] eq2;
             if (IplProgramRegistry.usesVanillaSubLevelInputSpace(programId) && eqV != null) {
                 eq = eqV;
+                eq2 = eqV2;
             } else if (IplProgramRegistry.isEntityStyleProgram(programId)) {
                 eq = currentSubLevelEqEye;
+                eq2 = eqE2;
             } else {
                 eq = eqW;
+                eq2 = eqW2;
             }
-            GL41.glProgramUniform4f(programId, loc, eq[0], eq[1], eq[2], eq[3]);
+            GL41.glProgramUniform4f(programId, locs[0], eq[0], eq[1], eq[2], eq[3]);
+            if (locs[1] >= 0) {
+                if (eq2 != null) {
+                    GL41.glProgramUniform4f(programId, locs[1], eq2[0], eq2[1], eq2[2], eq2[3]);
+                } else {
+                    GL41.glProgramUniform4f(programId, locs[1], 0f, 0f, 0f, 1f);
+                }
+            }
         });
 
         // Defensive re-enable: Veil bloom (RenderDoc EID ~2453 in cog_leak3)
@@ -458,6 +558,9 @@ public final class SubLevelClipUniformPatcher {
         currentSubLevelEqWorld = null;
         currentSubLevelEqEye = null;
         currentSubLevelEqVanillaInput = null;
+        currentSubLevelEqWorld2 = null;
+        currentSubLevelEqEye2 = null;
+        currentSubLevelEqVanillaInput2 = null;
 
         // NOTE: We intentionally do NOT spray (0,0,0,1) to all registered
         // programs here. Doing so was the root cause of the cog-leak bug
@@ -475,7 +578,14 @@ public final class SubLevelClipUniformPatcher {
         if (shader == null) return;
         Uniform uniform = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform();
         if (uniform == null) return;
+        // Same bound-program guard as patchForSubLevel (IPL fix P3).
+        if (GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM) != shader.getId()) return;
         uniform.set(0f, 0f, 0f, 1f);
         uniform.upload();
+        Uniform uniform2 = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform2();
+        if (uniform2 != null) {
+            uniform2.set(0f, 0f, 0f, 1f);
+            uniform2.upload();
+        }
     }
 }

@@ -14,15 +14,20 @@ pub struct LevelCollider {
     pub id: Option<LevelColliderID>,
     pub is_static: bool,
     pub cached_aabb: Option<Aabb>,
+    /// IPL atlas: owning chart. Load-bearing for STATIC terrain colliders (one per
+    /// chart) — the dispatcher's terrain-vs-convex path has only the shapes in
+    /// scope, so the shape itself must know which chart's chunk maps to read.
+    pub chart: crate::scene::ChartId,
 }
 
 impl LevelCollider {
     #[must_use]
-    pub fn new(id: Option<LevelColliderID>, is_static: bool) -> Self {
+    pub fn new(id: Option<LevelColliderID>, is_static: bool, chart: crate::scene::ChartId) -> Self {
         Self {
             id,
             is_static,
             cached_aabb: None,
+            chart,
         }
     }
 
@@ -54,6 +59,18 @@ pub fn update_collider_aabb(sim: &mut SimulationSceneData, info: &ActiveLevelCol
         cached_aabb: Some(new_aabb),
         ..existing
     }));
+
+    // Atlas M2: image colliders mirror the body's shape in far charts — keep
+    // their AABBs in sync (block updates mid-straddle change the bounds).
+    for handle in &info.image_colliders {
+        if let Some(image) = sim.collider_set.get_mut(*handle) {
+            let existing = *image.shape().as_shape::<LevelCollider>().unwrap();
+            image.set_shape(SharedShape::new(LevelCollider {
+                cached_aabb: Some(new_aabb),
+                ..existing
+            }));
+        }
+    }
 }
 
 impl RayCast for LevelCollider {

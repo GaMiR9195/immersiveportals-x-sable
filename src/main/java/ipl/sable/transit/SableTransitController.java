@@ -11,7 +11,6 @@ import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.portal.PortalExtension;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -44,106 +43,35 @@ public final class SableTransitController {
     /** Inflation amount when querying for nearby portals -- how close before we consider one. */
     private static final double PORTAL_QUERY_INFLATION = 4.0;
 
-    /** Lateral-only output-aperture allowance for a construction's final edge. */
+    /** Lateral aperture keep-margin for EXISTING sessions (grazing-flap hysteresis). */
     private static final double EXIT_APERTURE_MARGIN = 0.5;
 
     /**
-     * Per-(source, portal) mirror operation cooldown in server ticks. After a mirror
-     * spawn OR despawn for a pair, ignore further spawn/sync conditions for that pair
-     * for this many ticks. Prevents rapid respawn churn if something causes the
-     * mirror to repeatedly fail sync (e.g., Sable invalidates the mass tracker
-     * mid-tick, leaving us with a dead mirror and no valid registry entry).
-     *
-     * <p>Shorter than the transit cooldown (10 ticks vs 40) because mirrors are
-     * transient by nature -- they spawn and despawn on approach/disengage. A pair
-     * that's been mirror-cycled within the last half-second is suspicious and
-     * deserves a breather.
+     * Majority rehome (declarative-straddle phase 3): the transit fires when a live
+     * session's crossing fraction exceeds this threshold, instead of waiting for the
+     * trailing edge to clear. The declarative recompute derives the mirrored session
+     * on the reverse portal next tick (the minority-face rule picks it), so the
+     * remaining part keeps physics/render/collision through the handoff — and the
+     * majority-native invariant that makes parity geometric is actively maintained.
+     * Matches the servo's authority-swap threshold; the swap remains as the fallback
+     * when the rehome can't execute. {@code -Dipl.sable.majorityRehome=false} restores
+     * rehome-at-fully-CROSSED.
      */
-    private static final long MIRROR_COOLDOWN_TICKS = 10L;
-
-    private static final Map<MirrorRegistry.MirrorKey, Long> lastMirrorOpTick = new HashMap<>();
-
-    /**
-     * Per-(source, portal) locked source->dest normal for the crossing-phase
-     * evaluation, held for the duration of a contact session. Distinct from the
-     * client-side clip-normal tracker ({@code SubLevelPortalContactTracker}) on
-     * purpose: that one stores the clip normal (oriented toward the KEPT/source
-     * side) and is written from the render thread; this stores the opposite
-     * source->dest direction and is written from the server thread. Sharing one
-     * map would let the two sign conventions clobber each other in singleplayer
-     * (same JVM, same UUID key). Server-thread only, so a plain HashMap is fine.
-     *
-     * <p>Locking matters because a free-rotating airship's AABB center can wobble
-     * across the plane mid-straddle; without the lock the oriented normal could
-     * flip and bounce the crossing phase. The entry is dropped when the pair is no
-     * longer near the portal (see the despawn/cleanup pass).
-     */
-    private static final Map<MirrorRegistry.MirrorKey, Vec3> lockedCrossingNormal = new HashMap<>();
-
-    /**
-     * Dim-agnostic straddle latch. In the legacy model the mirror's existence is the latch
-     * ("only swap a pair that previously straddled"); hosted sub-levels have no mirrors, so the
-     * latch is explicit: a (subLevel, portal) key enters on STRADDLING, leaves on APPROACHING
-     * (ship backed out) or on the CROSSED flip. Server-thread only.
-     */
-    private static final java.util.Set<MirrorRegistry.MirrorKey> hostedStraddleLatch = new java.util.HashSet<>();
-
-    /** Output aperture faces that cannot be re-entered before an exit completes. */
-    private static final Map<UUID, java.util.Set<Portal>> pendingExitPortalsByAirship = new HashMap<>();
+    private static final boolean MAJORITY_REHOME =
+        !"false".equals(System.getProperty("ipl.sable.majorityRehome"));
+    private static final double REHOME_FRACTION =
+        Double.parseDouble(System.getProperty("ipl.sable.rehomeFraction", "0.6"));
 
     private SableTransitController() {}
 
-    /**
-     * Tear down all mirror state when the server is stopping. Despawns every
-     * registered mirror (removing it from its dest container so its plot chunks
-     * are freed) and clears all per-process static state.
-     *
-     * <p><b>Why this is needed -- two bugs it fixes:</b>
-     * <ul>
-     *   <li><b>Duplication on quit-to-title:</b> {@link MirrorRegistry} and the
-     *       cooldown maps are {@code static}. In singleplayer the same JVM hosts
-     *       successive integrated servers, so a mirror entry from session 1
-     *       survives into session 2; the controller then treats it as live and
-     *       spawns alongside it -> the "3 airships" the player counted.</li>
-     *   <li><b>Shutdown chunk-drain hang:</b> a mirror left in its dest container
-     *       at shutdown keeps its plot chunks occupied. {@code MinecraftServer.stopServer}'s
-     *       chunk drain ({@code ServerChunkCache.tick -> ChunkMap.processUnloads})
-     *       then spins waiting for those chunks to unload (watchdog 31May, stuck in
-     *       vanilla {@code processUnloads} with no mod frames). Despawning before
-     *       the drain frees them.</li>
-     * </ul>
-     *
-     * <p>Called from {@link ipl.sable.mixin.IplServerStopMirrorCleanupMixin} at the
-     * HEAD of {@code stopServer} -- before the final save and before the chunk drain.
-     * Per-mirror failures are swallowed so one bad despawn can't abort the rest of
-     * shutdown.
-     */
+    /** Clear hosted transit state when the server stops. */
     public static void onServerStopping(MinecraftServer server) {
-        List<MirrorRegistry.MirrorEntry> snapshot = new ArrayList<>(MirrorRegistry.all());
-        int despawned = 0;
-        for (MirrorRegistry.MirrorEntry entry : snapshot) {
-            try {
-                MirrorOps.despawnMirror(entry, server);
-                despawned++;
-            } catch (Throwable t) {
-                LOG.warn("[IPL-MIRROR] server-stop despawn failed for mirror={}", entry.mirrorUuid(), t);
-            }
-        }
-        // Belt-and-suspenders: despawnMirror already removes each entry, but clear
-        // the whole registry + cooldown maps so NOTHING carries into the next
-        // integrated server in this JVM.
-        MirrorRegistry.clear();
-        lastMirrorOpTick.clear();
-        lockedCrossingNormal.clear();
-        hostedStraddleLatch.clear();
-        pendingExitPortalsByAirship.clear();
+        IplStraddleSessionSync.clearAll();
+        IplPortalRimManager.clearAll();
         IplStraddleCloneBody.clearAll();
         IplStraddleTerrainClone.clearAll();
         SableRehomeOps.resetBootRestore();
         ipl.sable.dim.IplSceneOwnership.clearAll();
-        if (despawned > 0 || !snapshot.isEmpty()) {
-            LOG.info("[IPL-MIRROR] server-stop cleanup: despawned {} mirror(s), cleared registry", despawned);
-        }
     }
 
     /**
@@ -153,8 +81,8 @@ public final class SableTransitController {
     public static void onContainerTick(ServerSubLevelContainer container) {
         ServerLevel level = (ServerLevel) container.getLevel();
         if (level == null) return;
-        long nowTick = level.getGameTime();
-
+        // Always-on portal containment rims track portal entity lifecycle per level.
+        IplPortalRimManager.tick(level);
         // Per-scene model: migrate any hosted body whose scene doesn't match its parent —
         // covers boot-restored ships whose parent resolved after the body was created
         // (fallback landed it in the hosting scene) and any missed flip path.
@@ -163,15 +91,7 @@ public final class SableTransitController {
             ipl.sable.dim.IplSceneOwnership.reconcile(container);
         }
 
-        // Track which (sourceUuid, portalUuid) pairs are still active mirrors this
-        // tick -- so we can despawn any mirror whose source is no longer in the
-        // approach zone after we finish the iteration.
-        java.util.Set<MirrorRegistry.MirrorKey> seenMirrors = new java.util.HashSet<>();
-
-        // Same idea for hosted (dim-agnostic) pairs: latch + locked-normal entries whose pair
-        // is no longer near a portal get reaped after the loop. Only meaningful when ticking
-        // the hosting container (all hosted ships live there).
-        java.util.Set<MirrorRegistry.MirrorKey> seenHostedKeys = new java.util.HashSet<>();
+        java.util.Set<StraddleKey> seenHostedKeys = new java.util.HashSet<>();
 
         // Collect transit candidates first so we don't mutate iterators while iterating
         // (transit will call container.removeSubLevel which mutates allSubLevels).
@@ -179,24 +99,6 @@ public final class SableTransitController {
         for (SubLevel subLevel : container.getAllSubLevels()) {
             if (!(subLevel instanceof ServerSubLevel airship)) continue;
             if (airship.isRemoved()) continue;
-
-            // Skip airships that are themselves kinematic mirrors. Mirrors don't
-            // initiate transits; they're driven by their source.
-            if (airship instanceof ipl.sable.iface.IplKinematicSubLevelHolder kh
-                && kh.ipl$isKinematicMirror()) {
-                continue;
-            }
-
-            // Defensive skip: a sub-level tagged "ipl_mirror" in user_data is
-            // treated as a mirror regardless of the runtime @Unique kinematic
-            // flag (which doesn't survive serialisation). This catches any
-            // ghost mirror from a legacy save whose recovery mixin didn't
-            // fire on this run -- preventing the spawn-mirror-for-ghost
-            // cascade that produced the hang in the 29May log.
-            net.minecraft.nbt.CompoundTag userData = airship.getUserDataTag();
-            if (userData != null && userData.getBoolean("ipl_mirror")) {
-                continue;
-            }
 
             // Self-heal stale physics-actor registrations. After a transit the dest chunk's
             // block entities can be recreated by a chunk reprocess that doesn't re-fire
@@ -210,19 +112,13 @@ public final class SableTransitController {
                     + "entities for uuid={}", rebound, airship.getUniqueId());
             }
 
-            // Dim-agnostic model: the legacy mirror/copy machinery is disabled. Un-hosted
-            // ships are pending rehome (SableRehomeOps.sweep handles them within a tick);
-            // hosted ships query portals in their PARENT dim and transit via parent flip.
             boolean hosted = IplDimAgnostic.isHosted(airship);
-            if (IplDimAgnostic.isEnabled() && !hosted) {
+            if (!hosted) {
                 continue;
             }
 
-            ServerLevel portalQueryLevel = level;
-            if (hosted) {
-                portalQueryLevel = IplDimAgnostic.getServerParentLevel(airship);
-                if (portalQueryLevel == null) continue;
-            }
+            ServerLevel portalQueryLevel = IplDimAgnostic.getServerParentLevel(airship);
+            if (portalQueryLevel == null) continue;
 
             // Convert Sable's BoundingBox3d to MC AABB for the portal query.
             AABB airshipAabb = airship.boundingBox().toMojang().inflate(PORTAL_QUERY_INFLATION);
@@ -236,19 +132,17 @@ public final class SableTransitController {
             // held in GlobalPortalStorage, never returned by entity queries. Include any whose
             // (rect-clamped) nearest point reaches the inflated ship box. Distance-to-center vs
             // the box's half-diagonal matches the entity query's reach semantics closely enough.
-            if (IplDimAgnostic.isEnabled()) {
-                Vec3 shipCenter = airshipAabb.getCenter();
-                double reach = 0.5 * Math.sqrt(
-                    airshipAabb.getXsize() * airshipAabb.getXsize()
-                        + airshipAabb.getYsize() * airshipAabb.getYsize()
-                        + airshipAabb.getZsize() * airshipAabb.getZsize());
-                for (Portal globalPortal :
-                    qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage
-                        .getGlobalPortals(portalQueryLevel)) {
-                    if (globalPortal.isTeleportable()
-                        && globalPortal.getDistanceToNearestPointInPortal(shipCenter) <= reach) {
-                        nearby.add(globalPortal);
-                    }
+            Vec3 shipCenter = airshipAabb.getCenter();
+            double reach = 0.5 * Math.sqrt(
+                airshipAabb.getXsize() * airshipAabb.getXsize()
+                    + airshipAabb.getYsize() * airshipAabb.getYsize()
+                    + airshipAabb.getZsize() * airshipAabb.getZsize());
+            for (Portal globalPortal :
+                qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage
+                    .getGlobalPortals(portalQueryLevel)) {
+                if (globalPortal.isTeleportable()
+                    && globalPortal.getDistanceToNearestPointInPortal(shipCenter) <= reach) {
+                    nearby.add(globalPortal);
                 }
             }
 
@@ -257,227 +151,121 @@ public final class SableTransitController {
             // must remain independent; UUID order makes equivalent companions stable.
             nearby.sort(Comparator.comparing(portal -> portal.getUUID().toString()));
 
-            // Edge-interval crossing model (replaces the old centroid-crossing +
-            // proximity-spawn gates). For each nearby portal we project the airship's
-            // OBB onto a per-session-locked source->dest normal and classify:
-            //   APPROACHING -> hide mirror (leading edge hasn't reached the plane)
-            //   STRADDLING  -> spawn/sync mirror (leading edge through, trailing not)
-            //   CROSSED     -> if a mirror exists (it straddled and is now fully
-            //                  through), swap; the mirror becomes the source.
-            // The mirror's existence IS the straddle latch: we only ever swap a
-            // (source, portal) pair that previously straddled and spawned a mirror,
-            // so a ship that backs out, or one teleported fully across without
-            // straddling, never spuriously swaps.
+            // DECLARATIVE session derivation (phase 2 of the declarative-straddle
+            // rework): a session exists iff the ship's OBB currently STRADDLES a
+            // portal's plane THROUGH its aperture — no entry events, no latches.
+            // Existing sessions are kept with a lateral aperture margin (hysteresis
+            // against grazing flap); new sessions additionally require the minority-
+            // face parity rule: of a pair of coincident opposite faces, only the one
+            // whose crossing direction puts LESS than half the ship "through" may
+            // open a session — with the majority-native invariant, the through part
+            // is always the minority, which makes parity geometric, not historical.
+            // Transit fires when a LIVE session reaches CROSSED (the session is the
+            // straddle memory), or on a genuine single-tick aperture crossing.
             boolean candidateAddedForAirship = false;
             for (Portal portal : nearby) {
                 if (!ipl$isCanonicalEntranceFace(portal, nearby)) continue;
-                if (hosted && ipl$isBlockedOutputPortal(airship, portal)) {
-                    continue;
-                }
 
                 UUID portalUuid = portal.getUUID();
-                MirrorRegistry.MirrorKey key = new MirrorRegistry.MirrorKey(
+                StraddleKey key = new StraddleKey(
                     airship.getUniqueId(), portalUuid
                 );
+                boolean haveSession = IplStraddleCloneBody.hasSessionKey(key)
+                    || IplStraddleTerrainClone.hasSessionKey(key);
 
-                Vec3 normal = ipl$lockedSourceToDestNormal(airship, portal);
-                PortalCrossingDetector.CrossingState state =
-                    PortalCrossingDetector.evaluate(airship, portal, normal);
+                Vec3 normal = portal.getNormal().scale(-1.0);
+                PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
+                    airship, portal, normal, haveSession ? EXIT_APERTURE_MARGIN : 0.0);
 
-                // A portal is a finite aperture, not its infinite supporting plane.
-                // Without this gate, brushing the plane several blocks beside the
-                // frame starts a hosted latch; a later fast move to the other side
-                // then incorrectly flips the construction into the destination.
-                if (state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
-                    && !state.intersectsPortalAperture()) {
-                    if (hostedStraddleLatch.remove(key)) {
-                        IplStraddleCloneBody.clear(key, "left-aperture");
+                boolean straddlingAperture =
+                    state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
+                        && state.intersectsPortalAperture();
+
+                if (straddlingAperture) {
+                    double fraction = ipl$crossedFraction(airship, portal, normal);
+
+                    // Minority-face parity: the opposite coincident face evaluates
+                    // the same geometry with the complementary fraction and claims it.
+                    if (!haveSession && fraction > 0.5 + 1.0e-6) {
+                        continue;
+                    }
+                    seenHostedKeys.add(key);
+
+                    // Majority rehome: past the threshold the dest side owns the ship —
+                    // flip NOW. The session is NOT cleared here: it dies only when the
+                    // transit actually succeeds (see the candidate execution). Clearing
+                    // first stranded ships whose transit failed once — past 0.5 the
+                    // minority rule refuses to re-open this face and would open the
+                    // OPPOSITE face with inverted parity instead, making forward travel
+                    // structurally impossible.
+                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION) {
+                        if (candidates == null) candidates = new ArrayList<>(1);
+                        candidates.add(new TransitCandidate(airship, portal, true));
+                        candidateAddedForAirship = true;
+                        break;
+                    }
+
+                    // Session first, sync second: the one-session-per-ship gate (and
+                    // any other spawn decline) must be able to veto BEFORE the client
+                    // hears about the session — announced-but-blocked sessions were
+                    // unreapable phantoms that left stale clip planes on the ship.
+                    if (IplStraddleCloneBody.isEnabled()) {
+                        IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
+                    } else {
+                        IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
+                    }
+                    if (!haveSession && (IplStraddleCloneBody.hasSessionKey(key)
+                        || IplStraddleTerrainClone.hasSessionKey(key))) {
+                        IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
+                    }
+                    continue;
+                }
+
+                if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
+                    && (haveSession || state.enteredFromSourceAperture())) {
+                    if (haveSession) {
+                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
+                    }
+                    IplStraddleCloneBody.clear(key, "crossed");
+                    IplStraddleTerrainClone.clear(key);
+                    if (candidates == null) candidates = new ArrayList<>(1);
+                    candidates.add(new TransitCandidate(airship, portal, false));
+                    candidateAddedForAirship = true;
+                } else {
+                    String reason = state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
+                        ? "backed-out" : "left-aperture";
+                    if (haveSession) {
+                        IplStraddleCloneBody.clear(key, reason);
                         IplStraddleTerrainClone.clear(key);
                     }
-                    continue;
+                    // Unconditional + idempotent: a synced session whose spawn kept
+                    // failing has no local session key but must still be retracted.
+                    IplStraddleSessionSync.onSessionEnd(level.getServer(), key, reason);
                 }
-
-                // Starting a session requires an actual source-side aperture crossing
-                // during this physics step. A body already straddling nearby planes
-                // cannot claim several nearly-coplanar portal faces at once.
-                boolean canStartContact = state.enteredFromSourceAperture();
-
-                // Bring-up probe (remove later): log every phase evaluation that is either
-                // non-trivial or follows a latched straddle — the 1-tick clone-session
-                // mystery lives in this decision.
-                if (hosted && (state.phase() != PortalCrossingDetector.CrossingPhase.APPROACHING
-                    || hostedStraddleLatch.contains(key))) {
-                    LOG.info("[IPL-PHASE] uuid={} portal={} phase={} lead={} trail={} nearby={} latched={}",
-                        airship.getUniqueId().toString().substring(0, 8),
-                        portalUuid.toString().substring(0, 8),
-                        state.phase(),
-                        String.format("%.2f", state.leadingEdge()),
-                        String.format("%.2f", state.trailingEdge()),
-                        nearby.size(),
-                        hostedStraddleLatch.contains(key));
-                }
-
-                // Hosted (dim-agnostic) dispatch: no mirrors. The explicit straddle latch
-                // replaces "mirror exists" as the only-swap-after-straddle guard; CROSSED
-                // resolves to a parent flip via SableRehomeOps.executeHostedTransit.
-                if (hosted) {
-                    switch (state.phase()) {
-                        case CROSSED -> {
-                            if (hostedStraddleLatch.remove(key) || state.enteredFromSourceAperture()) {
-                                // Clone must despawn BEFORE the transit migrates the real
-                                // body into the dest scene (their plot sections share keys).
-                                IplStraddleCloneBody.clear(key, "crossed");
-                                IplStraddleTerrainClone.clear(key);
-                                if (candidates == null) candidates = new ArrayList<>(1);
-                                candidates.add(new TransitCandidate(airship, portal));
-                                candidateAddedForAirship = true;
-                            }
-                            // No latch -> never straddled (parked past the portal); nothing to do.
-                        }
-                        case STRADDLING -> {
-                            if (!hostedStraddleLatch.contains(key) && !canStartContact) {
-                                continue;
-                            }
-                            hostedStraddleLatch.add(key);
-                            seenHostedKeys.add(key);
-                            // Cross-seam physics: a servoed CLONE BODY in the dest scene
-                            // (per-scene model, spec §2.3-2.4), or legacy: dest terrain
-                            // baked into the body's scene through the inverse transform.
-                            if (IplStraddleCloneBody.isEnabled()) {
-                                IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
-                            } else {
-                                IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
-                            }
-                        }
-                        case APPROACHING -> {
-                            // Ship backed out of a straddle (or hasn't reached the plane):
-                            // clear the latch but keep the locked normal while still nearby.
-                            if (hostedStraddleLatch.remove(key)) {
-                                IplStraddleCloneBody.clear(key, "backed-out");
-                                IplStraddleTerrainClone.clear(key);
-                            }
-                            seenHostedKeys.add(key);
-                        }
-                    }
-                    if (candidateAddedForAirship) break; // one transit per airship per tick
-                    continue;
-                }
-
-                MirrorRegistry.MirrorEntry entry = MirrorRegistry.get(
-                    airship.getUniqueId(), portalUuid
-                );
-
-                if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED) {
-                    // Fully through. Only transit if this pair actually straddled
-                    // (mirror exists). If it does, queue the swap and let the
-                    // executor despawn the mirror as part of handoff.
-                    if (entry != null || state.enteredFromSourceAperture()) {
-                        if (candidates == null) candidates = new ArrayList<>(1);
-                        candidates.add(new TransitCandidate(airship, portal));
-                        candidateAddedForAirship = true;
-                        break; // one transit per airship per tick
-                    }
-                    // No mirror -> never straddled (e.g. parked fully past, or an
-                    // approach we never saw begin). Nothing to do.
-                    continue;
-                }
-
-                if (state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING) {
-                    // Leading edge hasn't reached the plane: the mirror must NOT be
-                    // visible yet. If one somehow exists for this pair (e.g. the ship
-                    // retreated after starting to cross), let the despawn pass below
-                    // reap it by simply not marking it seen.
-                    continue;
-                }
-
-                // STRADDLING: spawn-or-sync the mirror.
-                if (entry == null && !canStartContact) {
-                    continue;
-                }
-                Long lastOp = lastMirrorOpTick.get(key);
-                if (lastOp != null && (nowTick - lastOp) < MIRROR_COOLDOWN_TICKS) {
-                    // In cooldown. If a mirror exists, keep it alive (mark seen).
-                    if (entry != null) {
-                        seenMirrors.add(key);
-                    }
-                    continue;
-                }
-
-                try {
-                    if (entry == null) {
-                        ServerSubLevel spawned = MirrorOps.spawnMirror(airship, portal);
-                        if (spawned != null) {
-                            seenMirrors.add(key);
-                            lastMirrorOpTick.put(key, nowTick);
-                        }
-                    } else {
-                        boolean ok = MirrorOps.syncMirrorPose(airship, portal, entry);
-                        if (ok) {
-                            seenMirrors.add(key);
-                        } else {
-                            // Sync failed (mirror gone from dest container, dest dim
-                            // unloaded, etc.). Proper despawn -- removes from registry
-                            // and emits the wrapped removeSubLevel so any client-side
-                            // stale mirror gets cleaned up.
-                            MirrorOps.despawnMirror(entry, level.getServer());
-                            lastMirrorOpTick.put(key, nowTick);
-                        }
-                    }
-                } catch (Throwable t) {
-                    LOG.error("[IPL-MIRROR] uncaught exception handling mirror for {}/{}",
-                        airship.getUniqueId(), portalUuid, t);
-                    lastMirrorOpTick.put(key, nowTick);
-                }
+                if (candidateAddedForAirship) break;
             }
 
-            // Once we've queued a crossing transit for this airship, skip any
-            // further mirror handling for it this tick (the executor will despawn).
             if (candidateAddedForAirship) {
                 continue;
             }
         }
 
-        // Reap hosted latch/locked-normal state for pairs no longer near any portal. All
-        // hosted ships live in the hosting container, so only its tick does the cleanup
-        // (in dim-agnostic mode the legacy mirror path never populates these maps, so the
-        // shared lockedCrossingNormal map only holds hosted keys here).
-        if (IplDimAgnostic.isEnabled() && IplDimAgnostic.isHostingLevel(level)) {
-            hostedStraddleLatch.removeIf(k -> {
+        // Reap sessions whose (ship, portal) pair wasn't derivable this tick at all —
+        // portal unloaded/removed, or the ship left every portal's neighborhood. All
+        // hosted ships live in the hosting container, so only its tick sweeps.
+        if (IplDimAgnostic.isHostingLevel(level)) {
+            java.util.Set<StraddleKey> live = new java.util.HashSet<>(
+                IplStraddleCloneBody.sessionKeys());
+            live.addAll(IplStraddleTerrainClone.sessionKeys());
+            // Sync-advertised keys too: an advertised session without a physical
+            // backing must never outlive its geometry (stale clip planes client-side).
+            live.addAll(IplStraddleSessionSync.activeKeys());
+            for (StraddleKey k : live) {
                 if (!seenHostedKeys.contains(k)) {
                     IplStraddleCloneBody.clear(k, "reaped");
                     IplStraddleTerrainClone.clear(k);
-                    return true;
+                    IplStraddleSessionSync.onSessionEnd(level.getServer(), k, "reaped");
                 }
-                return false;
-            });
-            lockedCrossingNormal.keySet().removeIf(k -> !seenHostedKeys.contains(k));
-        }
-
-        // Despawn mirrors whose source is no longer in any portal's approach zone.
-        // Iterate a snapshot so we can remove during the loop.
-        for (MirrorRegistry.MirrorEntry entry : new ArrayList<>(MirrorRegistry.all())) {
-            // Only consider mirrors whose source is in THIS dim (the container we're ticking).
-            if (!entry.sourceDim().equals(container.getLevel().dimension())) continue;
-            MirrorRegistry.MirrorKey key = new MirrorRegistry.MirrorKey(
-                entry.sourceUuid(), entry.portalUuid()
-            );
-            if (!seenMirrors.contains(key)) {
-                MirrorOps.despawnMirror(entry, level.getServer());
-                lastMirrorOpTick.put(key, nowTick);
-                // Contact session ended (ship left the approach zone or retreated):
-                // release the locked crossing normal so a fresh re-approach
-                // re-snapshots it.
-                lockedCrossingNormal.remove(key);
-            }
-        }
-
-        // Prune mirror-cooldown map: drop entries older than the cooldown window so
-        // the map stays bounded.
-        var mirrorCdIter = lastMirrorOpTick.entrySet().iterator();
-        while (mirrorCdIter.hasNext()) {
-            var e = mirrorCdIter.next();
-            if ((nowTick - e.getValue()) >= MIRROR_COOLDOWN_TICKS) {
-                mirrorCdIter.remove();
             }
         }
 
@@ -486,36 +274,34 @@ public final class SableTransitController {
         for (TransitCandidate c : candidates) {
             UUID uuid = c.airship.getUniqueId();
             try {
-                // Hosted transit: parent flip, no mirror bookkeeping.
-                if (IplDimAgnostic.isHosted(c.airship)) {
-                    lockedCrossingNormal.remove(
-                        new MirrorRegistry.MirrorKey(uuid, c.portal.getUUID())
-                    );
-                    boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal);
-                    if (flipped) {
-                        ipl$beginExitLock(c.airship, c.portal);
+                boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal);
+                if (flipped) {
+                    // Rehome candidates keep their session until the transit SUCCEEDS
+                    // (a pre-cleared session on a failed transit strands the ship past
+                    // 0.5, where the minority rule can only re-open inverted parity).
+                    if (c.rehome()) {
+                        StraddleKey key = new StraddleKey(uuid, c.portal.getUUID());
+                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "rehomed");
+                        IplStraddleCloneBody.clear(key, "rehomed");
+                        IplStraddleTerrainClone.clear(key);
                     }
-                    continue;
+                    // No exit lock anymore (declarative phase 3): re-transiting the
+                    // reverse portal requires a genuine majority back-crossing — the
+                    // minority-face rule opens the reverse session at ~1-REHOME_FRACTION
+                    // and the ship must travel the full hysteresis band to flip again.
+                    IplStaffPortalDragState.onTransitCompleted(c.airship.getUniqueId(), c.portal);
+                    // EAGER re-derivation: a majority rehome leaves the minority part
+                    // still straddling. Waiting for the next tick's recompute opened a
+                    // one-tick hole (no image, no clone, no collision in the old dim —
+                    // riders fell through). Deriving the reverse session NOW is the same
+                    // declarative rule, just evaluated immediately: the client receives
+                    // session-end + handoff + session-start in one packet flush.
+                    ipl$deriveReverseSessionNow(c.airship, c.portal);
+                } else if (c.rehome()) {
+                    LOG.warn("[IPL-TRANSIT] majority rehome transit declined for uuid={} "
+                        + "portal={} — session retained, retrying next tick",
+                        uuid, c.portal.getUUID());
                 }
-
-                // Before atomic teleport, despawn any mirror for this (source, portal)
-                // pair so we don't end up with mirror + new dest sub-level coexisting.
-                // Phase 2 C2 will replace this with proper handoff (mirror promoted in
-                // place); for now we're degrading to Phase 1 at the moment of crossing.
-                MirrorRegistry.MirrorEntry mirrorEntry = MirrorRegistry.get(
-                    uuid, c.portal.getUUID()
-                );
-                if (mirrorEntry != null) {
-                    MirrorOps.despawnMirror(mirrorEntry, level.getServer());
-                }
-
-                // Crossing session resolved into a transit -- release the locked
-                // crossing normal for this pair.
-                lockedCrossingNormal.remove(
-                    new MirrorRegistry.MirrorKey(uuid, c.portal.getUUID())
-                );
-
-                SableTransitOps.executeTransit(c.airship, c.portal);
             } catch (Throwable t) {
                 LOG.error("[IPL-TRANSIT] uncaught exception executing transit for uuid={}",
                     uuid, t);
@@ -524,26 +310,29 @@ public final class SableTransitController {
     }
 
     /**
-     * The source->dest normal to use for {@code airship}'s crossing evaluation
-     * against {@code portal}, locked for the duration of the contact session.
-     *
-     * <p>IP's portal normal points to the source/remaining side. Its opposite is
-     * therefore the fixed source-to-destination direction. Never infer it from
-     * the ship center: a straddling body has points on both sides, and coplanar
-     * flipped portal faces would otherwise steal one another's contact sessions.
+     * Fraction of the ship's AABB extent past the portal plane along
+     * {@code sourceToDest} — the minority-face parity test for NEW sessions: of two
+     * coincident opposite faces, only the one seeing less than half the ship
+     * "through" may open a session, so the majority side is always the native one.
+     * (Per-session normal locking is gone: the crossing direction is a constant of
+     * the portal FACE, {@code -getNormal()}, and face selection itself is what this
+     * rule pins down.)
      */
-    private static Vec3 ipl$lockedSourceToDestNormal(ServerSubLevel airship, Portal portal) {
-        MirrorRegistry.MirrorKey key =
-            new MirrorRegistry.MirrorKey(airship.getUniqueId(), portal.getUUID());
-        Vec3 existing = lockedCrossingNormal.get(key);
-        if (existing != null) {
-            return existing;
-        }
-
-        Vec3 sourceToDest = portal.getNormal().scale(-1.0);
-
-        lockedCrossingNormal.put(key, sourceToDest);
-        return sourceToDest;
+    private static double ipl$crossedFraction(
+        ServerSubLevel airship, Portal portal, Vec3 sourceToDest
+    ) {
+        dev.ryanhcode.sable.companion.math.BoundingBox3dc box = airship.boundingBox();
+        Vec3 p = portal.getOriginPos();
+        double tc = ((box.minX() + box.maxX()) * 0.5 - p.x) * sourceToDest.x
+                  + ((box.minY() + box.maxY()) * 0.5 - p.y) * sourceToDest.y
+                  + ((box.minZ() + box.maxZ()) * 0.5 - p.z) * sourceToDest.z;
+        double r = (box.maxX() - box.minX()) * 0.5 * Math.abs(sourceToDest.x)
+                 + (box.maxY() - box.minY()) * 0.5 * Math.abs(sourceToDest.y)
+                 + (box.maxZ() - box.minZ()) * 0.5 * Math.abs(sourceToDest.z);
+        double tMin = tc - r, tMax = tc + r;
+        if (tMax <= 0.0) return 0.0;
+        if (tMin >= 0.0 || tMax - tMin < 1e-9) return 1.0;
+        return tMax / (tMax - tMin);
     }
 
     /**
@@ -570,37 +359,58 @@ public final class SableTransitController {
     }
 
     /**
-     * Suppress only reverse-portal re-entry while its finite aperture still cuts
-     * the OBB. A different portal may be entered normally during that time.
+     * Evaluate the declarative session rule for the REVERSE portal immediately after a
+     * majority rehome, instead of waiting one tick for the normal recompute. Considers
+     * both faces of the reverse pair; the minority-face rule picks the correct one
+     * (the freshly-flipped ship sits at ~{@code 1 - REHOME_FRACTION} through it, and
+     * the opposite face fails the ≤0.5 test). Idempotent with the next tick's loop.
      */
-    private static boolean ipl$isBlockedOutputPortal(ServerSubLevel airship, Portal candidate) {
-        java.util.Set<Portal> outputs = pendingExitPortalsByAirship.get(airship.getUniqueId());
-        if (outputs == null || !outputs.contains(candidate)) return false;
+    private static void ipl$deriveReverseSessionNow(ServerSubLevel airship, Portal entrance) {
+        ServerLevel newParent = IplDimAgnostic.getServerParentLevel(airship);
+        if (newParent == null) return;
 
-        PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
-            airship, candidate, candidate.getNormal(), EXIT_APERTURE_MARGIN
-        );
-        if ((state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
-            && state.intersectsPortalAperture())) {
-            return true;
+        List<Portal> faces = new ArrayList<>(2);
+        Portal reverse = qouteall.imm_ptl.core.portal.PortalExtension.get(entrance).reversePortal;
+        if (reverse != null) faces.add(reverse);
+        if (reverse != null) {
+            Portal twin = qouteall.imm_ptl.core.portal.PortalExtension.get(reverse).flippedPortal;
+            if (twin != null) faces.add(twin);
         }
 
-        pendingExitPortalsByAirship.remove(airship.getUniqueId());
-        return false;
-    }
+        for (Portal face : faces) {
+            if (face.isRemoved() || !face.isTeleportable()) continue;
+            if (!ipl$isCanonicalEntranceFace(face, faces)) continue;
 
-    private static void ipl$beginExitLock(ServerSubLevel airship, Portal entrance) {
-        Portal output = PortalExtension.get(entrance).reversePortal;
-        if (output == null) return;
+            Vec3 normal = face.getNormal().scale(-1.0);
+            PortalCrossingDetector.CrossingState state =
+                PortalCrossingDetector.evaluate(airship, face, normal);
+            if (state.phase() != PortalCrossingDetector.CrossingPhase.STRADDLING
+                || !state.intersectsPortalAperture()) {
+                continue;
+            }
+            if (ipl$crossedFraction(airship, face, normal) > 0.5 + 1.0e-6) continue;
 
-        java.util.Set<Portal> outputFaces = new java.util.HashSet<>();
-        outputFaces.add(output);
-        Portal flipped = PortalExtension.get(output).flippedPortal;
-        if (flipped != null) {
-            outputFaces.add(flipped);
+            // Session first, sync second: the sync must never announce a session
+            // whose spawn was declined (e.g. the body's scene migration lands a tick
+            // later) — the next tick's recompute then derives it normally.
+            if (IplStraddleCloneBody.isEnabled()) {
+                IplStraddleCloneBody.onStraddleTick(airship, face, normal);
+            } else {
+                IplStraddleTerrainClone.onStraddleTick(airship, face, normal);
+            }
+            StraddleKey key = new StraddleKey(airship.getUniqueId(), face.getUUID());
+            if (IplStraddleCloneBody.hasSessionKey(key)
+                || IplStraddleTerrainClone.hasSessionKey(key)) {
+                IplStraddleSessionSync.onSessionStart(newParent.getServer(), airship, face);
+                LOG.info("[IPL-TRANSIT] eager reverse session uuid={} portal={}",
+                    airship.getUniqueId(), face.getUUID());
+            } else {
+                LOG.info("[IPL-TRANSIT] eager reverse session deferred for uuid={} "
+                    + "(spawn declined; next tick derives it)", airship.getUniqueId());
+            }
+            return;
         }
-        pendingExitPortalsByAirship.put(airship.getUniqueId(), outputFaces);
     }
 
-    private record TransitCandidate(ServerSubLevel airship, Portal portal) {}
+    private record TransitCandidate(ServerSubLevel airship, Portal portal, boolean rehome) {}
 }

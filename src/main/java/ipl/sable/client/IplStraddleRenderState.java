@@ -74,4 +74,5 @@ public final class IplStraddleRenderState {
     public static Portal getPortalFor(@Nullable Object sub) {
         return isActiveFor(sub) ? activePortal : null;
     }
+
 }

@@ -33,6 +33,7 @@ import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.block_manipulation.BlockManipulationClient;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
+import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumRenderingContext;
 import qouteall.imm_ptl.core.ducks.IEGameRenderer;
 import qouteall.imm_ptl.core.ducks.IEMinecraftClient;
 import qouteall.imm_ptl.core.ducks.IEParticleManager;
@@ -47,7 +48,12 @@ import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 import qouteall.q_misc_util.my_util.LimitedLogger;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Stack;
+import java.util.UUID;
 import java.util.function.Consumer;
 
 //@OnlyIn(Dist.CLIENT)
@@ -61,6 +67,19 @@ public class MyGameRenderer {
     // portal rendering and outer world rendering uses different buffer builder storages
     private static Stack<RenderBuffers> secondaryRenderBuffers = new Stack<>();
     private static int usingRenderBuffersObjectNum = 0;
+
+    private static final int MAX_SODIUM_PORTAL_CONTEXTS = 64;
+    private static final Map<SodiumContextKey, SodiumRenderingContext> sodiumPortalContexts =
+        new LinkedHashMap<>(MAX_SODIUM_PORTAL_CONTEXTS, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(
+                Map.Entry<SodiumContextKey, SodiumRenderingContext> eldest
+            ) {
+                return size() > MAX_SODIUM_PORTAL_CONTEXTS;
+            }
+        };
+
+    private record SodiumContextKey(ResourceKey<Level> dimension, List<UUID> portalPath) {}
     
     // the vanilla visibility sections discovery code is multithreaded
     // when the player teleports through a portal, on the first frame it will not work normally
@@ -70,7 +89,10 @@ public class MyGameRenderer {
     public static boolean enablePortalCaveCulling = true;
     
     public static void init() {
-        NeoForge.EVENT_BUS.addListener(ClientCleanupEvent.class, e -> secondaryRenderBuffers.clear());
+        NeoForge.EVENT_BUS.addListener(ClientCleanupEvent.class, e -> {
+            secondaryRenderBuffers.clear();
+            sodiumPortalContexts.clear();
+        });
     }
     
     @Nullable
@@ -119,6 +141,7 @@ public class MyGameRenderer {
         int renderDistance,
         boolean doRenderHand
     ) {
+        boolean oldSmartCull = client.smartCull;
         if (!enablePortalCaveCulling) {
             client.smartCull = false;
         }
@@ -210,7 +233,9 @@ public class MyGameRenderer {
             }
         }
         
-        Object newSodiumContext = SodiumInterface.invoker.createNewContext(renderDistance);
+        Object newSodiumContext = getSodiumPortalContext(
+            newDimension, renderDistance, thisTickCameraPos
+        );
         SodiumInterface.invoker.switchContextWithCurrentWorldRenderer(newSodiumContext);
         
         ((IEWorldRenderer) worldRenderer).portal_setTransparencyShader(null);
@@ -234,7 +259,7 @@ public class MyGameRenderer {
             client.getProfiler().pop();
         });
         
-        SodiumInterface.invoker.switchContextWithCurrentWorldRenderer(newSodiumContext);
+        SodiumInterface.invoker.restoreContextWithCurrentWorldRenderer(newSodiumContext);
         
         //recover
         
@@ -281,7 +306,34 @@ public class MyGameRenderer {
         
         CHelper.checkGlError();
         
-        client.smartCull = true;
+        client.smartCull = oldSmartCull;
+    }
+
+    @Nullable
+    private static SodiumRenderingContext getSodiumPortalContext(
+        ResourceKey<Level> dimension, int renderDistance, Vec3 cameraPos
+    ) {
+        if (!SodiumInterface.invoker.isSodiumPresent()) {
+            return null;
+        }
+
+        SodiumContextKey key = new SodiumContextKey(
+            dimension,
+            new ArrayList<>(WorldRenderInfo.getRenderingDescription())
+        );
+        SodiumRenderingContext context = sodiumPortalContexts.get(key);
+        if (context == null) {
+            context = (SodiumRenderingContext) SodiumInterface.invoker.createNewContext(
+                renderDistance,
+                new org.joml.Vector3d(cameraPos.x(), cameraPos.y(), cameraPos.z())
+            );
+            sodiumPortalContexts.put(key, context);
+        }
+        else {
+            context.renderDistance = renderDistance;
+        }
+
+        return context;
     }
     
     /**

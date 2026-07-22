@@ -24,12 +24,16 @@ public class SodiumInterface {
             return false;
         }
         
-        public Object createNewContext(int renderDistance) {
+        public Object createNewContext(int renderDistance, org.joml.Vector3d initialCameraPos) {
             return null;
         }
         
         public void switchContextWithCurrentWorldRenderer(Object context) {
         
+        }
+
+        public void restoreContextWithCurrentWorldRenderer(Object context) {
+
         }
         
         public void markSpriteActive(TextureAtlasSprite sprite) {
@@ -54,23 +58,43 @@ public class SodiumInterface {
         }
         
         @Override
-        public Object createNewContext(int renderDistance) {
-            return new SodiumRenderingContext(renderDistance);
+        public Object createNewContext(int renderDistance, org.joml.Vector3d initialCameraPos) {
+            return new SodiumRenderingContext(renderDistance, initialCameraPos);
         }
         
         @Override
         public void switchContextWithCurrentWorldRenderer(Object context) {
             SodiumWorldRenderer swr =
                 ((LevelRendererExtension) Minecraft.getInstance().levelRenderer).sodium$getWorldRenderer();
-            swr.scheduleTerrainUpdate();
-            
+
             RenderSectionManager renderSectionManager =
                 ((IESodiumWorldRenderer) swr).ip_getRenderSectionManager();
             
             ((IESodiumRenderSectionManager) renderSectionManager)
                 .ip_swapContext(((SodiumRenderingContext) context));
             
+            // Keep movement detection tied to the camera for the active Sodium context.
+            var tmp = ((IESodiumWorldRenderer) swr).ip_getLastCameraPos();
+            ((IESodiumWorldRenderer) swr).ip_setLastCameraPos(((SodiumRenderingContext) context).lastCameraPos);
+            ((SodiumRenderingContext) context).lastCameraPos = tmp;
+            
             swr.scheduleTerrainUpdate();
+        }
+
+        @Override
+        public void restoreContextWithCurrentWorldRenderer(Object context) {
+            SodiumWorldRenderer swr =
+                ((LevelRendererExtension) Minecraft.getInstance().levelRenderer).sodium$getWorldRenderer();
+
+            RenderSectionManager renderSectionManager =
+                ((IESodiumWorldRenderer) swr).ip_getRenderSectionManager();
+
+            ((IESodiumRenderSectionManager) renderSectionManager)
+                .ip_swapContext(((SodiumRenderingContext) context));
+
+            var tmp = ((IESodiumWorldRenderer) swr).ip_getLastCameraPos();
+            ((IESodiumWorldRenderer) swr).ip_setLastCameraPos(((SodiumRenderingContext) context).lastCameraPos);
+            ((SodiumRenderingContext) context).lastCameraPos = tmp;
         }
         
         @Override

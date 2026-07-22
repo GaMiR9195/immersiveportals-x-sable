@@ -74,6 +74,8 @@ public abstract class SableAltContainerTickMixin {
                 if (container == null) continue;
                 container.tick();
             }
+            ipl.sable.client.IplParentDimSync.applyPendingHandoffs();
+            ipl.sable.client.IplParentDimSync.clientHeartbeat();
         } catch (Throwable t) {
             // Don't let a single dim's tick failure kill the whole render loop. Log at warn
             // so we notice if it starts spamming.

@@ -7,6 +7,7 @@ import net.minecraft.client.GraphicsStatus;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.culling.Frustum;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.Event;
@@ -32,6 +33,7 @@ import qouteall.imm_ptl.core.render.TransformationManager;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
+import qouteall.q_misc_util.my_util.Plane;
 import qouteall.q_misc_util.Helper;
 
 import java.util.Comparator;
@@ -88,6 +90,13 @@ public abstract class PortalRenderer {
     public abstract boolean replaceFrameBufferClearing();
     
     protected List<Portal> getPortalsToRender(Matrix4f modelView) {
+        // This plane is constant for the complete inner-world pass. Test it
+        // before any per-portal visibility work so hidden portals never reach
+        // the stencil query or recursive renderer.
+        @Nullable Plane activeClip = PortalRendering.isRendering()
+            ? PortalRendering.getActiveClippingPlane()
+            : null;
+
         Supplier<Frustum> frustumSupplier = Helper.cached(() -> {
             Frustum frustum = new Frustum(
                 modelView,
@@ -106,14 +115,14 @@ public abstract class PortalRenderer {
         assert world != null;
         List<Portal> globalPortals = GlobalPortalStorage.getGlobalPortals(world);
         for (Portal globalPortal : globalPortals) {
-            if (!shouldSkipRenderingPortal(globalPortal, frustumSupplier)) {
+            if (!shouldSkipRenderingPortal(globalPortal, frustumSupplier, activeClip)) {
                 renderables.add(globalPortal);
             }
         }
         
         world.entitiesForRendering().forEach(e -> {
             if (e instanceof Portal portal) {
-                if (!shouldSkipRenderingPortal(portal, frustumSupplier)) {
+                if (!shouldSkipRenderingPortal(portal, frustumSupplier, activeClip)) {
                     renderables.add(portal);
                 }
             }
@@ -126,8 +135,14 @@ public abstract class PortalRenderer {
         return renderables;
     }
     
-    private static boolean shouldSkipRenderingPortal(Portal portal, Supplier<Frustum> frustumSupplier) {
+    private static boolean shouldSkipRenderingPortal(
+        Portal portal, Supplier<Frustum> frustumSupplier, @Nullable Plane activeClip
+    ) {
         if (!portal.isPortalValid()) {
+            return true;
+        }
+
+        if (activeClip != null && isFullyBehindClipPlane(portal, activeClip)) {
             return true;
         }
         
@@ -152,6 +167,7 @@ public abstract class PortalRenderer {
             if (outerPortal.cannotRenderInMe(portal)) {
                 return true;
             }
+
         }
         
         double distance = portal.getDistanceToNearestPointInPortal(cameraPos);
@@ -176,7 +192,19 @@ public abstract class PortalRenderer {
         boolean predicateTest = NeoForge.EVENT_BUS.post(new PortalRenderingPredicateEvent(portal)).canRender();
         return !predicateTest;
     }
-    
+
+    /** True when no point in this portal's thin aperture can survive the active inner clip. */
+    private static boolean isFullyBehindClipPlane(Portal portal, Plane clip) {
+        AABB aperture = portal.getThinBoundingBox();
+        double centerDistance = clip.getDistanceTo(aperture.getCenter());
+        double radius = (aperture.getXsize() * Math.abs(clip.normal().x)
+            + aperture.getYsize() * Math.abs(clip.normal().y)
+            + aperture.getZsize() * Math.abs(clip.normal().z)) * 0.5;
+        // Preserve portals sharing the destination plane; floating-point error can
+        // otherwise cull their aperture as wholly behind it.
+        return centerDistance + radius <= -0.01;
+    }
+
     public static double getRenderRange() {
         double range = client.options.getEffectiveRenderDistance() * 16;
         if (RenderStates.isLaggy || IPGlobal.reducedPortalRendering) {

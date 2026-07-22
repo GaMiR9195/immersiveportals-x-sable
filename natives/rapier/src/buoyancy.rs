@@ -24,6 +24,11 @@ pub fn compute_buoyancy(scene: &PhysicsScene) {
             continue;
         }
         let info = info.unwrap();
+        // Atlas: this view computes buoyancy only for its own chart's bodies —
+        // per-level `tick` calls would otherwise recompute every body N times.
+        if info.chart != scene.chart {
+            continue;
+        }
         let Some(body) = sim_data.rigid_body_set.get_mut(*body_handle) else {
             panic!("No body with given handle!");
         };
@@ -48,6 +53,7 @@ pub fn compute_buoyancy(scene: &PhysicsScene) {
             DEFAULT_COLLISION_PARALLEL_CUTOFF,
             true,
             &sable_data,
+            info.chart,
         );
         let vels: RigidBodyVelocity<Real> = *body.vels();
 
@@ -73,8 +79,10 @@ pub fn compute_buoyancy(scene: &PhysicsScene) {
             }
         }
         for (static_pos, dynamic_pos) in pairs.iter() {
-            let chunk =
-                sable_data.get_chunk(dynamic_pos.x >> 4, dynamic_pos.y >> 4, dynamic_pos.z >> 4);
+            // Atlas: the body's sections live in its chart's chunk map.
+            let chunk = sable_data.chart(info.chart).and_then(|c| {
+                c.get_chunk(dynamic_pos.x >> 4, dynamic_pos.y >> 4, dynamic_pos.z >> 4)
+            });
 
             if chunk.is_none() {
                 continue;

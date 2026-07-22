@@ -2,21 +2,26 @@ package ipl.sable.mixin.client;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import ipl.sable.client.IplStraddleStaffPick;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.world.entity.player.Player;
+import java.util.UUID;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * Frame-correct staff drag/lock RENDERING (beam targets, anchor markers) for foreign
- * straddlers: render-pose reads in the staff's render handler and item renderer
- * substitute the portal-mapped pose so visuals land at the through-part. Same pattern as
- * the client-handler wraps in {@code IplStaffPickMixin}.
+ * Own every pose read used by staff held-item aim, lock marker, and client drag anchor.
+ * Simulated uses separate render/client classes, so broad target coverage is intentional.
  */
 @Pseudo
 @Mixin(
     targets = {
         "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffRenderHandler",
-        "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItemRenderer"
+        "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItemRenderer",
+        "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler"
     },
     remap = false
 )
@@ -31,16 +36,8 @@ public abstract class IplStaffRenderPoseMixin {
         ),
         require = 0
     )
-    private static dev.ryanhcode.sable.companion.math.Pose3dc ipl$mapRenderPose(
-        dev.ryanhcode.sable.sublevel.ClientSubLevel sub,
-        Operation<dev.ryanhcode.sable.companion.math.Pose3dc> original
-    ) {
-        dev.ryanhcode.sable.companion.math.Pose3dc pose = original.call(sub);
-        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
-        if (mc.level == null) return pose;
-        net.minecraft.core.BlockPos offset =
-            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, mc.level);
-        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+    private static Pose3dc ipl$portalPose(ClientSubLevel sub, Operation<Pose3dc> original) {
+        return IplStraddleStaffPick.mapStaffRenderPose(sub, original.call(sub));
     }
 
     @WrapOperation(
@@ -52,15 +49,31 @@ public abstract class IplStaffRenderPoseMixin {
         ),
         require = 0
     )
-    private static dev.ryanhcode.sable.companion.math.Pose3dc ipl$mapRenderPosePt(
-        dev.ryanhcode.sable.sublevel.ClientSubLevel sub, float pt,
-        Operation<dev.ryanhcode.sable.companion.math.Pose3dc> original
+    private static Pose3dc ipl$portalPosePt(
+        ClientSubLevel sub, float partialTick, Operation<Pose3dc> original
     ) {
-        dev.ryanhcode.sable.companion.math.Pose3dc pose = original.call(sub, pt);
-        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
-        if (mc.level == null) return pose;
-        net.minecraft.core.BlockPos offset =
-            ipl.sable.transit.IplStraddlePoseMap.getOffsetInto(sub, mc.level);
-        return offset != null ? ipl.sable.transit.IplStraddlePoseMap.mapped(pose, offset) : pose;
+        return IplStraddleStaffPick.mapStaffRenderPose(sub, original.call(sub, partialTick));
     }
+
+    /** The server stores staff sessions in the hosting dimension; resolve their owner in portal passes too. */
+    @WrapOperation(
+        method = "onRender",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/multiplayer/ClientLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"
+        ),
+        require = 0
+    )
+    private static Player ipl$findBeamOwnerAcrossPortalWorlds(
+        ClientLevel level, UUID uuid, Operation<Player> original
+    ) {
+        Player found = original.call(level, uuid);
+        if (found != null) return found;
+        for (ClientLevel world : qouteall.imm_ptl.core.ClientWorldLoader.getClientWorlds()) {
+            found = world.getPlayerByUUID(uuid);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
 }

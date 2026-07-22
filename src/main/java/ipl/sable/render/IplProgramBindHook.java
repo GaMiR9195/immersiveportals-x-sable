@@ -81,13 +81,14 @@ public final class IplProgramBindHook {
         if (locs == null) {
             int iportalLoc = GL20.glGetUniformLocation(program, "iportal_ClippingEquation");
             int subLevelLoc = GL20.glGetUniformLocation(program, "ipl_subLevelClipEquation");
-            locs = new int[]{iportalLoc, subLevelLoc};
+            int subLevelLoc2 = GL20.glGetUniformLocation(program, "ipl_subLevelClipEquation[1]");
+            locs = new int[]{iportalLoc, subLevelLoc, subLevelLoc2};
             IPL$LOC_CACHE.put(program, locs);
 
             // Register slot-1 carriers so SubLevelClipUniformPatcher.patchForSubLevel
             // can spray the equation to all known programs at bracket entry,
             // not just whatever shader is bound at that moment.
-            IplSubLevelUniformRegistry.register(program, subLevelLoc);
+            IplSubLevelUniformRegistry.register(program, subLevelLoc, subLevelLoc2);
 
             if (iportalLoc >= 0 && IPL$LOGGED_PROGRAMS.putIfAbsent(program, Boolean.TRUE) == null) {
                 LOG.info(

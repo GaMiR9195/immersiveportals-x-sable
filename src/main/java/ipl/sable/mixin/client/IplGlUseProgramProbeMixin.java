@@ -111,7 +111,10 @@ public class IplGlUseProgramProbeMixin {
         if (locs == null) {
             int iportalLoc = GL20.glGetUniformLocation(program, "iportal_ClippingEquation");
             int subLevelLoc = GL20.glGetUniformLocation(program, "ipl_subLevelClipEquation");
-            locs = new int[]{iportalLoc, subLevelLoc};
+            // Element [1] of the array uniform (multi-straddle second cut). Base-name
+            // lookups resolve element [0]; the second element has its own location.
+            int subLevelLoc2 = GL20.glGetUniformLocation(program, "ipl_subLevelClipEquation[1]");
+            locs = new int[]{iportalLoc, subLevelLoc, subLevelLoc2};
             IPL$LOC_CACHE.put(program, locs);
 
             // Register slot-1 carriers so SubLevelClipUniformPatcher.patchForSubLevel
@@ -121,7 +124,7 @@ public class IplGlUseProgramProbeMixin {
             // were bound BEFORE the bracket started -- those never re-trigger
             // _glUseProgram during the bracket so this mixin's per-bind write
             // path doesn't reach them.
-            IplSubLevelUniformRegistry.register(program, subLevelLoc);
+            IplSubLevelUniformRegistry.register(program, subLevelLoc, subLevelLoc2);
 
             // Only log programs that *could* be affected by IP's clip plane --
             // skip GUI / blit / etc. shaders that don't carry the uniform.
@@ -278,6 +281,22 @@ public class IplGlUseProgramProbeMixin {
                     program, subLevelLoc,
                     subEq[0], subEq[1], subEq[2], subEq[3]
                 );
+            }
+            // Second cut (multi-straddle), same space selection; neutral when absent.
+            int subLevelLoc2 = locs.length > 2 ? locs[2] : -1;
+            if (subLevelLoc2 >= 0) {
+                float[] subEq2 = IplProgramRegistry.usesVanillaSubLevelInputSpace(program)
+                    ? SubLevelClipUniformPatcher.getCurrentSubLevelEqVanillaInput2()
+                    : entityStyle ? SubLevelClipUniformPatcher.getCurrentSubLevelEqEye2()
+                    : SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld2();
+                if (subEq2 == null) {
+                    GL41.glProgramUniform4f(program, subLevelLoc2, 0f, 0f, 0f, 1f);
+                } else {
+                    GL41.glProgramUniform4f(
+                        program, subLevelLoc2,
+                        subEq2[0], subEq2[1], subEq2[2], subEq2[3]
+                    );
+                }
             }
         }
     }
