@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "foundry.veil.mixin.quasar",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "foundry.veil.VeilMixinPluginImpl",
+  "client": [
+    "client.QuasarEntityMixin",
+    "client.QuasarParticleEngineMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
+  

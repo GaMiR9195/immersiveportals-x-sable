@@ -15,6 +15,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
+import ipl.sable.duck.IplStaffDragSessionControl;
 
 /**
  * Authoritative replacement for Simulated's PD motor tick. This is intentionally an overwrite:
@@ -23,7 +24,7 @@ import org.spongepowered.asm.mixin.Shadow;
  */
 @Pseudo
 @Mixin(targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler$DragSession", remap = false)
-public abstract class IplStaffDragSessionOverwriteMixin {
+public abstract class IplStaffDragSessionOverwriteMixin implements IplStaffDragSessionControl {
 
     @Shadow(remap = false) @Final private java.util.UUID playerUUID;
     @Shadow(remap = false) @Final private Vector3d playerRelativeGoal;
@@ -81,5 +82,11 @@ public abstract class IplStaffDragSessionOverwriteMixin {
             config.physicsStaffLinearStiffness.getF(), config.physicsStaffLinearDamping.getF(), false, 0.0);
         this.constraint.setMotor(ConstraintJointAxis.LINEAR_Z, this.localGoal.z,
             config.physicsStaffLinearStiffness.getF(), config.physicsStaffLinearDamping.getF(), false, 0.0);
+    }
+
+    /** Keep held orientation continuous when the sub-level parent crosses a rotated portal. */
+    @Override
+    public void ipl$reframeAfterTransit(org.joml.Quaterniondc exitOrientation) {
+        this.orientation.set(new Quaterniond(exitOrientation).mul(this.orientation));
     }
 }

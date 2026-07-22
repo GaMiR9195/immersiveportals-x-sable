@@ -416,7 +416,10 @@ public final class SableRehomeOps {
             Double.toHexString(destination.x), Double.toHexString(destination.y), Double.toHexString(destination.z),
             Double.toHexString(rotation.x), Double.toHexString(rotation.y),
             Double.toHexString(rotation.z), Double.toHexString(rotation.w),
-            Double.toHexString(portal.getScaling())
+            Double.toHexString(portal.getScaling()),
+            Double.toHexString(portal.getNormal().x), Double.toHexString(portal.getNormal().y),
+            Double.toHexString(portal.getNormal().z),
+            portal.getUUID().toString()
         );
     }
 

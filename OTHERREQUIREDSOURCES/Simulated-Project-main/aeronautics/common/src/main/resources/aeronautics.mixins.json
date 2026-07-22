@@ -1,0 +1,45 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.eriksonn.aeronautics.mixin",
+  "refmap": "${mod_id}.refmap.json",
+  "plugin": "dev.eriksonn.aeronautics.plugin.AeroMixinPlugin",
+  "compatibilityLevel": "JAVA_18",
+  "mixins": [
+    "balloon.SimAssemblyHelperMixin",
+    "balloon.SubLevelAssemblyHelperMixin",
+    "flywheel_block_entity.FlywheelBlockEntityMixin",
+    "item_converter.ItemEntityMixin",
+    "levitite.BlockMixin",
+    "levitite.ItemEntityMixin",
+    "levitite.WaterWheelBlockEntityMixin",
+    "ponder.DisplayWorldSectionInstructionMixin",
+    "ponder.TickingInstructionAccessor",
+    "ponder.TickingInstructionMixin",
+    "ponder.WorldSectionElementImplAccessor",
+    "potato_cannon_projectiles.PotatoProjectileEntityMixin",
+    "propeller_bearing.BearingContraptionMixin",
+    "propeller_bearing.PropellerBearingContraptionEntityMixin",
+    "propeller_collision.ContraptionColliderMixin",
+    "sable_hooks.SableCommonEventsMixin",
+    "shears_break_envelopes.ShearsItemMixin",
+    "steam_vent.BoilerDataMixin"
+  ],
+  "client": [
+    "levitite.ChunkRenderTypeSetAccessor",
+    "balloon.LevelChunkMixin",
+    "custom_situational_music.MinecraftMixin",
+    "custom_situational_music.MusicManagerAccessor",
+    "levitite.PonderUIMixin",
+    "levitite.TerrainParticleMixin",
+    "levitite.VanillaChunkedSubLevelRenderDataMixin",
+    "render.iris.WorldRenderingPhaseMixin",
+    "render.sodium.DefaultMaterialsMixin",
+    "render.sodium.SodiumWorldRendererMixin",
+    "render.vanilla.LevelRendererMixin"
+  ],
+  "server": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

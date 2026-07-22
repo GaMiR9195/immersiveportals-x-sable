@@ -34,13 +34,15 @@ public abstract class IplStaffPickMixin {
     private HitResult ipl$portalPick(
         LocalPlayer player, double range, float tickDelta, boolean fluids, Operation<HitResult> original
     ) {
+        HitResult local = original.call(player, range, tickDelta, fluids);
+        HitResult projection = IplStraddleStaffPick.pickStraddleProjections(player, range, tickDelta);
         IplStraddleStaffPick.PortalTarget through =
             IplStraddleStaffPick.pickThroughPortals(player, range, tickDelta);
         if (through != null) return through.hit();
-
-        HitResult local = original.call(player, range, tickDelta, fluids);
-        HitResult projection = IplStraddleStaffPick.pickStraddleProjections(player, range, tickDelta);
-        if (projection != null) return projection;
+        if (projection != null) {
+            IplStraddleStaffPick.rememberLocalProjection(player, projection);
+            return projection;
+        }
         IplStraddleStaffPick.rememberLocalProjection(player, local);
         return local;
     }

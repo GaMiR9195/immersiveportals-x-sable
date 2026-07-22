@@ -1,0 +1,15 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "top.leonx.irisveil.compat.sable.mixin",
+  "plugin": "top.leonx.irisveil.compat.sable.mixin.SableMixinPlugin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "MixinSubLevelContainer",
+    "MixinSubLevelRenderDispatcher",
+    "MixinVanillaSubLevelBlockEntityRenderer"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

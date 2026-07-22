@@ -87,6 +87,12 @@ public final class IplRapierNatives {
         double dx, double dy, double dz,
         double qx, double qy, double qz, double qw);
 
+    /** Refresh an image collider's portal isometry while its portal entity moves. */
+    public static native void setImagePrefix(
+        long sceneHandle, int bodyId, long imageHandle,
+        double dx, double dy, double dz,
+        double qx, double qy, double qz, double qw);
+
     /** Remove an image collider created by {@link #createImageCollider}. */
     public static native void removeImageCollider(
         long sceneHandle, int bodyId, long imageHandle);

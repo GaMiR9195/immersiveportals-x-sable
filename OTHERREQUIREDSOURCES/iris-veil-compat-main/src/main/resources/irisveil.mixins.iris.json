@@ -1,0 +1,17 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "top.leonx.irisveil.mixin.iris",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "MixinGameRendererAccessor",
+    "MixinIrisRenderingPipeline",
+    "MixinLevelRendererCompatHooks",
+    "MixinProgramSource",
+    "MixinProgramDirectives",
+    "MixinShadowRenderer"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

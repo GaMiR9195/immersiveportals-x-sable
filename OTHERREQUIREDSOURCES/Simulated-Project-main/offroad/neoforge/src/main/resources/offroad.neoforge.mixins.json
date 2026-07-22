@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.ryanhcode.offroad.neoforge.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "MountedItemStorageMixin"
+  ],
+  "client": [
+  ],
+  "server": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

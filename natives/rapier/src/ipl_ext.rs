@@ -295,6 +295,54 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
     ((idx as jlong) << 32) | (generation as jlong)
 }
 
+/// Update an image's portal prefix without replacing its collider or clip state.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImagePrefix<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    packed_handle: jlong,
+    dx: jdouble,
+    dy: jdouble,
+    dz: jdouble,
+    qx: jdouble,
+    qy: jdouble,
+    qz: jdouble,
+    qw: jdouble,
+) {
+    use rapier3d::prelude::ColliderHandle;
+
+    if scene_handle == 0 || body_id < 0 || packed_handle < 0 {
+        return;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let is_known_body = scene
+        .sable_data
+        .read()
+        .unwrap()
+        .level_colliders
+        .contains_key(&(body_id as LevelColliderID));
+    if !is_known_body {
+        return;
+    }
+    let handle = ColliderHandle::from_raw_parts(
+        (packed_handle >> 32) as u32,
+        (packed_handle & 0xFFFF_FFFF) as u32,
+    );
+    let mut sim_data = scene.sim_data.write().unwrap();
+    let Some(collider) = sim_data.collider_set.get_mut(handle) else {
+        return;
+    };
+    collider.set_portal_prefix(Some(rapier3d::math::Pose {
+        translation: Vec3::new(dx as Real, dy as Real, dz as Real),
+        rotation: rapier3d::math::Rotation::from_xyzw(
+            qx as Real, qy as Real, qz as Real, qw as Real,
+        )
+        .normalize(),
+    }));
+}
+
 /// Remove an image collider previously created by `createImageCollider`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollider<'local>(

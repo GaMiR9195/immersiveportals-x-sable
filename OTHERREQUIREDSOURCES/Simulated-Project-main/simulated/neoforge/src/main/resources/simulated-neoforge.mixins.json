@@ -1,0 +1,25 @@
+{
+  "required": true,
+  "package": "dev.simulated_team.simulated.neoforge.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "minVersion": "0.8",
+  "client": [
+    "diagram.VisualizationManagerImplMixin",
+    "diagram.VisualManagerImplMixin",
+    "tooltip_flag.ClientTooltipFlagMixin"
+  ],
+  "mixins": [
+    "harvesters.BlockBreakingTileEntityMixin",
+    "harvesters.SableHarvesterMixin",
+    "harvesters.SableHarvesterTickerMixin",
+    "harvesters.SawTileEntityMixin",
+    "item_renderer.PhysicsStaffItemMixin",
+    "multiloader.CommonRedstoneBlockMixin",
+    "self_mixins.DiagramEntityMixin",
+    "self_mixins.HoneyGlueEntityMixin",
+    "self_mixins.PlungerLauncherItemMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -1,7 +1,11 @@
 package ipl.sable.transit;
 
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler;
+import ipl.sable.dim.SableSubLevelDimension;
+import ipl.sable.duck.IplStaffDragSessionControl;
 import ipl.sable.dim.IplDimAgnostic;
+import ipl.sable.mixin.IplStaffServerHandlerAccessorMixin;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -12,9 +16,7 @@ import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.ArrayList;
 import java.util.Set;
 import java.util.UUID;
 
@@ -27,12 +29,15 @@ public final class IplStaffPortalDragState {
 
     private static final Map<UUID, Frame> FRAMES = new HashMap<>();
 
+    /** Small dead band keeps same-dimension portal contact from flipping frames every substep. */
+    private static final double PORTAL_SIDE_EPSILON = 0.05;
+
     private IplStaffPortalDragState() {}
 
     public static void begin(ServerPlayer player, UUID subId, org.joml.Vector3dc localAnchor) {
         Frame existing = FRAMES.get(player.getUUID());
         if (existing == null || !existing.subId.equals(subId)) {
-            FRAMES.put(player.getUUID(), new Frame(subId));
+            FRAMES.put(player.getUUID(), new Frame(subId, player.getUUID(), player.level().dimension()));
         }
     }
 
@@ -52,19 +57,18 @@ public final class IplStaffPortalDragState {
     }
 
     /**
-     * Arm the new body frame only after server transit completed. In a same-dimension portal
-     * the dimension key does not change, so this is the sole reliable boundary between an
-     * aperture straddle (raw goal) and a fully mapped body (transformed goal).
+     * Body parent changed. From this point raw staff goals still originate in the player's
+     * current world, so map them exactly once only while that world remains portal source.
      */
     public static void onTransitCompleted(UUID subId, Portal portal) {
         for (Frame frame : FRAMES.values()) {
             if (!frame.subId.equals(subId)) continue;
-            frame.portals.clear();
-            frame.portals.add(new PortalRef(portal.getUUID(), portal.level().dimension()));
+            frame.portalId = portal.getUUID();
             frame.sourceDim = portal.level().dimension();
             frame.targetDim = portal.getDestDim();
             frame.completedTransit = true;
-            frame.sourceSide = null;
+            frame.playerUsesSourceFrame = null;
+            reframeLiveSession(portal, frame.playerId);
         }
     }
 
@@ -81,71 +85,101 @@ public final class IplStaffPortalDragState {
         ServerLevel parent = IplDimAgnostic.getServerParentLevel(sub);
         if (parent == null) return goal;
 
-        // Client-side portal picks already encode their destination target. This server path is
-        // only for a body grabbed in its native frame which later crossed a real portal.
-        if (!frame.completedTransit) return goal;
-
-        List<Portal> portals = frame.resolve(player, parent);
-        if (portals == null) return goal;
-
-        if (frame.sourceDim.equals(frame.targetDim)) {
-            // Once the real body crossed a same-dimension portal, continue mapping while the
-            // player remains on portal source side; switch to raw goal only after player crosses.
-            if (frame.sourceSide == null) {
-                frame.sourceSide = isPositiveSide(portals.get(0), player.getEyePosition());
-            }
-            return isPositiveSide(portals.get(0), player.getEyePosition()) == frame.sourceSide
-                ? transformThrough(portals, goal) : goal;
+        // Before parent flip, source-frame goals are raw. If the player already crossed the
+        // active straddle portal while pulling, bring its destination-frame cursor back through
+        // the live image. This is inverse of a normal seamless entity teleport, no velocity or
+        // body pose is touched.
+        if (!frame.completedTransit) {
+            if (player.level() == parent) return goal;
+            Portal exiting = IplStraddleCloneBody.getSessionPortalFrom(sub, parent);
+            if (exiting == null || !exiting.getDestDim().equals(player.level().dimension())) return goal;
+            return exiting.inverseTransformPoint(goal);
         }
 
-        // Different dimensions: while player remains in source world, convert its raw cursor
-        // into the body parent frame once. When player crosses, both are native again.
+        Portal portal = frame.resolve(player, parent);
+        if (portal == null) return goal;
+
+        // Different dimensions identify player frame by dimension key. Same-dimension portals
+        // have two charts inside one Level, so source-plane side is meaningless once source and
+        // exit apertures are separated or rotated. Select chart by the actual native body: map
+        // player eye through portal and choose that chart only when it is nearer to the real body.
         if (player.level().dimension().equals(frame.sourceDim)) {
-            return transformThrough(portals, goal);
+            if (frame.sourceDim.equals(frame.targetDim)
+                && !playerUsesSourceFrame(frame, portal, player.getEyePosition(), sub)) {
+                return goal;
+            }
+            return portal.transformPoint(goal);
         }
         return goal;
     }
 
-    private static Vec3 transformThrough(List<Portal> portals, Vec3 point) {
-        for (Portal portal : portals) {
-            point = portal.transformPoint(point);
+    private static boolean playerUsesSourceFrame(
+        Frame frame, Portal portal, Vec3 playerEye, SubLevel sub
+    ) {
+        dev.ryanhcode.sable.companion.math.BoundingBox3dc body = sub.boundingBox();
+        double nativeDistance = distanceSqToBox(body, playerEye);
+        double mappedDistance = distanceSqToBox(body, portal.transformPoint(playerEye));
+        double difference = mappedDistance - nativeDistance;
+        if (Math.abs(difference) > PORTAL_SIDE_EPSILON * PORTAL_SIDE_EPSILON) {
+            // Mapping source-chart eye through the portal places it near body only while
+            // player is still at source aperture. Once player follows the body to the exit,
+            // raw eye is nearer and must remain untransformed.
+            frame.playerUsesSourceFrame = mappedDistance < nativeDistance;
         }
-        return point;
+        // Exact overlap at an aperture keeps last chart. A new post-transit frame defaults to
+        // source because player has not crossed the exit aperture yet.
+        return frame.playerUsesSourceFrame == null || frame.playerUsesSourceFrame;
     }
 
-    private static boolean isPositiveSide(Portal portal, Vec3 point) {
-        return portal.getNormal().dot(point.subtract(portal.getOriginPos())) > 0.0;
+    private static double distanceSqToBox(
+        dev.ryanhcode.sable.companion.math.BoundingBox3dc box, Vec3 point
+    ) {
+        double x = Math.max(box.minX(), Math.min(box.maxX(), point.x));
+        double y = Math.max(box.minY(), Math.min(box.maxY(), point.y));
+        double z = Math.max(box.minZ(), Math.min(box.maxZ(), point.z));
+        double dx = point.x - x, dy = point.y - y, dz = point.z - z;
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    /** Reframe server target immediately; do not wait for client handoff packet latency. */
+    private static void reframeLiveSession(Portal portal, UUID playerId) {
+        ServerLevel hosting = SableSubLevelDimension.getSableSubLevelsOrNull(portal.getServer());
+        if (hosting == null) return;
+        PhysicsStaffServerHandler handler = PhysicsStaffServerHandler.get(hosting);
+        Object session = ((IplStaffServerHandlerAccessorMixin) (Object) handler)
+            .ipl$getDraggingSessions().get(playerId);
+        if (!(session instanceof IplStaffDragSessionControl control)) return;
+        qouteall.q_misc_util.my_util.DQuaternion rotation = portal.getRotationD();
+        control.ipl$reframeAfterTransit(new org.joml.Quaterniond(
+            rotation.x, rotation.y, rotation.z, rotation.w));
     }
 
     private static final class Frame {
         final UUID subId;
-        final List<PortalRef> portals = new ArrayList<>();
+        final UUID playerId;
+        UUID portalId;
         ResourceKey<Level> sourceDim;
         ResourceKey<Level> targetDim;
         boolean completedTransit;
-        Boolean sourceSide;
+        Boolean playerUsesSourceFrame;
 
-        Frame(UUID subId) {
+        Frame(UUID subId, UUID playerId, ResourceKey<Level> sourceDim) {
             this.subId = subId;
+            this.playerId = playerId;
+            this.sourceDim = sourceDim;
         }
 
-        List<Portal> resolve(ServerPlayer player, ServerLevel parent) {
-            if (portals.isEmpty() || sourceDim == null || targetDim == null) return null;
+        Portal resolve(ServerPlayer player, ServerLevel parent) {
+            if (portalId == null || sourceDim == null || targetDim == null) return null;
             if (!targetDim.equals(parent.dimension())) {
                 return null;
             }
-            List<Portal> resolved = new ArrayList<>(portals.size());
-            for (PortalRef ref : portals) {
-                ServerLevel level = player.getServer().getLevel(ref.sourceDim);
-                if (level == null || !(McHelper.getEntityByUUID(level, ref.id) instanceof Portal portal)) {
-                    return null;
-                }
-                resolved.add(portal);
+            ServerLevel level = player.getServer().getLevel(sourceDim);
+            if (level == null || !(McHelper.getEntityByUUID(level, portalId) instanceof Portal portal)) {
+                return null;
             }
-            return resolved.get(resolved.size() - 1).getDestDim().equals(parent.dimension()) ? resolved : null;
+            return portal.getDestDim().equals(parent.dimension()) ? portal : null;
         }
     }
-
-    private record PortalRef(UUID id, ResourceKey<Level> sourceDim) {}
 
 }

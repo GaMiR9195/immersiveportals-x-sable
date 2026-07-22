@@ -17,16 +17,13 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import qouteall.imm_ptl.core.ClientWorldLoader;
-import qouteall.imm_ptl.core.portal.Portal;
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 
-import java.util.List;
 import java.util.UUID;
 
-/** Draws one real beam section in each IP world render, never a main-world projected shortcut. */
+/** Draws exactly one physical staff-beam section in each matching IP world pass. */
 public final class IplStaffPortalBeamRenderer {
 
     /** Suppresses Simulated's main-world-only draw while this renderer owns the recursive pass. */
@@ -34,9 +31,9 @@ public final class IplStaffPortalBeamRenderer {
 
     private IplStaffPortalBeamRenderer() {}
 
-    public static void render(PoseStack poseStack, Camera camera) {
+    public static void render(PoseStack poseStack, Camera camera, ClientLevel renderLevel) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft.options.hideGui || minecraft.level == null) return;
+        if (minecraft.options.hideGui || minecraft.level == null || renderLevel == null) return;
 
         PhysicsStaffClientHandler handler =
             dev.simulated_team.simulated.SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
@@ -64,13 +61,12 @@ public final class IplStaffPortalBeamRenderer {
             ClientSubLevel sub = ipl$findHostedSubLevel(localAnchor);
             if (sub == null) continue;
 
-            List<Portal> route = IplStraddleStaffPick.getBeamPortalRoute(
-                owner.level(), source, sub, localAnchor
+            IplStraddleStaffPick.BeamRoute route = IplStraddleStaffPick.resolveBeamRoute(
+                owner.level(), source, sub, localAnchor, partialTick
             );
+            if (route == null) continue;
             IplStraddleStaffPick.BeamSegment segment =
-                IplStraddleStaffPick.getPhysicalBeamSegment(
-                    owner.level(), source, sub, localAnchor, partialTick, route
-                );
+                IplStraddleStaffPick.getPhysicalBeamSegment(route, renderLevel);
 
             if (segment == null) continue;
 
@@ -91,13 +87,22 @@ public final class IplStaffPortalBeamRenderer {
     ) {
         boolean previous = PHYSICAL_BEAM_PASS.get();
         PHYSICAL_BEAM_PASS.set(true);
+        IplStaffPortalBeamRenderer.ipl$activeSegment.set(segment);
         try {
             ((IplPhysicsStaffBeamInvokerMixin) (Object) beam).ipl$render(
                 segment.start(), segment.end(), poseStack, buffer, camera, partialTick
             );
         } finally {
+            IplStaffPortalBeamRenderer.ipl$activeSegment.remove();
             PHYSICAL_BEAM_PASS.set(previous);
         }
+    }
+
+    private static final ThreadLocal<IplStraddleStaffPick.BeamSegment> ipl$activeSegment =
+        new ThreadLocal<>();
+
+    public static IplStraddleStaffPick.BeamSegment getActiveSegment() {
+        return ipl$activeSegment.get();
     }
 
     private static Player findPlayer(UUID id) {

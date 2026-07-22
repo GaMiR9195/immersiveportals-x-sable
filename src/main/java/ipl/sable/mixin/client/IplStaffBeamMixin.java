@@ -1,8 +1,7 @@
 package ipl.sable.mixin.client;
 
+import ipl.sable.client.IplStaffPortalBeamRenderer;
 import ipl.sable.client.IplStraddleStaffPick;
-import dev.ryanhcode.sable.Sable;
-import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import net.createmod.catnip.outliner.LineOutline;
 import net.createmod.catnip.render.SuperRenderTypeBuffer;
 import net.minecraft.world.phys.Vec3;
@@ -13,7 +12,7 @@ import org.spongepowered.asm.mixin.Shadow;
 
 import java.util.List;
 
-/** Portal-frame endpoints for Simulated's original noisy-node beam renderer. */
+/** Draw-only half of Simulated's noisy-node beam renderer. */
 @Pseudo
 @Mixin(
     targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler$PhysicsBeam",
@@ -38,44 +37,57 @@ public abstract class IplStaffBeamMixin {
         com.mojang.blaze3d.vertex.PoseStack stack,
         SuperRenderTypeBuffer buffer, Vec3 camera, float partialTick
     ) {
-        // The owning handler passes a plot-coordinate end; use the same delayed endpoint that
-        // its vanilla beam interpolation uses for the portal-frame lookup.
-        Vec3 localAnchor = target;
-        ClientSubLevel sub = Sable.HELPER.getContainingClient(localAnchor);
-        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
-        if (sub != null) {
-            net.minecraft.world.level.Level sourceLevel = qouteall.imm_ptl.core.render.context_management.PortalRendering.isRendering()
-                ? qouteall.imm_ptl.core.render.context_management.PortalRendering.getRenderingPortal().getDestinationWorld()
-                : mc.level;
-            java.util.List<qouteall.imm_ptl.core.portal.Portal> portals =
-                sourceLevel == null ? java.util.List.of()
-                    : IplStraddleStaffPick.getBeamPortalPath(sourceLevel, source, sub, localAnchor);
-            target = IplStraddleStaffPick.mapBeamEndpoint(sub, localAnchor, partialTick, portals);
-            java.util.List<qouteall.imm_ptl.core.portal.Portal> renderPath =
-                IplStraddleStaffPick.getActiveRenderPath();
-            for (qouteall.imm_ptl.core.portal.Portal portal : renderPath) {
-                source = portal.transformPoint(source);
-            }
+        if (!IplStaffPortalBeamRenderer.isPhysicalBeamPass()
+            || IplStaffPortalBeamRenderer.getActiveSegment() == null) return;
 
-            // The outer pass draws only up to the first aperture. IP renders the continuation
-            // natively in each recursive portal pass with its own slot-0 stencil and clip plane.
-            if (renderPath.isEmpty() && !portals.isEmpty()) {
-                Vec3 hit = portals.get(0).rayTrace(source, target);
-                if (hit != null) target = hit;
-            }
+        IplStraddleStaffPick.BeamSegment segment = IplStaffPortalBeamRenderer.getActiveSegment();
+        int nodeCount = this.nodes.size();
+        if (nodeCount < 2 || segment.totalLength() <= 1.0e-9) {
+            this.line.set(source, target).render(stack, buffer, camera, partialTick);
+            return;
         }
-        Vec3 delta = target.subtract(source);
+
+        // Preserve Simulated's one noisy path through every portal. A half starts/ends at an
+        // exact aperture point, but all its interior nodes retain their original global phase.
+        // Far-side noise vectors rotate through preceding portals with the path itself.
         Vec3 last = source;
-        for (int i = 1; i < this.nodes.size(); i++) {
-            Object node = this.nodes.get(i);
-            Vec3 previous = ipl$nodePosition(node, "previousPosition");
-            Vec3 current = ipl$nodePosition(node, "position");
-            Vec3 offset = previous.lerp(current, partialTick);
-            Vec3 point = source.add(delta.scale(i / (float) this.nodes.size())
-                .add(offset.scale(this.currentNodeRadius)));
+        int firstNode = Math.max(1, (int) Math.ceil(segment.startFraction() * nodeCount));
+        int lastNode = Math.min(nodeCount - 1, (int) Math.floor(segment.endFraction() * nodeCount));
+        for (int node = firstNode; node <= lastNode; node++) {
+            double fraction = node / (double) nodeCount;
+            if (fraction <= segment.startFraction() || fraction >= segment.endFraction()) continue;
+            Vec3 point = ipl$pointAt(segment, fraction, partialTick);
             this.line.set(last, point).render(stack, buffer, camera, partialTick);
             last = point;
         }
+        this.line.set(last, target).render(stack, buffer, camera, partialTick);
+    }
+
+    private Vec3 ipl$pointAt(IplStraddleStaffPick.BeamSegment segment, double fraction, float partialTick) {
+        double span = segment.endFraction() - segment.startFraction();
+        double local = span <= 1.0e-9 ? 0.0 : (fraction - segment.startFraction()) / span;
+        Vec3 base = segment.start().lerp(segment.end(), Math.clamp(local, 0.0, 1.0));
+        Vec3 noise = ipl$noiseAt(fraction, partialTick);
+        for (qouteall.imm_ptl.core.portal.Portal portal : segment.prefix()) {
+            noise = portal.transformLocalVecNonScale(noise);
+        }
+        return base.add(noise);
+    }
+
+    private Vec3 ipl$noiseAt(double fraction, float partialTick) {
+        double scaled = Math.clamp(fraction, 0.0, 1.0) * this.nodes.size();
+        int left = (int) Math.floor(scaled);
+        int right = Math.min(this.nodes.size(), left + 1);
+        Vec3 a = ipl$nodeOffset(left, partialTick);
+        Vec3 b = ipl$nodeOffset(right, partialTick);
+        return a.lerp(b, scaled - left).scale(this.currentNodeRadius);
+    }
+
+    private Vec3 ipl$nodeOffset(int index, float partialTick) {
+        if (index <= 0 || index >= this.nodes.size()) return Vec3.ZERO;
+        Object node = this.nodes.get(index);
+        return ipl$nodePosition(node, "previousPosition").lerp(
+            ipl$nodePosition(node, "position"), partialTick);
     }
 
     private static Vec3 ipl$nodePosition(Object node, String fieldName) {

@@ -184,12 +184,12 @@ public final class IplStraddleCloneBody {
         final long destScene;
         final int realId;
         final int cloneId;
-        /** Full portal isometry source→dest (rotation-capable; scale gated at 1). */
-        final IplStraddlePoseMap.StraddleMapping mapping;
-        /** Cached dest→source view for the mirrored (dest-authority) servo direction. */
-        final IplStraddlePoseMap.StraddleMapping inverseMapping;
-        /** Unit crossing direction at the source plane (for the crossing fraction). */
-        final Vec3 sourceToDestN;
+        /** Full live portal isometry source→dest (rotation-capable; scale gated at 1). */
+        IplStraddlePoseMap.StraddleMapping mapping;
+        /** Cached live dest→source view for the mirrored (dest-authority) servo direction. */
+        IplStraddlePoseMap.StraddleMapping inverseMapping;
+        /** Live unit crossing direction at the source plane (for crossing fraction). */
+        Vec3 sourceToDestN;
         /**
          * Which body integrates freely: false = real body (source authority, the
          * original servo), true = clone (dest authority — the real body is pinned to
@@ -298,7 +298,11 @@ public final class IplStraddleCloneBody {
         if (IplSceneOwnership.getBodyHome(hosted) != parent) return;
 
         StraddleKey key = new StraddleKey(hosted.getUniqueId(), portal.getUUID());
-        if (SESSIONS.containsKey(key)) return;
+        Session existing = SESSIONS.get(key);
+        if (existing != null) {
+            refreshSession(existing, portal, sourceToDest);
+            return;
+        }
 
         // One clone session per ship (see MULTI_STRADDLE): a second portal's straddle
         // waits until the active session clears. Logged when it blocks a DIFFERENT
@@ -428,6 +432,40 @@ public final class IplStraddleCloneBody {
             axisW.x, axisW.y, axisW.z, halfW,
             axisH.x, axisH.y, axisH.z, halfH
         };
+    }
+
+    /** Update the live portal frame and both seam halves for every active session. */
+    private static void refreshSession(Session session, Portal portal, Vec3 sourceToDest) {
+        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.StraddleMapping.of(portal);
+        session.mapping = mapping;
+        session.inverseMapping = mapping.inverse();
+        session.sourceToDestN = sourceToDest.normalize();
+
+        if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return;
+
+        session.realClipRegion = clipRegion(
+            portal.getOriginPos(), sourceToDest, portal.getAxisW(), portal.getAxisH(),
+            portal.getWidth() * 0.5, portal.getHeight() * 0.5);
+        applyRealClipRegions(session.sub, session.parentScene, session.realId);
+
+        double[] farRegion = clipRegion(
+            mapping.mapPoint(portal.getOriginPos()),
+            mapping.mapVec(sourceToDest).scale(-1.0),
+            mapping.mapVec(portal.getAxisW()), mapping.mapVec(portal.getAxisH()),
+            portal.getWidth() * 0.5, portal.getHeight() * 0.5);
+        if (session.imageMode) {
+            Vec3 shift = mapping.mapPoint(Vec3.ZERO);
+            Quaterniond rotation = mapping.mapQuat(new Quaterniond());
+            ipl.sable.natives.IplRapierNatives.setImagePrefix(
+                session.destScene, session.realId, session.imageHandle,
+                shift.x, shift.y, shift.z,
+                rotation.x, rotation.y, rotation.z, rotation.w);
+            ipl.sable.natives.IplRapierNatives.setImageClipRegions(
+                session.destScene, session.realId, session.imageHandle, farRegion);
+        } else {
+            ipl.sable.natives.IplRapierNatives.setClipRegions(
+                session.destScene, session.cloneId, farRegion);
+        }
     }
 
     /**

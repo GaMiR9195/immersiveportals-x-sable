@@ -7,7 +7,6 @@ import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHand
 import dev.simulated_team.simulated.service.SimConfigService;
 import dev.simulated_team.simulated.util.click_interactions.InteractCallback;
 import ipl.sable.client.IplStraddleStaffPick;
-import ipl.sable.transit.IplStraddlePoseMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.phys.Vec3;
 import org.joml.AxisAngle4d;
@@ -49,21 +48,8 @@ public abstract class IplStaffMouseFrameMixin {
 
         Vec3 axis = minecraft.player.calculateViewVector(0.0f, minecraft.player.getYRot() - 90.0f);
         SubLevel sub = session.dragSubLevel();
-        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.getMappingInto(
-            sub, minecraft.player.level()
-        );
-        if (mapping == null) {
-            // Source and destination share a Level for same-dimension portals. Choose the
-            // mapped half from the player's physical position before converting its view axis.
-            mapping = IplStraddlePoseMap.getCollisionMappingInto(
-                sub, minecraft.player.level(), minecraft.player.getBoundingBox()
-            );
-        }
-        if (mapping != null) {
-            axis = mapping.unmapVec(axis);
-        }
         if (sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub) {
-            axis = IplStraddleStaffPick.unmapStaffInputAxis(clientSub, axis);
+            axis = IplStraddleStaffPick.unmapStaffInputAxis(minecraft.player, clientSub, axis);
         }
 
         Quaterniond orientation = session.dragOrientation();
