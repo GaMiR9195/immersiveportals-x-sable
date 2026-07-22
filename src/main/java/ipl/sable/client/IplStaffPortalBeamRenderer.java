@@ -144,27 +144,9 @@ public final class IplStaffPortalBeamRenderer {
         List<java.util.UUID> prefix = segment.prefixPortalIds();
         if (renderPath.size() != prefix.size()) return false;
         for (int i = 0; i < prefix.size(); i++) {
-            // A hop is framed by EITHER face of its portal pair: looking through the
-            // reverse/flipped companion shows the same doorway, so its pass frames the
-            // same segment. Without this, the through-portal beam was emitted only in the
-            // one traversed face's pass and vanished when viewed through the paired OUT
-            // portal. Per-pass clipping (below) keeps each pass showing only its visible
-            // part, so emitting through the companion can't leak the beam.
-            if (!hopFramedBy(renderPath.get(i), prefix.get(i))) return false;
+            if (!renderPath.get(i).getUUID().equals(prefix.get(i))) return false;
         }
         return true;
-    }
-
-    /** True when {@code renderPathPortal} is the hop's portal or its reverse/flipped twin. */
-    private static boolean hopFramedBy(Portal renderPathPortal, java.util.UUID hopPortalId) {
-        if (renderPathPortal.getUUID().equals(hopPortalId)) return true;
-        qouteall.imm_ptl.core.portal.PortalExtension ext =
-            qouteall.imm_ptl.core.portal.PortalExtension.get(renderPathPortal);
-        if (hopPortalId.equals(ext.reversePortalId)) return true;
-        if (hopPortalId.equals(ext.flippedPortalId)) return true;
-        if (ext.reversePortal != null && hopPortalId.equals(ext.reversePortal.getUUID())) return true;
-        if (ext.flippedPortal != null && hopPortalId.equals(ext.flippedPortal.getUUID())) return true;
-        return false;
     }
 
     public static boolean isPhysicalBeamPass() {
@@ -179,15 +161,6 @@ public final class IplStaffPortalBeamRenderer {
         PhysicsStaffClientHandler.PhysicsBeam beam, IplStaffBeamRoutes.Segment segment,
         PoseStack poseStack, SuperRenderTypeBuffer buffer, Vec3 camera, float partialTick
     ) {
-        // In a portal pass, clip the segment to that pass's kept half-space so the beam
-        // is cut exactly like the portal content around it — the beam's catnip line
-        // shader is in no clip transformation, so this CPU trim is its portal clipping.
-        // The main pass (no active portal clip) draws the whole segment.
-        if (PortalRendering.isRendering()) {
-            segment = IplStaffBeamRoutes.clipToPortalPass(segment, camera);
-            if (segment == null) return;
-        }
-
         boolean previous = PHYSICAL_BEAM_PASS.get();
         PHYSICAL_BEAM_PASS.set(true);
         ACTIVE_SEGMENT.set(segment);

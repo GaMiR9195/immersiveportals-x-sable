@@ -329,64 +329,6 @@ public final class IplStaffBeamRoutes {
     }
 
     // ------------------------------------------------------------------
-    // Portal-pass eye-space clipping (issue: exiting beam not clipped like content).
-    // ------------------------------------------------------------------
-
-    /** Coplanar keep-bias, matching IP's FrontClipping.ADJUSTMENT so the aperture line survives. */
-    private static final double CLIP_BIAS = 0.01;
-
-    /**
-     * Trim {@code segment} to the half-space the CURRENT portal render pass keeps, so the
-     * beam is clipped exactly like every other through-portal fragment — the "add the beam
-     * to portal clipping" the raw catnip line shader never got (it is in no clip
-     * transformation, so it was drawn unclipped and simply not emitted in the paired-face
-     * pass). Prefers IP's live {@link FrontClipping} equation (pixel-identical to the
-     * content clip); falls back to the rendering portal's own destination/content plane.
-     * Returns the trimmed segment, the segment unchanged when no clip is active, or null
-     * when the segment lies entirely on the discarded side.
-     *
-     * <p>Fractions, total length, noise rotation, and prefix are preserved so noise still
-     * animates continuously along the whole beam; only the drawn endpoints move.
-     */
-    @Nullable
-    public static Segment clipToPortalPass(Segment segment, Vec3 cameraPos) {
-        Vec3 normal;
-        double planeConstant; // signed distance of a world point P is normal·P + planeConstant
-
-        double[] eq = qouteall.imm_ptl.core.render.FrontClipping.isClippingEnabled
-            ? qouteall.imm_ptl.core.render.FrontClipping.getActiveClipPlaneEquationBeforeModelView()
-            : null;
-        if (eq != null && (eq[0] != 0.0 || eq[1] != 0.0 || eq[2] != 0.0)) {
-            // IP form: keep where normal·(P - cam) + eq[3] > 0.
-            normal = new Vec3(eq[0], eq[1], eq[2]);
-            planeConstant = eq[3] - normal.dot(cameraPos);
-        } else {
-            Portal rp = qouteall.imm_ptl.core.render.context_management.PortalRendering.isRendering()
-                ? qouteall.imm_ptl.core.render.context_management.PortalRendering.getRenderingPortal()
-                : null;
-            if (rp == null) return segment; // no active portal clip → draw whole segment
-            // Keep the destination content side: contentDirection·(P - destPos) >= 0.
-            normal = rp.getContentDirection();
-            planeConstant = -normal.dot(rp.getDestPos());
-        }
-
-        double dStart = normal.dot(segment.start()) + planeConstant + CLIP_BIAS;
-        double dEnd = normal.dot(segment.end()) + planeConstant + CLIP_BIAS;
-        if (dStart < 0.0 && dEnd < 0.0) return null;
-        if (dStart >= 0.0 && dEnd >= 0.0) return segment;
-
-        double t = dStart / (dStart - dEnd); // crossing parameter along start→end
-        Vec3 cut = segment.start().add(segment.end().subtract(segment.start()).scale(t));
-        Vec3 newStart = dStart >= 0.0 ? segment.start() : cut;
-        Vec3 newEnd = dEnd >= 0.0 ? segment.end() : cut;
-        return new Segment(
-            segment.dim(), newStart, newEnd,
-            segment.startFraction(), segment.endFraction(),
-            segment.totalLength(), segment.noiseRotation(), segment.prefixPortalIds()
-        );
-    }
-
-    // ------------------------------------------------------------------
     // PhysicsBeam length feed (true node density, issue: wrong segment count).
     // ------------------------------------------------------------------
 
