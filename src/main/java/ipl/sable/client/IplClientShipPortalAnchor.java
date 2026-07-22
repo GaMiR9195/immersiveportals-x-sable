@@ -60,6 +60,15 @@ public final class IplClientShipPortalAnchor {
     private static void ensureRegistered() {
         if (registered) return;
         registered = true;
+        // World teardown: drop all client anchor state. Without this, stale anchors
+        // survive disconnect and the per-frame driver runs against a torn-down
+        // ClientWorldLoader — getClientWorlds() Validate.isTrue crashed the render
+        // thread mid-disconnect (emergencySaveAndCrash = unclean server shutdown).
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+            de.nick1st.imm_ptl.events.ClientCleanupEvent.class, e -> {
+                ANCHORS.clear();
+                PORTAL_CACHE.clear();
+            });
         // ORDERING IS THE WELD: IP's ClientPortalAnimationManagement.update() runs at
         // the head of GameRenderer.render, and an anchored portal always has a fresh
         // 1-tick default animation chasing the latest SERVER-tick pose — any earlier
@@ -74,6 +83,13 @@ public final class IplClientShipPortalAnchor {
 
     private static void driveAll() {
         if (ANCHORS.isEmpty()) return;
+        // Torn-down or not-yet-initialized client world state: getClientWorlds()
+        // hard-validates initialization, and the game can render frames on the
+        // disconnect path after teardown — never drive there.
+        if (!ClientWorldLoader.getIsInitialized()
+            || net.minecraft.client.Minecraft.getInstance().level == null) {
+            return;
+        }
         for (Map.Entry<UUID, ClientAnchor> entry : ANCHORS.entrySet()) {
             ClientAnchor a = entry.getValue();
 

@@ -42,9 +42,10 @@ public final class IplServerWatchdog {
      * thread that died or deadlocked — only a full dump exposes that.
      */
     private static final long ALL_THREADS_THRESHOLD_NANOS = 25_000_000_000L; // 25s
-    private static final long ALL_THREADS_REDUMP_NANOS = 60_000_000_000L; // 60s
+    private static final long ALL_THREADS_REDUMP_NANOS = 30_000_000_000L; // 30s
 
     private static volatile Thread serverThread;
+    private static volatile net.minecraft.server.MinecraftServer server;
     private static volatile long lastProgressNanos = System.nanoTime();
     private static volatile long tickCount = 0L;
     private static volatile long lastDumpNanos = 0L;
@@ -58,8 +59,9 @@ public final class IplServerWatchdog {
      * the server thread reference + a fresh progress timestamp, and lazily starts the
      * watchdog daemon on first call.
      */
-    public static void onTick(Thread thread) {
+    public static void onTick(Thread thread, net.minecraft.server.MinecraftServer srv) {
         serverThread = thread;
+        server = srv;
         lastProgressNanos = System.nanoTime();
         tickCount++;
         if (!watchdogStarted) {
@@ -124,6 +126,22 @@ public final class IplServerWatchdog {
     private static void dumpAllThreads() {
         StringBuilder sb = new StringBuilder(16384);
         sb.append("[IPL-WATCHDOG] ALL-THREADS DUMP (stall escalation)\n");
+
+        // Per-level chunk counts: across repeated dumps, the level whose count does
+        // not shrink is the one the shutdown unload loop can't drain.
+        net.minecraft.server.MinecraftServer srv = server;
+        if (srv != null) {
+            try {
+                for (net.minecraft.server.level.ServerLevel level : srv.getAllLevels()) {
+                    sb.append("level ").append(level.dimension().location())
+                        .append(": loadedChunks=")
+                        .append(level.getChunkSource().getLoadedChunksCount())
+                        .append('\n');
+                }
+            } catch (Throwable t) {
+                sb.append("(level chunk stats unavailable: ").append(t).append(")\n");
+            }
+        }
 
         try {
             java.lang.management.ThreadMXBean mx =
