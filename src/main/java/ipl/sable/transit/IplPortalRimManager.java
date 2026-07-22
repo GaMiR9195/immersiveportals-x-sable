@@ -54,6 +54,14 @@ public final class IplPortalRimManager {
     /** Portal UUID → live rim. Server-thread only. */
     private static final Map<UUID, Rim> RIMS = new HashMap<>();
 
+    /**
+     * Ship-anchored portals (atlas M6): the rim is aperture containment for
+     * TRAVERSING bodies — it must never push its own CARRIER (the hull surrounds
+     * the aperture, so rim-vs-carrier contact is constant). Portal UUID → carrier
+     * body id; exclusions are (re)applied whenever this portal's rim (re)spawns.
+     */
+    private static final Map<UUID, Integer> CARRIER_EXCLUSIONS = new HashMap<>();
+
     private static int tickCounter = 0;
 
     private IplPortalRimManager() {}
@@ -115,6 +123,10 @@ public final class IplPortalRimManager {
                 geometry, OUTER_MARGIN);
             if (ids.length > 0) {
                 RIMS.put(portal.getUUID(), new Rim(scene, ids, geometry));
+                Integer carrier = CARRIER_EXCLUSIONS.get(portal.getUUID());
+                if (carrier != null) {
+                    applyCarrierExclusion(scene, ids, carrier, true);
+                }
             }
         }
     }
@@ -122,7 +134,40 @@ public final class IplPortalRimManager {
     public static void clearAll() {
         // Scenes die with their levels on stop; just drop the bookkeeping.
         RIMS.clear();
+        CARRIER_EXCLUSIONS.clear();
         tickCounter = 0;
+    }
+
+    /**
+     * Register (or clear) the carrier of a ship-anchored portal: the rim's bodies
+     * stop colliding with the carrier ship. Applied immediately to a live rim and
+     * re-applied automatically when the rim respawns (aperture change, portal
+     * reload). Body ids are never reused, so stale exclusions are inert.
+     */
+    public static void setCarrierExclusion(UUID portalId, int carrierBodyId, boolean on) {
+        Rim rim = RIMS.get(portalId);
+        if (on) {
+            CARRIER_EXCLUSIONS.put(portalId, carrierBodyId);
+            if (rim != null) {
+                applyCarrierExclusion(rim.scene(), rim.ids(), carrierBodyId, true);
+            }
+        } else {
+            // Unwind with the STORED id (callers pass -1 on release paths); the
+            // ex-carrier must collide with the rim again.
+            Integer old = CARRIER_EXCLUSIONS.remove(portalId);
+            if (old != null && rim != null) {
+                applyCarrierExclusion(rim.scene(), rim.ids(), old, false);
+            }
+        }
+    }
+
+    private static void applyCarrierExclusion(long scene, int[] rimIds, int carrier, boolean on) {
+        if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return;
+        for (int id : rimIds) {
+            ipl.sable.natives.IplRapierNatives.setBodyPairExclusion(scene, id, carrier, on);
+        }
+        LOG.info("[IPL-RIM] carrier exclusion {} for {} rim body(ies) vs carrier {}",
+            on ? "ON" : "off", rimIds.length, carrier);
     }
 
     private static IplStraddlePortalRim.RimGeometry geometryOf(Portal portal) {

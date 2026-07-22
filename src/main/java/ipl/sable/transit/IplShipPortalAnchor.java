@@ -118,6 +118,7 @@ public final class IplShipPortalAnchor {
 
         ANCHORS.put(portal.getUUID(), new Anchor(
             ship.getUniqueId(), level.dimension(), localPos, localOrient, destLock));
+        applyCarrierSideEffects(portal, ship, true);
         LOG.info("[IPL-SHIP-PORTAL] anchored portal {} to ship {} at local ({}, {}, {})",
             portal.getUUID(), ship.getUniqueId(),
             String.format("%.2f", localPos.x), String.format("%.2f", localPos.y),
@@ -127,8 +128,37 @@ public final class IplShipPortalAnchor {
 
     /** Detach the portal; it stays wherever the ship last carried it. */
     public static String unanchor(Portal portal) {
-        return ANCHORS.remove(portal.getUUID()) != null
-            ? "unanchored" : "portal was not anchored";
+        Anchor removed = ANCHORS.remove(portal.getUUID());
+        if (removed == null) return "portal was not anchored";
+        applyCarrierSideEffects(portal, null, false);
+        return "unanchored";
+    }
+
+    /**
+     * Anchored-portal side effects, applied to the whole same-level cluster
+     * (the flipped twin shares the plane and has its own rim):
+     *  - rim-vs-carrier exclusion: the containment rim must never push the hull
+     *    that surrounds the aperture;
+     *  - client lerp: IP's DefaultPortalAnimation eases synced state changes over
+     *    10 ticks — half a second of aperture lag on a moving ship. Anchored
+     *    portals get 1 tick (smooth at 20 TPS updates, no visible delay);
+     *    restored to the IP default on unanchor.
+     */
+    private static void applyCarrierSideEffects(Portal portal, ServerSubLevel ship, boolean on) {
+        int carrierId = on ? dev.ryanhcode.sable.physics.impl.rapier.Rapier3D.getID(ship) : -1;
+        java.util.function.Consumer<Portal> perPortal = p -> {
+            if (p.level() != portal.level()) return; // reverse/parallel sit at the dest
+            if (on) {
+                IplPortalRimManager.setCarrierExclusion(p.getUUID(), carrierId, true);
+                p.animation.defaultAnimation.durationTicks = 1;
+            } else {
+                IplPortalRimManager.setCarrierExclusion(p.getUUID(), -1, false);
+                p.animation.defaultAnimation.durationTicks = 10;
+            }
+        };
+        perPortal.accept(portal);
+        Portal flipped = PortalExtension.get(portal).flippedPortal;
+        if (flipped != null) perPortal.accept(flipped);
     }
 
     /**
@@ -157,6 +187,7 @@ public final class IplShipPortalAnchor {
             if (ship == null || ship.isRemoved()) {
                 LOG.info("[IPL-SHIP-PORTAL] ship {} gone — portal {} released",
                     a.shipId(), entry.getKey());
+                applyCarrierSideEffects(portal, null, false);
                 it.remove();
                 continue;
             }
