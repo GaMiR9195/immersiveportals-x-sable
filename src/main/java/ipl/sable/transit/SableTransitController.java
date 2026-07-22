@@ -183,6 +183,23 @@ public final class SableTransitController {
                     portal.getDestDim().equals(portalQueryLevel.dimension())
                         && IplStaffPortalDragState.isHeldByStaff(airship.getUniqueId());
 
+                // A held body is pinned to exactly ONE same-dimension portal for the whole
+                // grab. Any other face — a coincident reverse/flipped plane, or a second
+                // nearby portal — must never open or keep a competing session. That stray
+                // reverse-face session was what pulled a fully-inserted body sideways into
+                // the backward plane when the player tried to draw it back out.
+                if (heldSameDim) {
+                    UUID pinned = IplStaffPortalDragState.heldPortalId(airship.getUniqueId());
+                    if (pinned != null && !pinned.equals(portalUuid)) {
+                        if (haveSession) {
+                            IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "held-other-face");
+                            IplStraddleCloneBody.clear(key, "held-other-face");
+                            IplStraddleTerrainClone.clear(key);
+                        }
+                        continue;
+                    }
+                }
+
                 Vec3 normal = portal.getNormal().scale(-1.0);
                 PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
                     airship, portal, normal, haveSession ? EXIT_APERTURE_MARGIN : 0.0);
@@ -229,6 +246,9 @@ public final class SableTransitController {
                         || IplStraddleTerrainClone.hasSessionKey(key))) {
                         IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
                     }
+                    if (heldSameDim) {
+                        IplStaffPortalDragState.pinHeldPortal(airship.getUniqueId(), portalUuid);
+                    }
                     continue;
                 }
 
@@ -251,6 +271,7 @@ public final class SableTransitController {
                             || IplStraddleTerrainClone.hasSessionKey(key))) {
                             IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
                         }
+                        IplStaffPortalDragState.pinHeldPortal(airship.getUniqueId(), portalUuid);
                         continue;
                     }
                     if (haveSession) {

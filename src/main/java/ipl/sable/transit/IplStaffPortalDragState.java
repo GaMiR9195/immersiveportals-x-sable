@@ -51,6 +51,14 @@ public final class IplStaffPortalDragState {
     private static final Map<UUID, Frame> FRAMES = new HashMap<>();
 
     /**
+     * Sub-level -> the single same-dimension portal it is pinned to for the whole grab.
+     * Latched by the transit controller the first tick a held body straddles a portal, and
+     * enforced there so no other face (reverse/flipped plane, second nearby portal) can open
+     * a competing session. The goal mapper reads it so it maps through that exact portal only.
+     */
+    private static final Map<UUID, UUID> HELD_PORTAL = new HashMap<>();
+
+    /**
      * Same-dimension chooser stickiness: the losing candidate must be nearer to the native
      * body by this many blocks before the frame flips. Keeps a cursor hovering near the
      * geometric midpoint (or a tiny-offset portal pair) from oscillating the constraint.
@@ -63,11 +71,26 @@ public final class IplStaffPortalDragState {
         Frame existing = FRAMES.get(player.getUUID());
         if (existing == null || !existing.subId.equals(subId)) {
             FRAMES.put(player.getUUID(), new Frame(subId, player.getUUID(), player.level().dimension()));
+            // Fresh grab: drop any stale pin so this drag latches its own held portal.
+            HELD_PORTAL.remove(subId);
         }
     }
 
     public static void end(UUID playerId) {
-        FRAMES.remove(playerId);
+        Frame removed = FRAMES.remove(playerId);
+        if (removed != null && FRAMES.values().stream().noneMatch(f -> f.subId.equals(removed.subId))) {
+            HELD_PORTAL.remove(removed.subId);
+        }
+    }
+
+    /** Pin the single same-dimension held portal for this body (first straddle wins). */
+    public static void pinHeldPortal(UUID subId, UUID portalId) {
+        HELD_PORTAL.putIfAbsent(subId, portalId);
+    }
+
+    /** The pinned same-dimension held portal for this body, or null. */
+    public static UUID heldPortalId(UUID subId) {
+        return HELD_PORTAL.get(subId);
     }
 
     /** Players whose active staff session owns this body; transit must hand their client pose off. */
@@ -176,15 +199,20 @@ public final class IplStaffPortalDragState {
         return useMapped ? mapped : goal;
     }
 
-    /** The active straddle session whose entrance AND exit live in {@code parent}, or null. */
+    /**
+     * The active straddle session whose entrance AND exit live in {@code parent}, preferring
+     * the pinned held portal so a stray reverse-face session can never steal the mapping.
+     */
     private static Portal sameDimSessionPortal(SubLevel sub, ServerLevel parent) {
-        Portal[] found = new Portal[1];
+        UUID pinned = HELD_PORTAL.get(sub.getUniqueId());
+        Portal[] pinnedPortal = new Portal[1];
+        Portal[] fallback = new Portal[1];
         IplStraddleCloneBody.forEachSessionFrom(sub, parent, (portal, mapping) -> {
-            if (found[0] == null && portal.getDestDim().equals(parent.dimension())) {
-                found[0] = portal;
-            }
+            if (!portal.getDestDim().equals(parent.dimension())) return;
+            if (pinned != null && portal.getUUID().equals(pinned)) pinnedPortal[0] = portal;
+            if (fallback[0] == null) fallback[0] = portal;
         });
-        return found[0];
+        return pinnedPortal[0] != null ? pinnedPortal[0] : fallback[0];
     }
 
     private static double distanceToBox(

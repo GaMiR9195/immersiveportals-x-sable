@@ -47,9 +47,6 @@ public final class IplStaffBeamRoutes {
     /** Ticks a stale-but-active beam keeps its last resolved geometry. */
     private static final int RETENTION_TICKS = 15;
 
-    /** Through-portal path may exceed the direct line by this much and still win (grazing bias). */
-    private static final double THROUGH_PATH_BIAS = 0.25;
-
     private record Kept(Route route, long gameTime) {}
 
     private static final Map<UUID, Kept> LAST = new HashMap<>();
@@ -127,22 +124,25 @@ public final class IplStaffBeamRoutes {
 
             if (staffLevel == parent) {
                 if (sameDim) {
-                    // Both representations live in this world: pick the shorter physical
-                    // path — direct line, or a split through the aperture pair.
-                    Vec3 visible = anchorThrough ? mappedAnchor : nativeAnchor;
-                    Route direct = new Route(staffLevel, staffStart, visible, List.of());
-                    Route through = null;
+                    // Deterministic route from geometry — never a per-frame length compare
+                    // (that was the target flip-flop). The beam ends at whichever
+                    // representation is VISIBLE for the grabbed anchor (image past the plane,
+                    // native otherwise), reached by the physically correct path for the
+                    // player's side. Transitions happen exactly at plane crossings, where the
+                    // two representations coincide, so they are visually continuous.
+                    boolean playerThrough = isPastPlane(session, staffStart);
                     if (anchorThrough) {
-                        through = new Route(
-                            staffLevel, staffStart, mappedAnchor, List.of(session));
-                    } else {
+                        return playerThrough
+                            ? new Route(staffLevel, staffStart, mappedAnchor, List.of())
+                            : new Route(staffLevel, staffStart, mappedAnchor, List.of(session));
+                    }
+                    if (playerThrough) {
                         Portal reverse = reverseOf(session, staffLevel);
                         if (reverse != null) {
-                            through = new Route(
-                                staffLevel, staffStart, nativeAnchor, List.of(reverse));
+                            return new Route(staffLevel, staffStart, nativeAnchor, List.of(reverse));
                         }
                     }
-                    return shorterPath(direct, through);
+                    return new Route(staffLevel, staffStart, nativeAnchor, List.of());
                 }
                 // Cross-dimension, viewed from the body's native side.
                 if (anchorThrough) {
@@ -266,18 +266,6 @@ public final class IplStaffBeamRoutes {
             return null;
         }
         return reverse;
-    }
-
-    /** Physical path-length comparison; the through-route wins near-ties for continuity. */
-    private static Route shorterPath(Route direct, @Nullable Route through) {
-        if (through == null) return direct;
-        double directLength = direct.staffStart().distanceTo(direct.target());
-        Portal portal = through.portals().get(0);
-        Vec3 aperture = clampToAperture(
-            portal, through.staffStart(), endpointInFrame(through, 0));
-        double throughLength = through.staffStart().distanceTo(aperture)
-            + portal.transformPoint(aperture).distanceTo(through.target());
-        return throughLength <= directLength + THROUGH_PATH_BIAS ? through : direct;
     }
 
     /** Route target expressed in the frame BEFORE portal {@code frame} (unmap the suffix). */

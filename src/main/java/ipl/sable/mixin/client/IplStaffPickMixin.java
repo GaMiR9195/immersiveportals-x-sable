@@ -56,6 +56,19 @@ public abstract class IplStaffPickMixin {
         }
     }
 
+    /**
+     * After Simulated built the drag session (with its native-pose distance), replace the
+     * hold distance with the true visible pick distance for through-portal / projection grabs.
+     * Fixes the maxed-out scroll on a cross-dimension grab and the wrong hold point on an image.
+     */
+    @Inject(method = "startDraggingSubLevel", at = @At("TAIL"), require = 0)
+    private void ipl$applyGrabDistance(
+        SubLevel sub, BlockPos blockPos, LocalPlayer player, InteractionHand hand, CallbackInfo ci
+    ) {
+        IplStraddleStaffPick.applyGrabDistance(
+            (dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler) (Object) this, sub);
+    }
+
     @Inject(method = "stopDragging", at = @At("HEAD"), require = 0)
     private void ipl$clearCaptureBeforeStop(CallbackInfo ci) {
         IplStraddleStaffPick.clearDragTargets();

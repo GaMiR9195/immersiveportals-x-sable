@@ -17,6 +17,8 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
 import com.mojang.datafixers.util.Pair;
+import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
+import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItem;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +60,17 @@ public final class IplStraddleStaffPick {
     /** Same-dimension chooser margin (client mirror of the server goal chooser). */
     private static final double SAME_DIM_SWITCH_MARGIN = 1.5;
 
+    /**
+     * VISIBLE ray length from eye to the picked point, captured at grab, keyed by sub-level.
+     * Stock derives the hold distance from {@code logicalPose} (the body's NATIVE position),
+     * which is a different coordinate space for a cross-dimension grab and a different location
+     * for a same-dimension image grab — producing a maxed-out or plain wrong hold distance that
+     * yanks the body somewhere it was never grabbed. The physical pick already walked the true
+     * distance the ray travelled; we hand that to the drag session instead. One-shot: consumed
+     * when the session is created.
+     */
+    private static final Map<UUID, Double> GRAB_DISTANCE = new HashMap<>();
+
     private IplStraddleStaffPick() {}
 
     /** Best projection hit for a ray, or null. Used by the staff fallback. */
@@ -79,10 +92,11 @@ public final class IplStraddleStaffPick {
     public static PortalTarget pickThroughPortals(Player player, double range, float partialTick) {
         Vec3 eye = player.getEyePosition(partialTick);
         PortalTarget target = pickThroughPortals(
-            player, player.level(), eye, player.getViewVector(partialTick), range, List.of(), 0
+            player, player.level(), eye, player.getViewVector(partialTick), range, List.of(), 0, 0.0
         );
         if (target == null) return null;
         PENDING_TARGETS.put(target.sub().getUniqueId(), target);
+        GRAB_DISTANCE.put(target.sub().getUniqueId(), target.visibleDistance());
         return target;
     }
 
@@ -90,7 +104,7 @@ public final class IplStraddleStaffPick {
     @Nullable
     private static PortalTarget pickThroughPortals(
         Player player, Level level, Vec3 from, Vec3 direction, double remaining,
-        List<Portal> path, int depth
+        List<Portal> path, int depth, double traveled
     ) {
         if (depth > 3 || remaining <= 0.0) return null;
 
@@ -109,7 +123,9 @@ public final class IplStraddleStaffPick {
             .orElse(Double.MAX_VALUE);
 
         if (sub != null && blockDistance <= portalDistance + 0.0001) {
-            return portalTargetForHit(sub, level, block, path);
+            // traveled through prior frames + the visible reach within this frame = the true
+            // ray length to the grabbed point (mappings are rigid, so lengths add).
+            return portalTargetForHit(sub, level, block, path, traveled + blockDistance);
         }
         if (block.getType() != HitResult.Type.MISS && portalDistance > blockDistance) {
             return null;
@@ -130,14 +146,15 @@ public final class IplStraddleStaffPick {
             portal.transformLocalVecNonScale(direction),
             rest,
             List.copyOf(nextPath),
-            depth + 1
+            depth + 1,
+            traveled + portalDistance
         );
     }
 
     private static PortalTarget portalTargetForHit(
-        ClientSubLevel sub, Level level, BlockHitResult hit, List<Portal> path
+        ClientSubLevel sub, Level level, BlockHitResult hit, List<Portal> path, double visibleDistance
     ) {
-        return new PortalTarget(sub, level, hit, path, false);
+        return new PortalTarget(sub, level, hit, path, false, visibleDistance);
     }
 
     private static double visibleHitDistance(
@@ -197,7 +214,23 @@ public final class IplStraddleStaffPick {
         DRAG_TARGETS.clear();
         TRANSIT_FRAMES.clear();
         SAME_DIM_AXIS_MAPPED.clear();
+        GRAB_DISTANCE.clear();
         IplStaffBeamRoutes.clearAll();
+    }
+
+    /**
+     * Overwrite the fresh drag session's hold distance with the true visible pick distance.
+     * Called at the TAIL of {@code startDraggingSubLevel}, after Simulated created the session
+     * with its native-pose distance. No-op for a plain local grab (no captured pick distance),
+     * so ordinary same-world dragging keeps stock behavior.
+     */
+    public static void applyGrabDistance(PhysicsStaffClientHandler handler,
+                                         dev.ryanhcode.sable.sublevel.SubLevel sub) {
+        Double distance = GRAB_DISTANCE.remove(sub.getUniqueId());
+        if (distance == null) return;
+        PhysicsStaffClientHandler.ClientDragSession session = handler.getDragSession();
+        if (session == null || !session.dragSubLevel().getUniqueId().equals(sub.getUniqueId())) return;
+        session.setDistance(Math.clamp(distance, 2.0, PhysicsStaffItem.RANGE));
     }
 
     /**
@@ -236,7 +269,23 @@ public final class IplStraddleStaffPick {
      * server's geometric goal mapper owns every frame decision.
      */
     public static Vector3d mapOutgoingDragGoal(Player player, UUID subId, org.joml.Vector3dc relativeGoal) {
-        return new Vector3d(relativeGoal);
+        // Straddle sessions and completed transits are mapped SERVER-side (it owns that
+        // geometry); pre-mapping them too was the old double-transform flight bug. But a pure
+        // remote grab — body fully in another dimension, reached only through portals, no
+        // straddle session — is never mapped server-side, so the raw player-frame goal lands
+        // in the wrong dimension's coordinates and the body flies off (then vanishes until you
+        // follow it). For that case ONLY, walk the captured portal chain here so the goal
+        // arrives in the body's frame; the server passes it through untouched.
+        List<Portal> captured = capturedPortals(subId, player.level());
+        if (captured == null || captured.isEmpty()) return new Vector3d(relativeGoal);
+        if (IplStraddleSessionStore.hasSession(subId) || TRANSIT_FRAMES.containsKey(subId)) {
+            return new Vector3d(relativeGoal);
+        }
+        Vec3 eye = player.getEyePosition();
+        Vec3 absolute = eye.add(relativeGoal.x(), relativeGoal.y(), relativeGoal.z());
+        for (Portal portal : captured) absolute = portal.transformPoint(absolute);
+        // Server rebuilds goal as serverEye + this vector, so send it eye-relative.
+        return new Vector3d(absolute.x - eye.x, absolute.y - eye.y, absolute.z - eye.z);
     }
 
     /**
@@ -445,14 +494,19 @@ public final class IplStraddleStaffPick {
         if (ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) == level) {
             PENDING_TARGETS.remove(sub.getUniqueId());
             DRAG_TARGETS.remove(sub.getUniqueId());
+            GRAB_DISTANCE.remove(sub.getUniqueId());
             return;
         }
         IplClientHostedLookup.StraddleProjection projection =
             IplClientHostedLookup.getStraddleProjectionFor(sub);
         if (projection != null && projection.portal().getDestDim() == level.dimension()) {
+            // Distance to the image the player actually clicked, not the hidden native pose.
+            double distance = player.getEyePosition().distanceTo(
+                projection.mappedPose().transformPosition(blockHit.getLocation()));
             PENDING_TARGETS.put(sub.getUniqueId(), new PortalTarget(
-                sub, level, blockHit, List.of(projection.portal()), true
+                sub, level, blockHit, List.of(projection.portal()), true, distance
             ));
+            GRAB_DISTANCE.put(sub.getUniqueId(), distance);
         }
     }
 
@@ -474,7 +528,7 @@ public final class IplStraddleStaffPick {
 
     public record PortalTarget(
         ClientSubLevel sub, net.minecraft.world.level.Level world, BlockHitResult hit,
-        List<Portal> portals, boolean fromParentProjection
+        List<Portal> portals, boolean fromParentProjection, double visibleDistance
     ) {}
 
     private record TransitFrame(

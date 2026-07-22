@@ -723,3 +723,82 @@ anchor is through, no flicker at session start/end, and correct behavior for
 a rotated portal pair.
 
 No build or automated check was run for these changes.
+
+## Staff Drag/Beam Round 2 — Precision, Pin, Remote Grabs
+
+### Symptoms
+
+- Held point imprecise; the beam target flickered between "through the portal to
+  the part inside" and "directly to the sub-level".
+- A construction pushed fully into a same-dimension portal, when pulled back,
+  drifted into the backward/opposite plane of a bidirectional portal instead of
+  coming back out of the portal it went in through.
+- Grabbing the already-emerged (out) half could start pulling it back inside.
+- Grabbing a construction in another dimension (standing in the overworld,
+  reaching through a portal) made it vanish in that dimension until the player
+  followed, and the hold distance snapped to maximum.
+
+### Causes
+
+- Hold distance came from Simulated's `logicalPose` (the body's NATIVE pose):
+  wrong coordinate space for a cross-dimension grab (distance huge, clamped to
+  max), and the wrong location for a same-dimension image grab (held point off,
+  pulling the out half back in).
+- The beam picked direct-vs-through by comparing path lengths each frame; near
+  the crossover the shorter path flipped, switching the drawn target.
+- The staff freeze kept the same-dimension session alive but did not stop OTHER
+  portal faces from opening their own sessions. A fully-inserted body straddled
+  the opposite/reverse face, that face's session mapped the goal, and the body
+  was pulled into the backward plane.
+- A pure remote grab (body fully in another dimension, no straddle session) was
+  never frame-mapped on either side, so the raw player-frame goal was applied in
+  the wrong dimension and the body flew away.
+
+### Implemented Change
+
+- The physical pick now records the true VISIBLE ray length to the grabbed point
+  (summed across portal frames; rigid mappings preserve length) and a TAIL hook
+  on `startDraggingSubLevel` overwrites the session's hold distance with it. Plain
+  same-world grabs keep stock behavior.
+- The same-dimension beam route is now deterministic: it ends at the visible
+  representation of the anchor (image when past the portal plane, native
+  otherwise) and takes the physically correct path for the player's own side of
+  the portal (direct, through the held portal, or through its reverse). No
+  per-frame length comparison; switches occur only at plane crossings where the
+  representations coincide.
+- Held bodies are pinned to exactly one same-dimension portal for the whole grab
+  (`IplStaffPortalDragState.HELD_PORTAL`, latched by the transit controller on
+  first straddle). The transit controller refuses to open or keep a session on
+  any other face while held, and the goal mapper maps only through the pinned
+  portal — so pulling a fully-inserted body back out returns it through the
+  entrance, never the backward plane.
+- Pure remote cross-frame grabs are mapped CLIENT-side through the captured pick
+  portal chain in `mapOutgoingDragGoal` (server passes them through untouched);
+  straddle and post-transit grabs remain server-mapped. The two cases are
+  disjoint, so there is no double transform.
+
+### Files
+
+- `src/main/java/ipl/sable/client/IplStraddleStaffPick.java`
+  Visible pick distance, grab-distance store/apply, deterministic client axis
+  chooser, pure-remote outgoing goal mapping.
+- `src/main/java/ipl/sable/client/IplStaffBeamRoutes.java`
+  Deterministic same-dimension route (player-side + plane test); length compare
+  removed.
+- `src/main/java/ipl/sable/transit/IplStaffPortalDragState.java`
+  Held-portal pin store; goal mapper prefers the pinned portal.
+- `src/main/java/ipl/sable/transit/SableTransitController.java`
+  Pin gate: only the pinned portal keeps a session while held.
+- `src/main/java/ipl/sable/mixin/client/IplStaffPickMixin.java`
+  TAIL hook applying the visible grab distance.
+
+### Verification Needed
+
+Same-dimension bidirectional portal: push a construction fully in, pull it back
+out — it must exit through the entrance plane, not the opposite one. Grab the
+emerged half — it must not slide back in. Cross-dimension: grab a construction
+through a portal from another dimension — hold distance must match where it was
+grabbed (not max), it must stay put and visible, and follow the cursor in its
+own dimension. Beam target must not flip between through-portal and direct.
+
+No build or automated check was run for these changes.
