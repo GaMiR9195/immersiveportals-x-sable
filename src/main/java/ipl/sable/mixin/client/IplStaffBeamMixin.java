@@ -1,7 +1,7 @@
 package ipl.sable.mixin.client;
 
+import ipl.sable.client.IplStaffBeamRoutes;
 import ipl.sable.client.IplStaffPortalBeamRenderer;
-import ipl.sable.client.IplStraddleStaffPick;
 import net.createmod.catnip.outliner.LineOutline;
 import net.createmod.catnip.render.SuperRenderTypeBuffer;
 import net.minecraft.world.phys.Vec3;
@@ -40,16 +40,16 @@ public abstract class IplStaffBeamMixin {
         if (!IplStaffPortalBeamRenderer.isPhysicalBeamPass()
             || IplStaffPortalBeamRenderer.getActiveSegment() == null) return;
 
-        IplStraddleStaffPick.BeamSegment segment = IplStaffPortalBeamRenderer.getActiveSegment();
+        IplStaffBeamRoutes.Segment segment = IplStaffPortalBeamRenderer.getActiveSegment();
         int nodeCount = this.nodes.size();
         if (nodeCount < 2 || segment.totalLength() <= 1.0e-9) {
             this.line.set(source, target).render(stack, buffer, camera, partialTick);
             return;
         }
 
-        // Preserve Simulated's one noisy path through every portal. A half starts/ends at an
-        // exact aperture point, but all its interior nodes retain their original global phase.
-        // Far-side noise vectors rotate through preceding portals with the path itself.
+        // Preserve Simulated's one noisy path through every portal. A segment starts/ends at
+        // an exact aperture point, but all its interior nodes retain their original global
+        // phase. Far-side noise vectors rotate through preceding portals with the path itself.
         Vec3 last = source;
         int firstNode = Math.max(1, (int) Math.ceil(segment.startFraction() * nodeCount));
         int lastNode = Math.min(nodeCount - 1, (int) Math.floor(segment.endFraction() * nodeCount));
@@ -63,7 +63,7 @@ public abstract class IplStaffBeamMixin {
         this.line.set(last, target).render(stack, buffer, camera, partialTick);
     }
 
-    private Vec3 ipl$pointAt(IplStraddleStaffPick.BeamSegment segment, double fraction, float partialTick) {
+    private Vec3 ipl$pointAt(IplStaffBeamRoutes.Segment segment, double fraction, float partialTick) {
         double span = segment.endFraction() - segment.startFraction();
         double local = span <= 1.0e-9 ? 0.0 : (fraction - segment.startFraction()) / span;
         Vec3 base = segment.start().lerp(segment.end(), Math.clamp(local, 0.0, 1.0));

@@ -37,6 +37,9 @@ import java.util.UUID;
  *
  * <p>Distances compare correctly across frames because the mapping is rigid
  * (translation-only portal pairs preserve lengths).
+ *
+ * <p>Beam GEOMETRY lives in {@link IplStaffBeamRoutes}; this class owns pick/drag capture
+ * state and exposes it to the route builder.
  */
 public final class IplStraddleStaffPick {
 
@@ -48,6 +51,12 @@ public final class IplStraddleStaffPick {
 
     /** Most recent completed body crossing, retained while drag continues across its reverse. */
     private static final Map<UUID, TransitFrame> TRANSIT_FRAMES = new HashMap<>();
+
+    /** Same-dimension mouse-axis chooser stickiness, keyed by grabbed sub-level. */
+    private static final Map<UUID, Boolean> SAME_DIM_AXIS_MAPPED = new HashMap<>();
+
+    /** Same-dimension chooser margin (client mirror of the server goal chooser). */
+    private static final double SAME_DIM_SWITCH_MARGIN = 1.5;
 
     private IplStraddleStaffPick() {}
 
@@ -174,6 +183,7 @@ public final class IplStraddleStaffPick {
     /** Lock portal path only after Simulated created a drag session for this selected ship. */
     public static void beginDrag(ClientSubLevel sub) {
         TRANSIT_FRAMES.remove(sub.getUniqueId());
+        SAME_DIM_AXIS_MAPPED.remove(sub.getUniqueId());
         PortalTarget selected = PENDING_TARGETS.remove(sub.getUniqueId());
         if (selected == null || selected.sub() != sub) {
             DRAG_TARGETS.remove(sub.getUniqueId());
@@ -186,6 +196,8 @@ public final class IplStraddleStaffPick {
         PENDING_TARGETS.clear();
         DRAG_TARGETS.clear();
         TRANSIT_FRAMES.clear();
+        SAME_DIM_AXIS_MAPPED.clear();
+        IplStaffBeamRoutes.clearAll();
     }
 
     /**
@@ -198,6 +210,13 @@ public final class IplStraddleStaffPick {
     ) {
         PENDING_TARGETS.remove(subId);
         DRAG_TARGETS.remove(subId);
+        // Same-dimension transits never happen while held (staff freeze); one arriving here
+        // means the drag already ended or is ending — record nothing, rotate nothing.
+        if (sourceDim.equals(targetDim)) {
+            TRANSIT_FRAMES.remove(subId);
+            SAME_DIM_AXIS_MAPPED.remove(subId);
+            return;
+        }
         TRANSIT_FRAMES.put(subId, new TransitFrame(
             sourceDim, targetDim, origin, sourceNormal,
             new org.joml.Quaterniond(rotation), portalId
@@ -213,20 +232,22 @@ public final class IplStraddleStaffPick {
     /**
      * Convert Simulated's outgoing relative drag vector before packet construction. The stock
      * packet has no portal/frame field and server reconstructs its goal as `serverEye + vector`.
-     * Through-portal picks encode target-frame points only until parent handoff. Once the body
-     * completes transit, packets become raw again and server state maps direct-grab goals late.
+     * The packet stays raw in the player's physical world frame for the entire drag; the
+     * server's geometric goal mapper owns every frame decision.
      */
     public static Vector3d mapOutgoingDragGoal(Player player, UUID subId, org.joml.Vector3dc relativeGoal) {
-        // This packet stays in the player's physical world frame for the entire drag. The
-        // server converts it only after a confirmed parent handoff, when body and player
-        // frames actually differ. Pre-mapping here was the double-transform flight bug.
         return new Vector3d(relativeGoal);
     }
 
     /**
-     * Convert the staff's mouse pitch axis into the native body frame for a locked
-     * through-portal grab. Projection grabs are already converted by the caller's
-     * straddle mapping, so applying their portal again would rotate every mouse delta twice.
+     * Convert the staff's mouse pitch axis into the native body frame.
+     *
+     * <p>Same-dimension straddle: mirrors the server's geometric goal chooser — when the
+     * cursor works the body from the exit side of a ROTATED portal pair, the view axis maps
+     * back through the portal rotation; translation-only pairs need (and get) nothing.
+     *
+     * <p>Cross-dimension: unchanged — post-transit frames rotate by the recorded crossing,
+     * pre-transit far-side rotation uses the straddle mapping.
      */
     public static Vec3 unmapStaffInputAxis(Player player, ClientSubLevel sub, Vec3 axis) {
         TransitFrame transit = TRANSIT_FRAMES.get(sub.getUniqueId());
@@ -234,6 +255,16 @@ public final class IplStraddleStaffPick {
             org.joml.Vector3d mapped = transit.rotation().transform(
                 new org.joml.Vector3d(axis.x, axis.y, axis.z));
             return new Vec3(mapped.x, mapped.y, mapped.z);
+        }
+
+        Level parent = ipl.sable.dim.IplDimAgnostic.getParentLevel(sub);
+        Portal session = IplStraddleSessionStore.resolvePortal(sub);
+        if (session != null && parent == player.level()
+            && session.getDestDim().equals(session.level().dimension())) {
+            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+                ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(session);
+            if (mapping.isIdentityRotation()) return axis;
+            return sameDimCursorMapped(player, sub, mapping) ? mapping.unmapVec(axis) : axis;
         }
 
         // Before a parent flip the real body remains in its source frame. A player can still
@@ -249,130 +280,68 @@ public final class IplStraddleStaffPick {
         return axis;
     }
 
-    /**
-     * Resolve beam endpoints once from stable state. A beam route describes its whole physical
-     * path from the owner's staff world to its target world; rendering then selects only one
-     * segment by matching IP's exact recursive portal prefix.
-     */
-    @Nullable
-    public static BeamRoute resolveBeamRoute(
-        Level staffLevel, Vec3 staffStart, ClientSubLevel sub, Vec3 localAnchor, float partialTick
+    /** Client mirror of the server's same-dimension goal chooser, with its own stickiness. */
+    private static boolean sameDimCursorMapped(
+        Player player, ClientSubLevel sub,
+        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping
     ) {
-        Level parent = ipl.sable.dim.IplDimAgnostic.getParentLevel(sub);
-        if (parent == null) return null;
-
-        TransitFrame transit = TRANSIT_FRAMES.get(sub.getUniqueId());
-        if (transit != null && transit.bodyIsInTargetFrame(sub)
-            && transit.sourceDim().equals(staffLevel.dimension())) {
-            Portal portal = findPortal(transit.sourceDim(), transit.portalId());
-            if (portal != null) {
-                return new BeamRoute(staffLevel, staffStart,
-                    sub.renderPose(partialTick).transformPosition(localAnchor), List.of(portal));
-            }
+        double distance = 10.0;
+        dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler.ClientDragSession session =
+            dev.simulated_team.simulated.SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER.getDragSession();
+        if (session != null && session.dragSubLevel().getUniqueId().equals(sub.getUniqueId())) {
+            distance = session.distance();
         }
+        Vec3 goal = player.getEyePosition().add(player.getLookAngle().scale(distance));
+        dev.ryanhcode.sable.companion.math.BoundingBox3dc body = sub.boundingBox();
+        double rawDistance = distanceToBox(body, goal);
+        double mappedDistance = distanceToBox(body, mapping.unmapPoint(goal));
 
-        PortalTarget captured = DRAG_TARGETS.get(sub.getUniqueId());
-        if (captured != null && captured.sub() != sub) captured = null;
-
-        // Session sync carries transit controller's canonical directed entrance face. It keeps
-        // coplanar opposite faces separate and collapses only true duplicate companions.
-        Portal sessionPortal = IplStraddleSessionStore.resolvePortal(sub);
-        if (sessionPortal != null) {
-            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
-                ipl.sable.transit.IplStraddlePoseMap.StraddleMapping.of(sessionPortal);
-            Vec3 cloneAnchor = mapping.mapPose(sub.renderPose(partialTick))
-                .transformPosition(localAnchor);
-            List<Portal> route = routeToCanonicalPortal(staffLevel, captured, sessionPortal);
-            if (route != null) return new BeamRoute(staffLevel, staffStart, cloneAnchor, route);
-
-        }
-
-        if (captured != null && captured.fromParentProjection()) {
-            IplClientHostedLookup.StraddleProjection localProjection =
-                IplClientHostedLookup.getStraddleProjectionFor(sub);
-            if (localProjection == null) return null;
-            return new BeamRoute(staffLevel, staffStart,
-                localProjection.mappedPose().transformPosition(localAnchor), List.of());
-        }
-
-        if (staffLevel != parent) return null;
-        Vec3 target = sub.renderPose(partialTick).transformPosition(localAnchor);
-        return new BeamRoute(staffLevel, staffStart, target, List.of());
-    }
-
-    /** Build from exact captured interaction portals and end at canonical session portal only. */
-    @Nullable
-    private static List<Portal> routeToCanonicalPortal(
-        Level staffLevel, @Nullable PortalTarget captured, Portal canonicalPortal
-    ) {
-        if (captured == null || captured.portals().isEmpty()) {
-            return canonicalPortal.level() == staffLevel ? List.of(canonicalPortal) : null;
-        }
-        java.util.ArrayList<Portal> route = new java.util.ArrayList<>(captured.portals());
-        if (route.get(0).level() != staffLevel) return null;
-        Portal last = route.get(route.size() - 1);
-        if (last.getUUID().equals(canonicalPortal.getUUID())) return List.copyOf(route);
-        if (last.getDestinationWorld() != canonicalPortal.level()) return null;
-        route.add(canonicalPortal);
-        return List.copyOf(route);
-    }
-
-    /**
-     * Return only segment belonging to current world pass. Outer pass ends at first portal;
-     * each matching recursive pass starts at its transformed exit and ends at next aperture.
-     */
-    @Nullable
-    public static BeamSegment getPhysicalBeamSegment(BeamRoute route, ClientLevel renderLevel) {
-        List<Portal> rendered = getActiveRenderPath();
-        if (!isPrefix(rendered, route.portals())) return null;
-
-        Level expectedLevel = route.staffLevel();
-        for (Portal portal : rendered) {
-            if (portal.level() != expectedLevel) return null;
-            expectedLevel = portal.getDestinationWorld();
-        }
-        if (expectedLevel != renderLevel) return null;
-
-        int segmentIndex = rendered.size();
-        Vec3 start = route.staffStart();
-        double distanceBefore = 0.0;
-        double[] lengths = new double[route.portals().size() + 1];
-
-        // Aperture point is shared by adjacent world segments. Transforming that exact point
-        // gives continuous-looking geometry on portal exit, including rotated portals.
-        for (int i = 0; i < route.portals().size(); i++) {
-            Vec3 segmentEnd = endpointInRouteFrame(route, i);
-            Vec3 aperture = route.portals().get(i).rayTrace(start, segmentEnd);
-            if (aperture == null) return null;
-            lengths[i] = start.distanceTo(aperture);
-            if (i < segmentIndex) distanceBefore += lengths[i];
-            start = route.portals().get(i).transformPoint(aperture);
-        }
-        Vec3 finalEnd = endpointInRouteFrame(route, route.portals().size());
-        lengths[route.portals().size()] = start.distanceTo(finalEnd);
-        double total = 0.0;
-        for (double length : lengths) total += length;
-        if (total <= 1.0e-9) return null;
-
-        Vec3 segmentStart = route.staffStart();
-        for (int i = 0; i < segmentIndex; i++) {
-            Vec3 aperture = route.portals().get(i).rayTrace(segmentStart, endpointInRouteFrame(route, i));
-            if (aperture == null) return null;
-            segmentStart = route.portals().get(i).transformPoint(aperture);
-        }
-        Vec3 segmentEnd;
-        if (segmentIndex < route.portals().size()) {
-            segmentEnd = route.portals().get(segmentIndex).rayTrace(
-                segmentStart, endpointInRouteFrame(route, segmentIndex));
-            if (segmentEnd == null) return null;
+        Boolean previous = SAME_DIM_AXIS_MAPPED.get(sub.getUniqueId());
+        boolean useMapped;
+        if (previous != null && previous) {
+            useMapped = mappedDistance < rawDistance + SAME_DIM_SWITCH_MARGIN;
         } else {
-            segmentEnd = finalEnd;
+            useMapped = mappedDistance + SAME_DIM_SWITCH_MARGIN < rawDistance;
         }
-        return new BeamSegment(
-            segmentStart, segmentEnd,
-            distanceBefore / total, (distanceBefore + lengths[segmentIndex]) / total,
-            total, List.copyOf(route.portals().subList(0, segmentIndex))
-        );
+        SAME_DIM_AXIS_MAPPED.put(sub.getUniqueId(), useMapped);
+        return useMapped;
+    }
+
+    private static double distanceToBox(
+        dev.ryanhcode.sable.companion.math.BoundingBox3dc box, Vec3 point
+    ) {
+        double x = Math.max(box.minX(), Math.min(box.maxX(), point.x));
+        double y = Math.max(box.minY(), Math.min(box.maxY(), point.y));
+        double z = Math.max(box.minZ(), Math.min(box.maxZ(), point.z));
+        double dx = point.x - x, dy = point.y - y, dz = point.z - z;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    // ------------------------------------------------------------------
+    // Beam route builder inputs (geometry itself lives in IplStaffBeamRoutes).
+    // ------------------------------------------------------------------
+
+    /**
+     * The recorded cross-dimension crossing portal for a body already in its target frame,
+     * when the staff is still in the crossing's source world. Null otherwise.
+     */
+    @Nullable
+    public static Portal transitRoutePortal(ClientSubLevel sub, Level staffLevel) {
+        TransitFrame transit = TRANSIT_FRAMES.get(sub.getUniqueId());
+        if (transit == null || !transit.bodyIsInTargetFrame(sub)
+            || !transit.sourceDim().equals(staffLevel.dimension())) {
+            return null;
+        }
+        return findPortal(transit.sourceDim(), transit.portalId());
+    }
+
+    /** Captured pick-time portal chain for this drag, when it starts in {@code staffLevel}. */
+    @Nullable
+    public static List<Portal> capturedPortals(UUID subId, Level staffLevel) {
+        PortalTarget captured = DRAG_TARGETS.get(subId);
+        if (captured == null || captured.portals().isEmpty()) return null;
+        if (captured.portals().get(0).level() != staffLevel) return null;
+        return captured.portals();
     }
 
     @Nullable
@@ -401,22 +370,6 @@ public final class IplStraddleStaffPick {
             }
         }
         return null;
-    }
-
-    private static Vec3 endpointInRouteFrame(BeamRoute route, int frame) {
-        Vec3 endpoint = route.target();
-        for (int i = route.portals().size() - 1; i >= frame; i--) {
-            endpoint = route.portals().get(i).inverseTransformPoint(endpoint);
-        }
-        return endpoint;
-    }
-
-    private static boolean isPrefix(List<Portal> prefix, List<Portal> route) {
-        if (prefix.size() > route.size()) return false;
-        for (int i = 0; i < prefix.size(); i++) {
-            if (prefix.get(i) != route.get(i)) return false;
-        }
-        return true;
     }
 
     /**
@@ -522,13 +475,6 @@ public final class IplStraddleStaffPick {
     public record PortalTarget(
         ClientSubLevel sub, net.minecraft.world.level.Level world, BlockHitResult hit,
         List<Portal> portals, boolean fromParentProjection
-    ) {}
-
-    public record BeamRoute(Level staffLevel, Vec3 staffStart, Vec3 target, List<Portal> portals) {}
-
-    public record BeamSegment(
-        Vec3 start, Vec3 end, double startFraction, double endFraction,
-        double totalLength, List<Portal> prefix
     ) {}
 
     private record TransitFrame(

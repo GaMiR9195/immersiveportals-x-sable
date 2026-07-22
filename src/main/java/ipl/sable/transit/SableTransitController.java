@@ -173,6 +173,16 @@ public final class SableTransitController {
                 boolean haveSession = IplStraddleCloneBody.hasSessionKey(key)
                     || IplStraddleTerrainClone.hasSessionKey(key);
 
+                // STAFF FREEZE: while a creative-staff drag session owns this body, a
+                // same-dimension portal never transits it. The held construction simply
+                // straddles on its image colliders — it can go fully in and be pulled fully
+                // back out with its native pose (and rotation) untouched. Transit resumes
+                // with normal rules the tick after release. Cross-dimension behavior is
+                // deliberately unchanged (its handoff pipeline is verified).
+                boolean heldSameDim =
+                    portal.getDestDim().equals(portalQueryLevel.dimension())
+                        && IplStaffPortalDragState.isHeldByStaff(airship.getUniqueId());
+
                 Vec3 normal = portal.getNormal().scale(-1.0);
                 PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
                     airship, portal, normal, haveSession ? EXIT_APERTURE_MARGIN : 0.0);
@@ -198,7 +208,8 @@ public final class SableTransitController {
                     // minority rule refuses to re-open this face and would open the
                     // OPPOSITE face with inverted parity instead, making forward travel
                     // structurally impossible.
-                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION) {
+                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION
+                        && !heldSameDim) {
                         if (candidates == null) candidates = new ArrayList<>(1);
                         candidates.add(new TransitCandidate(airship, portal, true));
                         candidateAddedForAirship = true;
@@ -223,6 +234,25 @@ public final class SableTransitController {
 
                 if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
                     && (haveSession || state.enteredFromSourceAperture())) {
+                    // STAFF FREEZE, fully-through half of the rule: a held construction
+                    // that fully cleared a same-dimension aperture keeps its session (image
+                    // colliders, clip seam, projection) instead of transiting. The clip
+                    // plane fully hides the native half and the image is the whole visible
+                    // body, so render and collision stay correct while it is parked beyond
+                    // the plane or pulled back out. Release lets this branch fire normally.
+                    if (heldSameDim) {
+                        seenHostedKeys.add(key);
+                        if (IplStraddleCloneBody.isEnabled()) {
+                            IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
+                        } else {
+                            IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
+                        }
+                        if (!haveSession && (IplStraddleCloneBody.hasSessionKey(key)
+                            || IplStraddleTerrainClone.hasSessionKey(key))) {
+                            IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
+                        }
+                        continue;
+                    }
                     if (haveSession) {
                         IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
                     }
