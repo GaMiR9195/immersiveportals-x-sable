@@ -87,6 +87,11 @@ public final class IplShipPortalAnchor {
      * portals simply write no tag, so release paths need no save-side bookkeeping.
      */
     public static void registerPersistence() {
+        // A/B kill switch while the feature is young: -Dipl.sable.anchorPersistence=false
+        if ("false".equals(System.getProperty("ipl.sable.anchorPersistence"))) {
+            LOG.info("[IPL-SHIP-PORTAL] anchor persistence DISABLED by system property");
+            return;
+        }
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
             de.nick1st.imm_ptl.events.WritePortalDataEvent.class, event -> {
                 if (event.portal.level() == null || event.portal.level().isClientSide()) return;
