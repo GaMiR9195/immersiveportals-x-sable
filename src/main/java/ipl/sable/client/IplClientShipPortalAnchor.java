@@ -42,8 +42,12 @@ public final class IplClientShipPortalAnchor {
 
     private record ClientAnchor(
         UUID flippedId,
+        UUID reverseId,
+        UUID parallelId,
         UUID shipId,
-        Vector3d localPos,
+        /** PLOT-space origin — mapped through the ship's FULL render pose per frame,
+         * exactly like block vertices (COM-invariant; see the server anchor). */
+        Vector3d plotPos,
         DQuaternion localOrient,
         DQuaternion destLock
     ) {}
@@ -72,15 +76,12 @@ public final class IplClientShipPortalAnchor {
             Portal portal = findPortal(entry.getKey());
             if (portal == null) continue;
 
-            // The weld: portal pose from the ship's per-frame interpolated pose.
+            // The weld: portal pose from the ship's per-frame interpolated pose,
+            // through the FULL pose transform — the same map block vertices use.
             Pose3dc pose = ship.renderPose();
             Quaterniond shipRot = new Quaterniond(pose.orientation());
-            Vector3d world = new Vector3d(a.localPos());
-            shipRot.transform(world);
-            Vec3 originNow = new Vec3(
-                world.x + pose.position().x(),
-                world.y + pose.position().y(),
-                world.z + pose.position().z());
+            Vec3 originNow = pose.transformPosition(
+                new Vec3(a.plotPos().x, a.plotPos().y, a.plotPos().z));
             DQuaternion shipD = new DQuaternion(shipRot.x, shipRot.y, shipRot.z, shipRot.w);
             DQuaternion oNow = shipD.hamiltonProduct(a.localOrient());
             DQuaternion rtNow = a.destLock().hamiltonProduct(oNow.getConjugated());
@@ -95,6 +96,26 @@ public final class IplClientShipPortalAnchor {
                     flipped.setOriginPos(originNow);
                     flipped.setOrientation(portal.getAxisW().scale(-1), portal.getAxisH());
                     flipped.setRotation(rtNow);
+                }
+            }
+
+            // Dest-side members (cross-dim clusters): their DESTINATION points at the
+            // moving origin — server rectify + entity sync lags a tick+, so the view
+            // and return trip through the far side swim. Weld them per frame too;
+            // their own origin/orientation are static (the far frame doesn't move).
+            DQuaternion rtInverse = rtNow.getConjugated();
+            if (a.reverseId() != null) {
+                Portal reverse = findPortal(a.reverseId());
+                if (reverse != null) {
+                    reverse.setDestination(originNow);
+                    reverse.setRotation(rtInverse);
+                }
+            }
+            if (a.parallelId() != null) {
+                Portal parallel = findPortal(a.parallelId());
+                if (parallel != null) {
+                    parallel.setDestination(originNow);
+                    parallel.setRotation(rtInverse);
                 }
             }
         }
@@ -134,10 +155,10 @@ public final class IplClientShipPortalAnchor {
 
     public static final class RemoteCallables {
 
-        /** Anchor set/update: doubles are ','-joined; flipped UUID may be empty. */
+        /** Anchor set/update: doubles are ','-joined; cluster UUIDs may be empty. */
         public static void set(
-            String portalUuid, String flippedUuid, String shipUuid,
-            String localPos, String localOrient, String destLock
+            String portalUuid, String flippedUuid, String reverseUuid, String parallelUuid,
+            String shipUuid, String localPos, String localOrient, String destLock
         ) {
             try {
                 ensureRegistered();
@@ -145,8 +166,9 @@ public final class IplClientShipPortalAnchor {
                 double[] o = parse(localOrient, 4);
                 double[] d = parse(destLock, 4);
                 ANCHORS.put(UUID.fromString(portalUuid), new ClientAnchor(
-                    flippedUuid == null || flippedUuid.isEmpty()
-                        ? null : UUID.fromString(flippedUuid),
+                    parseUuid(flippedUuid),
+                    parseUuid(reverseUuid),
+                    parseUuid(parallelUuid),
                     UUID.fromString(shipUuid),
                     new Vector3d(p[0], p[1], p[2]),
                     new DQuaternion(o[0], o[1], o[2], o[3]),
@@ -154,6 +176,10 @@ public final class IplClientShipPortalAnchor {
             } catch (Throwable t) {
                 LOG.error("[IPL-SHIP-PORTAL] bad anchor sync", t);
             }
+        }
+
+        private static UUID parseUuid(String s) {
+            return s == null || s.isEmpty() ? null : UUID.fromString(s);
         }
 
         public static void clear(String portalUuid) {

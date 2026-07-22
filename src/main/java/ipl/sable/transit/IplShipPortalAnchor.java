@@ -52,7 +52,14 @@ public final class IplShipPortalAnchor {
     private record Anchor(
         UUID shipId,
         ResourceKey<Level> portalDim,
-        Vector3d localPos,
+        /**
+         * PLOT-space portal origin — mapped through the ship's FULL pose transform
+         * each tick, exactly like block positions. Never store a pose-position-
+         * relative offset: {@code pose.position()} is center-of-mass-derived, and
+         * any COM update (fluids, block changes) would silently re-base the offset
+         * and drift the aperture off its frame.
+         */
+        Vector3d plotPos,
         DQuaternion localOrient,
         /** D₀ = R_t(0) ∘ O(0): the dest end's orientation lock. */
         DQuaternion destLock
@@ -124,11 +131,8 @@ public final class IplShipPortalAnchor {
         ServerLevel level = (ServerLevel) portal.level();
         Pose3dc pose = ship.logicalPose();
         Quaterniond shipRot = new Quaterniond(pose.orientation());
-        Vector3d localPos = new Vector3d(
-            portal.getOriginPos().x - pose.position().x(),
-            portal.getOriginPos().y - pose.position().y(),
-            portal.getOriginPos().z - pose.position().z());
-        new Quaterniond(shipRot).conjugate().transform(localPos);
+        Vec3 plotOrigin = pose.transformPositionInverse(portal.getOriginPos());
+        Vector3d localPos = new Vector3d(plotOrigin.x, plotOrigin.y, plotOrigin.z);
 
         DQuaternion shipD = new DQuaternion(shipRot.x, shipRot.y, shipRot.z, shipRot.w);
         DQuaternion o0 = portal.getOrientationRotation();
@@ -140,7 +144,7 @@ public final class IplShipPortalAnchor {
             ship.getUniqueId(), level.dimension(), localPos, localOrient, destLock));
         applyCarrierSideEffects(portal, ship, true);
         syncToClients(level.getServer(), portal.getUUID());
-        LOG.info("[IPL-SHIP-PORTAL] anchored portal {} to ship {} at local ({}, {}, {})",
+        LOG.info("[IPL-SHIP-PORTAL] anchored portal {} to ship {} at plot ({}, {}, {})",
             portal.getUUID(), ship.getUniqueId(),
             String.format("%.2f", localPos.x), String.format("%.2f", localPos.y),
             String.format("%.2f", localPos.z));
@@ -229,12 +233,8 @@ public final class IplShipPortalAnchor {
 
             Pose3dc pose = ship.logicalPose();
             Quaterniond shipRot = new Quaterniond(pose.orientation());
-            Vector3d world = new Vector3d(a.localPos());
-            shipRot.transform(world);
-            Vec3 originNow = new Vec3(
-                world.x + pose.position().x(),
-                world.y + pose.position().y(),
-                world.z + pose.position().z());
+            Vec3 originNow = pose.transformPosition(
+                new Vec3(a.plotPos().x, a.plotPos().y, a.plotPos().z));
             DQuaternion shipD = new DQuaternion(shipRot.x, shipRot.y, shipRot.z, shipRot.w);
             DQuaternion oNow = shipD.hamiltonProduct(a.localOrient());
 
@@ -276,11 +276,15 @@ public final class IplShipPortalAnchor {
         if (a == null || server == null) return;
         ServerLevel level = server.getLevel(a.portalDim());
         String flippedId = "";
+        String reverseId = "";
+        String parallelId = "";
         if (level != null && level.getEntity(portalId) instanceof Portal portal) {
-            Portal flipped = PortalExtension.get(portal).flippedPortal;
-            if (flipped != null) flippedId = flipped.getUUID().toString();
+            PortalExtension ext = PortalExtension.get(portal);
+            if (ext.flippedPortal != null) flippedId = ext.flippedPortal.getUUID().toString();
+            if (ext.reversePortal != null) reverseId = ext.reversePortal.getUUID().toString();
+            if (ext.parallelPortal != null) parallelId = ext.parallelPortal.getUUID().toString();
         }
-        String localPos = a.localPos().x + "," + a.localPos().y + "," + a.localPos().z;
+        String localPos = a.plotPos().x + "," + a.plotPos().y + "," + a.plotPos().z;
         String localOrient = a.localOrient().getX() + "," + a.localOrient().getY() + ","
             + a.localOrient().getZ() + "," + a.localOrient().getW();
         String destLock = a.destLock().getX() + "," + a.destLock().getY() + ","
@@ -290,8 +294,8 @@ public final class IplShipPortalAnchor {
             qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
                 player,
                 "ipl.sable.client.IplClientShipPortalAnchor.RemoteCallables.set",
-                portalId.toString(), flippedId, a.shipId().toString(),
-                localPos, localOrient, destLock);
+                portalId.toString(), flippedId, reverseId, parallelId,
+                a.shipId().toString(), localPos, localOrient, destLock);
         }
     }
 
