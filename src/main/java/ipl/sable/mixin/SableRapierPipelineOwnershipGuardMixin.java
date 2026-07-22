@@ -322,28 +322,6 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
     }
 
     // ======================================================================
-    // Clone feedback tee (spec §2.4, phase 2-3): the contact-event buffer is
-    // cleared-on-read by the pipeline's own impact-effects pass — tee a copy
-    // to the straddle clone feedback BEFORE handing the records back.
-    // ======================================================================
-
-    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
-        method = "processCollisionEffects",
-        at = @At(
-            value = "INVOKE",
-            // Sable 2.0: scene ids are native long handles.
-            target = "Ldev/ryanhcode/sable/physics/impl/rapier/Rapier3D;clearCollisions(J)[D"
-        ),
-        require = 0)
-    private double[] ipl$teeCollisionRecords(
-        long sceneHandle, com.llamalad7.mixinextras.injector.wrapoperation.Operation<double[]> original
-    ) {
-        double[] records = original.call(sceneHandle);
-        ipl.sable.transit.IplStraddleCloneBody.onCollisionRecords(this.level, records);
-        return records;
-    }
-
-    // ======================================================================
     // Per-scene routing (portal-physics spec §2.2, phase 1): a hosted ship's
     // body AND its plot voxel data live in the PARENT dimension's scene.
     // ======================================================================

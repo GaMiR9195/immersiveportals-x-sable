@@ -6,7 +6,6 @@ import dev.ryanhcode.sable.platform.SableEventPublishPlatform;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
 import ipl.sable.mixin.IplPhysicsSystemFusionAccess;
-import ipl.sable.transit.IplStraddleCloneBody;
 import net.minecraft.CrashReport;
 import net.minecraft.CrashReportCategory;
 import net.minecraft.ReportedException;
@@ -126,7 +125,6 @@ public final class IplFusedStep {
                 Entry e = systems.get(i);
                 boolean last = i == systems.size() - 1;
                 runGuarded(e, () -> {
-                    IplStraddleCloneBody.preStep(e.level(), dt);
                     STEP_ARMED = last;
                     try {
                         e.sys().getPipeline().physicsTick(dt);
@@ -138,10 +136,7 @@ public final class IplFusedStep {
             SubLevelPhysicsSystem.IN_PHYSICS_STEP = false;
 
             for (Entry e : systems) {
-                runGuarded(e, () -> {
-                    IplStraddleCloneBody.postStep(e.level(), dt);
-                    postSubstepPhases(e, dt);
-                });
+                runGuarded(e, () -> postSubstepPhases(e, dt));
             }
         }
 
