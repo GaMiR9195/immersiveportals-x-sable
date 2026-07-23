@@ -211,11 +211,21 @@ public final class IplShipPortalAnchor {
      * plane with the opposite normal: gating by UUID alone lets the carrier
      * open a straddle session against its own portal's other face — an image
      * collider of itself through its own deck aperture (self-collision chaos).
+     *
+     * <p>Resolution goes through the extension's persisted cluster UUIDs, NOT the
+     * lazy entity references: on world load the refs stay null until IP re-binds
+     * the cluster, and in that window a ref-based guard waved the carrier's own
+     * flipped face through — the rejoin wobble. The UUID fields are read straight
+     * from the portal's NBT, so a loaded portal always has them. Entity refs are
+     * kept as a fallback for runtime-created clusters mid-bind.
      */
     public static boolean isAnchorShip(Portal portal, UUID shipId) {
         if (isAnchorShip(portal.getUUID(), shipId)) return true;
         PortalExtension ext = PortalExtension.get(portal);
-        return (ext.flippedPortal != null && isAnchorShip(ext.flippedPortal.getUUID(), shipId))
+        return (ext.flippedPortalId != null && isAnchorShip(ext.flippedPortalId, shipId))
+            || (ext.reversePortalId != null && isAnchorShip(ext.reversePortalId, shipId))
+            || (ext.parallelPortalId != null && isAnchorShip(ext.parallelPortalId, shipId))
+            || (ext.flippedPortal != null && isAnchorShip(ext.flippedPortal.getUUID(), shipId))
             || (ext.reversePortal != null && isAnchorShip(ext.reversePortal.getUUID(), shipId))
             || (ext.parallelPortal != null && isAnchorShip(ext.parallelPortal.getUUID(), shipId));
     }

@@ -187,11 +187,19 @@ public final class IplShipNetherPortal {
             mappedAxis);
     }
 
-    /** Is this portal — or any same-cluster member — already anchored? */
+    /**
+     * Is this portal — or any same-cluster member — already anchored? Resolved
+     * through the extension's persisted cluster UUIDs (entity refs as fallback):
+     * the refs bind lazily after world load and can be null while the IDs are
+     * already present from NBT.
+     */
     private static boolean isClusterAnchored(Portal portal) {
         if (IplShipPortalAnchor.isAnchored(portal.getUUID())) return true;
         PortalExtension ext = PortalExtension.get(portal);
-        return (ext.flippedPortal != null && IplShipPortalAnchor.isAnchored(ext.flippedPortal.getUUID()))
+        return (ext.flippedPortalId != null && IplShipPortalAnchor.isAnchored(ext.flippedPortalId))
+            || (ext.reversePortalId != null && IplShipPortalAnchor.isAnchored(ext.reversePortalId))
+            || (ext.parallelPortalId != null && IplShipPortalAnchor.isAnchored(ext.parallelPortalId))
+            || (ext.flippedPortal != null && IplShipPortalAnchor.isAnchored(ext.flippedPortal.getUUID()))
             || (ext.reversePortal != null && IplShipPortalAnchor.isAnchored(ext.reversePortal.getUUID()))
             || (ext.parallelPortal != null && IplShipPortalAnchor.isAnchored(ext.parallelPortal.getUUID()));
     }
