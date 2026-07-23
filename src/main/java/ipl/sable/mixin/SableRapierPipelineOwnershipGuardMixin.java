@@ -358,15 +358,36 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
         ServerLevel home = ipl.sable.dim.IplSceneOwnership.getBodyHome(subLevel);
         if (home == null || home == this.level) {
             ipl.sable.dim.IplSceneOwnership.recordBodyRemoved(subLevel);
+            // Server-stop teardown ordering: levels close overworld-first, so by the
+            // time the HOSTING container removes its live ships, the parent scenes
+            // are already freed (scene == null). The dead scene took every body with
+            // it — proceeding into the native remove NPEs "Exception stopping the
+            // server" out of stopServer, which skips the session-lock release and
+            // leaves the world "locked" in the menu for the rest of the process.
+            if (ipl$sceneOf((RapierPhysicsPipeline) (Object) this) == null) {
+                ci.cancel();
+            }
             return; // proceed: the body (if any) is here
         }
         RapierPhysicsPipeline target = ipl.sable.dim.IplSceneOwnership.pipelineOf(home);
         if (target == null) {
             ipl.sable.dim.IplSceneOwnership.recordBodyRemoved(subLevel);
+            if (ipl$sceneOf((RapierPhysicsPipeline) (Object) this) == null) {
+                ci.cancel();
+            }
+            return;
+        }
+        if (ipl$sceneOf(target) == null) {
+            ipl.sable.dim.IplSceneOwnership.recordBodyRemoved(subLevel);
+            ci.cancel(); // body's home scene already torn down — nothing to remove
             return;
         }
         target.remove(subLevel); // recursion ends: home == target's level → records + proceeds
         ci.cancel();
+    }
+
+    private static Object ipl$sceneOf(RapierPhysicsPipeline pipeline) {
+        return ((IplRapierPipelineAccess) (Object) pipeline).ipl$scene();
     }
 
     /**
