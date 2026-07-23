@@ -1,0 +1,72 @@
+plugins {
+    id 'multiloader-common'
+}
+
+configurations {
+    commonJava {
+        canBeResolved = true
+    }
+    commonResources {
+        canBeResolved = true
+    }
+}
+
+dependencies {
+    def commonProjectPath = project.path.contains(':') ? ":${project.parent.name}:common" : ':common'
+    
+    compileOnly(project(commonProjectPath)) {
+        capabilities {
+            requireCapability "$group:$mod_id"
+        }
+    }
+    commonJava project(path: commonProjectPath, configuration: 'commonJava')
+    commonResources project(path: commonProjectPath, configuration: 'commonResources')
+    
+    // ---
+
+    compileOnly("dev.ryanhcode.sable-companion:sable-companion-common-${project.minecraft_version}:${project.sable_companion_version}")
+
+    api("top.theillusivec4.curios:curios-neoforge:${curios_version}+${minecraft_version}")
+    api("mezz.jei:jei-${minecraft_version}-neoforge:${jei_version}")
+
+    api("com.simibubi.create:create-${minecraft_version}:${create_version}") { transitive = false }
+    api("net.createmod.ponder:ponder-neoforge:${ponder_version}+mc${minecraft_version}")
+    compileOnly("dev.engine-room.flywheel:flywheel-neoforge-api-${minecraft_version}:${flywheel_version}")
+    implementation("dev.engine-room.flywheel:flywheel-neoforge-${minecraft_version}:${flywheel_version}")
+    compileOnly("com.tterrag.registrate:Registrate:${registrate_version}")
+
+    implementation("foundry.veil:veil-neoforge-${minecraft_version}:${project.veil_version}") {
+        exclude group: "maven.modrinth"
+    }
+
+    api ("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:$sable_version") {
+        exclude group: "foundry.veil"
+        exclude group: "com.tterrag.registrate"
+    }
+    // Mod compat
+    compileOnly("cc.tweaked:cc-tweaked-$minecraft_version-core-api:$computercraft_tweaked_version")
+    compileOnly("cc.tweaked:cc-tweaked-$minecraft_version-forge-api:$computercraft_tweaked_version")
+    runtimeOnly("cc.tweaked:cc-tweaked-$minecraft_version-forge:$computercraft_tweaked_version")
+
+    implementation("maven.modrinth:natures-compass:$minecraft_version-$natures_compass_version-neoforge")
+    implementation("maven.modrinth:explorers-compass:$minecraft_version-$explorers_compass_version-neoforge")
+    compileOnly("maven.modrinth:iris:$iris_version")
+    compileOnly("maven.modrinth:sodium:$rootProject.sodium_version")
+}
+
+tasks.named('compileJava', JavaCompile) {
+    dependsOn(configurations.commonJava)
+    source(configurations.commonJava)
+}
+
+processResources {
+    dependsOn(configurations.commonResources)
+    from(configurations.commonResources)
+}
+
+tasks.named('sourcesJar', Jar) {
+    dependsOn(configurations.commonJava)
+    from(configurations.commonJava)
+    dependsOn(configurations.commonResources)
+    from(configurations.commonResources)
+}

@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "building",
+  "ingredients": [
+    {
+      "tag": "c:dyes/pink"
+    },
+    {
+      "tag": "simulated:nameplate_items"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "id": "simulated:pink_nameplate"
+  }
+}

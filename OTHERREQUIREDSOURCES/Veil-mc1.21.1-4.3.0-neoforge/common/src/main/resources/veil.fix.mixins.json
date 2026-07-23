@@ -1,0 +1,17 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "foundry.veil.mixin.fix",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "foundry.veil.VeilMixinPluginImpl",
+  "mixins": [
+    "MemUtilMixin"
+  ],
+  "client": [
+    "NativeImageMixin", "WindowMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
+  

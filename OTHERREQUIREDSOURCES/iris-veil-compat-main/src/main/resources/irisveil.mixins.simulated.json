@@ -1,0 +1,14 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "top.leonx.irisveil.compat.simulated.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "MixinEndSeaShadowRenderer",
+    "MixinPlungerLauncherItemRenderer",
+    "MixinPhysicsStaffItemRenderer"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

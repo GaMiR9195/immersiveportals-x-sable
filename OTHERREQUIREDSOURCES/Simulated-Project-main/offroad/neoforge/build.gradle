@@ -1,0 +1,53 @@
+plugins {
+    id 'multiloader-loader'
+    id 'net.neoforged.moddev'
+}
+
+def generatedResources = project(":offroad:common").file("src/generated/resources")
+def commonResources = project(":offroad:common").file("src/main/resources")
+
+neoForge {
+    version = neoforge_version
+
+    // Automatically enable neoforge AccessTransformers if the file exists
+    def at = project(':offroad:common').file('src/main/resources/META-INF/accesstransformer.cfg')
+
+    if (at.exists()) {
+        accessTransformers.from(at.absolutePath)
+    }
+
+    parchment {
+        minecraftVersion = parchment_minecraft
+        mappingsVersion = parchment_version
+    }
+
+    runs {
+        configureEach {
+            systemProperty('neoforge.enabledGameTestNamespaces', mod_id)
+            ideName = "Offroad NeoForge ${it.name.capitalize()} (${project.path})" // Unify the run config names with fabric
+        }
+        data {
+            data()
+            gameDirectory = project.file('runs/data')
+            programArguments.addAll '--all',
+                    '--mod', 'offroad',
+                    '--output', generatedResources.absolutePath,
+                    '--existing', commonResources.absolutePath,
+                    '--existing-mod', 'create',
+                    '--existing-mod', 'simulated'
+        }
+    }
+    
+    mods {
+        "${mod_id}" {
+            sourceSet sourceSets.main
+        }
+        simulated {
+            sourceSet project(':simulated:neoforge').sourceSets.main
+        }
+    }
+}
+
+sourceSets.main.resources {
+    srcDir generatedResources.absolutePath
+}

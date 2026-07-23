@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "group": "handle_variants",
+  "ingredients": [
+    {
+      "item": "simulated:iron_handle"
+    },
+    {
+      "item": "minecraft:yellow_dye"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "id": "simulated:yellow_handle"
+  }
+}

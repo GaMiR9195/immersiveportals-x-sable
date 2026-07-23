@@ -1,0 +1,22 @@
+modLoader = "javafml"
+# The loader version doesn't matter. Modify the NeoForge and/or Minecraft version ranges instead.
+loaderVersion = "[0,)"
+license = "${license}"
+issueTrackerURL = "${github_url}/issues"
+
+[[mods]]
+modId = "${mod_id}"
+version = "${version}"
+displayName = "${mod_name}"
+displayURL = "${github_url}"
+logoFile = "${mod_id}.png"
+logoBlur = false
+authors = "${authors}"
+description = '''${mod_description}'''
+
+[[dependencies."${mod_id}"]]
+modId = "minecraft"
+type="required"
+versionRange = "[${minecraft_version},)"
+ordering = "NONE"
+side = "BOTH"

@@ -1,0 +1,23 @@
+{
+  "stages": [
+    {
+      "type": "veil:mask",
+      "red": false,
+      "green": false,
+      "blue": false,
+      "alpha": false,
+      "depth": true
+    },
+    {
+      "type": "veil:depth_function",
+      "function": "LEQUAL"
+    },
+    {
+      "type": "veil:blit",
+      "shader": "veil:blit_depth",
+      "in": "veil:first_person",
+      "out": "minecraft:main",
+      "clear": false
+    }
+  ]
+}
