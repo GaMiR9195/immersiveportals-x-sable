@@ -88,6 +88,12 @@ public final class IplServerWatchdog {
 
             Thread st = serverThread;
             if (st == null) continue;
+            if (st.getState() == Thread.State.TERMINATED) {
+                // Server exited; the stale progress timestamp is not a stall.
+                serverThread = null;
+                server = null;
+                continue;
+            }
 
             long now = System.nanoTime();
             long stalledNanos = now - lastProgressNanos;
@@ -112,6 +118,7 @@ public final class IplServerWatchdog {
                     sb.append("    at ").append(e).append('\n');
                 }
             }
+            appendLevelChunkCounts(sb);
             LOG.error(sb.toString());
 
             if (stalledNanos >= ALL_THREADS_THRESHOLD_NANOS
@@ -122,26 +129,32 @@ public final class IplServerWatchdog {
         }
     }
 
+    /**
+     * Per-level chunk counts: across repeated dumps, the level whose count does not
+     * shrink is the one a shutdown unload loop can't drain. On every stall dump —
+     * slow-but-finite shutdowns end before the all-threads escalation would fire.
+     */
+    private static void appendLevelChunkCounts(StringBuilder sb) {
+        net.minecraft.server.MinecraftServer srv = server;
+        if (srv == null) return;
+        try {
+            for (net.minecraft.server.level.ServerLevel level : srv.getAllLevels()) {
+                sb.append("level ").append(level.dimension().location())
+                    .append(": loadedChunks=")
+                    .append(level.getChunkSource().getLoadedChunksCount())
+                    .append('\n');
+            }
+        } catch (Throwable t) {
+            sb.append("(level chunk stats unavailable: ").append(t).append(")\n");
+        }
+    }
+
     /** Full JVM picture: deadlock check + every thread's state and stack. */
     private static void dumpAllThreads() {
         StringBuilder sb = new StringBuilder(16384);
         sb.append("[IPL-WATCHDOG] ALL-THREADS DUMP (stall escalation)\n");
 
-        // Per-level chunk counts: across repeated dumps, the level whose count does
-        // not shrink is the one the shutdown unload loop can't drain.
-        net.minecraft.server.MinecraftServer srv = server;
-        if (srv != null) {
-            try {
-                for (net.minecraft.server.level.ServerLevel level : srv.getAllLevels()) {
-                    sb.append("level ").append(level.dimension().location())
-                        .append(": loadedChunks=")
-                        .append(level.getChunkSource().getLoadedChunksCount())
-                        .append('\n');
-                }
-            } catch (Throwable t) {
-                sb.append("(level chunk stats unavailable: ").append(t).append(")\n");
-            }
-        }
+        appendLevelChunkCounts(sb);
 
         try {
             java.lang.management.ThreadMXBean mx =
