@@ -42,6 +42,7 @@
     "IplStaffServerStateMixin",
     "IplHostingLevelNeverEmptyMixin",
     "IplHostedBeTickContextMixin",
+    "IplHostedPhysicsTickContextMixin",
     "IplHostedWorldFrameRouterMixin",
     "IplEntityLevelInvoker",
     "IplRapierPipelineAccess",
