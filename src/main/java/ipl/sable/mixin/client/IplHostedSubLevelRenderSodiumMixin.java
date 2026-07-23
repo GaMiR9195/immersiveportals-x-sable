@@ -36,24 +36,14 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Sodium-backend parity for {@link IplHostedSubLevelRenderMixin}. With Sodium loaded,
- * {@code LevelRenderer}'s vanilla terrain path (setupRender / compileSections /
- * renderSectionLayer) is dormant and Sable drives sub-level rendering from
- * {@code SodiumWorldRenderer} instead ({@code sublevel_render/impl/sodium}). Sable's
- * hooks gather from the camera level's own container, so hosted sub-levels — which
- * live in the {@code ipl_sable:sublevels} container — are never gathered. This mixin
- * mirrors each of Sable's Sodium hook points, feeding the hosted + straddle-projection
- * lists, exactly as the vanilla-backend mixin mirrors Sable's vanilla hooks.
- *
- * <p>Geometry still compiles through the vanilla section pipeline: Sable's
- * reach-around dispatcher builds its own {@code SectionRenderDispatcher} and rebinds it
- * to each sub-level's plot level via {@code setLevel()} per createRenderData, so hosted
- * sections read block/light data from the sublevels {@code ClientLevel} with no extra
- * routing (the {@code IplHostedRenderDataMixin} reroute is a vanilla-backend concern).
- * Block-update dirtiness flows through Sable's own {@code scheduleRebuildForChunk} hook
- * on the sublevels dimension's renderer. The vanilla mixin's {@code allChanged} /
- * {@code renderLevel} hooks (rebuild, block entities, after-sections) still fire under
- * Sodium and are not duplicated here.
+ * Sodium-backend portal-pass parity. Ships live in their parent dimension's
+ * {@code ClientLevel} container, and Sable's own Sodium hooks gather from
+ * {@code SodiumWorldRenderer.level} — a SINGLETON field that tracks the camera dimension
+ * for the whole frame. IP swaps {@code Minecraft.level} (and the per-dimension
+ * {@code LevelRenderer}) around each portal-content render but never touches Sodium's
+ * world renderer, so a portal pass into dimension B still gathers dimension A's ships.
+ * This mixin feeds the PASS level's ships during portal passes (main pass is Sable's,
+ * natively correct), plus straddle projections for every pass.
  *
  * <p>Priority 1010: applies after Sable's own render mixins (1002).
  */
@@ -80,7 +70,12 @@ public abstract class IplHostedSubLevelRenderSodiumMixin {
 
     @Unique
     private List<ClientSubLevel> ipl$hosted() {
-        return IplClientHostedLookup.getHostedSubLevelsFor(ipl$passLevel());
+        ClientLevel passLevel = ipl$passLevel();
+        if (passLevel == this.level) {
+            // Main pass: Sable's own Sodium hooks already gather this level's container.
+            return List.of();
+        }
+        return IplClientHostedLookup.getHostedSubLevelsFor(passLevel);
     }
 
     @Unique

@@ -42,6 +42,32 @@ public final class IplClientHostedLookup {
         return hosting == null ? null : SubLevelContainer.getContainer((net.minecraft.world.level.Level) hosting);
     }
 
+    /**
+     * Resolve a ship from PLOT-space coordinates without knowing which dimension's
+     * container holds it: plot slots come from the single hosting-dimension allocator,
+     * so a slot identifies at most one ship across all client levels.
+     */
+    @Nullable
+    public static dev.ryanhcode.sable.sublevel.ClientSubLevel findClientShipByPlotChunk(
+        net.minecraft.world.level.ChunkPos chunk
+    ) {
+        if (!ClientWorldLoader.getIsInitialized()) {
+            return null;
+        }
+        for (ClientLevel world : ClientWorldLoader.getClientWorlds()) {
+            SubLevelContainer container =
+                SubLevelContainer.getContainer((net.minecraft.world.level.Level) world);
+            if (container == null) continue;
+            dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(chunk);
+            dev.ryanhcode.sable.sublevel.SubLevel sub = plot == null ? null : plot.getSubLevel();
+            if (sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub
+                && !clientSub.isRemoved()) {
+                return clientSub;
+            }
+        }
+        return null;
+    }
+
     private static final org.slf4j.Logger LOG =
         org.slf4j.LoggerFactory.getLogger("ipl-hosted-gather");
 
@@ -49,10 +75,9 @@ public final class IplClientHostedLookup {
     private static long lastGatherLogMs = 0;
 
     /**
-     * Hosted sub-levels that should appear in {@code level} — i.e. whose synced
-     * {@code parentLevel} is that level and whose render data exists. Used by the render
-     * mixins, which run once per {@code LevelRenderer} instance: the main pass and each IP
-     * portal pass each query with their own level, giving per-dimension visibility for free.
+     * Sub-levels that appear in {@code level}. Under the stock-client model that is
+     * simply the level's OWN container — every ship lives in its parent dimension's
+     * {@code ClientLevel}. Kept as the shared lookup for straddle/staff/transit logic.
      */
     public static java.util.List<dev.ryanhcode.sable.sublevel.ClientSubLevel> getHostedSubLevelsFor(
         @Nullable ClientLevel level
@@ -66,48 +91,17 @@ public final class IplClientHostedLookup {
         if (level == null) {
             return java.util.List.of();
         }
-        if (level.dimension() == SableSubLevelDimension.SUBLEVELS) {
-            return java.util.List.of(); // never render inside the hosting dim's own pass
+        SubLevelContainer container = SubLevelContainer.getContainer((net.minecraft.world.level.Level) level);
+        if (container == null) {
+            return java.util.List.of();
         }
-        SubLevelContainer container = getHostingContainerOrNull();
-
         java.util.List<dev.ryanhcode.sable.sublevel.ClientSubLevel> out = null;
-        int total = 0, parentOther = 0, nullRenderData = 0;
-        if (container != null) {
-            for (dev.ryanhcode.sable.sublevel.SubLevel sub : container.getAllSubLevels()) {
-                if (sub.isRemoved()) continue;
-                if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) continue;
-                total++;
-                if (((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel() != level) {
-                    parentOther++;
-                    continue;
-                }
-                if (clientSub.getRenderData() == null) {
-                    nullRenderData++;
-                    continue;
-                }
-                if (out == null) out = new java.util.ArrayList<>(4);
-                out.add(clientSub);
-            }
+        for (dev.ryanhcode.sable.sublevel.SubLevel sub : container.getAllSubLevels()) {
+            if (sub.isRemoved()) continue;
+            if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) continue;
+            if (out == null) out = new java.util.ArrayList<>(4);
+            out.add(clientSub);
         }
-
-        // Diagnostic: prove the render hooks fire and show what the gather sees. Rate-limited;
-        // remove once the dim-agnostic render path is stable.
-        long now = System.currentTimeMillis();
-        if (now - lastGatherLogMs > 5000) {
-            lastGatherLogMs = now;
-            int firstMatchedChunks = -1;
-            Object firstPose = null;
-            if (out != null && !out.isEmpty()) {
-                firstMatchedChunks = out.get(0).getPlot().getLoadedChunks().size();
-                firstPose = out.get(0).logicalPose().position();
-            }
-            LOG.info("[IPL-HOSTED-GATHER] level={} containerPresent={} total={} matched={} parentOther={} nullRenderData={} firstChunks={} firstPos={}",
-                level.dimension().location(), container != null, total,
-                out == null ? 0 : out.size(), parentOther, nullRenderData,
-                firstMatchedChunks, firstPose);
-        }
-
         return out == null ? java.util.List.of() : out;
     }
 
@@ -135,7 +129,7 @@ public final class IplClientHostedLookup {
 
     @Nullable
     public static StraddleProjection getStraddleProjectionFor(ClientSubLevel clientSub) {
-        if (!(((ipl.sable.duck.IplSubLevelDuck) clientSub).ipl$getParentLevel() instanceof ClientLevel)) {
+        if (!(clientSub.getLevel() instanceof ClientLevel)) {
             return null;
         }
         ipl.sable.render.SourceClipPortalFinder.ClipDecision decision =
@@ -155,50 +149,50 @@ public final class IplClientHostedLookup {
         if (destLevel == null) {
             return java.util.List.of();
         }
-        if (destLevel.dimension() == SableSubLevelDimension.SUBLEVELS) {
-            return java.util.List.of();
-        }
-        SubLevelContainer container = getHostingContainerOrNull();
-        if (container == null) {
+        if (!qouteall.imm_ptl.core.ClientWorldLoader.getIsInitialized()) {
             return java.util.List.of();
         }
 
         java.util.List<StraddleProjection> out = null;
-        for (dev.ryanhcode.sable.sublevel.SubLevel sub : container.getAllSubLevels()) {
-            if (sub.isRemoved()) continue;
-            if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) continue;
-            if (clientSub.getRenderData() == null) continue;
+        // Ships live in their own (source) level's container; a projection is drawn into
+        // this DESTINATION pass for every straddle session whose portal leads here —
+        // including same-dimension portals (source container == destLevel's container).
+        for (ClientLevel sourceLevel : qouteall.imm_ptl.core.ClientWorldLoader.getClientWorlds()) {
+            SubLevelContainer container =
+                SubLevelContainer.getContainer((net.minecraft.world.level.Level) sourceLevel);
+            if (container == null) continue;
 
-            net.minecraft.world.level.Level parent =
-                ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
-            if (parent == null) continue;
-            if (parent.dimension() == SableSubLevelDimension.SUBLEVELS) continue; // parent unset
+            for (dev.ryanhcode.sable.sublevel.SubLevel sub : container.getAllSubLevels()) {
+                if (sub.isRemoved()) continue;
+                if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) continue;
+                if (clientSub.getRenderData() == null) continue;
 
-            // ONE projection per session portal (multi-straddle): a ship crossing two
-            // portals into this level projects two images, each with its own dest cut.
-            for (ipl.sable.render.SourceClipPortalFinder.ClipDecision decision :
-                    ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlanes(clientSub)) {
-                if (decision.portal() == null) continue;
-                if (decision.portal().getDestDim() != destLevel.dimension()) continue;
+                // ONE projection per session portal (multi-straddle): a ship crossing two
+                // portals into this level projects two images, each with its own dest cut.
+                for (ipl.sable.render.SourceClipPortalFinder.ClipDecision decision :
+                        ipl.sable.render.SourceClipPortalFinder.findStraddlingPortalPlanes(clientSub)) {
+                    if (decision.portal() == null) continue;
+                    if (decision.portal().getDestDim() != destLevel.dimension()) continue;
 
-                qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
+                    qouteall.imm_ptl.core.portal.Portal portal = decision.portal();
 
-                // Render the mapped half even when source and destination are the same level.
-                dev.ryanhcode.sable.companion.math.Pose3d mapped =
-                    ipl$computeMappedPose(clientSub.renderPose(), portal);
+                    // Render the mapped half even when source and destination are the same level.
+                    dev.ryanhcode.sable.companion.math.Pose3d mapped =
+                        ipl$computeMappedPose(clientSub.renderPose(), portal);
 
-                // Clip plane: the source plane keeps the source half; through the portal
-                // the kept half flips — n_dest = -R(n_src), anchored at the mapped point.
-                net.minecraft.world.phys.Vec3 srcPos = decision.plane().pos();
-                net.minecraft.world.phys.Vec3 srcNormal = decision.plane().normal();
-                net.minecraft.world.phys.Vec3 destPos = portal.transformPoint(srcPos);
-                net.minecraft.world.phys.Vec3 destNormal =
-                    portal.transformLocalVec(srcNormal).scale(-1.0);
-                qouteall.q_misc_util.my_util.Plane destPlane =
-                    new qouteall.q_misc_util.my_util.Plane(destPos, destNormal);
+                    // Clip plane: the source plane keeps the source half; through the portal
+                    // the kept half flips — n_dest = -R(n_src), anchored at the mapped point.
+                    net.minecraft.world.phys.Vec3 srcPos = decision.plane().pos();
+                    net.minecraft.world.phys.Vec3 srcNormal = decision.plane().normal();
+                    net.minecraft.world.phys.Vec3 destPos = portal.transformPoint(srcPos);
+                    net.minecraft.world.phys.Vec3 destNormal =
+                        portal.transformLocalVec(srcNormal).scale(-1.0);
+                    qouteall.q_misc_util.my_util.Plane destPlane =
+                        new qouteall.q_misc_util.my_util.Plane(destPos, destNormal);
 
-                if (out == null) out = new java.util.ArrayList<>(2);
-                out.add(new StraddleProjection(clientSub, portal, mapped, destPlane));
+                    if (out == null) out = new java.util.ArrayList<>(2);
+                    out.add(new StraddleProjection(clientSub, portal, mapped, destPlane));
+                }
             }
         }
         return out == null ? java.util.List.of() : out;

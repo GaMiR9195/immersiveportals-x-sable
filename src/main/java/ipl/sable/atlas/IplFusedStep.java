@@ -161,16 +161,43 @@ public final class IplFusedStep {
         }
         for (ServerSubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
-            subLevel.updateMergedMassData((float) sys.getPartialPhysicsTick());
+            runInParentFrame(subLevel, () ->
+                subLevel.updateMergedMassData((float) sys.getPartialPhysicsTick()));
         }
         for (ServerSubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
-            subLevel.prePhysicsTick(sys, sys.getPhysicsHandle(subLevel), dt);
+            // World-frame context for the PHYSICS actor pass of hosted ships: an Offroad
+            // wheel's suspension cast is a plot-space ray that Sable's clip overlay
+            // pose-projects into WORLD coordinates and traverses via the BE's own level —
+            // hosted, that's the void ipl_sable:sublevels. With the context armed,
+            // IplHostedWorldFrameRouterMixin routes the world-frame traversal (and the
+            // friction getBlockState on the hit block) to the ship's parent dimension.
+            // Structural: covers EVERY sable$physicsTick actor of every mod, plus lift
+            // providers and contraption logic, without per-mod arming sites.
+            runInParentFrame(subLevel, () ->
+                subLevel.prePhysicsTick(sys, sys.getPhysicsHandle(subLevel), dt));
         }
         SableEventPublishPlatform.INSTANCE.prePhysicsTick(sys, dt);
         for (ServerSubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
-            subLevel.applyQueuedForces(sys, sys.getPhysicsHandle(subLevel), dt);
+            runInParentFrame(subLevel, () ->
+                subLevel.applyQueuedForces(sys, sys.getPhysicsHandle(subLevel), dt));
+        }
+    }
+
+    /** Run {@code phase} with the hosted sub-level's parent armed as the world frame. */
+    private static void runInParentFrame(ServerSubLevel subLevel, Runnable phase) {
+        ServerLevel parent = ipl.sable.dim.IplDimAgnostic.isHosted(subLevel)
+            ? ipl.sable.dim.IplDimAgnostic.getServerParentLevel(subLevel) : null;
+        if (parent == null) {
+            phase.run();
+            return;
+        }
+        ServerLevel prev = ipl.sable.dim.IplWorldFrameContext.push(parent);
+        try {
+            phase.run();
+        } finally {
+            ipl.sable.dim.IplWorldFrameContext.pop(prev);
         }
     }
 

@@ -4,7 +4,6 @@ import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
-import dev.ryanhcode.sable.network.udp.SableUDPServer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelTrackingSystem;
@@ -120,9 +119,20 @@ import java.util.UUID;
  */
 @Pseudo
 @Mixin(value = SubLevelTrackingSystem.class, remap = false)
-public abstract class SableCrossDimTrackingMixin {
+public abstract class SableCrossDimTrackingMixin implements ipl.sable.duck.IplTrackingResyncDuck {
 
     @Shadow @Final private ServerLevel level;
+
+    /**
+     * Post-flip chunk/BE rebind: re-emit a full sync to an already-tracking player. The
+     * force-redirect arms the per-packet resolver, so every packet of the bundle lands in
+     * the ship's (new) parent dimension; the client-side dedupe turns the StartTracking
+     * into an adopt/skip and the bundled chunk packets refresh the plot in place.
+     */
+    @Override
+    public void ipl$resendFullSync(ServerPlayer player, ServerSubLevel subLevel) {
+        PacketRedirection.withForceRedirect(level, () -> sendFullSync(player, subLevel, null));
+    }
 
     @Shadow
     private void sendFullSync(ServerPlayer player, ServerSubLevel subLevel, CustomPacketPayload extraPacket) {
@@ -334,22 +344,13 @@ public abstract class SableCrossDimTrackingMixin {
                         serverSubLevel.getUniqueId(), viewer.getGameProfile().getName(),
                         serverSubLevel.getPlot().getLoadedChunks().size());
                 }
+                // The force-redirect arms IP's packet stamping; IplHostedPacketRouting then
+                // remaps every packet of the bundled sync to the SHIP'S PARENT dimension,
+                // so the client allocates it in the parent level's container (stock client
+                // model) — no separate parent-stamp RPC needed.
                 PacketRedirection.withForceRedirect(level, () -> sendFullSync(viewer, serverSubLevel, null));
 
-                // Hosted sub-levels: follow the full sync with the parent-dim stamp so the
-                // client knows which dimension to render this sub-level in. Sent after the
-                // bundled sync, so the client-side ClientSubLevel exists when it arrives.
                 if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
-                    net.minecraft.server.level.ServerLevel parent =
-                        ipl.sable.dim.IplDimAgnostic.getServerParentLevel(serverSubLevel);
-                    if (parent != null) {
-                        qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
-                            viewer,
-                            "ipl.sable.client.IplParentDimSync.RemoteCallables.setParent",
-                            serverSubLevel.getUniqueId().toString(),
-                            parent.dimension().location().toString()
-                        );
-                    }
                     // Straddle parity is server state (see IplStraddleSessionSync); a viewer
                     // starting to track mid-crossing needs the current session snapshot too.
                     ipl.sable.transit.IplStraddleSessionSync.sendSnapshotTo(
@@ -390,28 +391,11 @@ public abstract class SableCrossDimTrackingMixin {
     }
 
     // ------------------------------------------------------------------------
-    // 7. Force TCP for cross-dim recipients in sendMovementUpdates. Sable's UDP
-    //    fast-path bypasses Connection.send and therefore IP's outgoing-packet
-    //    wrap; the client would receive an unwrapped packet and route it to its
-    //    currently-active container (wrong dim). TCP fallback goes through
-    //    Connection.send and gets wrapped by IP under the active
-    //    withForceRedirect from @Redirect above.
+    // (Removed) 7. The force-TCP-for-cross-dim wrap is gone: movement snapshot
+    //    payloads are applied per sub-level id on the client, and the cross-level
+    //    lookup bridge (IplClientSubLevelLookupBridgeMixin) resolves the id no
+    //    matter which level a packet was delivered under — UDP included.
     // ------------------------------------------------------------------------
-
-    @WrapOperation(
-        method = "sendMovementUpdates",
-        at = @At(
-            value = "INVOKE",
-            target = "Ldev/ryanhcode/sable/network/udp/SableUDPServer;isConnectedTo(Lnet/minecraft/server/level/ServerPlayer;)Z"
-        ),
-        require = 1
-    )
-    private boolean ipl$forceCrossDimToTCP(SableUDPServer server, ServerPlayer player, Operation<Boolean> original) {
-        if (player.serverLevel() != level) {
-            return false;
-        }
-        return original.call(server, player);
-    }
 
     // ------------------------------------------------------------------------
     // 8. Stamp StopTracking packets with the hosting dim. sendRemoval

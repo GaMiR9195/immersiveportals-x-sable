@@ -88,24 +88,45 @@ public abstract class SableStartTrackingDedupeMixin {
 
         UUID uuid = this.subLevelID();
 
-        // (1) Same-UUID re-track: already tracking → skip re-allocation. The server's
-        // re-emit doesn't carry novel state we need to apply -- pose/bounds updates
-        // arrive on separate packets.
-        if (container.getSubLevel(uuid) != null) {
+        // (1) Same-UUID re-track IN THIS container: already tracking → skip
+        // re-allocation. Container-LOCAL check — the cross-level lookup bridge must not
+        // answer here, or a re-sync meant to move the ship into this level would be
+        // swallowed. The server's re-emit doesn't carry novel state we need to apply --
+        // pose/bounds updates arrive on separate packets.
+        SubLevel local = ipl.sable.client.IplClientLookupBridge.withLocalOnly(
+            () -> container.getSubLevel(uuid));
+        if (local != null) {
             LOG.debug("[IPL-SABLE] Skipping duplicate StartTracking for sub-level {} (already tracked)", uuid);
             ci.cancel();
             return;
         }
 
+        // (1b) Same UUID in ANOTHER client level's container: this StartTracking is a
+        // parent-flip reconciliation (the ship changed dimension). Adopt the existing
+        // client object — compiled render data and interpolation timeline intact — into
+        // this level instead of allocating a duplicate. The rest of the sync bundle then
+        // refreshes its chunks in place.
+        SubLevel elsewhere = container.getSubLevel(uuid); // bridged: cross-level on miss
+        if (elsewhere instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub
+            && level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
+            if (ipl.sable.client.IplClientAdopt.adoptInto(clientSub, clientLevel)) {
+                LOG.info("[IPL-SABLE] StartTracking adopted {} into {} (parent flip re-sync)",
+                    uuid, clientLevel.dimension().location());
+                ci.cancel();
+                return;
+            }
+        }
+
         // (2) Different-UUID-same-plot collision: evict the stale occupant so the
         // incoming (server-authoritative) sub-level can allocate, instead of letting
         // allocateSubLevel throw "Plot already exists at x, z" and crash the render
-        // thread. Plot coords are decoded the same way the handler does
-        // (ChunkPos.getX/getZ on the packed long).
+        // thread. Container-LOCAL occupant check; plot coords decoded the same way the
+        // handler does (ChunkPos.getX/getZ on the packed long).
         long plot = this.plotCoordinate();
         int x = ChunkPos.getX(plot);
         int z = ChunkPos.getZ(plot);
-        SubLevel occupant = container.getSubLevel(x, z);
+        SubLevel occupant = ipl.sable.client.IplClientLookupBridge.withLocalOnly(
+            () -> container.getSubLevel(x, z));
         if (occupant != null && !occupant.getUniqueId().equals(uuid)) {
             LOG.warn("[IPL-SABLE] StartTracking plot collision at ({}, {}): evicting stale "
                     + "occupant {} for incoming {}", x, z, occupant.getUniqueId(), uuid);

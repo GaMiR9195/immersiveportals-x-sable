@@ -4,7 +4,6 @@ import com.llamalad7.mixinextras.sugar.Local;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import dev.ryanhcode.sable.mixinhelpers.sublevel_render.vanilla.VanillaSubLevelBlockEntityRenderer;
-import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.SubLevelRenderDispatcher;
 import foundry.veil.api.client.render.VeilRenderBridge;
 import foundry.veil.api.client.render.rendertype.VeilRenderType;
@@ -44,26 +43,17 @@ import java.util.Objects;
 import java.util.SortedSet;
 
 /**
- * Phase 4 of the dim-agnostic refactor: render hosted sub-levels in their PARENT dimension's
- * render passes.
+ * Straddle-projection rendering.
  *
- * <p>Sable's render hooks gather sub-levels from the camera level's own container; hosted
- * sub-levels live in the {@code ipl_sable:sublevels} container and would never be gathered.
- * This mixin mirrors each of Sable's vanilla-backend hook points, feeding
- * {@link IplClientHostedLookup#getHostedSubLevelsFor} — the hosted sub-levels whose synced
- * {@code parentLevel} is THIS renderer's level. Every {@code ClientLevel} has its own
- * {@code LevelRenderer} (IP's ClientWorldLoader), so the main pass and each portal pass
- * automatically pick up exactly the airships that belong in the dimension being drawn, and
- * IP's slot-0 clip stack crops them at portal planes like any other geometry.
- *
- * <p>Section geometry is compiled by the hosting world renderer's
- * {@code SectionRenderDispatcher} (see {@code IplHostedRenderDataMixin}), i.e. block/light
- * data is read from the sublevels {@code ClientLevel} while the pose transform places the
- * result in parent-dim world space.
+ * <p>Ships live in their parent dimension's {@code ClientLevel} container, so Sable's own
+ * render hooks draw them natively in every pass (main and IP portal passes alike). The one
+ * thing Sable cannot know about is a STRADDLE PROJECTION: while a ship crosses a portal,
+ * its through-the-portal half must also be drawn into the DESTINATION dimension's pass at
+ * the portal-mapped pose, clipped at the mapped portal plane. This mixin draws exactly
+ * those projections, reusing the ship's native compiled render data.
  *
  * <p>Priority 1010: applies after Sable's own render mixins (1002) and Flywheel's.
- * Vanilla backend only — the Sodium reach-around backend hooks SodiumWorldRenderer and is a
- * known follow-up.
+ * Vanilla backend only.
  */
 @Mixin(value = LevelRenderer.class, priority = 1010)
 public abstract class IplHostedSubLevelRenderMixin {
@@ -83,18 +73,13 @@ public abstract class IplHostedSubLevelRenderMixin {
     @Final
     private Long2ObjectMap<SortedSet<BlockDestructionProgress>> destructionProgress;
 
-    /** Keep each source or mapped instance's shared render data culled for its active pose. */
+    /** Keep each mapped instance's shared render data culled for its active pose. */
     @Unique
     private VanillaSubLevelBlockEntityRenderer ipl$hostedBeRenderer;
 
     /** Buffer set captured by {@link #ipl$hostedBeRenderer}'s constructor. */
     @Unique
     private RenderBuffers ipl$hostedBeRenderBuffers;
-
-    @Unique
-    private List<ClientSubLevel> ipl$hosted() {
-        return IplClientHostedLookup.getHostedSubLevelsFor(this.level);
-    }
 
     @Unique
     private List<IplClientHostedLookup.StraddleProjection> ipl$projections() {
@@ -117,27 +102,15 @@ public abstract class IplHostedSubLevelRenderMixin {
         IplStraddleRenderCache.end(this.level);
     }
 
-    @Inject(method = "allChanged", at = @At("TAIL"))
-    private void ipl$rebuildHosted(CallbackInfo ci) {
-        List<ClientSubLevel> hosted = ipl$hosted();
-        if (!hosted.isEmpty()) {
-            SubLevelRenderDispatcher.get().rebuild(hosted);
-        }
-    }
-
     @Inject(method = "compileSections", at = @At("TAIL"))
-    private void ipl$compileHostedSections(Camera camera, CallbackInfo ci) {
-        List<ClientSubLevel> hosted = ipl$hosted();
+    private void ipl$compileProjectionSections(Camera camera, CallbackInfo ci) {
         List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
-        if (hosted.isEmpty() && projections.isEmpty()) return;
+        if (projections.isEmpty()) return;
 
         RenderRegionCache renderRegionCache = new RenderRegionCache();
         PrioritizeChunkUpdates chunkUpdates = Minecraft.getInstance().options.prioritizeChunkUpdates().get();
-        for (ClientSubLevel sublevel : hosted) {
-            sublevel.getRenderData().compileSections(chunkUpdates, renderRegionCache, camera);
-        }
         // Projections share the native render data; compiling here covers the case where
-        // the parent dim's own pass isn't rendered this frame (e.g. player on the dest side
+        // the source dim's own pass isn't rendered this frame (e.g. player on the dest side
         // with no portal view back).
         for (IplClientHostedLookup.StraddleProjection projection : projections) {
             projection.sub().getRenderData().compileSections(chunkUpdates, renderRegionCache, camera);
@@ -152,22 +125,15 @@ public abstract class IplHostedSubLevelRenderMixin {
             args = "ldc=update"
         )
     )
-    private void ipl$cullHosted(
+    private void ipl$cullProjections(
         Camera camera, Frustum frustum, boolean hasCapturedFrustum, boolean isSpectator, CallbackInfo ci
     ) {
         if (hasCapturedFrustum) return;
-        List<ClientSubLevel> hosted = ipl$hosted();
         List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
-        if (hosted.isEmpty() && projections.isEmpty()) return;
+        if (projections.isEmpty()) return;
 
         Vec3 cameraPosition = camera.getPosition();
         SubLevelRenderDispatcher dispatcher = SubLevelRenderDispatcher.get();
-        if (!hosted.isEmpty()) {
-            dispatcher.updateCulling(
-                hosted, cameraPosition.x, cameraPosition.y, cameraPosition.z,
-                VeilRenderBridge.create(frustum), isSpectator
-            );
-        }
 
         // Projection geometry uses the source sub-level's render data, but its mapped
         // pose belongs in this destination pass. Recompute its section visibility while
@@ -190,19 +156,12 @@ public abstract class IplHostedSubLevelRenderMixin {
         method = "renderSectionLayer",
         at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/ShaderInstance;clear()V")
     )
-    private void ipl$renderHostedSectionLayer(
+    private void ipl$renderProjectionSectionLayer(
         RenderType renderType, double x, double y, double z,
         Matrix4f modelView, Matrix4f projection, CallbackInfo ci,
         @Local ShaderInstance shader
     ) {
         float partialTick = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
-
-        List<ClientSubLevel> hosted = ipl$hosted();
-        if (!hosted.isEmpty()) {
-            ipl$updateCullingForDraw(hosted);
-            SubLevelRenderDispatcher.get().renderSectionLayer(
-                hosted, renderType, shader, x, y, z, modelView, projection, partialTick);
-        }
 
         for (IplClientHostedLookup.StraddleProjection proj : ipl$projections()) {
             ipl.sable.client.IplStraddleRenderState.set(
@@ -218,7 +177,7 @@ public abstract class IplHostedSubLevelRenderMixin {
     }
 
     @Inject(method = "renderSectionLayer", at = @At("TAIL"))
-    private void ipl$renderHostedVeilLayers(
+    private void ipl$renderProjectionVeilLayers(
         RenderType renderType, double x, double y, double z,
         Matrix4f modelView, Matrix4f projection, CallbackInfo ci
     ) {
@@ -228,9 +187,8 @@ public abstract class IplHostedSubLevelRenderMixin {
         }
         if (!(unwrapped instanceof VeilRenderType.LayeredRenderType layered)) return;
 
-        List<ClientSubLevel> hosted = ipl$hosted();
         List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
-        if (hosted.isEmpty() && projections.isEmpty()) return;
+        if (projections.isEmpty()) return;
 
         SubLevelRenderDispatcher dispatcher = SubLevelRenderDispatcher.get();
         for (RenderType layer : layered.getLayers()) {
@@ -240,11 +198,6 @@ public abstract class IplHostedSubLevelRenderMixin {
                 Minecraft.getInstance().getWindow());
             shader.apply();
 
-            if (!hosted.isEmpty()) {
-                ipl$updateCullingForDraw(hosted);
-                dispatcher.renderSectionLayer(hosted, layer, shader, x, y, z, modelView, projection,
-                    Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false));
-            }
             for (IplClientHostedLookup.StraddleProjection proj : projections) {
                 ipl.sable.client.IplStraddleRenderState.set(
                     proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
@@ -264,7 +217,7 @@ public abstract class IplHostedSubLevelRenderMixin {
     }
 
     @Unique
-    private void ipl$updateCullingForDraw(List<ClientSubLevel> sublevels) {
+    private void ipl$updateCullingForDraw(List<dev.ryanhcode.sable.sublevel.ClientSubLevel> sublevels) {
         Frustum frustum = ((IEWorldRenderer) Minecraft.getInstance().levelRenderer).portal_getFrustum();
         if (frustum == null) return;
 
@@ -286,13 +239,12 @@ public abstract class IplHostedSubLevelRenderMixin {
             ordinal = 0
         )
     )
-    private void ipl$renderHostedBlockEntities(
+    private void ipl$renderProjectionBlockEntities(
         DeltaTracker deltaTracker, boolean bl, Camera camera, GameRenderer gameRenderer,
         LightTexture lightTexture, Matrix4f modelView, Matrix4f projection, CallbackInfo ci
     ) {
-        List<ClientSubLevel> hosted = ipl$hosted();
         List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
-        if (hosted.isEmpty() && projections.isEmpty()) return;
+        if (projections.isEmpty()) return;
 
         // IP temporarily swaps this LevelRenderer's RenderBuffers while it renders
         // a portal world. VanillaSubLevelBlockEntityRenderer captures that object in
@@ -306,14 +258,6 @@ public abstract class IplHostedSubLevelRenderMixin {
         }
         Vec3 cameraPosition = camera.getPosition();
         float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
-
-        for (ClientSubLevel sub : hosted) {
-            SubLevelBlockEntityRenderScope.renderAndFlush(sub, this.renderBuffers.bufferSource(), () ->
-                SubLevelRenderDispatcher.get().renderBlockEntities(
-                    List.of(sub), ipl$hostedBeRenderer,
-                    cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick)
-            );
-        }
 
         for (IplClientHostedLookup.StraddleProjection proj : projections) {
             ipl.sable.client.IplStraddleRenderState.set(
@@ -341,22 +285,15 @@ public abstract class IplHostedSubLevelRenderMixin {
             shift = At.Shift.BEFORE
         )
     )
-    private void ipl$renderHostedAfterSections(
+    private void ipl$renderProjectionsAfterSections(
         DeltaTracker deltaTracker, boolean bl, Camera camera, GameRenderer gameRenderer,
         LightTexture lightTexture, Matrix4f modelView, Matrix4f projection, CallbackInfo ci
     ) {
-        List<ClientSubLevel> hosted = ipl$hosted();
         List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
-        if (hosted.isEmpty() && projections.isEmpty()) return;
+        if (projections.isEmpty()) return;
 
         Vec3 cameraPosition = camera.getPosition();
         float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
-
-        if (!hosted.isEmpty()) {
-            SubLevelRenderDispatcher.get().renderAfterSections(
-                hosted, cameraPosition.x, cameraPosition.y, cameraPosition.z,
-                modelView, projection, partialTick);
-        }
 
         for (IplClientHostedLookup.StraddleProjection proj : projections) {
             ipl.sable.client.IplStraddleRenderState.set(

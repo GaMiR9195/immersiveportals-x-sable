@@ -307,18 +307,12 @@ public final class IplStraddleStaffPick {
 
     @Nullable
     private static ClientSubLevel getHitSubLevel(net.minecraft.world.level.Level level, BlockHitResult hit) {
-        // Every hosted plot lives in the dedicated sublevels container. `level` is the visible
-        // source/destination world during portal recursion and has no plot ownership map; using
-        // it here lost the clicked plot anchor and made the constraint fall back to ship center.
-        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
-            IplClientHostedLookup.getHostingContainerOrNull();
-        if (container == null) return null;
-        net.minecraft.world.level.ChunkPos chunk = new net.minecraft.world.level.ChunkPos(
-            net.minecraft.core.BlockPos.containing(hit.getLocation())
-        );
-        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(chunk);
-        dev.ryanhcode.sable.sublevel.SubLevel sub = plot != null ? plot.getSubLevel() : null;
-        return sub instanceof ClientSubLevel clientSub ? clientSub : null;
+        // Plot anchors are PLOT-space coordinates; the visible source/destination world of a
+        // portal-recursion pass isn't necessarily the level whose container owns the plot.
+        // Resolve across client levels (slots are globally unique).
+        return IplClientHostedLookup.findClientShipByPlotChunk(
+            new net.minecraft.world.level.ChunkPos(
+                net.minecraft.core.BlockPos.containing(hit.getLocation())));
     }
 
     /**
