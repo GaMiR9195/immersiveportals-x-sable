@@ -1,8 +1,0 @@
-{
-  "parent": "simulated:block/symmetric_sail/block",
-  "textures": {
-    "0": "create:block/sail/canvas_cyan",
-    "1": "simulated:block/symmetric_sail/side_cyan",
-    "particle": "create:block/sail/canvas_cyan"
-  }
-}

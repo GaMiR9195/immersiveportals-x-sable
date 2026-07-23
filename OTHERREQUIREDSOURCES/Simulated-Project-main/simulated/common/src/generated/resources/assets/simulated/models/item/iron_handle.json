@@ -1,6 +1,0 @@
-{
-  "parent": "simulated:block/handle/item",
-  "textures": {
-    "0": "simulated:block/handle/iron_handle"
-  }
-}

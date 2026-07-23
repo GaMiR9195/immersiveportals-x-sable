@@ -1,6 +1,0 @@
-{
-	"parent": "simulated:block/docking_connector/block",
-	"textures": {
-		"0": "simulated:block/dock_powered"
-	}
-}

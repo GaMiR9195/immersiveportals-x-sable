@@ -250,7 +250,7 @@ public class NetherPortalGeneration {
     private static final LimitedLogger limitedLogger = new LimitedLogger(50);
     
     public static boolean checkPortalGeneration(ServerLevel fromWorld, BlockPos startingPos) {
-        if (!fromWorld.hasChunkAt(startingPos)) {
+        if (!ipl.sable.SableBridge.hasChunkAtFrameAware(fromWorld, startingPos)) {
             Helper.log("Cancel Portal Generation Because Chunk Not Loaded");
             return false;
         }
@@ -295,9 +295,12 @@ public class NetherPortalGeneration {
         ServerLevel world,
         BlockPortalShape blockPortalShape
     ) {
+        // Plot-space shapes (ship-borne frames) write where the chunks actually live.
+        ServerLevel target = ipl.sable.SableBridge.plotAwareLevel(world, blockPortalShape.anchor)
+            instanceof ServerLevel plotLevel ? plotLevel : world;
         blockPortalShape.area.forEach(
             blockPos -> setPortalContentBlock(
-                world, blockPos, blockPortalShape.axis
+                target, blockPos, blockPortalShape.axis
             )
         );
     }

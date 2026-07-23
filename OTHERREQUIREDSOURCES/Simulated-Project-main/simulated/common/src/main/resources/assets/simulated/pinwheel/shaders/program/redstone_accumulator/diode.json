@@ -1,7 +1,0 @@
-{
-  "vertex": "simulated:redstone_accumulator/diode",
-  "fragment": "simulated:redstone_accumulator/diode",
-  "textures": {
-    "TextureSheet": "minecraft:textures/atlas/blocks.png"
-  }
-}

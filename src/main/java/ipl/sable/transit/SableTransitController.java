@@ -66,10 +66,28 @@ public final class SableTransitController {
 
     /** Clear hosted transit state when the server stops. */
     public static void onServerStopping(MinecraftServer server) {
+        // Post-drain diagnostic (this runs at stopServer RETURN): any chunk still
+        // loaded in the hosting dim here survived the shutdown drain — the slow-
+        // shutdown / unload-flap investigation reads this line.
+        try {
+            ServerLevel hosting =
+                ipl.sable.dim.SableSubLevelDimension.getSableSubLevelsOrNull(server);
+            if (hosting != null) {
+                var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer
+                    .getContainer((net.minecraft.world.level.Level) hosting);
+                LOG.info("[IPL-SHUTDOWN] hosting dim post-drain: loadedChunks={} liveSubLevels={}",
+                    hosting.getChunkSource().getLoadedChunksCount(),
+                    container == null ? -1 : container.getAllSubLevels().size());
+            }
+        } catch (Throwable t) {
+            LOG.warn("[IPL-SHUTDOWN] post-drain diagnostic failed", t);
+        }
         IplGrabChain.clearAll();
         IplStraddleSessionSync.clearAll();
         IplPortalRimManager.clearAll();
         IplStraddleCloneBody.clearAll();
+        IplShipPortalAnchor.clearAll();
+        IplShipNetherPortal.clearPending();
         IplStraddleTerrainClone.clearAll();
         SableRehomeOps.resetBootRestore();
         ipl.sable.dim.IplSceneOwnership.clearAll();
@@ -168,6 +186,11 @@ public final class SableTransitController {
                 if (!ipl$isCanonicalEntranceFace(portal, nearby)) continue;
 
                 UUID portalUuid = portal.getUUID();
+                // A carrier ignores its OWN anchored portal completely: no session,
+                // no crossing state, no transit (IplShipPortalAnchor).
+                if (IplShipPortalAnchor.isAnchorShip(portal, airship.getUniqueId())) {
+                    continue;
+                }
                 StraddleKey key = new StraddleKey(
                     airship.getUniqueId(), portalUuid
                 );
@@ -196,6 +219,38 @@ public final class SableTransitController {
                     // Minority-face parity: the opposite coincident face evaluates
                     // the same geometry with the complementary fraction and claims it.
                     if (!haveSession && fraction > 0.5 + 1.0e-6) {
+                        continue;
+                    }
+
+                    // ONE SESSION PER COINCIDENT-FACE PAIR (dual-parity exclusion).
+                    // The minority rule gates only at OPEN time: oscillating through
+                    // 0.5 let the OPPOSITE face open its own session (its complement
+                    // dips under 0.5 while this face's session lives), and the back
+                    // face's majority rehome then teleported a backing-out ship
+                    // through the mirrored mapping — the "wrong logical side"
+                    // oscillation bug. A live session on the twin owns the doorway's
+                    // parity; this face may not open. Scoped to coincident opposite
+                    // faces only — multi-straddle sessions on DIFFERENT doorways are
+                    // unaffected.
+                    Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
+                    boolean twinHasSession = twin != null
+                        && ipl$hasAnySession(airship.getUniqueId(), twin);
+                    if (!haveSession && twinHasSession) {
+                        continue;
+                    }
+                    if (haveSession && twinHasSession && fraction <= 0.5 + 1.0e-6) {
+                        // Defensive self-heal — structurally unreachable once the
+                        // exclusion is in (runtime sessions can't persist a dual
+                        // state), but any unknown race resolves toward the
+                        // majority-native invariant: the minority face yields, the
+                        // majority twin proceeds to its legitimate rehome.
+                        LOG.warn("[IPL-TRANSIT] dual-parity sessions on coincident "
+                            + "faces for uuid={} — clearing minority face {}",
+                            airship.getUniqueId(), portalUuid);
+                        IplStraddleCloneBody.clear(key, "dual-parity-heal");
+                        IplStraddleTerrainClone.clear(key);
+                        IplStraddleSessionSync.onSessionEnd(
+                            level.getServer(), key, "dual-parity-heal");
                         continue;
                     }
                     seenHostedKeys.add(key);
@@ -347,6 +402,32 @@ public final class SableTransitController {
     }
 
     /**
+     * The coincident OPPOSITE face of {@code portal} (the other side of the same
+     * physical doorway), or null. The cluster link is authoritative when present;
+     * the geometric fallback covers independent back-to-back portals with no
+     * extension binding (same plane, opposed normals, same extents).
+     */
+    private static Portal ipl$oppositeCoincidentFace(Portal portal, List<Portal> candidates) {
+        Portal flipped = qouteall.imm_ptl.core.portal.PortalExtension.get(portal).flippedPortal;
+        if (flipped != null && !flipped.isRemoved()) return flipped;
+        for (Portal other : candidates) {
+            if (other == portal) continue;
+            if (portal.getOriginPos().distanceToSqr(other.getOriginPos()) > 1.0e-12) continue;
+            if (portal.getNormal().dot(other.getNormal()) > -0.999999) continue;
+            if (Math.abs(portal.getWidth() - other.getWidth()) > 1.0e-6
+                || Math.abs(portal.getHeight() - other.getHeight()) > 1.0e-6) continue;
+            return other;
+        }
+        return null;
+    }
+
+    private static boolean ipl$hasAnySession(UUID shipId, Portal face) {
+        StraddleKey key = new StraddleKey(shipId, face.getUUID());
+        return IplStraddleCloneBody.hasSessionKey(key)
+            || IplStraddleTerrainClone.hasSessionKey(key);
+    }
+
+    /**
      * IP can create companion entities for one physical doorway. They have the same
      * directed source rectangle and the same mapped origin; retain one deterministic
      * representative. Opposite normals deliberately fail this test, so a two-sided
@@ -400,6 +481,11 @@ public final class SableTransitController {
                 continue;
             }
             if (ipl$crossedFraction(airship, face, normal) > 0.5 + 1.0e-6) continue;
+
+            // Same dual-parity exclusion as the main loop: the doorway's parity
+            // belongs to at most one face.
+            Portal twin = ipl$oppositeCoincidentFace(face, faces);
+            if (twin != null && ipl$hasAnySession(airship.getUniqueId(), twin)) continue;
 
             // Session first, sync second: the sync must never announce a session
             // whose spawn was declined (e.g. the body's scene migration lands a tick

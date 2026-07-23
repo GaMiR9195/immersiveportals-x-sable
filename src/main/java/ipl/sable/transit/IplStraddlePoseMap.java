@@ -216,6 +216,41 @@ public final class IplStraddlePoseMap {
         }
     }
 
+    /**
+     * Atlas pick fix: a world point that lies on a straddling ship's THROUGH half
+     * (past the portal plane, inside the aperture column — the physics clip's cut)
+     * physically exists at its MAPPED position. Remaps such points; returns null when
+     * the point is on the source half (caller keeps the unmapped projection).
+     * Multi-straddle: the first session whose cut contains the point wins.
+     *
+     * <p>This is what makes plot-space pick hits SURVIVE vanilla's reach clamp:
+     * distance checks project the hit out of the sub level, and the through half's
+     * truthful world position is the mapped one.
+     */
+    @Nullable
+    public static Vec3 remapThroughHalfProjection(SubLevel sub, Level ctx, Vec3 world) {
+        if (sub == null || ctx == null || world == null) return null;
+        Vec3[] result = {null};
+        forEachStraddleFrom(sub, ctx, (portal, mapping) -> {
+            if (result[0] != null || portal == null || mapping == null) return;
+            Vec3 origin = portal.getOriginPos();
+            Vec3 n = portal.getNormal(); // source side keeps +normal (keep-filter convention)
+            double d = (world.x - origin.x) * n.x + (world.y - origin.y) * n.y
+                + (world.z - origin.z) * n.z;
+            if (d >= 0.0) return; // source half
+            Vec3 w = portal.getAxisW();
+            Vec3 h = portal.getAxisH();
+            double lw = (world.x - origin.x) * w.x + (world.y - origin.y) * w.y
+                + (world.z - origin.z) * w.z;
+            if (Math.abs(lw) > portal.getWidth() * 0.5 + APERTURE_CLIP_MARGIN) return;
+            double lh = (world.x - origin.x) * h.x + (world.y - origin.y) * h.y
+                + (world.z - origin.z) * h.z;
+            if (Math.abs(lh) > portal.getHeight() * 0.5 + APERTURE_CLIP_MARGIN) return;
+            result[0] = mapping.mapPoint(world);
+        });
+        return result[0];
+    }
+
     /** Visit every straddle of {@code sub} exiting FROM {@code ctx} (its parent side). */
     public static void forEachStraddleFrom(
         SubLevel sub, Level ctx,

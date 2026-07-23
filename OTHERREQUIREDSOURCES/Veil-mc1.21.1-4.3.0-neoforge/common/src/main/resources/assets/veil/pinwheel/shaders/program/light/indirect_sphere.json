@@ -1,8 +1,0 @@
-{
-  "compute": "veil:light/indirect_sphere",
-  "required_features": [
-    "compute",
-    "shader_storage",
-    "atomic_counter"
-  ]
-}

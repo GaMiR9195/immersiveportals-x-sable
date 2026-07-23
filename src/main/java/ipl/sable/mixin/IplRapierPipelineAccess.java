@@ -27,4 +27,12 @@ public interface IplRapierPipelineAccess {
     /** Sable 2.0: scene ids are native {@code long} handles held by the pipeline. */
     @org.spongepowered.asm.mixin.gen.Invoker(value = "getSceneHandle", remap = false)
     long ipl$sceneHandle();
+
+    /**
+     * Raw scene FIELD — null once the pipeline is torn down (or never armed). Use
+     * this for liveness checks: {@code ipl$sceneHandle()} is an invoker into
+     * {@code getSceneHandle}, which dereferences the scene and NPEs when null.
+     */
+    @Accessor(value = "scene", remap = false)
+    dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsScene ipl$scene();
 }

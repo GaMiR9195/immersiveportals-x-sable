@@ -1,7 +1,0 @@
-{
-  "vertex": "simulated:laser_pointer/lens",
-  "fragment": "simulated:laser_pointer/lens",
-  "textures": {
-    "TextureSheet": "minecraft:textures/atlas/blocks.png"
-  }
-}

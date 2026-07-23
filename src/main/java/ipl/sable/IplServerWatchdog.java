@@ -35,10 +35,21 @@ public final class IplServerWatchdog {
     /** While still stalled, re-dump no more often than this. */
     private static final long REDUMP_INTERVAL_NANOS = 10_000_000_000L; // 10s
 
+    /**
+     * A stall older than this escalates to an ALL-THREADS dump + JVM deadlock check:
+     * the server-thread stack shows WHERE it spins, but when it's waiting on an
+     * incomplete future (chunk save, entity storage), the WHY lives on a worker
+     * thread that died or deadlocked — only a full dump exposes that.
+     */
+    private static final long ALL_THREADS_THRESHOLD_NANOS = 25_000_000_000L; // 25s
+    private static final long ALL_THREADS_REDUMP_NANOS = 30_000_000_000L; // 30s
+
     private static volatile Thread serverThread;
+    private static volatile net.minecraft.server.MinecraftServer server;
     private static volatile long lastProgressNanos = System.nanoTime();
     private static volatile long tickCount = 0L;
     private static volatile long lastDumpNanos = 0L;
+    private static volatile long lastAllDumpNanos = 0L;
     private static volatile boolean watchdogStarted = false;
 
     private IplServerWatchdog() {}
@@ -48,8 +59,9 @@ public final class IplServerWatchdog {
      * the server thread reference + a fresh progress timestamp, and lazily starts the
      * watchdog daemon on first call.
      */
-    public static void onTick(Thread thread) {
+    public static void onTick(Thread thread, net.minecraft.server.MinecraftServer srv) {
         serverThread = thread;
+        server = srv;
         lastProgressNanos = System.nanoTime();
         tickCount++;
         if (!watchdogStarted) {
@@ -76,6 +88,12 @@ public final class IplServerWatchdog {
 
             Thread st = serverThread;
             if (st == null) continue;
+            if (st.getState() == Thread.State.TERMINATED) {
+                // Server exited; the stale progress timestamp is not a stall.
+                serverThread = null;
+                server = null;
+                continue;
+            }
 
             long now = System.nanoTime();
             long stalledNanos = now - lastProgressNanos;
@@ -100,8 +118,76 @@ public final class IplServerWatchdog {
                     sb.append("    at ").append(e).append('\n');
                 }
             }
+            appendLevelChunkCounts(sb);
             LOG.error(sb.toString());
+
+            if (stalledNanos >= ALL_THREADS_THRESHOLD_NANOS
+                && now - lastAllDumpNanos >= ALL_THREADS_REDUMP_NANOS) {
+                lastAllDumpNanos = now;
+                dumpAllThreads();
+            }
         }
+    }
+
+    /**
+     * Per-level chunk counts: across repeated dumps, the level whose count does not
+     * shrink is the one a shutdown unload loop can't drain. On every stall dump —
+     * slow-but-finite shutdowns end before the all-threads escalation would fire.
+     */
+    private static void appendLevelChunkCounts(StringBuilder sb) {
+        net.minecraft.server.MinecraftServer srv = server;
+        if (srv == null) return;
+        try {
+            for (net.minecraft.server.level.ServerLevel level : srv.getAllLevels()) {
+                sb.append("level ").append(level.dimension().location())
+                    .append(": loadedChunks=")
+                    .append(level.getChunkSource().getLoadedChunksCount())
+                    .append('\n');
+            }
+        } catch (Throwable t) {
+            sb.append("(level chunk stats unavailable: ").append(t).append(")\n");
+        }
+    }
+
+    /** Full JVM picture: deadlock check + every thread's state and stack. */
+    private static void dumpAllThreads() {
+        StringBuilder sb = new StringBuilder(16384);
+        sb.append("[IPL-WATCHDOG] ALL-THREADS DUMP (stall escalation)\n");
+
+        appendLevelChunkCounts(sb);
+
+        try {
+            java.lang.management.ThreadMXBean mx =
+                java.lang.management.ManagementFactory.getThreadMXBean();
+            long[] deadlocked = mx.findDeadlockedThreads();
+            if (deadlocked != null && deadlocked.length > 0) {
+                sb.append("!! JVM-LEVEL DEADLOCK detected between thread ids: ");
+                for (long id : deadlocked) sb.append(id).append(' ');
+                sb.append('\n');
+            } else {
+                sb.append("no JVM-level lock deadlock (futures/spin loops not covered by this check)\n");
+            }
+        } catch (Throwable ignored) {
+        }
+
+        java.util.Map<Thread, StackTraceElement[]> all = Thread.getAllStackTraces();
+        for (java.util.Map.Entry<Thread, StackTraceElement[]> entry : all.entrySet()) {
+            Thread thread = entry.getKey();
+            if (thread == Thread.currentThread()) continue;
+            sb.append("-- \"").append(thread.getName()).append("\" ")
+                .append(thread.getState())
+                .append(thread.isDaemon() ? " daemon" : "")
+                .append(" id=").append(thread.threadId()).append('\n');
+            StackTraceElement[] stack = entry.getValue();
+            int limit = Math.min(stack.length, 24);
+            for (int i = 0; i < limit; i++) {
+                sb.append("    at ").append(stack[i]).append('\n');
+            }
+            if (stack.length > limit) {
+                sb.append("    ... ").append(stack.length - limit).append(" more\n");
+            }
+        }
+        LOG.error(sb.toString());
     }
 
     /** The server can deliberately sleep for arbitrary time while paused. */

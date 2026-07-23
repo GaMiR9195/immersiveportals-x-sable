@@ -73,6 +73,33 @@ public abstract class IplPlotBridgeMixin {
     }
 
     /**
+     * Removals route to the container that OWNS the sub-level: command paths call
+     * {@code requireSubLevelContainer(sourceLevel).removeSubLevel(hostedShip, ...)},
+     * but a hosted ship belongs to the hosting dimension's container — removing from
+     * the parent's container is a wrong-owner no-op that leaves the ship alive.
+     * Same-owner calls (rehome's own removals included) pass through untouched.
+     */
+    @org.spongepowered.asm.mixin.injection.Inject(
+        method = "removeSubLevel(Ldev/ryanhcode/sable/sublevel/SubLevel;"
+            + "Ldev/ryanhcode/sable/sublevel/storage/SubLevelRemovalReason;)V",
+        at = @At("HEAD"),
+        cancellable = true,
+        require = 0
+    )
+    private void ipl$routeRemoveToOwningContainer(
+        dev.ryanhcode.sable.sublevel.SubLevel subLevel,
+        dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason reason,
+        org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci
+    ) {
+        Level self = this.getLevel();
+        if (self == null || subLevel == null || subLevel.getLevel() == self) return;
+        SubLevelContainer owner = SubLevelContainer.getContainer(subLevel.getLevel());
+        if (owner == null || owner == (Object) this) return;
+        owner.removeSubLevel(subLevel, reason);
+        ci.cancel();
+    }
+
+    /**
      * By-UUID lookups are bridged too: tools resolve their target from the level they're
      * used in (e.g. Simulated's physics staff does {@code getContainer(player.level())
      * .getSubLevel(uuid)} and silently no-ops on null). Gated to hosted sub-levels whose

@@ -54,6 +54,14 @@ public final class IplPortalRimManager {
     /** Portal UUID → live rim. Server-thread only. */
     private static final Map<UUID, Rim> RIMS = new HashMap<>();
 
+    /**
+     * Ship-anchored portals (atlas M6): the rim is aperture containment for
+     * TRAVERSING bodies — it must never push its own CARRIER (the hull surrounds
+     * the aperture, so rim-vs-carrier contact is constant). Portal UUID → carrier
+     * body id; exclusions are (re)applied whenever this portal's rim (re)spawns.
+     */
+    private static final Map<UUID, Integer> CARRIER_EXCLUSIONS = new HashMap<>();
+
     private static int tickCounter = 0;
 
     private IplPortalRimManager() {}
@@ -77,7 +85,8 @@ public final class IplPortalRimManager {
 
             Entity entity = level.getEntity(entry.getKey());
             if (!(entity instanceof Portal portal) || portal.isRemoved()
-                || !portal.isTeleportable()) {
+                || !portal.isTeleportable() || hasBlockFrame(portal)
+                || ipl$anchoredWithoutExclusion(portal)) {
                 for (int id : rim.ids()) IplStraddlePortalRim.remove(scene, id);
                 LOG.info("[IPL-RIM] portal {} gone — rim removed", entry.getKey());
                 it.remove();
@@ -104,6 +113,8 @@ public final class IplPortalRimManager {
         for (Entity candidate : level.getAllEntities()) {
             if (!(candidate instanceof Portal portal) || !portal.isTeleportable()) continue;
             if (RIMS.containsKey(portal.getUUID())) continue;
+            if (hasBlockFrame(portal)) continue;
+            if (ipl$anchoredWithoutExclusion(portal)) continue;
             if (portal.getWidth() <= 0 || portal.getHeight() <= 0
                 || portal.getWidth() > MAX_APERTURE || portal.getHeight() > MAX_APERTURE) {
                 continue;
@@ -115,6 +126,10 @@ public final class IplPortalRimManager {
                 geometry, OUTER_MARGIN);
             if (ids.length > 0) {
                 RIMS.put(portal.getUUID(), new Rim(scene, ids, geometry));
+                Integer carrier = CARRIER_EXCLUSIONS.get(portal.getUUID());
+                if (carrier != null) {
+                    applyCarrierExclusion(scene, ids, carrier, true);
+                }
             }
         }
     }
@@ -122,7 +137,64 @@ public final class IplPortalRimManager {
     public static void clearAll() {
         // Scenes die with their levels on stop; just drop the bookkeeping.
         RIMS.clear();
+        CARRIER_EXCLUSIONS.clear();
         tickCounter = 0;
+    }
+
+    /**
+     * Register (or clear) the carrier of a ship-anchored portal: the rim's bodies
+     * stop colliding with the carrier ship. Applied immediately to a live rim and
+     * re-applied automatically when the rim respawns (aperture change, portal
+     * reload). Body ids are never reused, so stale exclusions are inert.
+     */
+    public static void setCarrierExclusion(UUID portalId, int carrierBodyId, boolean on) {
+        Rim rim = RIMS.get(portalId);
+        if (on) {
+            CARRIER_EXCLUSIONS.put(portalId, carrierBodyId);
+            if (rim != null) {
+                applyCarrierExclusion(rim.scene(), rim.ids(), carrierBodyId, true);
+            }
+        } else {
+            // Unwind with the STORED id (callers pass -1 on release paths); the
+            // ex-carrier must collide with the rim again.
+            Integer old = CARRIER_EXCLUSIONS.remove(portalId);
+            if (old != null && rim != null) {
+                applyCarrierExclusion(rim.scene(), rim.ids(), old, false);
+            }
+        }
+    }
+
+    private static void applyCarrierExclusion(long scene, int[] rimIds, int carrier, boolean on) {
+        if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return;
+        for (int id : rimIds) {
+            ipl.sable.natives.IplRapierNatives.setBodyPairExclusion(scene, id, carrier, on);
+        }
+        LOG.info("[IPL-RIM] carrier exclusion {} for {} rim body(ies) vs carrier {}",
+            on ? "ON" : "off", rimIds.length, carrier);
+    }
+
+    /**
+     * A ship-anchored portal's rim must not exist before its carrier exclusion:
+     * restored anchors resolve their ship TICKS after the portal entity loads,
+     * and a rim spawned in that window grinds against the hull it's embedded in
+     * (the rejoin wobble). Spawn is deferred — and any rim that slipped in is
+     * evicted — until {@code applyCarrierSideEffects} stores the exclusion for
+     * this face; the respawn then applies it atomically.
+     */
+    private static boolean ipl$anchoredWithoutExclusion(Portal portal) {
+        return IplShipPortalAnchor.isAnchoredCluster(portal)
+            && !CARRIER_EXCLUSIONS.containsKey(portal.getUUID());
+    }
+
+    /**
+     * Framed portals (nether portals and every datapack custom-gen form — any
+     * {@code BreakablePortalEntity} carrying a block shape) need no rim: their
+     * physical frame blocks ARE the aperture containment, and a rim would just
+     * plant a redundant invisible wall over them.
+     */
+    private static boolean hasBlockFrame(Portal portal) {
+        return portal instanceof qouteall.imm_ptl.core.portal.nether_portal.BreakablePortalEntity breakable
+            && breakable.blockPortalShape != null;
     }
 
     private static IplStraddlePortalRim.RimGeometry geometryOf(Portal portal) {

@@ -427,46 +427,56 @@ public final class IplStraddleStaffPick {
         for (IplClientHostedLookup.StraddleProjection projection : projections) {
             Pose3dc mapped = projection.mappedPose();
 
-            // The mapped image exists only past the destination plane (the projection's
-            // own render clip): shorten the ray to that half-space so hits can't land on
-            // the not-yet-through half, while a ray entering through the portal still
-            // reaches the emerged part behind the plane crossing.
-            Vec3 planePos = projection.destPlane().pos();
-            Vec3 planeNormal = projection.destPlane().normal();
-            double dFrom = from.subtract(planePos).dot(planeNormal);
-            double dTo = to.subtract(planePos).dot(planeNormal);
-            if (dFrom < 0.0 && dTo < 0.0) continue; // entirely on the phantom side
-            Vec3 segFrom = from;
-            Vec3 segTo = to;
-            if (dFrom < 0.0) {
-                segFrom = from.add(to.subtract(from).scale(dFrom / (dFrom - dTo)));
-            } else if (dTo < 0.0) {
-                segTo = from.add(to.subtract(from).scale(dFrom / (dFrom - dTo)));
-            }
+            // Which half of the image physically exists is decided in PLOT SPACE by
+            // the source-half keep filter — the same cut physics and interaction use.
+            // (The old half-space ray gate against the infinite dest plane was
+            // orientation-fragile: it both rejected legitimate rays aimed straight at
+            // the emerged part and let near-portal rays alias onto source-half twin
+            // blocks through the image frame.)
+            java.util.function.Predicate<net.minecraft.core.BlockPos> keep =
+                ipl.sable.transit.IplStraddlePoseMap.getSourceHalfKeepFilter(
+                    projection.sub(), level);
 
             // Distance frame anchor: the ORIGINAL ray origin, not the clipped segment
             // start — distSq must stay comparable with the stock hit's measurement.
             Vector3d localStart = mapped.transformPositionInverse(
                 new Vector3d(from.x, from.y, from.z));
-            Vector3d segStart = mapped.transformPositionInverse(
-                new Vector3d(segFrom.x, segFrom.y, segFrom.z));
+            Vector3d segStart = localStart;
             Vector3d segStop = mapped.transformPositionInverse(
-                new Vector3d(segTo.x, segTo.y, segTo.z));
+                new Vector3d(to.x, to.y, to.z));
 
-            ClipContext localCtx = new ClipContext(
-                new Vec3(segStart.x, segStart.y, segStart.z),
-                new Vec3(segStop.x, segStop.y, segStop.z),
-                access.ipl$getBlock(), access.ipl$getFluid(),
-                access.ipl$getCollisionContext());
-            // The ray is already in plot space — suppress Sable's sub-level projection
-            // (its own recursion flag), leaving pure vanilla traversal whose block reads
-            // resolve through the plot bridge.
-            ((dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension) localCtx)
-                .sable$setDoNotProject(true);
+            // The rays below are already in plot space — Sable's own sub-level
+            // projection is suppressed per cast, leaving pure vanilla traversal whose
+            // block reads resolve through the plot bridge.
 
-            BlockHitResult hit = level.clip(localCtx);
-
-            if (hit.getType() == HitResult.Type.MISS) continue;
+            // Only the THROUGH half exists as this image: hits on source-half blocks
+            // reached via the image frame are phantoms (the twin-block alias) — skip
+            // past them along the ray (bounded), like the native drop pass re-casts.
+            Vec3 rayFrom = new Vec3(segStart.x, segStart.y, segStart.z);
+            Vec3 rayTo = new Vec3(segStop.x, segStop.y, segStop.z);
+            Vec3 rayDir = rayTo.subtract(rayFrom).normalize();
+            BlockHitResult hit = null;
+            for (int guard = 0; guard < 4; guard++) {
+                ClipContext stepCtx = new ClipContext(
+                    rayFrom, rayTo,
+                    access.ipl$getBlock(), access.ipl$getFluid(),
+                    access.ipl$getCollisionContext());
+                ((dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension) stepCtx)
+                    .sable$setDoNotProject(true);
+                BlockHitResult step = level.clip(stepCtx);
+                if (step.getType() == HitResult.Type.MISS) {
+                    hit = null;
+                    break;
+                }
+                if (keep == null || !keep.test(step.getBlockPos())) {
+                    hit = step;
+                    break;
+                }
+                // Phantom: advance just past the hit and re-cast.
+                rayFrom = step.getLocation().add(rayDir.scale(1.0e-3));
+                hit = null;
+            }
+            if (hit == null) continue;
 
             double distSq = hit.getLocation().distanceToSqr(
                 localStart.x, localStart.y, localStart.z);

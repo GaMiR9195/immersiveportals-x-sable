@@ -1,7 +1,0 @@
-{
-  "selector": "#aeronautics:airtight",
-  "properties": {
-    "sable:floating_material": "aeronautics:simple_drag",
-    "sable:floating_scale": 0.33
-  }
-}

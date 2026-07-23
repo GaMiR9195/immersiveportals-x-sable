@@ -78,7 +78,12 @@ public class PortalGenInfo {
         portal.setDestination(toShape.innerAreaBox.getCenterVec());
         portal.setScaling(scale);
         portal.setRotation(rotation);
-        
+
+        // Ship-borne frame: the shape is in plot space, so the template's pose maps
+        // through the owning ship's pose into the world (before flipped/reverse
+        // portals are derived from it). No-op for world-space shapes.
+        ipl.sable.SableBridge.mapShipFramePortalPose(portal);
+
         return portal;
     }
     
@@ -108,7 +113,11 @@ public class PortalGenInfo {
         McHelper.spawnServerEntity(f2);
         McHelper.spawnServerEntity(t1);
         McHelper.spawnServerEntity(t2);
-        
+
+        // Ship-borne frame: glue the cluster primary to the owning ship (the anchor
+        // tick driver rectifies f2/t1/t2). No-op for world-space shapes.
+        ipl.sable.SableBridge.anchorShipFramePortal(f1, fromShape.anchor);
+
         return (new BreakablePortalEntity[]{f1, f2, t1, t2});
     }
     

@@ -51,7 +51,8 @@ public abstract class IplServerHeartbeatMixin {
         // Feed the stall watchdog: records the server thread + a progress
         // timestamp each completed tick. If a future tick hangs, the watchdog
         // daemon dumps this thread's stuck stack (see IplServerWatchdog).
-        ipl.sable.IplServerWatchdog.onTick(Thread.currentThread());
+        ipl.sable.IplServerWatchdog.onTick(
+            Thread.currentThread(), (MinecraftServer) (Object) this);
 
         ipl$tickCount++;
         long now = System.nanoTime();

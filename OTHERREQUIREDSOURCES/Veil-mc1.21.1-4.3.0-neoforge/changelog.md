@@ -1,3 +1,0 @@
-- Add mutable getters for light data
-- Implement a particle editor for Quasar ([#163](https://github.com/FoundryMC/Veil/pull/163))
-- Improve trails module ([#164](https://github.com/FoundryMC/Veil/pull/164))
