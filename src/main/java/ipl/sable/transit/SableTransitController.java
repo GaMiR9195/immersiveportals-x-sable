@@ -66,6 +66,7 @@ public final class SableTransitController {
 
     /** Clear hosted transit state when the server stops. */
     public static void onServerStopping(MinecraftServer server) {
+        IplGrabChain.clearAll();
         IplStraddleSessionSync.clearAll();
         IplPortalRimManager.clearAll();
         IplStraddleCloneBody.clearAll();
@@ -180,6 +181,14 @@ public final class SableTransitController {
                 boolean haveSession = IplStraddleCloneBody.hasSessionKey(key)
                     || IplStraddleTerrainClone.hasSessionKey(key);
 
+                // Staff-held bodies ride the SAME declarative pipeline as free ones. The
+                // old staff freeze (no same-dim transit while held, plus a held-portal pin
+                // blocking every other face) made a fully-inserted body permanently unable
+                // to enter any OTHER portal for the rest of the grab and made sequential
+                // multi-portal drags structurally impossible. Transit while held is safe:
+                // the parent flip is an exact isometry, and the grab chain rebases the
+                // goal and held orientation through the same portal in the same tick, so
+                // the constraint error is invariant across the flip (no yank).
                 Vec3 normal = portal.getNormal().scale(-1.0);
                 PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
                     airship, portal, normal, haveSession ? EXIT_APERTURE_MARGIN : 0.0);
@@ -296,7 +305,9 @@ public final class SableTransitController {
                     // reverse portal requires a genuine majority back-crossing — the
                     // minority-face rule opens the reverse session at ~1-REHOME_FRACTION
                     // and the ship must travel the full hysteresis band to flip again.
-                    IplStaffPortalDragState.onTransitCompleted(c.airship.getUniqueId(), c.portal);
+                    // Grab chains of every player holding this body rebase through the
+                    // exact crossing portal (goal, orientation, beam — one event).
+                    IplGrabChain.onBodyTransit(level.getServer(), c.airship.getUniqueId(), c.portal);
                     // EAGER re-derivation: a majority rehome leaves the minority part
                     // still straddling. Waiting for the next tick's recompute opened a
                     // one-tick hole (no image, no clone, no collision in the old dim —

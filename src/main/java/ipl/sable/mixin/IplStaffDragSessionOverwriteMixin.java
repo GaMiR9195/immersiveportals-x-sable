@@ -15,6 +15,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
+import ipl.sable.duck.IplStaffDragSessionControl;
 
 /**
  * Authoritative replacement for Simulated's PD motor tick. This is intentionally an overwrite:
@@ -23,7 +24,7 @@ import org.spongepowered.asm.mixin.Shadow;
  */
 @Pseudo
 @Mixin(targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler$DragSession", remap = false)
-public abstract class IplStaffDragSessionOverwriteMixin {
+public abstract class IplStaffDragSessionOverwriteMixin implements IplStaffDragSessionControl {
 
     @Shadow(remap = false) @Final private java.util.UUID playerUUID;
     @Shadow(remap = false) @Final private Vector3d playerRelativeGoal;
@@ -64,10 +65,11 @@ public abstract class IplStaffDragSessionOverwriteMixin {
         double eyeZ = Mth.lerp(partial, player.zOld, player.getZ());
         this.localGoal.set(this.playerRelativeGoal).add(eyeX, eyeY, eyeZ);
 
-        // A direct grab has no client portal path. Once its real body completes transit, map
-        // that raw player-frame point through the recorded crossing exactly once, immediately
-        // before Simulated converts world space into its constraint-local motor target.
-        net.minecraft.world.phys.Vec3 goal = ipl.sable.transit.IplStaffPortalDragState.mapGoal(
+        // The absolute cursor point is in the PLAYER's world frame; fold it through the
+        // grab chain (the event-sourced portal path between player and body) into the
+        // body's parent frame, immediately before Simulated converts world space into
+        // its constraint-local motor target.
+        net.minecraft.world.phys.Vec3 goal = ipl.sable.transit.IplGrabChain.mapGoal(
             player, this.subLevel, new net.minecraft.world.phys.Vec3(
                 this.localGoal.x, this.localGoal.y, this.localGoal.z
             )
@@ -81,5 +83,35 @@ public abstract class IplStaffDragSessionOverwriteMixin {
             config.physicsStaffLinearStiffness.getF(), config.physicsStaffLinearDamping.getF(), false, 0.0);
         this.constraint.setMotor(ConstraintJointAxis.LINEAR_Z, this.localGoal.z,
             config.physicsStaffLinearStiffness.getF(), config.physicsStaffLinearDamping.getF(), false, 0.0);
+    }
+
+    /** Keep held orientation continuous when the sub-level parent crosses a rotated portal. */
+    @Override
+    public void ipl$reframeAfterTransit(org.joml.Quaterniondc exitOrientation) {
+        this.orientation.set(new Quaterniond(exitOrientation).mul(this.orientation));
+    }
+
+    /** Keep the stored cursor vector continuous when the dragging player crosses a portal. */
+    @Override
+    public void ipl$rotateRelativeGoal(org.joml.Quaterniondc portalRotation) {
+        portalRotation.transform(this.playerRelativeGoal);
+    }
+
+    /**
+     * Simulated removes sessions without stopDragging when the player logs off or stops
+     * holding the staff; the grab chain must die with its session, never outlive it.
+     */
+    @org.spongepowered.asm.mixin.injection.Inject(
+        method = "onRemoved", at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
+        remap = false, require = 0
+    )
+    private void ipl$endChainOnRemoval(
+        org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci
+    ) {
+        net.minecraft.server.level.ServerLevel hosting =
+            (net.minecraft.server.level.ServerLevel) this.subLevel.getLevel();
+        if (hosting != null && hosting.getServer() != null) {
+            ipl.sable.transit.IplGrabChain.end(hosting.getServer(), this.playerUUID);
+        }
     }
 }

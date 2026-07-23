@@ -44,7 +44,7 @@ public final class IplParentDimSync {
 
     private IplParentDimSync() {}
 
-    private record PendingHandoff(String parentDimId, String portalTransform) {}
+        private record PendingHandoff(String parentDimId, String portalTransform) {}
 
     private static long ipl$lastDiagMs = 0;
 
@@ -160,9 +160,8 @@ public final class IplParentDimSync {
             // space. A pass already in progress may otherwise render a stale source
             // projection as well as the newly native destination sub-level.
             setParent(clientSubLevel, parentDimId);
-            // A through-portal staff pick encoded its packets in the old target frame. The
-            // server now owns post-transit raw-goal conversion, matching direct grabbed ships.
-            IplStraddleStaffPick.onTransitHandoff(subLevelId);
+            // Staff drag frame changes ride the dedicated grab-chain rebase RPC (ordered
+            // after this handoff on the same channel); nothing staff-related to do here.
             // Straddle parity is server-synced state now (IplStraddleSessionStore); the
             // "crossed" session-end snapshot precedes this handoff on the ordered channel,
             // so there is no client-side latch left to clear here.
@@ -190,21 +189,25 @@ public final class IplParentDimSync {
             net.minecraft.world.phys.Vec3 origin,
             net.minecraft.world.phys.Vec3 destination,
             Quaterniond rotation,
-            double scale
+            double scale,
+            net.minecraft.world.phys.Vec3 sourceNormal,
+            UUID portalId
         ) {
             static PortalMapping decode(String encoded) {
                 String[] values = encoded.split(";", -1);
-                if (values.length != 11) {
+                if (values.length != 15) {
                     throw new IllegalArgumentException("invalid portal handoff transform");
                 }
-                double[] decoded = new double[values.length];
-                for (int i = 0; i < values.length; i++) {
-                    decoded[i] = Double.parseDouble(values[i]);
+                double[] decoded = new double[14];
+                for (int i = 0; i < decoded.length; i++) {
+                    decoded[i] = Double.valueOf(values[i]);
                 }
                 return new PortalMapping(
                     new net.minecraft.world.phys.Vec3(decoded[0], decoded[1], decoded[2]),
                     new net.minecraft.world.phys.Vec3(decoded[3], decoded[4], decoded[5]),
-                    new Quaterniond(decoded[6], decoded[7], decoded[8], decoded[9]), decoded[10]
+                    new Quaterniond(decoded[6], decoded[7], decoded[8], decoded[9]), decoded[10],
+                    new net.minecraft.world.phys.Vec3(decoded[11], decoded[12], decoded[13]),
+                    UUID.fromString(values[14])
                 );
             }
 
@@ -225,6 +228,10 @@ public final class IplParentDimSync {
             }
         }
 
+        private static ResourceKey<Level> parentKey(String parentDimId) {
+            return ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(parentDimId));
+        }
+
         private static SubLevel findHostedSubLevel(String subLevelUuid, String parentDimId) {
             ClientLevel hosting = ClientWorldLoader.getWorld(SableSubLevelDimension.SUBLEVELS);
             SubLevelContainer container = SubLevelContainer.getContainer((Level) hosting);
@@ -243,8 +250,7 @@ public final class IplParentDimSync {
 
         private static void setParent(SubLevel subLevel, String parentDimId) {
             ClientLevel hosting = ClientWorldLoader.getWorld(SableSubLevelDimension.SUBLEVELS);
-            ResourceKey<Level> parentKey = ResourceKey.create(
-                Registries.DIMENSION, ResourceLocation.parse(parentDimId));
+            ResourceKey<Level> parentKey = parentKey(parentDimId);
             ClientLevel parent = ClientWorldLoader.getWorld(parentKey);
 
             IplSubLevelDuck duck = (IplSubLevelDuck) subLevel;

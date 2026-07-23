@@ -387,7 +387,7 @@ public final class SableRehomeOps {
         // reveal the fully crossed body to destination portal viewers before the tracking tick
         // adds them, so hand off to both sets now instead of leaving a one-way invisible ship.
         java.util.Set<UUID> handoffRecipients = new java.util.HashSet<>(hosted.getTrackingPlayers());
-        handoffRecipients.addAll(IplStaffPortalDragState.getDraggingPlayers(uuid));
+        handoffRecipients.addAll(IplGrabChain.getDraggingPlayers(uuid));
         net.minecraft.world.level.ChunkPos destinationChunk = new net.minecraft.world.level.ChunkPos(
             net.minecraft.core.BlockPos.containing(mappedPose.position().x(), mappedPose.position().y(), mappedPose.position().z())
         );
@@ -420,7 +420,10 @@ public final class SableRehomeOps {
             Double.toHexString(destination.x), Double.toHexString(destination.y), Double.toHexString(destination.z),
             Double.toHexString(rotation.x), Double.toHexString(rotation.y),
             Double.toHexString(rotation.z), Double.toHexString(rotation.w),
-            Double.toHexString(portal.getScaling())
+            Double.toHexString(portal.getScaling()),
+            Double.toHexString(portal.getNormal().x), Double.toHexString(portal.getNormal().y),
+            Double.toHexString(portal.getNormal().z),
+            portal.getUUID().toString()
         );
     }
 

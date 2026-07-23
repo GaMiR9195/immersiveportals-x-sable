@@ -99,6 +99,7 @@ public class IPModEntryClient {
         if (ModList.get().isLoaded("veil")) {
             Helper.log("Veil is present -- registering IPL clip preprocessor");
             ipl.sable.render.IplVeilCompat.init(modEventBus);
+            ipl.sable.client.IplStaffPortalBeamStage.init();
         }
 
         if (ModList.get().isLoaded("iris")) {
