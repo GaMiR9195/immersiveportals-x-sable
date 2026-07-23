@@ -66,6 +66,22 @@ public final class SableTransitController {
 
     /** Clear hosted transit state when the server stops. */
     public static void onServerStopping(MinecraftServer server) {
+        // Post-drain diagnostic (this runs at stopServer RETURN): any chunk still
+        // loaded in the hosting dim here survived the shutdown drain — the slow-
+        // shutdown / unload-flap investigation reads this line.
+        try {
+            ServerLevel hosting =
+                ipl.sable.dim.SableSubLevelDimension.getSableSubLevelsOrNull(server);
+            if (hosting != null) {
+                var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer
+                    .getContainer((net.minecraft.world.level.Level) hosting);
+                LOG.info("[IPL-SHUTDOWN] hosting dim post-drain: loadedChunks={} liveSubLevels={}",
+                    hosting.getChunkSource().getLoadedChunksCount(),
+                    container == null ? -1 : container.getAllSubLevels().size());
+            }
+        } catch (Throwable t) {
+            LOG.warn("[IPL-SHUTDOWN] post-drain diagnostic failed", t);
+        }
         IplGrabChain.clearAll();
         IplStraddleSessionSync.clearAll();
         IplPortalRimManager.clearAll();

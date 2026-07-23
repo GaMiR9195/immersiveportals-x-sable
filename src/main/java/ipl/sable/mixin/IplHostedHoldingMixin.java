@@ -35,7 +35,15 @@ public abstract class IplHostedHoldingMixin {
 
     @Inject(method = "updateChunkStatus", at = @At("HEAD"), cancellable = true, require = 0)
     private void ipl$noMidSessionHoldsOnHosting(ChunkPos chunkPos, boolean loaded, CallbackInfo ci) {
-        if (!loaded && IplDimAgnostic.isHostingLevel(this.level)) {
+        // SHUTDOWN is exempt: a stopping server must let Sable's holding/unload path
+        // run — it is the symmetric release of the plot chunk's vanilla tickets
+        // (Sable pokes tickingTicketsTracker raw; only moveToUnloaded removes the
+        // pair). Suppressing it forever left the hosting dim's live plot chunks
+        // pinned through stopServer's drain: slow shutdowns, occasionally the
+        // infinite unload-flap freeze. Pause saves keep isRunning()==true, so
+        // mid-session behavior is untouched; boot-restore revives held ships.
+        if (!loaded && IplDimAgnostic.isHostingLevel(this.level)
+            && this.level.getServer() != null && this.level.getServer().isRunning()) {
             ci.cancel();
         }
     }
