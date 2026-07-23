@@ -85,7 +85,8 @@ public final class IplPortalRimManager {
 
             Entity entity = level.getEntity(entry.getKey());
             if (!(entity instanceof Portal portal) || portal.isRemoved()
-                || !portal.isTeleportable() || hasBlockFrame(portal)) {
+                || !portal.isTeleportable() || hasBlockFrame(portal)
+                || ipl$anchoredWithoutExclusion(portal)) {
                 for (int id : rim.ids()) IplStraddlePortalRim.remove(scene, id);
                 LOG.info("[IPL-RIM] portal {} gone — rim removed", entry.getKey());
                 it.remove();
@@ -113,6 +114,7 @@ public final class IplPortalRimManager {
             if (!(candidate instanceof Portal portal) || !portal.isTeleportable()) continue;
             if (RIMS.containsKey(portal.getUUID())) continue;
             if (hasBlockFrame(portal)) continue;
+            if (ipl$anchoredWithoutExclusion(portal)) continue;
             if (portal.getWidth() <= 0 || portal.getHeight() <= 0
                 || portal.getWidth() > MAX_APERTURE || portal.getHeight() > MAX_APERTURE) {
                 continue;
@@ -169,6 +171,19 @@ public final class IplPortalRimManager {
         }
         LOG.info("[IPL-RIM] carrier exclusion {} for {} rim body(ies) vs carrier {}",
             on ? "ON" : "off", rimIds.length, carrier);
+    }
+
+    /**
+     * A ship-anchored portal's rim must not exist before its carrier exclusion:
+     * restored anchors resolve their ship TICKS after the portal entity loads,
+     * and a rim spawned in that window grinds against the hull it's embedded in
+     * (the rejoin wobble). Spawn is deferred — and any rim that slipped in is
+     * evicted — until {@code applyCarrierSideEffects} stores the exclusion for
+     * this face; the respawn then applies it atomically.
+     */
+    private static boolean ipl$anchoredWithoutExclusion(Portal portal) {
+        return IplShipPortalAnchor.isAnchoredCluster(portal)
+            && !CARRIER_EXCLUSIONS.containsKey(portal.getUUID());
     }
 
     /**

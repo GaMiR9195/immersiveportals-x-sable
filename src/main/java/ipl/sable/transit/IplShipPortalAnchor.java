@@ -353,8 +353,35 @@ public final class IplShipPortalAnchor {
             }
         };
         perPortal.accept(portal);
-        Portal flipped = PortalExtension.get(portal).flippedPortal;
+        // Resolve the flipped face by persisted UUID, not just the lazy entity ref:
+        // on a restored anchor the refs may still be unbound, and a missed flipped
+        // face here leaves its rim WITHOUT the carrier exclusion — permanent
+        // rim-vs-hull wobble after rejoin.
+        PortalExtension ext = PortalExtension.get(portal);
+        Portal flipped = ext.flippedPortal;
+        if (flipped == null && ext.flippedPortalId != null
+            && portal.level() instanceof ServerLevel sl
+            && sl.getEntity(ext.flippedPortalId) instanceof Portal boundByUuid) {
+            flipped = boundByUuid;
+        }
         if (flipped != null) perPortal.accept(flipped);
+    }
+
+    /**
+     * Is this portal — or any persisted cluster member — anchored to ANY ship?
+     * Used by the rim manager to hold off rim creation until the anchor's carrier
+     * exclusion has been applied (restored anchors resolve their ship ticks after
+     * the portal loads; a rim spawned in that window grinds against its own hull).
+     */
+    public static boolean isAnchoredCluster(Portal portal) {
+        if (ANCHORS.containsKey(portal.getUUID())) return true;
+        PortalExtension ext = PortalExtension.get(portal);
+        return (ext.flippedPortalId != null && ANCHORS.containsKey(ext.flippedPortalId))
+            || (ext.reversePortalId != null && ANCHORS.containsKey(ext.reversePortalId))
+            || (ext.parallelPortalId != null && ANCHORS.containsKey(ext.parallelPortalId))
+            || (ext.flippedPortal != null && ANCHORS.containsKey(ext.flippedPortal.getUUID()))
+            || (ext.reversePortal != null && ANCHORS.containsKey(ext.reversePortal.getUUID()))
+            || (ext.parallelPortal != null && ANCHORS.containsKey(ext.parallelPortal.getUUID()));
     }
 
     /**
