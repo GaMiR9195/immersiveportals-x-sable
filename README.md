@@ -1,16 +1,3 @@
-# Updates:
-v0.4.0
-1) Added transition for objects that out of portal (way smoother)
-2) Fixed portal cut
-3) A bit less jitter, right now only happens with sub-level difference (original and clone in other dimension)
-4) Fixed sub-level portal enter detection (happened even around portal if sub-level moved fast) 
-5) Now renders block entities while going through portal and after. (and invisible too behind portal)
-
-v0.4.1 
-1) Way better portal crossing detection (double sided portals, are actually 2 separate planes) + I removed bug made by me in 0.4.0 (sub-level through portal rarely)
-2) Just a tiny bit of optimization
-3) RESTORED CLIPPING THROUGH WALLS!!! (was my mistake)
-
 # Immersive Portals × Sable Compatibility Fork
 
 **Platform: NeoForge 1.21.1 · Sable 2.0.3+ · Create Aeronautics 1.3.0+ ·
