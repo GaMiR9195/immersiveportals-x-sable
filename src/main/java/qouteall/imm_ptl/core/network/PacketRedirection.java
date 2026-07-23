@@ -154,17 +154,6 @@ public class PacketRedirection {
             );
         }
         else {
-            // IPL sable dim-agnostic hosting: packets emitted for the hosting dimension
-            // describe per-ship content that the client stores in the ship's PARENT
-            // dimension (stock Sable client model). Remap the stamp per packet; null
-            // means "send unstamped" (delivered under the player's current level).
-            ResourceKey<Level> remapped =
-                ipl.sable.dim.IplHostedPacketRouting.remapRedirectDimension(server, dimension, packet);
-            if (remapped == null) {
-                return packet;
-            }
-            dimension = remapped;
-
             // will use the server argument in the future
             int intDimId = PortalAPI.serverDimKeyToInt(server, dimension);
             Payload payload = new Payload(intDimId, packet);

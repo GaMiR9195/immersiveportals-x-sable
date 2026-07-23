@@ -185,9 +185,13 @@ public final class IplStaffPortalBeamRenderer {
         return null;
     }
 
-    /** Beam anchors are plot coordinates; resolve the owning ship across client levels. */
+    /** Beam anchors are plot coordinates, so resolve through hosting container, never main world. */
     public static ClientSubLevel findHostedSubLevel(Vec3 localAnchor) {
-        return IplClientHostedLookup.findClientShipByPlotChunk(
-            new ChunkPos(BlockPos.containing(localAnchor)));
+        SubLevelContainer container = IplClientHostedLookup.getHostingContainerOrNull();
+        if (container == null) return null;
+        ChunkPos chunk = new ChunkPos(BlockPos.containing(localAnchor));
+        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(chunk);
+        SubLevel sub = plot == null ? null : plot.getSubLevel();
+        return sub instanceof ClientSubLevel clientSub ? clientSub : null;
     }
 }

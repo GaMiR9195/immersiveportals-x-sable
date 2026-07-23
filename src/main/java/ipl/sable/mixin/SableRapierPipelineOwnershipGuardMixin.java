@@ -322,51 +322,6 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
     }
 
     // ======================================================================
-    // Physics OBJECTS (ropes, boxes) created by hosted-ship content.
-    //
-    // Third-party mods (Simulated rope strands, box debris) register physics
-    // objects through the physics system of the level their block entity lives
-    // in — hosted, that's the void hosting dimension's pipeline, whose chart has
-    // no terrain and whose collision groups can never meet the ship's body (it
-    // lives in the PARENT dimension's scene under per-scene ownership). The
-    // world-frame context armed around hosted BE ticks / physics actor passes
-    // names the correct frame: route creation there. The returned handle is
-    // bound to the target pipeline's scene, so every later per-handle native
-    // call is chart-consistent with no further routing.
-    // ======================================================================
-
-    /** The parent pipeline when hosted content is creating physics state under an armed frame. */
-    @Nullable
-    private RapierPhysicsPipeline ipl$armedFrameTarget() {
-        if (!ipl.sable.dim.IplDimAgnostic.isHostingLevel(this.level)) return null;
-        ServerLevel parent = ipl.sable.dim.IplWorldFrameContext.current();
-        if (parent == null || parent == this.level) return null;
-        return ipl.sable.dim.IplSceneOwnership.pipelineOf(parent);
-    }
-
-    @Inject(method = "addRope", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
-    private void ipl$routeAddRope(
-        dev.ryanhcode.sable.api.physics.object.rope.RopePhysicsObject rope,
-        CallbackInfoReturnable<dev.ryanhcode.sable.api.physics.object.rope.RopeHandle> cir
-    ) {
-        RapierPhysicsPipeline target = ipl$armedFrameTarget();
-        if (target != null) {
-            cir.setReturnValue(target.addRope(rope));
-        }
-    }
-
-    @Inject(method = "addBox", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
-    private void ipl$routeAddBox(
-        dev.ryanhcode.sable.api.physics.object.box.BoxPhysicsObject box,
-        CallbackInfoReturnable<dev.ryanhcode.sable.api.physics.object.box.BoxHandle> cir
-    ) {
-        RapierPhysicsPipeline target = ipl$armedFrameTarget();
-        if (target != null) {
-            cir.setReturnValue(target.addBox(box));
-        }
-    }
-
-    // ======================================================================
     // Per-scene routing (portal-physics spec §2.2, phase 1): a hosted ship's
     // body AND its plot voxel data live in the PARENT dimension's scene.
     // ======================================================================

@@ -5,19 +5,20 @@ import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.dim.SableSubLevelDimension;
+import ipl.sable.duck.IplSubLevelDuck;
 import ipl.sable.mixin.client.IplClientSubLevelRenderPoseAccessor;
 import ipl.sable.mixin.client.IplSnapshotInterpolatorAccessor;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
-import org.joml.Quaterniond;
-import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import org.joml.Quaterniond;
+import org.joml.Vector3d;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -25,27 +26,52 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Client receiver for the hosted-transit parent flip.
+ * Client receiver for the hosted sub-level parent-dim stamp, invoked via IP's
+ * {@code McRemoteProcedureCall} right after each full sync of a hosted sub-level
+ * (see {@code SableCrossDimTrackingMixin}'s bootstrap).
  *
- * <p>Under the stock-client model a ship lives in its parent dimension's
- * {@code ClientLevel} container. A parent flip therefore MOVES the client object:
- * {@link IplClientAdopt} re-homes the existing {@code ClientSubLevel} (compiled render
- * data and interpolation timeline intact) into the destination level's container, and
- * this class maps every buffered pose through the exact portal transform first so the
- * delayed interpolation timeline stays continuous — no forward jump, no re-compile gap.
- * The follow-up tracking re-sync (dedupe-guarded) replaces chunk objects with
- * destination-level copies, healing light and block-entity level references.
+ * <p>The client-side {@code ClientSubLevel} is allocated in the sublevels-dim container by
+ * the redirected start-tracking packet; its duck {@code parentLevel} defaults to the hosting
+ * level. This call points it at the actual parent {@code ClientLevel} so the renderer and
+ * client-side collision know which dimension the airship appears in.
  */
 public final class IplParentDimSync {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-parent-sync");
 
-    /** RPC delivery can precede the sync that creates the client sub-level. */
+    /** RPC delivery can precede the redirected full-sync that creates the client sub-level. */
     private static final Map<UUID, PendingHandoff> PENDING_HANDOFFS = new HashMap<>();
 
     private IplParentDimSync() {}
 
-    private record PendingHandoff(String parentDimId, String portalTransform) {}
+        private record PendingHandoff(String parentDimId, String portalTransform) {}
+
+    private static long ipl$lastDiagMs = 0;
+
+    /**
+     * Round-trip bring-up diagnostic: per hosted client ship, the exact links that can
+     * die independently — parent duck, render pose, session store, portal resolution.
+     * 5s cadence; remove after the declarative-straddle stack stabilizes.
+     */
+    public static void clientHeartbeat() {
+        long now = System.currentTimeMillis();
+        if (now - ipl$lastDiagMs < 5000) return;
+        ipl$lastDiagMs = now;
+
+        SubLevelContainer container = IplClientHostedLookup.getHostingContainerOrNull();
+        if (container == null) return;
+        for (SubLevel sub : container.getAllSubLevels()) {
+            if (!(sub instanceof ClientSubLevel clientSub) || sub.isRemoved()) continue;
+            Level parent = ipl.sable.dim.IplDimAgnostic.getParentLevel(sub);
+            var pos = clientSub.renderPose().position();
+            LOG.info("[IPL-CLIENT-DIAG] ship={} parent={} pose=({},{},{}) portal={}",
+                sub.getUniqueId(),
+                parent == null ? "NULL" : parent.dimension().location(),
+                String.format("%.1f", pos.x()), String.format("%.1f", pos.y()),
+                String.format("%.1f", pos.z()),
+                IplStraddleSessionStore.debugPortalKind(clientSub));
+        }
+    }
 
     /** Retries handoffs that arrived before their client sub-level was created. */
     public static void applyPendingHandoffs() {
@@ -68,18 +94,27 @@ public final class IplParentDimSync {
         }
     }
 
-    /** Kept for the alt-container tick call site; nothing periodic left to do. */
-    public static void clientHeartbeat() {
-    }
-
     public static final class RemoteCallables {
+
+        public static void setParent(String subLevelUuid, String parentDimId) {
+            try {
+                SubLevel subLevel = findHostedSubLevel(subLevelUuid, parentDimId);
+                if (subLevel == null) return;
+                setParent(subLevel, parentDimId);
+
+                LOG.info("[IPL-PARENT-SYNC] sub-level {} parent={} (client)",
+                    subLevelUuid, parentDimId);
+            } catch (Throwable t) {
+                LOG.error("[IPL-PARENT-SYNC] failed to apply parent stamp for {}", subLevelUuid, t);
+            }
+        }
 
         /**
          * Atomically switches an already-tracked ship from its source frame to its
-         * destination frame: maps the delayed interpolation timeline through the portal
-         * transform, then adopts the client object into the destination level's
-         * container. The server pose is deliberately not used as the baseline: it is
-         * ahead of Sable's interpolation delay and would produce a visible forward jump.
+         * destination frame. Unlike a normal parent stamp, this also resets Sable's
+         * interpolation timeline into destination space. The server pose is deliberately not
+         * used as the baseline: it is ahead of Sable's interpolation delay and would produce
+         * a visible forward jump on every smooth crossing.
          */
         public static void handoff(String subLevelUuid, String parentDimId, String portalTransform) {
             try {
@@ -93,11 +128,8 @@ public final class IplParentDimSync {
         }
 
         private static boolean applyHandoff(UUID subLevelId, String parentDimId, String portalTransform) {
-            SubLevel subLevel = findSubLevel(subLevelId);
+            SubLevel subLevel = findHostedSubLevel(subLevelId.toString(), parentDimId);
             if (!(subLevel instanceof ClientSubLevel clientSubLevel)) return false;
-
-            ClientLevel destination = ClientWorldLoader.getWorld(parentKey(parentDimId));
-            if (destination == null) return false;
 
             // Projection rendering uses this exact delayed pose and portal transform. The
             // server includes it because a fast crossing can finish before IP tracks the
@@ -124,13 +156,15 @@ public final class IplParentDimSync {
             clientSubLevel.updateLastPose();
             clientSubLevel.forceUpdateBounds();
 
-            // Move the client object into the destination level's container only after
-            // every client pose is in destination space. A pass already in progress may
-            // otherwise render a stale source projection as well as the native ship.
-            if (!IplClientAdopt.adoptInto(clientSubLevel, destination)) {
-                return false;
-            }
-
+            // Do not expose the new parent until every client pose is in destination
+            // space. A pass already in progress may otherwise render a stale source
+            // projection as well as the newly native destination sub-level.
+            setParent(clientSubLevel, parentDimId);
+            // Staff drag frame changes ride the dedicated grab-chain rebase RPC (ordered
+            // after this handoff on the same channel); nothing staff-related to do here.
+            // Straddle parity is server-synced state now (IplStraddleSessionStore); the
+            // "crossed" session-end snapshot precedes this handoff on the ordered channel,
+            // so there is no client-side latch left to clear here.
             IplStraddleRenderCache.invalidateActivePasses();
             // Rebuild Sable's cached render pose from the mapped endpoints now. Both
             // endpoints are the same handoff pose, so this produces no interpolated
@@ -198,16 +232,30 @@ public final class IplParentDimSync {
             return ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(parentDimId));
         }
 
-        /**
-         * Resolve the ship across ALL client levels: the current level's container plus
-         * the cross-level lookup bridge covers whichever container the ship is in now.
-         */
-        private static SubLevel findSubLevel(UUID subLevelId) {
-            ClientLevel current = Minecraft.getInstance().level;
-            if (current == null) return null;
-            SubLevelContainer container = SubLevelContainer.getContainer((Level) current);
-            if (container == null) return null;
-            return container.getSubLevel(subLevelId);
+        private static SubLevel findHostedSubLevel(String subLevelUuid, String parentDimId) {
+            ClientLevel hosting = ClientWorldLoader.getWorld(SableSubLevelDimension.SUBLEVELS);
+            SubLevelContainer container = SubLevelContainer.getContainer((Level) hosting);
+            if (container == null) {
+                LOG.warn("[IPL-PARENT-SYNC] sublevels client world has no container");
+                return null;
+            }
+
+            SubLevel subLevel = container.getSubLevel(UUID.fromString(subLevelUuid));
+            if (subLevel == null) {
+                LOG.warn("[IPL-PARENT-SYNC] no hosted sub-level {} (parent {})",
+                    subLevelUuid, parentDimId);
+            }
+            return subLevel;
+        }
+
+        private static void setParent(SubLevel subLevel, String parentDimId) {
+            ClientLevel hosting = ClientWorldLoader.getWorld(SableSubLevelDimension.SUBLEVELS);
+            ResourceKey<Level> parentKey = parentKey(parentDimId);
+            ClientLevel parent = ClientWorldLoader.getWorld(parentKey);
+
+            IplSubLevelDuck duck = (IplSubLevelDuck) subLevel;
+            duck.ipl$setParentLevel(parent);
+            duck.ipl$setHostingLevel(hosting);
         }
     }
 }

@@ -406,22 +406,6 @@ public final class SableRehomeOps {
             );
         }
 
-        // Stock-client model: the ship's client object lives in its parent dimension's
-        // container, so a parent flip must be followed by a chunk/BE re-sync into the NEW
-        // parent's level. The handoff RPC above adopts the existing client object in place
-        // (seamless, compiled geometry kept); this full re-sync — stamped with the new
-        // parent by IplHostedPacketRouting — then rebinds chunk/BE objects and relight in
-        // the destination level. The client dedupe turns its StartTracking into an
-        // adopt/skip, so nothing is allocated twice and nothing visibly pops.
-        dev.ryanhcode.sable.sublevel.system.SubLevelTrackingSystem trackingSystem =
-            hostingContainer.trackingSystem();
-        for (UUID trackerUuid : handoffRecipients) {
-            ServerPlayer player = server.getPlayerList().getPlayer(trackerUuid);
-            if (player == null) continue;
-            ((ipl.sable.duck.IplTrackingResyncDuck) trackingSystem)
-                .ipl$resendFullSync(player, hosted);
-        }
-
         LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
         return true;
     }

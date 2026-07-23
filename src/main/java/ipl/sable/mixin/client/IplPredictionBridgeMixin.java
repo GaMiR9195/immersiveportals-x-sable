@@ -1,5 +1,6 @@
 package ipl.sable.mixin.client;
 
+import ipl.sable.dim.IplDimAgnostic;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
@@ -36,10 +37,7 @@ public abstract class IplPredictionBridgeMixin {
         BlockPos pos, BlockState state, int flags, CallbackInfo ci
     ) {
         ClientLevel self = (ClientLevel) (Object) this;
-        // Plot coordinates only (globally unique): a ship's confirming block update can be
-        // applied under a different client level than the one the prediction was booked on
-        // (IP cross-portal manipulation, parent flips). World-frame positions never fan out.
-        if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return;
+        if (!IplDimAgnostic.isHostingLevel(self)) return;
 
         for (ClientLevel clientLevel : qouteall.imm_ptl.core.ClientWorldLoader.getClientWorlds()) {
             if (clientLevel == self) continue;
