@@ -90,6 +90,13 @@ public final class SableRehomeOps {
             // Entities that entered plot space in a parent dim (plunger projectiles etc.)
             // are teleported into the hosting dim here, once per hosting-container tick.
             ipl.sable.dim.IplPlotEntityMigration.drain(level);
+            // Low-frequency client parent re-stamp: the one-shot setParent RPC can race
+            // the client's StartTracking allocation; a ship whose client parent stays
+            // null is filtered out of the hosted render gather — it EXISTS (physics,
+            // collision) but is invisible. The client retries pending stamps per tick;
+            // this sweep guarantees a fresh stamp eventually reaches every tracker even
+            // if the original RPC was dropped or expired.
+            restampClientParents(container, level);
             return;
         }
 
@@ -645,6 +652,36 @@ public final class SableRehomeOps {
         } catch (Throwable t) {
             LOG.error("[IPL-REHOME] eager split parent stamp failed for {}",
                 split != null ? split.getUniqueId() : null, t);
+        }
+    }
+
+    private static int restampCounter = 0;
+
+    /**
+     * Every ~5 seconds, re-send the client parent stamp for every hosted sub-level to
+     * every player tracking it. Idempotent client-side (same-parent stamps change
+     * nothing); closes every "client parent never arrived" race for good.
+     */
+    private static void restampClientParents(ServerSubLevelContainer container, ServerLevel hosting) {
+        if (++restampCounter < 100) return;
+        restampCounter = 0;
+
+        MinecraftServer server = hosting.getServer();
+        if (server == null) return;
+        for (SubLevel sub : container.getAllSubLevels()) {
+            if (!(sub instanceof ServerSubLevel hosted) || hosted.isRemoved()) continue;
+            ServerLevel parent = IplDimAgnostic.getServerParentLevel(hosted);
+            if (parent == null) continue;
+            for (UUID trackerUuid : hosted.getTrackingPlayers()) {
+                ServerPlayer viewer = server.getPlayerList().getPlayer(trackerUuid);
+                if (viewer == null) continue;
+                qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                    viewer,
+                    "ipl.sable.client.IplParentDimSync.RemoteCallables.setParent",
+                    hosted.getUniqueId().toString(),
+                    parent.dimension().location().toString()
+                );
+            }
         }
     }
 

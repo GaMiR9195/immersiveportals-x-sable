@@ -55,8 +55,8 @@
     "IplServerEntityGetterInvoker",
     "IplHostingEntityTrackingMixin",
     "IplTrackedEntityInvoker",
-    "IplRopeDiagMixin",
-    "IplRopePacketDiagMixin",
+    "IplHostedClientEntityLookupMixin",
+    "IplLevelEntityGetterInvoker",
     "IplSubLevelContainerOriginAccessor",
     "IplEntityLevelInvoker",
     "IplRapierPipelineAccess",
@@ -107,8 +107,7 @@
     "client.IplStaffPortalBeamPassMixin",
     "client.IplStaffItemAimMixin",
     "client.IplHostedPlotEntityRenderMixin",
-    "client.IplLevelRendererEntityInvoker",
-    "client.IplRopeRenderDiagMixin"
+    "client.IplLevelRendererEntityInvoker"
   ],
   "injectors": {
     "defaultRequire": 0

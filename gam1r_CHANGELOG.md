@@ -1,5 +1,54 @@
 # Sub-Level Mod Compatibility — One Root: Level Identity
 
+## Round 8 — Invisible Single-Block Sub-Levels: The Client Parent Stamp Race
+
+### The report that cracked it
+
+"Single block sub-levels are just not visible." A hosted ship is rendered ONLY when the
+client knows its parent dimension: `getHostedSubLevelsFor` filters the hosting container
+by the client-side parent duck. That parent arrives via ONE `setParent` RPC sent right
+after the tracking full-sync — and the client handler silently DROPPED it when it raced
+the StartTracking allocation (`findHostedSubLevel == null → return`, no retry; unlike the
+handoff RPC, which has a pending queue). A ship that loses this race exists (physics,
+collision) but never renders. Big ships kept winning the race or self-healing through
+later traffic; small static ones — swivel-split tops ("with one block it did nothing"),
+shattered blocks, and every quiet single-block sub-level — stayed invisible forever.
+
+### Changes
+
+- **Client parent-stamp retry** (`IplParentDimSync`): a `setParent` that arrives before
+  its client sub-level exists is queued (`PENDING_PARENT_STAMPS`, 30s expiry) and retried
+  from the same per-tick drain the handoff retry uses. The race is now harmless.
+- **Server periodic re-stamp** (`SableRehomeOps.restampClientParents`): every ~5s the
+  hosting sweep re-sends the parent stamp for every hosted sub-level to every tracker.
+  Idempotent client-side; guarantees a stamp eventually lands even if the original RPC was
+  dropped entirely (relog, packet loss, unknown races).
+- **Client entity-by-id addressing** (`IplHostedClientEntityLookupMixin` +
+  `IplLevelEntityGetterInvoker` + `client/IplClientEntityLookup`, new): the CLIENT half of
+  Round 7's entity bridge. A hosted plunger's client copy resolved its spawn-packet owner
+  id against the hosting client level (the shooter lives in the parent) → `cachedOwner`
+  null → the client copy `discard()`ed itself on its first tick — invisible even with a
+  healthy server entity; the pair-id lookup missed the same way from the ground side.
+  Network-id misses now fall through across the plot-space boundary (hosting ⇄ parents),
+  through raw entity getters (non-recursive).
+- **Removed the temporary [IPL-ROPE] diagnostics** (`IplRopeDiagMixin`,
+  `IplRopePacketDiagMixin`, `client/IplRopeRenderDiagMixin`) — superseded: the reporter's
+  single-block observation identified the dead link (ropes attached to/near sub-levels
+  suffer the same parent-stamp loss; ground-rope strands ride holder BEs whose ships must
+  render for their strands to be dispatched).
+
+### Verification Needed
+
+Assemble/shatter a SINGLE block: it must render immediately and stay rendered. Activate a
+single-block swivel: the top must be visible and attached. Ropes: ground↔ground and
+ship↔ground must both show segments. Plungers: ship + ground shots must stick, stay
+visible and connected (server pair survives via Round 7's bridge, the client copy now
+survives via the client bridge). Watch for `[IPL-PARENT-SYNC] deferred parent stamp
+applied` — its presence confirms the race was real and is being healed.
+
+No build or automated check was run for these changes (verified statically against
+`OTHERREQUIREDSOURCES`).
+
 ## Round 7 — Plot-Space Entities Are Ship Parts; Rope Chain Instrumented
 
 ### Test results after Round 6
