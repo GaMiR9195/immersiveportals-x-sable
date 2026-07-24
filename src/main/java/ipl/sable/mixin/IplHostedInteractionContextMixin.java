@@ -28,6 +28,12 @@ import org.spongepowered.asm.mixin.Mixin;
 @Mixin(ServerPlayerGameMode.class)
 public abstract class IplHostedInteractionContextMixin {
 
+    @org.spongepowered.asm.mixin.Unique
+    private static long ipl$lastArmLogMs = 0;
+
+    @org.spongepowered.asm.mixin.Unique
+    private static long ipl$lastMissLogMs = 0;
+
     @WrapMethod(method = "useItemOn")
     private InteractionResult ipl$armWorldFrameForHostedUse(
         ServerPlayer player, Level level, ItemStack stack, InteractionHand hand,
@@ -37,7 +43,25 @@ public abstract class IplHostedInteractionContextMixin {
             ? IplWorldFrameContext.resolveParentForPlotInteraction(serverLevel, hitResult.getBlockPos())
             : null;
         if (parent == null) {
+            // Diagnostic: a plot-range click that fails to resolve means the arming is
+            // dead for this interaction shape — log throttled so a runtime trace shows it.
+            net.minecraft.core.BlockPos pos = hitResult.getBlockPos();
+            if ((Math.abs(pos.getX()) >= 1_000_000 || Math.abs(pos.getZ()) >= 1_000_000)) {
+                long now = System.currentTimeMillis();
+                if (now - ipl$lastMissLogMs > 2000) {
+                    ipl$lastMissLogMs = now;
+                    org.slf4j.LoggerFactory.getLogger("ipl-hosted-use").warn(
+                        "[IPL-USE] plot-range click at {} did NOT resolve a hosted parent (arming skipped)", pos);
+                }
+            }
             return original.call(player, level, stack, hand, hitResult);
+        }
+        long now = System.currentTimeMillis();
+        if (now - ipl$lastArmLogMs > 2000) {
+            ipl$lastArmLogMs = now;
+            org.slf4j.LoggerFactory.getLogger("ipl-hosted-use").info(
+                "[IPL-USE] armed world-frame {} for hosted ship click at {}",
+                parent.dimension().location(), hitResult.getBlockPos());
         }
         ServerLevel prev = IplWorldFrameContext.push(parent);
         try {

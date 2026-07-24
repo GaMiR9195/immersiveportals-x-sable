@@ -282,43 +282,28 @@ public final class SableRehomeOps {
         //    the plot at assembly). Without this, removeSubLevel(REMOVED) deletes them.
         int entitiesMoved = relocatePlotEntities(source, hosted, parentLevel, hosting);
 
-        // 4.5 Re-anchor the pose to the NEW plot slot. The verbatim-copied pose carries the
-        //     SOURCE plot's rotation point, and the hosted twin starts a FRESH
-        //     MergedMassTracker: its first uploadData() null-baselines lastCenterOfMass and
-        //     jumps rotationPoint to the new-slot center of mass WITHOUT compensating
-        //     position (movement = 0 on a fresh baseline). Any skew between "source
-        //     rotationPoint translated to the new slot" and "recomputed new-slot CoM" —
-        //     a just-assembled ship whose own first merged upload hadn't run yet, in-flight
-        //     merged-mass state, per-block copy ordering — therefore displaced the ship by
-        //     that delta: +0.5 on a fresh single-block assembly, scaling with size.
-        //     Setting rotationPoint := new-slot self CoM and position := the world position
-        //     that SAME material point had under the source mapping makes the world mapping
-        //     identical by construction, and turns the first uploadData into a no-op.
-        Pose3d hostedPose = hosted.logicalPose();
-        org.joml.Vector3dc comNew = hosted.getSelfMassTracker().getCenterOfMass();
-        if (comNew != null) {
+        // 4.5 DIAGNOSTIC ONLY (an earlier active re-anchor here made freshly assembled
+        //     ships vanish — pose mutation at this point is not safe against the live
+        //     enrollment/upload ordering). Log the source-vs-new-slot pose relation so the
+        //     size-scaled assembly height offset can be pinned from a runtime trace:
+        //     position, rotation point, both plots' anchors and the new-slot self CoM.
+        {
+            Pose3d hostedPose = hosted.logicalPose();
+            org.joml.Vector3dc comNew = hosted.getSelfMassTracker().getCenterOfMass();
             ChunkPos srcCenter = source.getPlot().getCenterChunk();
             ChunkPos dstCenter = hosted.getPlot().getCenterChunk();
-            Vector3d slotDelta = new Vector3d(
-                dstCenter.getMinBlockX() - srcCenter.getMinBlockX(), 0.0,
-                dstCenter.getMinBlockZ() - srcCenter.getMinBlockZ());
-            // The material point now sitting at comNew, expressed in the SOURCE plot frame.
-            Vector3d comInSourceFrame = new Vector3d(comNew).sub(slotDelta);
-            Vector3d anchoredPos = hostedPose.transformPosition(comInSourceFrame, new Vector3d());
-
-            double dx = anchoredPos.x - hostedPose.position().x();
-            double dy = anchoredPos.y - hostedPose.position().y();
-            double dz = anchoredPos.z - hostedPose.position().z();
-            if (dx * dx + dy * dy + dz * dz > 1.0e-8) {
-                LOG.info("[IPL-REHOME] pose re-anchor for uuid={}: correction=({}, {}, {}) "
-                        + "(source rotationPoint vs new-slot CoM skew)",
-                    uuid, String.format("%.4f", dx), String.format("%.4f", dy), String.format("%.4f", dz));
-            }
-            hostedPose.position().set(anchoredPos.x, anchoredPos.y, anchoredPos.z);
-            hostedPose.rotationPoint().set(comNew);
-            hostingContainer.physicsSystem().getPipeline()
-                .teleport(hosted, hostedPose.position(), hostedPose.orientation());
-            hosted.updateLastPose();
+            LOG.info("[IPL-REHOME-POSE] uuid={} pos=({},{},{}) rp=({},{},{}) srcPlotMin=({},{}) "
+                    + "dstPlotMin=({},{}) comNew={}",
+                uuid,
+                String.format("%.3f", hostedPose.position().x()),
+                String.format("%.3f", hostedPose.position().y()),
+                String.format("%.3f", hostedPose.position().z()),
+                String.format("%.3f", hostedPose.rotationPoint().x()),
+                String.format("%.3f", hostedPose.rotationPoint().y()),
+                String.format("%.3f", hostedPose.rotationPoint().z()),
+                srcCenter.getMinBlockX(), srcCenter.getMinBlockZ(),
+                dstCenter.getMinBlockX(), dstCenter.getMinBlockZ(),
+                comNew == null ? "null" : String.format("(%.3f,%.3f,%.3f)", comNew.x(), comNew.y(), comNew.z()));
         }
 
         // 5. Transfer physics velocity verbatim (no portal rotation — same world frame).

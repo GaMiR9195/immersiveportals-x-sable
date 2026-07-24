@@ -1,5 +1,62 @@
 # Sub-Level Mod Compatibility — One Root: Level Identity
 
+## Round 2 — Tracking Sinks, Flywheel Sweep, Re-anchor Rollback
+
+### Findings from the first runtime test
+
+Wheels fixed. Ropes still fully invisible, Flywheel parts (swivel bearing,
+throttle lever, torsion springs) still missing, springs still camera-dependent,
+assembler "too far from ground" unchanged, and the rehome pose re-anchor made
+freshly assembled ships VANISH (regression).
+
+### Causes and changes
+
+- **Tracking-based packet sinks sent to nobody** (`IplHostingChunkTrackersMixin`,
+  new): mods address per-chunk packet sinks through `ChunkMap.getPlayers`
+  (NeoForge `PacketDistributor.trackingChunk`, Veil's
+  `VeilPacketManager.tracking(be)` — which carries Simulated's rope strand
+  point snapshots — Create chunk syncs). Hosting plot chunks have no vanilla
+  trackers, so those packets were dropped: rope strands never received points
+  (fully invisible regardless of light), spring/BE live state never synced.
+  Plot-chunk `getPlayers` on the hosting level now resolves to the owning
+  sub-level's tracking players — the block-event broadcast fix generalized one
+  layer lower.
+- **Flywheel reroute never fired** for Sable-managed plot chunks (custom chunk
+  pipeline bypasses the vanilla `LevelChunk` add path; parent can also sync
+  after the BE arrives). Added a safety-net sweep from the hosting container's
+  client tick (`IplClientFlywheelReroute.sweepHostedContainer`, wired in
+  `SableAltContainerTickMixin`): any hosted plot BE not yet queued is
+  registered into its parent's visualization world; already-queued BEs cost a
+  weak-map hit.
+- **Rehome pose re-anchor rolled back to a diagnostic log** (`SableRehomeOps`):
+  the active mutation was unsafe against live enrollment/upload ordering.
+  `[IPL-REHOME-POSE]` now logs position, rotation point, both plot anchors and
+  the new-slot self CoM per rehome — one runtime trace pins the size-scaled
+  assembly offset exactly.
+- **Interaction arming instrumented** (`IplHostedInteractionContextMixin`):
+  throttled `[IPL-USE] armed ...` / `... did NOT resolve` logs show whether the
+  assembler's click-time ground check actually runs armed — if the miss log
+  fires (or neither fires) on an assembler click, the disassembly entry point
+  bypasses `useItemOn` and needs its own arming site.
+
+### Files
+
+- `src/main/java/ipl/sable/mixin/IplHostingChunkTrackersMixin.java` (new)
+- `src/main/java/ipl/sable/client/IplClientFlywheelReroute.java`
+- `src/main/java/ipl/sable/mixin/client/SableAltContainerTickMixin.java`
+- `src/main/java/ipl/sable/transit/SableRehomeOps.java`
+- `src/main/java/ipl/sable/mixin/IplHostedInteractionContextMixin.java`
+- `src/main/resources/ipl_sable.mixins.json`
+
+### Verification Needed
+
+Ropes visible with live physics points; torsion springs / swivel bearing /
+throttle lever rendered on hosted ships; springs stable from all angles;
+assembling a structure no longer vanishes it (offset may be back — capture
+`[IPL-REHOME-POSE]` lines); on an assembler click capture `[IPL-USE]` lines.
+
+No build or automated check was run for these changes.
+
 ## Hosted Level Identity For Third-Party Mods
 
 ### Symptom

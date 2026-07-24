@@ -73,6 +73,12 @@ public abstract class SableAltContainerTickMixin {
                 SubLevelContainer container = SubLevelContainer.getContainer((Level) alt);
                 if (container == null) continue;
                 container.tick();
+                if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(alt)) {
+                    // Flywheel visual safety net: plot BEs missed by the chunk hooks
+                    // (Sable's own chunk pipeline / late parent sync) get queued into
+                    // their parent's visualization world here.
+                    ipl.sable.client.IplClientFlywheelReroute.sweepHostedContainer(container);
+                }
             }
             ipl.sable.client.IplParentDimSync.applyPendingHandoffs();
             ipl.sable.client.IplParentDimSync.clientHeartbeat();

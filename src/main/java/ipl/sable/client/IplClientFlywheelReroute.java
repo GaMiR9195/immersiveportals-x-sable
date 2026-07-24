@@ -53,6 +53,36 @@ public final class IplClientFlywheelReroute {
 
     private IplClientFlywheelReroute() {}
 
+    /**
+     * Safety-net sweep, run from the hosting container's client tick: Sable manages plot
+     * chunks through its own pipeline, so vanilla {@code LevelChunk} add hooks can miss
+     * plot BEs entirely (and a BE can arrive before its sub-level's parent is synced).
+     * Cheap: already-queued BEs are one weak-map hit.
+     */
+    public static void sweepHostedContainer(dev.ryanhcode.sable.api.sublevel.SubLevelContainer container) {
+        if (!ipl$flywheelPresent()) return;
+        for (SubLevel sub : container.getAllSubLevels()) {
+            if (sub == null || sub.isRemoved()) continue;
+            Level parentRaw = ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
+            if (!(parentRaw instanceof ClientLevel parent)
+                || ipl.sable.dim.IplDimAgnostic.isHostingLevel(parent)) continue;
+
+            for (dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder holder : sub.getPlot().getLoadedChunks()) {
+                net.minecraft.world.level.chunk.LevelChunk chunk = holder.getChunk();
+                if (chunk == null) continue;
+                for (BlockEntity be : chunk.getBlockEntities().values()) {
+                    if (be == null || be.isRemoved() || QUEUED_UNDER.containsKey(be)) continue;
+                    if (queueAdd(parent, be)) {
+                        QUEUED_UNDER.put(be, parent);
+                        SUB_BES.computeIfAbsent(sub.getUniqueId(),
+                                id -> Collections.newSetFromMap(Collections.synchronizedMap(new WeakHashMap<>())))
+                            .add(be);
+                    }
+                }
+            }
+        }
+    }
+
     public static void onBlockEntityAdded(Level chunkLevel, BlockEntity be) {
         if (!ipl.sable.dim.IplDimAgnostic.isHostingLevel(chunkLevel)) return;
         BlockPos pos = be.getBlockPos();

@@ -45,6 +45,7 @@
     "IplHostedWorldFrameRouterMixin",
     "IplHostedInteractionContextMixin",
     "IplDisassemblyPortalRestoreMixin",
+    "IplHostingChunkTrackersMixin",
     "IplEntityLevelInvoker",
     "IplRapierPipelineAccess",
     "IplRapier3DInvoker",
