@@ -51,6 +51,12 @@
     "IplMergedMassBaselineAccessor",
     "IplSplitParentStampMixin",
     "IplPlotSpaceEntityMigrationMixin",
+    "IplHostedEntityLookupMixin",
+    "IplServerEntityGetterInvoker",
+    "IplHostingEntityTrackingMixin",
+    "IplTrackedEntityInvoker",
+    "IplRopeDiagMixin",
+    "IplRopePacketDiagMixin",
     "IplSubLevelContainerOriginAccessor",
     "IplEntityLevelInvoker",
     "IplRapierPipelineAccess",
@@ -99,7 +105,10 @@
     "client.IplStaffRenderPoseMixin",
     "client.IplStaffBeamMixin",
     "client.IplStaffPortalBeamPassMixin",
-    "client.IplStaffItemAimMixin"
+    "client.IplStaffItemAimMixin",
+    "client.IplHostedPlotEntityRenderMixin",
+    "client.IplLevelRendererEntityInvoker",
+    "client.IplRopeRenderDiagMixin"
   ],
   "injectors": {
     "defaultRequire": 0

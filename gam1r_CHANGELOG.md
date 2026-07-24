@@ -1,5 +1,112 @@
 # Sub-Level Mod Compatibility — One Root: Level Identity
 
+## Round 7 — Plot-Space Entities Are Ship Parts; Rope Chain Instrumented
+
+### Test results after Round 6
+
+Assembly offset, disassembly, swivel bearing (both directions), and springs verified
+working. Two survivors: rope strands still fully invisible, and plunger projectiles
+still disappear the moment they hit a sub-level (fine on normal ground).
+
+### Plunger — the actual death, found in source
+
+Round 6 correctly migrated the plunger into the hosting dimension when it re-positions
+itself into plot coordinates (stock behavior — plot coords are the "stuck to the ship"
+frame). What killed it was the FIRST TICK after migration:
+`LaunchedPlungerEntity.tick()` resolves `getOwner()` (and the pair partner via
+`getOther()`) through `ServerLevel.getEntity(uuid)` on its OWN level — the hosting
+dimension, where the shooter does not exist — and `discard()`s itself on a null owner.
+The ground-side partner then discards through the "pair recorded but unresolvable"
+branch. And even a surviving plunger would have been invisible: nothing ever synced or
+rendered entities living in the hosting dimension.
+
+Three structural pieces complete the "plot-space entities are ship parts" doctrine:
+
+- **Entity-by-UUID global addressing** (`IplHostedEntityLookupMixin` +
+  `IplServerEntityGetterInvoker`, new): a `getEntity(uuid)` MISS on the hosting level
+  falls through to the parent levels; a miss on any other level additionally checks the
+  hosting level. Entity references (owners, pair links) now resolve across the plot-space
+  boundary in both directions — the entity twin of the sub-level UUID bridge. Reads go
+  through the raw entity getter, so the fallthrough cannot recurse.
+- **Hosting entity tracking** (`IplHostingEntityTrackingMixin` +
+  `IplTrackedEntityInvoker`, new): stock Sable already projects plot-entity positions for
+  tracking distance and answers plot-chunk `isChunkTracked` from sub-level trackers — the
+  only hosted gap was the INPUT (no players ever inhabit the hosting dim, so
+  `updatePlayers` never ran). A per-tick viewer sweep now feeds every hosting-level
+  tracked entity the union of hosted sub-levels' tracking players, and the whole tracking
+  tick (spawns, `sendChanges` movement, removals) is wrapped in IP's `PacketRedirection`
+  so clients apply those packets to the hosting `ClientLevel` — same doctrine as the plot
+  chunk send stamp.
+- **Hosted plot-entity render pass** (`client/IplHostedPlotEntityRenderMixin` +
+  `IplLevelRendererEntityInvoker`, new): during the parent level's render (the hosted BE
+  pass phase), entities of the hosting client level whose plot's ship is parented to the
+  rendered level are dispatched through the real `LevelRenderer.renderEntity` — Sable's
+  own `renderEntityOnSubLevel` transform then places them on the ship exactly like stock
+  (light sampled plot-local from the hosting level, as stock).
+
+Known cosmetic gap: the client-side `getOwner()` of a hosting-dim plunger resolves null
+(client entity lookup is not bridged), so the shooter's HUD link duck is not set while
+the plunger sticks to a ship. Server logic and the pair constraint are unaffected.
+
+### Ropes — every static link passes; the chain is now instrumented
+
+The full chain was re-traced against the vendored sources with Round 6 in place:
+creation frame math (`projectOutOfSubLevel` world-frame points), parent-identity physics
+system + manager bucket + `wouldBeLoaded` gate, the tracking-player resolution
+(`ChunkMap.getPlayers` plot-range → Sable's own mixin → BRIDGED `getPlayersTracking` →
+sub-level trackers — verified to route through the bridged `getPlot`), the per-container
+tracking plugin (fires regardless of ship count; the fused step publishes the same
+pre/post physics events stock does), the Veil data packet, the client BE resolve at plot
+coordinates (client chunk-cache mixin → bridged container chunk), client bucket identity,
+interpolation timeline consistency (parent-side end to end), and the native atlas rope
+path (`createRope` stamps the creating chart, `Rapier3D.tick` runs rope maintenance for
+EVERY pipeline unarmed, points are world-step bodies). Everything checks out — including
+several links runtime-proven by the features Round 6 fixed.
+
+Since a static trace cannot find the dead link when every link traces alive, this round
+ships throttled [IPL-ROPE] diagnostics at each stage (TEMPORARY — remove when verified):
+
+- `IplRopeDiagMixin` (new): `createRope` result + frame; per-2s server strand probe
+  (active flag, BOTH add-gate inputs recomputed, tracker count, point count);
+  `receiveClientStrand` acceptance.
+- `IplRopePacketDiagMixin` (new): client packet arrival — an arrival without a matching
+  receive isolates the client BE-resolve link.
+- `client/IplRopeRenderDiagMixin` (new): render-gate probe (ownsRope / client strand
+  present / point count) — closes the chain at the renderer's silent early-outs.
+
+One test run with ropes placed on ground AND on a ship pins the dead link: compare which
+[IPL-ROPE] stage stops reporting.
+
+### Files
+
+- `src/main/java/ipl/sable/mixin/IplHostedEntityLookupMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplServerEntityGetterInvoker.java` (new)
+- `src/main/java/ipl/sable/mixin/IplHostingEntityTrackingMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplTrackedEntityInvoker.java` (new)
+- `src/main/java/ipl/sable/mixin/IplRopeDiagMixin.java` (new, TEMPORARY)
+- `src/main/java/ipl/sable/mixin/IplRopePacketDiagMixin.java` (new, TEMPORARY)
+- `src/main/java/ipl/sable/mixin/client/IplHostedPlotEntityRenderMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplLevelRendererEntityInvoker.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplRopeRenderDiagMixin.java` (new, TEMPORARY)
+- `src/main/resources/ipl_sable.mixins.json`
+
+### Verification Needed
+
+Plunger: shoot one plunger at a hosted ship and one at the ground — both must stick,
+stay visible (the ship one rendered ON the ship, moving with it), keep their pair link,
+and neither may vanish. Then break the plunged block: the plunger must release cleanly
+(the stamped removal packet cleans the client copy).
+
+Ropes: create one ground↔ground rope and one ship↔ground rope, then collect the log.
+For each rope the [IPL-ROPE] sequence should read: createRope → server strand
+(active=true, attachmentsLoaded=true, wouldBeLoaded=true, trackers≥1, points≥2) →
+client packet arrived → client received → render probe (ownsRope=true, clientStrand=true,
+points≥2). The FIRST stage whose values go wrong (or which never logs) is the dead link —
+report those lines.
+
+No build or automated check was run for these changes (verified statically against
+`OTHERREQUIREDSOURCES`).
+
 ## Round 6 — The Root, Finished: Server Identity + Coherent Hosted Lifecycle
 
 ### Why Rounds 2–4 could not hold (found by static trace against the vendored sources)
