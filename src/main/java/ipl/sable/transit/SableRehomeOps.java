@@ -247,7 +247,35 @@ public final class SableRehomeOps {
             return;
         }
 
-        int[] plotXZ = SableTransitOps.findFirstEmptyPlotForMirror(hostingContainer);
+        // SAME-SLOT rehome: allocate the twin at the source's GLOBAL plot coordinates
+        // whenever that slot is free in the hosting grid. Every persisted plot-coordinate
+        // reference then survives the rehome — constraint anchors, mods' stored link/plate
+        // positions (Simulated's swivel bearing kept the split part's platePos and
+        // re-attached its rotary constraint against the OLD slot's coordinates: with a
+        // moved slot, Sable's anchor validation threw "pos2 does not fall within the plot"
+        // and crashed the server). Slot delta zero also means the verbatim pose carries
+        // over exactly.
+        int[] plotXZ = null;
+        {
+            ChunkPos srcCenter = source.getPlot().getCenterChunk();
+            int logPlot = hostingContainer.getLogPlotSize();
+            int globalX = srcCenter.x >> logPlot;
+            int globalZ = srcCenter.z >> logPlot;
+            int localX = globalX - ((ipl.sable.mixin.IplSubLevelContainerOriginAccessor) hostingContainer).ipl$originX();
+            int localZ = globalZ - ((ipl.sable.mixin.IplSubLevelContainerOriginAccessor) hostingContainer).ipl$originZ();
+            int side = 1 << hostingContainer.getLogSideLength();
+            if (localX >= 0 && localX < side && localZ >= 0 && localZ < side
+                && !hostingContainer.getOccupancy().get(hostingContainer.getIndex(localX, localZ))) {
+                plotXZ = new int[]{localX, localZ};
+            } else {
+                LOG.warn("[IPL-REHOME] same-slot ({},{}) unavailable in hosting grid for uuid={}; "
+                        + "falling back to first-free (stored plot references may go stale)",
+                    globalX, globalZ, source.getUniqueId());
+            }
+        }
+        if (plotXZ == null) {
+            plotXZ = SableTransitOps.findFirstEmptyPlotForMirror(hostingContainer);
+        }
         if (plotXZ == null) {
             LOG.warn("[IPL-REHOME] hosting plot grid full; uuid={} stays in legacy model",
                 source.getUniqueId());

@@ -1,5 +1,51 @@
 # Sub-Level Mod Compatibility — One Root: Level Identity
 
+## Round 4 — Same-Slot Rehome + Constraint Soft-Fail (Swivel Crash)
+
+### Crash trace analysis
+
+`SwivelBearingBlockEntity.checkPersistence → reattachConstraint → addConstraint →
+validateAnchors: "pos2 does not fall within the plot of the second sub-level"`.
+Simulated persists the split part's link position (`platePos`) in PLOT
+coordinates and re-attaches its rotary constraint from a BE tick. A swivel
+activated on a WORLD structure creates the split part in the parent container;
+our rehome then moved it to a DIFFERENT hosting slot — the stored anchor now
+points outside the twin's plot, Sable's validation throws mid-tick, whole
+server crashes.
+
+### Changes
+
+- **Same-slot rehome** (`SableRehomeOps` + `IplSubLevelContainerOriginAccessor`,
+  new): the hosted twin is allocated at the source's GLOBAL plot coordinates
+  whenever that slot is free in the hosting grid. Every persisted
+  plot-coordinate reference (constraint anchors, mods' stored link/plate
+  positions) survives the rehome, and the verbatim pose carries over with slot
+  delta zero. Falls back to first-free with a warning when the slot is taken
+  (two dimensions' ships on the same source slot).
+- **Constraint validation soft-fail**
+  (`IplConstraintValidationSoftFailMixin`, new): a stale persisted anchor is
+  data, not a code invariant — `RapierPhysicsPipeline.addConstraint` now
+  returns null with a throttled warning instead of throwing out of a ticking
+  block entity and killing the server. Callers already handle a null handle
+  (Simulated re-checks persistence and retries).
+
+### Files
+
+- `src/main/java/ipl/sable/transit/SableRehomeOps.java`
+- `src/main/java/ipl/sable/mixin/IplSubLevelContainerOriginAccessor.java` (new)
+- `src/main/java/ipl/sable/mixin/IplConstraintValidationSoftFailMixin.java` (new)
+- `src/main/resources/ipl_sable.mixins.json`
+
+### Verification Needed
+
+Swivel bearing activated on a ground structure: split works, top stays
+attached, no crash (old saves may log `[IPL-CONSTRAINT] rejected invalid
+constraint` once per stale anchor — freshly split swivels must not).
+`[IPL-REHOME]` should stop reporting differing src/dst plot minima in the
+`[IPL-REHOME-POSE]` line.
+
+No build or automated check was run for these changes.
+
 ## Round 3 — Connections: Physics Objects, Accelerator Routing, First-Upload Jump
 
 ### The pattern from the second test
