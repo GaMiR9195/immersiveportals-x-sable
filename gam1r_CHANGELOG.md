@@ -1,5 +1,76 @@
 # Sub-Level Mod Compatibility — One Root: Level Identity
 
+## Round 3 — Connections: Physics Objects, Accelerator Routing, First-Upload Jump
+
+### The pattern from the second test
+
+Everything that CONNECTS two points broke identically: rope strands (fully
+invisible), plunger-gun pairs (lying disconnected), swivel bearing tops
+(detached from their base), spring coils (endpoints render, middle missing).
+Plus: disassembly placed the ship's blocks into the void dimension at world
+coordinates, and assembly still shifted ships by 0.5 along the assembler's
+facing (scaling with size; swivel splits identical, single-block splits
+unaffected).
+
+### Causes and changes
+
+- **Arbitrary physics objects never activated / lived in the wrong system**
+  (`IplHostedPhysicsObjectRoutingMixin` + `IplHostedTicketQueryRoutingMixin` +
+  `IplHostedPhysicsObjects`, new): mods resolve their physics system from
+  `be.getLevel()` — the hosting void. A world-frame `ArbitraryPhysicsObject`
+  (rope strand, joint, connection) added there is gated by
+  `wouldBeLoaded(hostingLevel, object)`, which always answers no over void
+  terrain — Simulated's rope strands were never simulated at all (hence no
+  points even after the tracking-sink fix). Armed adds and the ticket query now
+  route to the PARENT's system; removals follow a recorded object→system map so
+  unarmed unload paths clean up correctly.
+- **`LevelAccelerator` bypassed the world-frame router**
+  (`IplLevelAcceleratorOverrideMixin`): Sable's `moveBlocks` reads/writes
+  chunks through the accelerator's own cache, not `Level` methods — an armed
+  hosted DISASSEMBLY therefore materialized the ship's blocks in the void at
+  world coordinates. The accelerator's `getChunk` now applies the same gate as
+  the router: hosting level + armed context + world-frame chunk → the parent's
+  chunk.
+- **Assembly/split offset root confirmed and fixed**
+  (`IplMergedMassFirstUploadMixin`): `MergedMassTracker.uploadData` keeps the
+  world mapping invariant on CoM moves (`position += R·(CoM − lastCoM)`), but
+  the FIRST upload null-baselines `lastCenterOfMass`, computes zero movement,
+  and still jumps `rotationPoint` from assembly's `plotAnchor + 0.5` fallback
+  to the real CoM — shifting the ship by `R·(rpBefore − CoM)`: 0.5 along the
+  assembler's facing for assembler+block, growing with size, zero for a single
+  split block (CoM == rotation point) — matching every observation. The wrap
+  applies the missing position compensation and re-teleports. A rehome guard
+  skips plot-slot-translation jumps (> 512 blocks), which are correct
+  uncompensated; the world-assembly case is fixed parent-side before the
+  rehome copies the pose.
+- **Spring coil / partner renders** (`IplHostedSubLevelRenderMixin`): the
+  hosted BE render pass now arms the client world-frame context, so renderers
+  resolving partners through the BE's level FIELD at world coordinates
+  (SpringRenderer's `getPairedSpring`) read this pass's dimension instead of
+  the void.
+
+### Files
+
+- `src/main/java/ipl/sable/mixin/IplHostedPhysicsObjectRoutingMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplHostedTicketQueryRoutingMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplMergedMassFirstUploadMixin.java` (new)
+- `src/main/java/ipl/sable/dim/IplHostedPhysicsObjects.java` (new)
+- `src/main/java/ipl/sable/mixin/IplLevelAcceleratorOverrideMixin.java`
+- `src/main/java/ipl/sable/mixin/client/IplHostedSubLevelRenderMixin.java`
+- `src/main/resources/ipl_sable.mixins.json`
+
+### Verification Needed
+
+Ropes visible and simulated (plunger pairs connected, winch/connector strands);
+swivel bearing top stays attached, split has no offset and no crash (if it
+still crashes, capture the crash report); springs show the coil between ship
+and ground; assembler+block assembly lands exactly in place (watch for
+`[IPL-MASS] first-upload rotation-point jump compensated` — nonzero values
+confirm the fix engaging); disassembly places blocks into the ship's actual
+dimension. Multi-block swivel split crash needs its log if it persists.
+
+No build or automated check was run for these changes.
+
 ## Round 2 — Tracking Sinks, Flywheel Sweep, Re-anchor Rollback
 
 ### Findings from the first runtime test

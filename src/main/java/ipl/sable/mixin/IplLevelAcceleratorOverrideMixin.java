@@ -25,6 +25,29 @@ public abstract class IplLevelAcceleratorOverrideMixin {
     @org.spongepowered.asm.mixin.Final
     private int minBuildHeight;
 
+    @org.spongepowered.asm.mixin.Shadow(remap = false)
+    @org.spongepowered.asm.mixin.Final
+    private Level level;
+
+    /**
+     * WORLD-FRAME routing, accelerator edition: {@code LevelAccelerator} reads and writes
+     * chunks directly (its own cache over the chunk source), BYPASSING every routed
+     * {@code Level} method — so Sable's {@code moveBlocks} during an armed hosted
+     * DISASSEMBLY resolved world-frame chunks on the hosting void and placed the ship's
+     * blocks there. Mirror the router's gate here: hosting-level accelerator + armed
+     * context + world-frame chunk → the parent's chunk. Plot-range chunks stay native.
+     */
+    @Inject(method = "getChunk(II)Lnet/minecraft/world/level/chunk/LevelChunk;",
+        at = @At("HEAD"), cancellable = true, require = 0)
+    private void ipl$worldFrameChunkFromParent(int chunkX, int chunkZ, CallbackInfoReturnable<LevelChunk> cir) {
+        if (IplTerrainReadOverride.get() != null) return; // explicit override wins (below)
+        if (Math.abs(chunkX) >= 62_500 || Math.abs(chunkZ) >= 62_500) return;
+        if (!ipl.sable.dim.IplDimAgnostic.isHostingLevel(this.level)) return;
+        net.minecraft.server.level.ServerLevel parent = ipl.sable.dim.IplWorldFrameContext.current();
+        if (parent == null || parent == this.level) return;
+        cir.setReturnValue(parent.getChunk(chunkX, chunkZ));
+    }
+
     @Inject(method = "getChunk(II)Lnet/minecraft/world/level/chunk/LevelChunk;",
         at = @At("HEAD"), cancellable = true, require = 0)
     private void ipl$readFromOverrideLevel(int chunkX, int chunkZ, CallbackInfoReturnable<LevelChunk> cir) {
