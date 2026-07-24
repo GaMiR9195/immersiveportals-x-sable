@@ -43,6 +43,7 @@ public final class SableBridge {
         PRESENT = p;
         if (PRESENT) {
             LOG.info("[IPL-SABLE] Sable detected on classpath; sub-level-aware integration active.");
+            LOG.info("[IPL-SABLE] ======== FIX BUILD: ROUND 5 (2026-07-24) ========");
         } else {
             LOG.info("[IPL-SABLE] Sable not present; IP runs in upstream-equivalent mode.");
         }
