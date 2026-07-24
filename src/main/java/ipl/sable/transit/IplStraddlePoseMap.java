@@ -218,7 +218,7 @@ public final class IplStraddlePoseMap {
 
     /**
      * Atlas pick fix: a world point that lies on a straddling ship's THROUGH half
-     * (past the portal plane, inside the aperture column — the physics clip's cut)
+     * (past the portal plane — the physics clip's cut)
      * physically exists at its MAPPED position. Remaps such points; returns null when
      * the point is on the source half (caller keeps the unmapped projection).
      * Multi-straddle: the first session whose cut contains the point wins.
@@ -238,14 +238,6 @@ public final class IplStraddlePoseMap {
             double d = (world.x - origin.x) * n.x + (world.y - origin.y) * n.y
                 + (world.z - origin.z) * n.z;
             if (d >= 0.0) return; // source half
-            Vec3 w = portal.getAxisW();
-            Vec3 h = portal.getAxisH();
-            double lw = (world.x - origin.x) * w.x + (world.y - origin.y) * w.y
-                + (world.z - origin.z) * w.z;
-            if (Math.abs(lw) > portal.getWidth() * 0.5 + APERTURE_CLIP_MARGIN) return;
-            double lh = (world.x - origin.x) * h.x + (world.y - origin.y) * h.y
-                + (world.z - origin.z) * h.z;
-            if (Math.abs(lh) > portal.getHeight() * 0.5 + APERTURE_CLIP_MARGIN) return;
             result[0] = mapping.mapPoint(world);
         });
         return result[0];
@@ -370,14 +362,6 @@ public final class IplStraddlePoseMap {
     }
 
     /**
-     * Lateral slack around the aperture rectangle for {@link #getBlockCollisionKeepFilter}:
-     * block CENTERS of edge blocks flush with the portal frame sit up to half a block
-     * outside the exact aperture. Over-covering is safe — ship geometry past the plane
-     * outside the aperture column cannot exist mid-crossing (it would have been blocked).
-     */
-    private static final double APERTURE_CLIP_MARGIN = 0.5;
-
-    /**
      * Blocks. Plane slack for COLLISION filters only (raycast/wireframe stays strict).
      * The filters cut by block CENTER but the collision frame is chosen by ENTITY
      * center — without slack, an entity whose center hasn't crossed the plane, standing
@@ -406,24 +390,21 @@ public final class IplStraddlePoseMap {
         if (!IplDimAgnostic.isHosted(sub)) return null;
         StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
         if (frame != null) {
-            if (frame.portal() == null) return null; // terrain-clone: no aperture data
+            if (frame.portal() == null) return null; // terrain-clone: no portal plane
             return buildKeepFilter(
                 frame.mapping().mapPose(sub.logicalPose()),
                 frame.mapping().mapPoint(frame.portal().getOriginPos()),
                 frame.mapping().mapVec(frame.portal().getNormal().scale(-1.0)),
-                SEAM_SUPPORT_MARGIN,
-                null, null, 0.0, 0.0);
+                SEAM_SUPPORT_MARGIN);
         }
         return getSourceHalfKeepFilter(sub, contextLevel, SEAM_SUPPORT_MARGIN);
     }
 
     /**
      * Keep-filter for plot blocks reached through the ship's NATIVE frame (real pose):
-     * drops the through-half — past the portal plane, inside the aperture column only.
-     * A ship part reaching past the plane's lateral extension BESIDE the portal frame is
-     * still physically on this side and stays. This is the gameplay counterpart of the
-     * native aperture contact clip (spec §2.5). Null when the ship isn't straddling out
-     * of {@code contextLevel}.
+     * drops the through-half — past the portal plane across its full infinite span. This
+     * matches the native portal-plane contact clip for an active straddle session. Null
+     * when the ship isn't straddling out of {@code contextLevel}.
      */
     @Nullable
     public static java.util.function.Predicate<BlockPos> getSourceHalfKeepFilter(
@@ -451,11 +432,7 @@ public final class IplStraddlePoseMap {
         forEachStraddleFrom(sub, contextLevel, (portal, mapping) -> {
             if (portal == null) return;
             parts.add(buildKeepFilter(
-                pose,
-                portal.getOriginPos(), portal.getNormal(), planeMargin,
-                portal.getAxisW(), portal.getAxisH(),
-                portal.getWidth() * 0.5 + APERTURE_CLIP_MARGIN,
-                portal.getHeight() * 0.5 + APERTURE_CLIP_MARGIN));
+                pose, portal.getOriginPos(), portal.getNormal(), planeMargin));
         });
         if (parts.isEmpty()) return null;
         if (parts.size() == 1) return parts.get(0);
@@ -468,14 +445,13 @@ public final class IplStraddlePoseMap {
     }
 
     /**
-     * Compile a world-frame half-space cut (optionally aperture-column-bounded) into a
-     * plot-local block-center predicate: transformed once, three dot products per block.
+     * Compile a world-frame half-space cut into a plot-local block-center predicate:
+     * transformed once, one dot product per block.
      * Uses the end-of-tick pose rather than any substep lerp — within-tick ship motion
      * is far below the block-center granularity this test operates at.
      */
     private static java.util.function.Predicate<BlockPos> buildKeepFilter(
-        Pose3dc pose, Vec3 point, Vec3 keepNormal, double planeMargin,
-        @Nullable Vec3 axisW, @Nullable Vec3 axisH, double halfW, double halfH
+        Pose3dc pose, Vec3 point, Vec3 keepNormal, double planeMargin
     ) {
         org.joml.Vector3d lp = pose.transformPositionInverse(
             new org.joml.Vector3d(point.x, point.y, point.z));
@@ -483,25 +459,9 @@ public final class IplStraddlePoseMap {
             new org.joml.Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
             new org.joml.Vector3d());
         double keepThreshold = -planeMargin;
-        if (axisW == null || axisH == null) {
-            return pos -> (pos.getX() + 0.5 - lp.x) * ln.x
-                        + (pos.getY() + 0.5 - lp.y) * ln.y
-                        + (pos.getZ() + 0.5 - lp.z) * ln.z >= keepThreshold;
-        }
-        org.joml.Vector3d lw = pose.transformNormalInverse(
-            new org.joml.Vector3d(axisW.x, axisW.y, axisW.z), new org.joml.Vector3d());
-        org.joml.Vector3d lh = pose.transformNormalInverse(
-            new org.joml.Vector3d(axisH.x, axisH.y, axisH.z), new org.joml.Vector3d());
-        return pos -> {
-            double px = pos.getX() + 0.5 - lp.x;
-            double py = pos.getY() + 0.5 - lp.y;
-            double pz = pos.getZ() + 0.5 - lp.z;
-            double d = px * ln.x + py * ln.y + pz * ln.z;
-            if (d >= keepThreshold) return true;
-            double w = Math.abs(px * lw.x + py * lw.y + pz * lw.z);
-            double h = Math.abs(px * lh.x + py * lh.y + pz * lh.z);
-            return w > halfW || h > halfH;
-        };
+        return pos -> (pos.getX() + 0.5 - lp.x) * ln.x
+                    + (pos.getY() + 0.5 - lp.y) * ln.y
+                    + (pos.getZ() + 0.5 - lp.z) * ln.z >= keepThreshold;
     }
 
     /**
