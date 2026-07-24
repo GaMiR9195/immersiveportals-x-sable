@@ -99,6 +99,8 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
 
     private static long ipl$lastConstraintLogMs = 0;
 
+    private static long ipl$lastConstraintRefusalLogMs = 0;
+
     /** TEMPORARY bring-up diagnostic: prove constraint forwarding fires (rate-limited). */
     private void ipl$logConstraintForward(
         @Nullable ServerSubLevel a, @Nullable ServerSubLevel b, Object configuration
@@ -283,9 +285,15 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
             }
 
             ServerSubLevel offender = ipl$notOwnedSub(sublevelA) ? sublevelA : sublevelB;
-            IPL$LOG.warn("[IPL-RAPIER-GUARD] refused addConstraint on unowned sub-level {} "
-                + "(no native body -- e.g. a kinematic mirror). Returning null handle.",
-                offender != null ? offender.getUniqueId() : null);
+            long now = System.currentTimeMillis();
+            if (now - ipl$lastConstraintRefusalLogMs > 2000) {
+                ipl$lastConstraintRefusalLogMs = now;
+                IPL$LOG.warn("[IPL-RAPIER-GUARD] deferred addConstraint on sub-level {} "
+                    + "(no native body here{}). Returning null handle; persistence-driven "
+                    + "callers retry once scenes reconcile.",
+                    offender != null ? offender.getUniqueId() : null,
+                    sameScene ? "" : ", ends currently live in different scenes");
+            }
             cir.setReturnValue(null);
         }
     }
@@ -325,6 +333,34 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
     // Per-scene routing (portal-physics spec §2.2, phase 1): a hosted ship's
     // body AND its plot voxel data live in the PARENT dimension's scene.
     // ======================================================================
+
+    /**
+     * Re-fire {@code onStatsChanged} once a hosted body's add COMPLETED. The stock
+     * {@code add()} calls {@code onStatsChanged} internally (directly and via the first
+     * {@code updateMergedMassData}) BEFORE it registers the body in {@code activeSubLevels}
+     * — so this guard's own {@code ipl$guardOnStatsChanged} judged the body unowned and
+     * cancelled those calls for every hosted add. A native body without its
+     * {@code local_bounds}/CoM upload hard-aborts the process on its first chunk insert
+     * (natives {@code insert_block} unwraps {@code local_bounds}); the empty-plot rehome
+     * add survived only because the block copy's own mass uploads re-fired stats before
+     * the first insert. This TAIL makes the ordering structural instead of incidental —
+     * covers deserialization restores and split allocations whose plots are ALREADY
+     * populated at add time.
+     */
+    @Inject(
+        method = "add(Ldev/ryanhcode/sable/sublevel/ServerSubLevel;Ldev/ryanhcode/sable/companion/math/Pose3dc;)V",
+        at = @At("TAIL"), remap = false, require = 0)
+    private void ipl$restatHostedBodyAfterAdd(
+        ServerSubLevel subLevel, dev.ryanhcode.sable.companion.math.Pose3dc pose, CallbackInfo ci
+    ) {
+        if (!ipl.sable.dim.IplDimAgnostic.isHosted(subLevel)) return;
+        if (!this.activeSubLevels.containsKey(subLevel.getRuntimeId())) return; // add bailed
+        if (subLevel.getMassTracker() == null
+            || subLevel.getMassTracker().getCenterOfMass() == null) {
+            return; // empty plot: no stats to push yet; first block change uploads them
+        }
+        ((RapierPhysicsPipeline) (Object) this).onStatsChanged(subLevel);
+    }
 
     @Inject(
         method = "add(Ldev/ryanhcode/sable/sublevel/ServerSubLevel;Ldev/ryanhcode/sable/companion/math/Pose3dc;)V",

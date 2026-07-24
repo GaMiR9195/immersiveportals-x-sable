@@ -1,5 +1,173 @@
 # Sub-Level Mod Compatibility — One Root: Level Identity
 
+## Round 6 — The Root, Finished: Server Identity + Coherent Hosted Lifecycle
+
+### Why Rounds 2–4 could not hold (found by static trace against the vendored sources)
+
+1. **Same-slot rehome almost never fired.** Every parent-dim assembly allocates at the
+   parent grid's FIRST-FREE slot — and the parent grid is always near-empty (ships rehome
+   away a tick later), so every assembly gets local (0,0) = global (10000,10000). That
+   slot is occupied in the HOSTING grid by the first ship ever hosted, so Round 4's
+   same-slot claim fell back to first-free for practically every rehome: the plot slot
+   MOVED, every persisted plot-coordinate reference went stale (Simulated's swivel
+   `platePos`, constraint anchors — the validation crash), or WORSE, a stale reference
+   silently resolved against whatever other ship now owned the old slot. And with the slot
+   moving, Round 3's first-upload compensation disarmed itself through its own >512
+   plot-translation guard — the 0.5-per-facing offset survived exactly as observed.
+2. **The identity fix was half-done.** Round 1 restored Level identity on the CLIENT but
+   deliberately left the server on "field identity + thread-local contextual routing".
+   Simulated resolves its physics system, `WorldAttached` buckets (`ServerLevelRopeManager`,
+   plunger collections), packet sinks (`chunkMap.getPlayers`), and physics load gates
+   (`wouldBeLoaded`) from `be.getLevel()` ON THE SERVER — and no finite set of arming
+   sites covers every such path.
+3. **The rope fix fought itself.** Round 3 routed the strand OBJECT into the parent
+   physics system while the strand stayed REGISTERED in the hosting-level rope-manager
+   bucket: the parent system's rope pass never ticked it (wrong bucket), and the hosting
+   system's own pass removed it every substep (`areAttachmentsLoaded` fails for
+   world-frame attachment chunks on the void). Add/remove tug-of-war — never simulated,
+   never synced, invisible.
+4. **The hosted split ran in two scenes.** A swivel split of a hosted ship allocates the
+   new sub-level directly in the hosting container with no parent stamp; its body landed
+   in the HOSTING scene while the source ship's body lives in the PARENT scene
+   (per-scene ownership). The rotary constraint attaches synchronously after the split —
+   refused by the ownership guard's same-scene gate; retries raced reconciliation. The
+   guard also CANCELLED stock `add()`'s internal `onStatsChanged` for every hosted body
+   (the body isn't in `activeSubLevels` until add returns), leaving native bodies without
+   `local_bounds` — a hard process abort on the first chunk insert whenever the plot was
+   already populated at add time (multi-block split), i.e. the multi-block swivel crash.
+5. **Disassembly's entity path was unroutable.** `disassembleSubLevel` re-adds
+   plot-resident entities via `ServerLevel.addDuringTeleport` — which the world-frame
+   router never covered. And Simulated's plunger converts its own POSITION into plot
+   coordinates on hitting a ship (`setPosRaw(transformPositionInverse(...))`) — in the
+   parent dim that is 20.5M blocks of empty far land: the projectile "disappears the
+   moment it touches the sub-level".
+
+### Changes (the root fix, in dependency order)
+
+- **Server BE identity** (`IplHostedBeParentIdentityMixin`, new): `getLevel()` on a hosted
+  plot BE returns the sub-level's PARENT `ServerLevel` — the exact mirror of the proven
+  client fix (getter only; the `level` field and all vanilla storage/tick machinery keep
+  hosting semantics). Rope system resolution, manager buckets, tracking-player lookups,
+  `wouldBeLoaded` gates, swivel container lookups, spring loaded-area checks — all resolve
+  stock semantics with zero per-mod code. Plot-range reads/writes against the parent keep
+  resolving through Sable's chunk-cache mixins + the plot bridge (already in place).
+- **Union-free plot allocation** (`IplUnionPlotAllocationMixin`, new): a parent-dim
+  container's `getFirstEmptyPlot` picks the first slot free in BOTH its own grid and the
+  hosting grid — same-slot rehome now succeeds by construction, so every persisted
+  plot-coordinate reference (swivel plates, constraint anchors) survives rehoming.
+- **Mass-baseline seeding** (`IplMergedMassBaselineAccessor` new; `SableRehomeOps`):
+  the hosted twin's `MergedMassTracker` baseline (`lastCenterOfMass`/`lastInertiaTensor`/
+  `lastMass`) is seeded from the settled SOURCE tracker (slot-translated) BEFORE the block
+  copy. The first upload can no longer null-baseline and jump `rotationPoint` to the first
+  copied block's partial CoM without position compensation — THE assembly/split offset
+  (R·(shipCoM − firstBlockCoM): 0.5·facing for assembler+block, size-scaled, zero for one
+  block) is eliminated by construction, not compensated after the fact.
+- **Cross-slot fallback correctness** (`SableRehomeOps`): if a rehome ever does change
+  slots (two dims assembling the same tick), the pose's rotation point — a PLOT coordinate
+  — is translated by the slot delta with the blocks, so the verbatim world mapping still
+  holds; the seeded baseline uses the same delta. Loud warn remains for the mod-NBT
+  references we cannot translate.
+- **Eager split parenting + scene coherence** (`IplSplitParentStampMixin` new;
+  `SableRehomeOps.onSplitAllocated`): core Sable's `setSplitFrom` (fired for every nested
+  assembly, BEFORE control returns to the splitting mod) now inherits the parent from the
+  containing ship and migrates the fresh body into the parent scene immediately — the
+  swivel's synchronous constraint attach sees both bodies in ONE scene. The plain rehome
+  also migrates its twin eagerly at completion instead of waiting a reconcile tick.
+- **Structural `onStatsChanged` ordering** (`SableRapierPipelineOwnershipGuardMixin`):
+  a TAIL on `add()` re-fires `onStatsChanged` for hosted bodies once they are registered,
+  so native `local_bounds`/CoM exist before ANY chunk insert — populated-plot adds
+  (splits, deserialization restores) no longer depend on incidental mass-upload ordering.
+  The cross-scene constraint refusal is now a throttled "deferred" log (callers retry).
+- **Disassembly completeness** (`IplHostedWorldFrameRouterMixin`): `addDuringTeleport`
+  (the plot-entity return path), `addWithUUID`, and `onBlockStateChange` (POI) are routed
+  like `addFreshEntity`, with the same re-leveling.
+- **Entity plot-space migration** (`IplPlotSpaceEntityMigrationMixin` +
+  `IplPlotEntityMigration`, new): any entity whose position enters the hosting plot grid
+  while in a parent dimension (plunger projectiles "boarding" a ship) is queued from
+  `setPosRaw` (two-compare hot-path gate) and teleported into the hosting dimension on the
+  next hosting-container tick — the runtime twin of rehome's `relocatePlotEntities`.
+- **Tracking sinks generalized** (`IplHostingChunkTrackersMixin`): plot-range
+  `ChunkMap.getPlayers` resolves to the owning sub-level's tracking players from ANY
+  level's chunk map (parent-identity BEs now ask their parent's), not just the hosting one.
+
+### Removed (superseded point patches)
+
+- `IplHostedPhysicsObjectRoutingMixin` + `IplHostedTicketQueryRoutingMixin` +
+  `IplHostedPhysicsObjects` — with parent identity, the only `addObject` caller in the
+  whole Simulated project (the rope holder) resolves the parent system natively; object,
+  manager bucket, ticket gate and removal all agree on one system.
+- `IplMergedMassFirstUploadMixin` — replaced by baseline seeding (deterministic, no wrap
+  ordering, covers splits).
+- `IplConstraintValidationSoftFailMixin` — with union-slot allocation + eager scene
+  coherence the validation legitimately passes; fail-fast semantics restored. NOTE: saves
+  from the broken era can carry stale swivel `platePos` values; those swivels may need to
+  be broken and re-placed once.
+
+### Static path walks (all six symptoms, against vendored sources)
+
+- Rope on hosted ship: holder BE getLevel()=parent → parent system + parent bucket +
+  parent gate (world chunks near players) → added & simulated; snapshots via
+  `getPlayers(plot chunk)` on the parent chunk map → generalized redirect → sub-level
+  trackers; client: packet BE lookup at plot coords resolves through the client chunk
+  cache + plot bridge, strand registers in the parent bucket (client identity), parent
+  container ticks its interpolation, light bridged. Rope on ground winch attached to a
+  ship: UUID bridge resolves the hosted attachment from the parent container.
+- Plunger: hits hosted ship → repositions into plot coords → migration hook → hosting dim;
+  its tick then reads loaded plot chunks natively; the pair constraint forwards to the
+  parent pipeline (both ends' bodies live there) and validates against plot/world anchors.
+- Swivel on ground: assembly → union slot → rehome same-slot (platePos valid) → seeded
+  baseline (no offset) → eager migrate → reattach: plate block read through the plot
+  bridge, sub-level via the UUID bridge, constraint on the parent pipeline — owned, valid,
+  attached. Swivel on hosted ship: split → `setSplitFrom` stamps parent + migrates body →
+  synchronous attach sees both bodies in the parent scene; anchors validate against both
+  plots.
+- Assembly offset: seeding removes the null-baseline jump; union slot removes the
+  >512-guard interaction; nested/split assembly keeps stock Step-4 + kick math (heals
+  in-place, then re-transforms through the containing pose).
+- Disassembly: armed BE tick (vanilla ticker on the hosting level — Sable registers plot
+  chunk tick containers) routes accelerator chunk writes, BE restores, `addFreshEntity`,
+  and now `addDuringTeleport`/`onBlockStateChange` to the parent.
+- Springs: server physics tick armed (physics-actor context) routes the world-frame
+  partner BE read; client render-pass arming + client router cover the renderer's field
+  reads; the partner sub-level resolves via the UUID bridge from `minecraft.level`.
+
+Known gaps (documented, not blocking): `moveTrackingPoints` reads the hosting level's
+SavedData during hosted disassembly (tracking points created parent-side pre-rehome are
+not found — minor, unrelated to the reported bugs); plot-resident entity visibility rides
+the existing seat/item-frame pipeline.
+
+### Files
+
+- `src/main/java/ipl/sable/mixin/IplHostedBeParentIdentityMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplUnionPlotAllocationMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplMergedMassBaselineAccessor.java` (new)
+- `src/main/java/ipl/sable/mixin/IplSplitParentStampMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplPlotSpaceEntityMigrationMixin.java` (new)
+- `src/main/java/ipl/sable/dim/IplPlotEntityMigration.java` (new)
+- `src/main/java/ipl/sable/transit/SableRehomeOps.java`
+- `src/main/java/ipl/sable/mixin/SableRapierPipelineOwnershipGuardMixin.java`
+- `src/main/java/ipl/sable/mixin/IplHostedWorldFrameRouterMixin.java`
+- `src/main/java/ipl/sable/mixin/IplHostingChunkTrackersMixin.java`
+- `src/main/resources/ipl_sable.mixins.json`
+- deleted: `IplHostedPhysicsObjectRoutingMixin.java`, `IplHostedTicketQueryRoutingMixin.java`,
+  `IplHostedPhysicsObjects.java`, `IplMergedMassFirstUploadMixin.java`,
+  `IplConstraintValidationSoftFailMixin.java`
+
+### Verification Needed
+
+Fresh world (or new ships in an existing world — old-save swivels may need re-placing):
+assembler + one block assembles with ZERO offset (and bigger builds too); disassembly
+places blocks AND entities in the ship's actual dimension; ropes visible with live
+physics from ship-mounted and ground-mounted holders; plunger pairs survive hitting a
+ship and stay connected; swivel bearing splits on ground and on ships with the top
+staying attached, single- and multi-block, no crash; springs render their coil between
+ship and ground and between two ships. Watch for `[IPL-REHOME] cross-slot rehome` warns —
+they should be RARE (two same-tick assemblies in different dims); frequent warns mean the
+union allocation is not applying.
+
+No build or automated check was run for these changes (per instruction; verified
+statically against `OTHERREQUIREDSOURCES`).
+
 ## Round 4 — Same-Slot Rehome + Constraint Soft-Fail (Swivel Crash)
 
 ### Crash trace analysis

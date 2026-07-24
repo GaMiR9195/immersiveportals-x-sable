@@ -221,6 +221,52 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
         }
     }
 
+    /**
+     * Disassembly's entity return path: {@code SimAssemblyHelper.disassembleSubLevel} moves
+     * plot-resident entities (glue, item frames, seats) back to world coordinates via
+     * {@code entity.levelCallback.onRemove(CHANGED_DIMENSION)} + {@code addDuringTeleport}
+     * on the BE's own level — hosted, the void. Route it like {@code addFreshEntity}, so
+     * the entities re-enter the dimension the ship actually occupied.
+     */
+    @Inject(method = "addDuringTeleport", at = @At("HEAD"), cancellable = true)
+    private void ipl$routeAddDuringTeleport(Entity entity, CallbackInfo ci) {
+        ServerLevel target = ipl$worldFrameTarget(entity.getX(), entity.getZ());
+        if (target != null) {
+            if (entity.level() == (Object) this) {
+                ((IplEntityLevelInvoker) entity).ipl$invokeSetLevel(target);
+            }
+            target.addDuringTeleport(entity);
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "addWithUUID", at = @At("HEAD"), cancellable = true)
+    private void ipl$routeAddWithUUID(Entity entity, CallbackInfoReturnable<Boolean> cir) {
+        ServerLevel target = ipl$worldFrameTarget(entity.getX(), entity.getZ());
+        if (target != null) {
+            if (entity.level() == (Object) this) {
+                ((IplEntityLevelInvoker) entity).ipl$invokeSetLevel(target);
+            }
+            cir.setReturnValue(target.addWithUUID(entity));
+        }
+    }
+
+    /** POI bookkeeping for routed world-frame block moves (disassembly placements). */
+    @Inject(
+        method = "onBlockStateChange(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/block/state/BlockState;)V",
+        at = @At("HEAD"),
+        cancellable = true
+    )
+    private void ipl$routeOnBlockStateChange(
+        BlockPos pos, BlockState oldState, BlockState newState, CallbackInfo ci
+    ) {
+        ServerLevel target = ipl$worldFrameTarget(pos);
+        if (target != null) {
+            target.onBlockStateChange(pos, oldState, newState);
+            ci.cancel();
+        }
+    }
+
     @Inject(method = "destroyBlockProgress", at = @At("HEAD"), cancellable = true)
     private void ipl$routeDestroyBlockProgress(int breakerId, BlockPos pos, int progress, CallbackInfo ci) {
         ServerLevel target = ipl$worldFrameTarget(pos);
