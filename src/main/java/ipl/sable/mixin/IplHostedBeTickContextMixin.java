@@ -13,14 +13,21 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * Establish the {@link IplWorldFrameContext parent-frame context} around every plot-chunk
- * block entity tick on the hosting level.
+ * Establish the world-frame context around every plot-chunk block entity tick on the
+ * hosting level — BOTH sides.
  *
- * <p>Drills, deployers, saws and harvesters do their cross-frame terrain work from inside
- * their BE tick (directly or via Sable's compat redirects), addressing parent-frame world
- * coordinates through {@code this.level} — the hosting dimension. The context resolved here
- * (plot → owner sub-level → parent) lets {@code IplHostedWorldFrameRouterMixin} forward that
- * access to the dimension the ship is actually in.
+ * <p>SERVER ({@link IplWorldFrameContext}): drills, deployers, saws and harvesters do their
+ * cross-frame terrain work from inside their BE tick (directly or via Sable's compat
+ * redirects), addressing parent-frame world coordinates through {@code this.level} — the
+ * hosting dimension. The context resolved here (plot → owner sub-level → parent) lets
+ * {@code IplHostedWorldFrameRouterMixin} forward that access to the dimension the ship is
+ * actually in.
+ *
+ * <p>CLIENT ({@link ipl.sable.dim.IplClientWorldFrameContext}): IP's remote-world ticking
+ * runs hosted plot BE ticks on the hosting {@code ClientLevel} (wheel-mount visual
+ * suspension probes, rope strand registration, Create behaviors). The client context lets
+ * {@code IplHostedClientWorldFrameRouterMixin} forward their world-frame READS to the
+ * parent the same way.
  *
  * <p>require = 1: this is a vanilla single-call-site target; if it ever stops applying we
  * want a load-time failure, not silently dead drills.
@@ -41,6 +48,11 @@ public abstract class IplHostedBeTickContextMixin {
         BlockEntityTicker ticker, Level level, BlockPos pos, BlockState state,
         BlockEntity blockEntity, Operation<Void> original
     ) {
+        if (level.isClientSide()) {
+            // Client-only helper class: common-typed signature, loaded only on this branch.
+            ipl.sable.client.IplClientBeTickArming.tickArmed(ticker, level, pos, state, blockEntity, original);
+            return;
+        }
         ServerLevel parent = IplWorldFrameContext.resolveParentForPlotBe(level, pos);
         if (parent == null) {
             original.call(ticker, level, pos, state, blockEntity);

@@ -50,8 +50,10 @@ import java.util.function.Supplier;
  * drops, events and neighbor updates are native. Drop items created against the hosting
  * level are re-leveled before insertion ({@link IplEntityLevelInvoker}).
  *
- * <p>Known gap (deliberate): entity queries ({@code getEntities*}) are not routed — a
- * deployer punching mobs in the parent world stays dead until the entity-interaction pass.
+ * <p>Chunk lookups ({@code getChunk}) and entity queries ({@code getEntities*}) are routed
+ * too, gated on chunk-grid / AABB coordinates: third-party content (Simulated's assembler
+ * disassembling into the world, deployers interacting with parent-world mobs, ground
+ * checks) reaches the dimension the ship actually occupies with no per-mod patches.
  */
 @Mixin(value = ServerLevel.class, priority = 1200)
 public abstract class IplHostedWorldFrameRouterMixin extends Level {
@@ -137,6 +139,70 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
         ServerLevel target = ipl$worldFrameTarget(pos);
         return target != null ? target.isLoaded(pos) : super.isLoaded(pos);
     }
+
+    /** Chunk-grid variant of the world-frame gate: plot chunks live at |chunk| >= 62,500. */
+    @Unique
+    @Nullable
+    private ServerLevel ipl$worldFrameChunkTarget(int chunkX, int chunkZ) {
+        ServerLevel self = (ServerLevel) (Object) this;
+        if (!IplDimAgnostic.isHostingLevel(self)) return null;
+        if (Math.abs(chunkX) >= 62_500 || Math.abs(chunkZ) >= 62_500) return null;
+        ServerLevel parent = IplWorldFrameContext.current();
+        if (parent == null || parent == self) return null;
+        return parent;
+    }
+
+    @Override
+    public net.minecraft.world.level.chunk.LevelChunk getChunk(int chunkX, int chunkZ) {
+        ServerLevel target = ipl$worldFrameChunkTarget(chunkX, chunkZ);
+        return target != null ? target.getChunk(chunkX, chunkZ) : super.getChunk(chunkX, chunkZ);
+    }
+
+    @Override
+    public net.minecraft.world.level.chunk.ChunkAccess getChunk(
+        int chunkX, int chunkZ, net.minecraft.world.level.chunk.status.ChunkStatus status, boolean requireChunk
+    ) {
+        ServerLevel target = ipl$worldFrameChunkTarget(chunkX, chunkZ);
+        return target != null
+            ? target.getChunk(chunkX, chunkZ, status, requireChunk)
+            : super.getChunk(chunkX, chunkZ, status, requireChunk);
+    }
+
+    /** AABB variant of the world-frame gate (entity queries), keyed on the box center. */
+    @Unique
+    @Nullable
+    private ServerLevel ipl$worldFrameTarget(net.minecraft.world.phys.AABB area) {
+        return ipl$worldFrameTarget(
+            (area.minX + area.maxX) * 0.5, (area.minZ + area.maxZ) * 0.5);
+    }
+
+    @Override
+    public java.util.List<Entity> getEntities(
+        @Nullable Entity entity, net.minecraft.world.phys.AABB area,
+        java.util.function.Predicate<? super Entity> predicate
+    ) {
+        ServerLevel target = ipl$worldFrameTarget(area);
+        return target != null
+            ? target.getEntities(entity, area, predicate)
+            : super.getEntities(entity, area, predicate);
+    }
+
+    @Override
+    public <T extends Entity> java.util.List<T> getEntities(
+        net.minecraft.world.level.entity.EntityTypeTest<Entity, T> typeTest,
+        net.minecraft.world.phys.AABB area, java.util.function.Predicate<? super T> predicate
+    ) {
+        ServerLevel target = ipl$worldFrameTarget(area);
+        return target != null
+            ? target.getEntities(typeTest, area, predicate)
+            : super.getEntities(typeTest, area, predicate);
+    }
+
+    // Build-height accessors are deliberately NOT routed: LevelChunk section indexing
+    // chains through the level's height profile, so an armed override would shift plot
+    // chunk section math for non-overworld parents (corruption). The hosting profile
+    // matches the overworld's; disassembly placement is height-safe regardless because
+    // the routed per-position setBlock enforces the PARENT's real limits.
 
     // ------------------------------------------------------------------
     // ServerLevel-defined methods: HEAD injects.

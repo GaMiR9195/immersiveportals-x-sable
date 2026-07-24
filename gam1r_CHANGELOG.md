@@ -1,3 +1,152 @@
+# Sub-Level Mod Compatibility — One Root: Level Identity
+
+## Hosted Level Identity For Third-Party Mods
+
+### Symptom
+
+With the mod loaded, every mod built for Sable sub-levels misbehaved on hosted
+ships: Offroad wheels did not move or find ground, Simulated ropes rendered
+invisible, springs appeared only from some camera positions, Flywheel-visualized
+block-entity parts (swivel bearing, throttle lever) were missing, the physics
+assembler spawned assembled ships too high (0.5 blocks for a single block,
+scaling with size) and disassembled into the wrong dimension, and sub-levels
+ignored ambient occlusion and lighting.
+
+### Cause
+
+One root: rehoming plots into `ipl_sable:sublevels` splits the Level-object
+identity that stock Sable guarantees. In stock Sable a ship's plot chunks live
+in the SAME level the ship occupies, so `be.getLevel()`, `Minecraft.level`, the
+container level and the interaction level are one object. Hosted, a plot BE's
+level is the void hosting dimension, and every mod keys something off the
+difference:
+
+- `LevelRenderer.getLightColor(be.getLevel(), worldPos)` sampled the void at
+  world-frame positions → light 0 → world-frame BE geometry (rope strands)
+  rendered black.
+- `WorldAttached` registries split buckets: rope strands registered under the
+  hosting level, zipline and render-side lookups searched the parent's.
+- `SubLevelContainer.getContainer(minecraft.level)` vs
+  `getContainer(be.getLevel())` resolved different containers.
+- Flywheel visuals registered with the hosting level's visualization world,
+  which never renders; renderers meanwhile skip their vanilla path when
+  `VisualizationManager.supportsVisualization(be.getLevel())`.
+- Client BE ticks on the hosting level probed world-frame terrain
+  (wheel suspension `clip`, `getSignal`) in the void.
+- Server interaction handlers (assembler `placeIntoWorld`) ran against
+  `this.getLevel()` = the void: ground/build-height checks and the disassembly
+  target were wrong.
+- The hosting dimension type declared `ambient_light: 1.0`, flattening all
+  baked sub-level lighting to fullbright (no AO variation).
+
+### Implemented Change
+
+Client — restore the stock identity invariant:
+
+- `BlockEntity.getLevel()` on a hosted plot BE returns the owning sub-level's
+  PARENT `ClientLevel` (`IplHostedBeLevelIdentityMixin` +
+  `IplClientBeIdentity`). Getter only; the `level` field, chunk storage,
+  ticking and packet application stay on the hosting level. Plot-coordinate
+  block reads from the parent already resolve through Sable's client
+  chunk-cache mixins + the plot bridge.
+- Plot light bridge (`IplPlotLightBridgeMixin`): plot-range positions on a
+  non-hosting `ClientLevel` read the hosting level's light engine, so the BE
+  dispatcher's `getLightColor(parent, plotPos)` returns the plot-local light
+  stock Sable would have had.
+- Client world-frame router + arming (`IplHostedClientWorldFrameRouterMixin`,
+  `IplClientWorldFrameContext`, client half of `IplHostedBeTickContextMixin`
+  via `IplClientBeTickArming`): hosted plot BE client ticks read world-frame
+  terrain (suspension probes, redstone) from the ship's parent dimension.
+  Read-only surface.
+- Flywheel visual reroute (`IplHostedFlywheelVisualRerouteMixin`,
+  `IplClientFlywheelReroute`): BEs entering/leaving hosting-level plot chunks
+  are queued into the PARENT level's `VisualizationManager` through Flywheel's
+  public API. Sable's own `BlockEntityStorageMixin` then embeds them
+  per-sub-level with `renderPose()` transforms in the world that actually
+  renders. Parent flips re-home the visuals (`IplParentDimSync`).
+
+Server — complete the contextual router:
+
+- `IplHostedWorldFrameRouterMixin` now also routes `getChunk` (both overloads,
+  chunk-grid gate |chunk| >= 62,500) and `getEntities` (both overloads, AABB
+  center gate). Build-height accessors are deliberately NOT routed: chunk
+  section indexing chains through the level height profile, and the routed
+  per-position `setBlock` already enforces the parent's real limits.
+- Interaction arming (`IplHostedInteractionContextMixin`): block-use on a
+  hosted ship (plot-range hit position) arms the world-frame context for the
+  click, so synchronous handlers — assembler assemble/disassemble, swivel
+  bearing split — route their world-frame access structurally.
+
+Assembly offset:
+
+- `SableRehomeOps.rehome` re-anchors the hosted twin's pose after the block
+  copy: `rotationPoint := new-slot self center-of-mass`, `position := the world
+  position that material point had under the source mapping`. The fresh
+  `MergedMassTracker`'s first `uploadData()` null-baselines `lastCenterOfMass`
+  and jumps `rotationPoint` WITHOUT position compensation; any skew between the
+  verbatim-copied rotation point (translated across plot slots) and the
+  recomputed center of mass displaced the ship by exactly that delta — +0.5 on
+  a fresh single-block assembly, scaling with ship size. The re-anchor makes
+  the world mapping identical by construction and turns the first upload into
+  a no-op. A one-line INFO log reports any nonzero correction.
+
+Lighting:
+
+- `dimension_type/sublevels.json`: `ambient_light` 1.0 → 0.0 (skylight stays
+  on). Plot sections bake real skylight + block light again — ambient
+  occlusion and light gradients return to stock appearance.
+
+Removed point patches (superseded by the structural routing above):
+
+- `IplAssemblerDisassemblyParentMixin` — covered by interaction arming + the
+  router's `getChunk`/set-block routing. Its portal-restore piece (a ship-borne
+  portal FEATURE hook, not a bug patch) moved to
+  `IplDisassemblyPortalRestoreMixin` at Simulated's single disassembly
+  chokepoint.
+- `IplWheelMountLevelFilterMixin` + `IplWheelMountInvoker` — under the fused
+  step each container's wheels are queued by its own actor pass and drained by
+  its own event in the same substep; the global-drain filter is unnecessary,
+  and `applyBatchedForces` applies through the sub-level's own handle with no
+  world reads.
+
+### Files
+
+- `src/main/java/ipl/sable/client/IplClientBeIdentity.java` (new)
+- `src/main/java/ipl/sable/client/IplClientBeTickArming.java` (new)
+- `src/main/java/ipl/sable/client/IplClientFlywheelReroute.java` (new)
+- `src/main/java/ipl/sable/dim/IplClientWorldFrameContext.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplHostedBeLevelIdentityMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplPlotLightBridgeMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplHostedClientWorldFrameRouterMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplHostedFlywheelVisualRerouteMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplHostedInteractionContextMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplDisassemblyPortalRestoreMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplHostedWorldFrameRouterMixin.java`
+- `src/main/java/ipl/sable/mixin/IplHostedBeTickContextMixin.java`
+- `src/main/java/ipl/sable/dim/IplWorldFrameContext.java`
+- `src/main/java/ipl/sable/transit/SableRehomeOps.java`
+- `src/main/java/ipl/sable/client/IplParentDimSync.java`
+- `src/main/resources/data/ipl_sable/dimension_type/sublevels.json`
+- `src/main/resources/ipl_sable.mixins.json`
+- deleted: `IplAssemblerDisassemblyParentMixin.java`,
+  `IplWheelMountLevelFilterMixin.java`, `IplWheelMountInvoker.java`
+
+### Verification Needed
+
+Runtime-check on a hosted ship: rope strands visible and correctly lit in the
+parent dimension; springs visible from all camera angles between ship and
+ground and between two ships; swivel bearing and throttle lever fully rendered
+(Flywheel backend on AND off); Offroad wheels find ground, spin and steer;
+assembling a single block yields no vertical offset (watch for the
+`[IPL-REHOME] pose re-anchor` log line — a nonzero correction confirms the
+fixed skew); assembler disassembly places blocks in the ship's dimension with
+correct ground/height checks; ship-borne portal frames still restore on
+disassembly; sub-level lighting shows AO and light gradients; cross-portal
+transit keeps ropes/springs/visuals alive after the parent flip; dedicated
+server boots (client classes untouched server-side).
+
+No build or automated check was run for these changes.
+
 # Straddling Portal Rendering
 
 ## Current Fix: Rotated Destination Clone Cut

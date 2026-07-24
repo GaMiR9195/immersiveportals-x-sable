@@ -68,4 +68,24 @@ public final class IplWorldFrameContext {
         if (subLevel == null) return null;
         return IplDimAgnostic.getServerParentLevel(subLevel);
     }
+
+    /**
+     * For an INTERACTION (use / attack) at a plot position reached from ANY server level:
+     * the parent level of the owning hosted sub-level. Unlike
+     * {@link #resolveParentForPlotBe} the context level here is usually the PLAYER's level
+     * — Sable maps ship clicks to plot coordinates, and the plot bridge resolves them from
+     * every dimension — so the plot is looked up through the hosting container directly.
+     */
+    @Nullable
+    public static ServerLevel resolveParentForPlotInteraction(ServerLevel contextLevel, BlockPos pos) {
+        if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return null;
+
+        SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(contextLevel);
+        if (hosting == null) return null;
+        LevelPlot plot = hosting.getPlot(pos.getX() >> 4, pos.getZ() >> 4);
+        if (plot == null) return null;
+        SubLevel subLevel = plot.getSubLevel();
+        if (subLevel == null || subLevel.isRemoved()) return null;
+        return IplDimAgnostic.getServerParentLevel(subLevel);
+    }
 }
