@@ -1,0 +1,54 @@
+plugins {
+    id 'multiloader-loader'
+    id 'net.neoforged.moddev'
+}
+
+def generatedResources = project(":simulated:common").file("src/generated/resources")
+def commonResources = project(":simulated:common").file("src/main/resources")
+
+neoForge {
+    version = neoforge_version
+
+    def at = project(':simulated:common').file('src/main/resources/META-INF/accesstransformer.cfg')
+
+    if (at.exists()) {
+        accessTransformers.from(at.absolutePath)
+    }
+
+    parchment {
+        minecraftVersion = parchment_minecraft
+        mappingsVersion = parchment_version
+    }
+
+    runs {
+        configureEach {
+            systemProperty('neoforge.enabledGameTestNamespaces', mod_id)
+            ideName = "Simulated NeoForge ${it.name.capitalize()} (${project.path})" // Unify the run config names with fabric
+        }
+
+        data {
+            data()
+            gameDirectory = project.file('runs/data')
+            programArguments.addAll '--all',
+                    '--mod', 'simulated',
+                    '--output', generatedResources.absolutePath,
+                    '--existing', commonResources.absolutePath,
+                    '--existing-mod', 'create'
+        }
+        
+        gameTest {
+            type = "gameTestServer"
+            gameDirectory = project.file('build/gametest')
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+sourceSets.main.resources {
+    srcDir generatedResources.absolutePath
+}

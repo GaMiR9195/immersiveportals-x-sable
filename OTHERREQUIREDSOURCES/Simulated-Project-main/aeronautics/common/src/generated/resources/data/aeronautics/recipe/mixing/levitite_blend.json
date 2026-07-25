@@ -1,0 +1,35 @@
+{
+  "type": "create:mixing",
+  "heat_requirement": "heated",
+  "ingredients": [
+    {
+      "item": "aeronautics:end_stone_powder"
+    },
+    {
+      "item": "aeronautics:end_stone_powder"
+    },
+    {
+      "item": "aeronautics:end_stone_powder"
+    },
+    {
+      "item": "aeronautics:end_stone_powder"
+    },
+    {
+      "item": "create:zinc_nugget"
+    },
+    {
+      "item": "create:zinc_nugget"
+    },
+    {
+      "type": "neoforge:tag",
+      "amount": 500,
+      "tag": "c:water"
+    }
+  ],
+  "results": [
+    {
+      "amount": 500,
+      "id": "aeronautics:levitite_blend"
+    }
+  ]
+}

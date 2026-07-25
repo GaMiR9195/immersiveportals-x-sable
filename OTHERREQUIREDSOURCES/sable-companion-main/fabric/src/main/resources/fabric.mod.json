@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "${mod_id}",
+  "version": "${version}",
+  "name": "${mod_name}",
+  "description": "${mod_description}",
+  "authors": [
+    "${authors_json}"
+  ],
+  "contact": {
+    "sources": "${github_url}",
+    "issues": "${github_url}/issues"
+  },
+  "license": "${license}",
+  "icon": "${mod_id}.png",
+  "environment": "*",
+  "depends": {
+    "minecraft": ">=${minecraft_version}"
+  }
+}

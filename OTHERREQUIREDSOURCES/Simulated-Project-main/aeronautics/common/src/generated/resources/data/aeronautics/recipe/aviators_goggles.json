@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    {
+      "tag": "c:leathers"
+    },
+    {
+      "item": "create:goggles"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "id": "aeronautics:aviators_goggles"
+  }
+}

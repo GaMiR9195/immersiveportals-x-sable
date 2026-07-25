@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "foundry.veil.mixin.network",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "foundry.veil.VeilMixinPluginImpl",
+  "mixins": [
+    "NetworkMinecraftServerMixin",
+    "NetworkServerLevelMixin",
+    "NetworkServerPlayerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
+  

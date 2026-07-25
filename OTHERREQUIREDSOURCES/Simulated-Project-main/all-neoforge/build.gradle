@@ -1,0 +1,78 @@
+plugins {
+    id 'net.neoforged.moddev'
+}
+
+def neoforgeProjects = rootProject.subprojects.findAll { it.path.endsWith(":neoforge") }
+
+neoforgeProjects.each { neoforgeProject ->
+    evaluationDependsOn(neoforgeProject.path)
+}
+
+neoForge {
+    version = neoforge_version
+
+    neoforgeProjects.forEach { neoforgeProject ->
+        def parentName = neoforgeProject.parent.name
+        def commonProject = project(":$parentName:common")
+        def at = commonProject.file('src/main/resources/META-INF/accesstransformer.cfg')
+
+        if (at.exists()) {
+            accessTransformers.from(at.absolutePath)
+        }
+    }
+
+    parchment {
+        minecraftVersion = parchment_minecraft
+        mappingsVersion = parchment_version
+    }
+
+    runs {
+        configureEach {
+            ideName = "NeoForge ${it.name.capitalize()} (${project.path})" // Unify the run config names with fabric
+        }
+
+        client {
+            client()
+            gameDirectory = project.file('runs/client')
+        }
+
+        clientAuth {
+            client()
+            gameDirectory = project.file('runs/client')
+            devLogin = true
+        }
+
+        server {
+            server()
+            gameDirectory = project.file('runs/server')
+            programArgument 'nogui'
+        }
+    }
+
+    mods {
+        neoforgeProjects.forEach { neoforgeProject ->
+            def parentName = neoforgeProject.parent.name
+            "$parentName" {
+                sourceSet neoforgeProject.sourceSets.main
+            }
+        }
+    }
+}
+
+tasks.register("runDataAll") {
+    group = "mod development"
+    neoforgeProjects.forEach { neoforgeProject -> 
+        dependsOn(neoforgeProject.tasks.runData)
+    }
+}
+
+dependencies {
+    neoforgeProjects.forEach {
+        def parentName = it.parent.name
+        implementation(it) {
+            capabilities {
+                requireCapability "$group:${parentName}"
+            }
+        }
+    }
+}

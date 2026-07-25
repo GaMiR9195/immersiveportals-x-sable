@@ -1,0 +1,13 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    {
+      "tag": "simulated:handle_variants"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "id": "simulated:iron_handle"
+  }
+}

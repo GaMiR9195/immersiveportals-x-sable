@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "I": {
+      "item": "create:iron_sheet"
+    },
+    "S": {
+      "item": "create:industrial_iron_block"
+    }
+  },
+  "pattern": [
+    "I",
+    "S"
+  ],
+  "result": {
+    "count": 1,
+    "id": "simulated:rope_connector"
+  }
+}

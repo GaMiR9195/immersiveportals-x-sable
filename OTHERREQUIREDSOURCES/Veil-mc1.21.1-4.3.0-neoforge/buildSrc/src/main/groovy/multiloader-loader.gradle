@@ -1,0 +1,125 @@
+plugins {
+    id 'multiloader-common'
+    id 'me.modmuss50.mod-publish-plugin'
+}
+
+configurations {
+    commonJava {
+        canBeResolved = true
+    }
+    commonResources {
+        canBeResolved = true
+    }
+}
+
+dependencies {
+    compileOnly(project(':common')) {
+        capabilities {
+            requireCapability "$group:$mod_id"
+        }
+    }
+    commonJava project(path: ':common', configuration: 'commonJava')
+    commonResources project(path: ':common', configuration: 'commonResources')
+}
+
+tasks.named('compileJava', JavaCompile) {
+    dependsOn(configurations.commonJava)
+    source(configurations.commonJava)
+}
+
+processResources {
+    dependsOn(configurations.commonResources)
+    from(configurations.commonResources)
+}
+
+tasks.named('javadoc', Javadoc).configure {
+    dependsOn(configurations.commonJava)
+    source(configurations.commonJava)
+}
+
+tasks.named('sourcesJar', Jar) {
+    dependsOn(configurations.commonJava)
+    from(configurations.commonJava)
+    dependsOn(configurations.commonResources)
+    from(configurations.commonResources)
+}
+
+publishMods {
+    def isFabric = project.name == "fabric"
+    def isNeoforge = project.name == "neoforge"
+    def changelogFile = rootProject.file("changelog.md")
+
+    type = STABLE
+
+    if (isFabric) {
+        file = remapJar.archiveFile
+        additionalFiles.from(jar.archiveFile)
+        additionalFiles.from(sourcesJar.archiveFile)
+    } else {
+        file = jar.archiveFile
+        additionalFiles.from(sourcesJar.archiveFile)
+    }
+
+    changelog = changelogFile.text
+
+    version = project.version
+    displayName = "$mod_name $project.version ${project.name.capitalize()}"
+    modLoaders.add(project.name)
+
+    curseforge {
+        accessToken = providers.environmentVariable("CURSEFORGE_TOKEN")
+        projectId = "1517006"
+        minecraftVersions.add(minecraft_version)
+
+        clientRequired = true
+        serverRequired = false
+
+        optional "sodium"
+        optional "imguimc"
+
+        incompatible "embeddium"
+
+        if (isNeoforge) {
+            incompatible "rubidium"
+        }
+
+        if (isFabric) {
+            requires "fabric-api"
+        }
+    }
+
+    github {
+        repository = "FoundryMC/Veil"
+        accessToken = providers.environmentVariable("GITHUB_TOKEN")
+        tagName = "mc$minecraft_version-$project.version-$project.name"
+        commitish = "1.21"
+
+        file.unset()
+        file.unsetConvention()
+        additionalFiles.unset()
+        additionalFiles.unsetConvention()
+
+        allowEmptyFiles = true
+    }
+
+    modrinth {
+        accessToken = providers.environmentVariable("MODRINTH_TOKEN")
+        projectId = "3KUWeVhG"
+        minecraftVersions.add(minecraft_version)
+
+        optional "sodium"
+        optional "imguimc"
+
+        incompatible "embeddium"
+
+        if (isNeoforge) {
+            incompatible "rubidium"
+        }
+
+        if (isFabric) {
+            requires "fabric-api"
+        }
+    }
+
+    dryRun = providers.environmentVariable("GITHUB_TOKEN").getOrNull() == null
+}

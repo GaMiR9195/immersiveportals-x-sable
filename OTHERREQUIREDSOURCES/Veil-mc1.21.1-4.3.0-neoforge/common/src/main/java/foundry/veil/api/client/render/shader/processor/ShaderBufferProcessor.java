@@ -1,0 +1,58 @@
+package foundry.veil.api.client.render.shader.processor;
+
+import foundry.veil.api.client.registry.VeilShaderBufferRegistry;
+import foundry.veil.api.client.render.VeilShaderBufferLayout;
+import foundry.veil.api.client.render.shader.ShaderFeature;
+import io.github.ocelot.glslprocessor.api.GlslSyntaxException;
+import io.github.ocelot.glslprocessor.api.node.GlslTree;
+import io.github.ocelot.glslprocessor.lib.anarres.cpp.LexerException;
+import net.minecraft.ResourceLocationException;
+import net.minecraft.resources.ResourceLocation;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Processes a shader to add buffer bindings.
+ *
+ * @author Ocelot
+ */
+public class ShaderBufferProcessor implements ShaderPreProcessor {
+
+    private static final String BUFFER_KEY = "#veil:buffer ";
+
+    public ShaderBufferProcessor() {
+    }
+
+    @Override
+    public void modify(Context ctx, GlslTree tree) throws IOException, GlslSyntaxException, LexerException {
+        List<String> buffers = new ArrayList<>();
+        List<String> directives = tree.getDirectives();
+        for (String directive : directives) {
+            if (directive.startsWith(ShaderBufferProcessor.BUFFER_KEY)) {
+                buffers.add(directive);
+            }
+        }
+        for (String directive : buffers) {
+            String[] parts = directive.substring(ShaderBufferProcessor.BUFFER_KEY.length()).trim().split(" +", 2);
+            String bufferId = parts[0].trim();
+            String interfaceName = parts.length > 1 ? parts[1].trim() : null;
+
+            try {
+                ResourceLocation name = ResourceLocation.parse(bufferId);
+                VeilShaderBufferLayout<?> layout = VeilShaderBufferRegistry.REGISTRY.get(name);
+                if (layout == null) {
+                    throw new IOException("Unknown buffer: " + name);
+                }
+
+                GlslTree loadedImport = new GlslTree();
+                loadedImport.getBody().add(layout.createNode(ctx.hasFeatures(ShaderFeature.SHADER_STORAGE), interfaceName));
+                ctx.include(tree, "#buffer " + name, loadedImport, IncludeOverloadStrategy.INCLUDE);
+            } catch (ResourceLocationException e) {
+                throw new IOException("Invalid buffer: " + bufferId, e);
+            }
+        }
+        directives.removeAll(buffers);
+    }
+}

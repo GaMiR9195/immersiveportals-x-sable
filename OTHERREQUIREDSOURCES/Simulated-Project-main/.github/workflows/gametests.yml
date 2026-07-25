@@ -1,0 +1,27 @@
+name: gametests
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 21
+          cache: gradle
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Make Gradle Wrapper Executable
+        run: chmod +x ./gradlew
+      - name: Execute Gradle build
+        env:
+          local_maven_user: ${{ secrets.MAVEN_USERNAME }}
+          local_maven_token: ${{ secrets.MAVEN_TOKEN }}
+        run: ./gradlew :simulated:build :simulated:neoforge:runGameTest

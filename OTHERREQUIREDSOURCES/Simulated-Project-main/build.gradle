@@ -1,0 +1,87 @@
+plugins {
+    // https://projects.neoforged.net/neoforged/moddevgradle
+    id 'net.neoforged.moddev' version '2.0.140' apply false
+}
+
+allprojects {
+    if (project == rootProject) {
+        version = '1.0.0'
+    }
+}
+
+def configureModSubprojects(String modName) {
+    configure(subprojects.findAll { it.path.startsWith(":${modName}:") }) {
+        def modProps = new Properties()
+        file("${rootProject.projectDir}/${modName}/gradle.properties").withInputStream { modProps.load(it) }
+
+        modProps.each { key, value ->
+            project.ext.set(key.toString(), value)
+        }
+
+        version = project.mod_version
+        group = modProps.group
+        description = modProps.description
+    }
+}
+
+configureModSubprojects('simulated')
+configureModSubprojects('aeronautics')
+configureModSubprojects('offroad')
+
+subprojects {
+    repositories {
+        mavenLocal()
+        mavenCentral()
+
+        maven {
+            url = "https://maven.ryanhcode.dev/releases"
+        }
+
+        maven {
+            url = "https://maven.ryanhcode.dev/snapshots"
+        }
+
+        maven {
+            url = "https://maven.ryanhcode.dev/private"
+
+            authentication {
+                basic(BasicAuthentication)
+            }
+
+            credentials {
+                username = System.getenv('local_maven_user') ?: project.findProperty('ryanhcodeMavenUser') ?: ''
+                password = System.getenv('local_maven_token') ?: project.findProperty('ryanhcodeMavenToken') ?: ''
+            }
+        }
+
+        maven { url = "https://maven.createmod.net" } // Create, Ponder, Flywheel
+        maven { url = "https://mvn.devos.one/snapshots" } // Registrate
+        maven { url = "https://raw.githubusercontent.com/Fuzss/modresources/main/maven/" } // ForgeConfigAPIPort
+
+        maven { url = "https://maven.theillusivec4.top/" } // Curios API
+
+        maven {
+            name = 'Jared maven'
+            url =   'https://maven.blamejared.com/'
+        }
+
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = "Modrinth"
+                    url = "https://api.modrinth.com/maven"
+                }
+            }
+            filter {
+                includeGroup "maven.modrinth"
+            }
+        }
+
+        maven {
+            url = "https://maven.squiddev.cc"
+            content {
+                includeGroup("cc.tweaked")
+            }
+        }
+    }
+}

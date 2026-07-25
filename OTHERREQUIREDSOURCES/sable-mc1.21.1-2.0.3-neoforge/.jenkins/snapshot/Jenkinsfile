@@ -1,0 +1,41 @@
+#!/usr/bin/env groovy
+
+pipeline {
+    agent any
+    tools {
+        jdk "jdk-21"
+    }
+    environment {
+        CI = 'true'
+        SNAPSHOT = 'true'
+    }
+    stages {
+        stage('Clean') {
+            steps {
+                echo 'Cleaning Project'
+                sh 'chmod +x gradlew'
+                sh './gradlew clean'
+            }
+        }
+        stage('Build Snapshot') {
+            steps {
+                echo 'Building'
+                sh './gradlew build'
+            }
+        }
+        stage('Publish Snapshot') {
+            environment {
+                MAVEN_PUBLISH_URL = 'https://maven.ryanhcode.dev/snapshots'
+            }
+
+            steps {
+                echo 'Deploying to Maven'
+                withCredentials([
+                    usernamePassword(credentialsId: 'publishing-user-credentials', usernameVariable: 'local_maven_user', passwordVariable: 'local_maven_token')
+                ]) {
+                    sh './gradlew publish'
+                }
+            }
+        }
+    }
+}
