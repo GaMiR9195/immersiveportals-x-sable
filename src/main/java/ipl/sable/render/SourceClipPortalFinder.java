@@ -5,6 +5,7 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.render.FrontClipping;
+import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.q_misc_util.my_util.Plane;
 
 /**
@@ -50,7 +51,8 @@ public final class SourceClipPortalFinder {
             // the mathematical plane, leaving a moving-only empty hairline between CD0 and
             // this CD1 split. Preserve IP's offset and move only the projection's kept
             // half by the identical amount, making the two clips meet with no exposed gap.
-            Plane seamMatchedProjectionPlane = projectionPlane.move(-FrontClipping.ADJUSTMENT);
+            Plane seamMatchedProjectionPlane = isUsingMatchingPortalClip(projectionPlane)
+                ? projectionPlane.move(-FrontClipping.ADJUSTMENT) : projectionPlane;
             return new ClipDecision(
                 ipl.sable.client.IplStraddleRenderState.getPortalFor(sub), seamMatchedProjectionPlane);
         }
@@ -61,6 +63,19 @@ public final class SourceClipPortalFinder {
         ClipDecision decision = ipl$findAuthoritative(sub);
         ipl.sable.client.IplStraddleRenderCache.cacheDecision(sub, decision);
         return decision;
+    }
+
+    /**
+     * The overlap belongs only to IP's offset portal terrain pass. A same-dimension image
+     * drawn in the ordinary main pass has no slot-0 offset and must retain its exact
+     * half-open split, otherwise its source and mapped instances would z-fight.
+     */
+    private static boolean isUsingMatchingPortalClip(Plane projectionPlane) {
+        if (!PortalRendering.isRendering() || !FrontClipping.isClippingEnabled) return false;
+        Plane active = PortalRendering.getActiveClippingPlane();
+        return active != null
+            && active.normal().dot(projectionPlane.normal()) > 0.999999
+            && active.pos().distanceToSqr(projectionPlane.pos()) < 1.0e-8;
     }
 
     /**
