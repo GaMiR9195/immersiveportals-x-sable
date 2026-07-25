@@ -204,11 +204,6 @@ public final class IplClientHostedLookup {
         return out == null ? java.util.List.of() : out;
     }
 
-    /**
-     * Collision-frame offset: the block translation mapping {@code sub}'s source frame into
-     * {@code destLevel}, when it is currently straddling a translation-only portal whose
-     * destination is that dimension. Null otherwise.
-     */
     /** Whether this hosted sub-level currently straddles a portal (client judgment). */
     public static boolean isClientStraddling(dev.ryanhcode.sable.sublevel.SubLevel sub) {
         if (!(sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub)) return false;
@@ -285,16 +280,6 @@ public final class IplClientHostedLookup {
         if (decision == null || decision.portal() == null) return null;
         if (Math.abs(decision.portal().getScaling() - 1.0) > 1e-9) return null;
         return decision.portal();
-    }
-
-    /** Legacy BlockPos view of {@link #getClientStraddleMappingInto}. */
-    @Nullable
-    public static net.minecraft.core.BlockPos getClientStraddleOffsetInto(
-        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
-    ) {
-        ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
-            getClientStraddleMappingInto(sub, destLevel);
-        return mapping == null ? null : mapping.blockOffsetOrNull();
     }
 
     /** Client port of SableTransitOps.computeMappedPose (pose through the portal transform). */

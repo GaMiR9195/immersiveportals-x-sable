@@ -450,14 +450,12 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
      */
     private static void ipl$withHostingReadOverride(net.minecraft.world.level.Level hosting, Runnable call) {
         net.minecraft.world.level.Level prior = ipl.sable.transit.IplTerrainReadOverride.get();
-        net.minecraft.core.BlockPos priorOffset = ipl.sable.transit.IplTerrainReadOverride.getOffset();
         ipl.sable.transit.IplTerrainReadOverride.set(hosting);
         try {
             call.run();
         } finally {
             if (prior != null) {
-                if (priorOffset != null) ipl.sable.transit.IplTerrainReadOverride.set(prior, priorOffset);
-                else ipl.sable.transit.IplTerrainReadOverride.set(prior);
+                ipl.sable.transit.IplTerrainReadOverride.set(prior);
             } else {
                 ipl.sable.transit.IplTerrainReadOverride.clear();
             }

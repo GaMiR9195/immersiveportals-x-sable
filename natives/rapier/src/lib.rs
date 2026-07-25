@@ -71,12 +71,6 @@ pub struct ActiveLevelColliderInfo {
     /// the native set keeps d < 0 — one body, two region sets). The clip hook
     /// selects by collider handle, falling back to `clip_regions`.
     pub image_clip: HashMap<ColliderHandle, Vec<crate::ipl_ext::IplClipRegion>>,
-    /// IPSable diagnostics: clip-pass counters, mutated with atomics under the scene
-    /// READ lock from the solver hook. Read back via `getClipStats`.
-    pub ipl_clip_seen: std::sync::atomic::AtomicU64,
-    pub ipl_clip_dropped: std::sync::atomic::AtomicU64,
-    /// Last solver-contact point seen by the clip pass for this body (f64 bit patterns).
-    pub ipl_last_contact: [std::sync::atomic::AtomicU64; 3],
 }
 
 impl ChunkAccess for ActiveLevelColliderInfo {
@@ -112,13 +106,6 @@ impl ActiveLevelColliderInfo {
             clip_regions: Vec::new(),
             image_colliders: Vec::new(),
             image_clip: HashMap::new(),
-            ipl_clip_seen: std::sync::atomic::AtomicU64::new(0),
-            ipl_clip_dropped: std::sync::atomic::AtomicU64::new(0),
-            ipl_last_contact: [
-                std::sync::atomic::AtomicU64::new(0),
-                std::sync::atomic::AtomicU64::new(0),
-                std::sync::atomic::AtomicU64::new(0),
-            ],
         }
     }
 
@@ -805,9 +792,9 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
         let mut sable_data = scene.sable_data.write().unwrap();
 
         sable_data.level_colliders.remove(&(id as LevelColliderID));
-        // Java-side cleanup can race scene teardown or repeat after a clone body
-        // was already removed during transit. JNI panics cannot unwind into Java,
-        // so an absent body must mean "already cleaned up", not abort the process.
+        // Java-side cleanup can race scene teardown or repeat after a body was already
+        // removed during transit. JNI panics cannot unwind into Java, so an absent body
+        // must mean "already cleaned up", not abort the process.
         let Some(handle) = sable_data.rigid_bodies.remove(&(id as LevelColliderID)) else {
             return;
         };
@@ -919,15 +906,11 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
             ..
         } = charts.entry(scene.chart).or_default();
 
-        // IPL dedicated chunks: a body that owns private section storage keeps its copied
-        // sections out of the scene-wide map. In a same-dimension straddle the clone and
-        // the real body share one scene while describing identical ship-local section
-        // coordinates at different poses — routing the clone through main_level_chunks
-        // let either body's uploads/cleanup corrupt the other's collision source.
+        // Kinematic contraptions own private section storage because they have no Java-side
+        // plot. Atlas image colliders always read their real body's chart storage.
         if global == 0 && object_id != -1 {
-            // Defensive: a feed racing a despawned clone must not panic across JNI
-            // (a panic here aborts the JVM). Missing body falls through to the shared
-            // path, preserving stock behavior for normal bodies.
+            // Defensive: a feed racing a despawned body must not panic across JNI. Missing
+            // bodies fall through to the shared path, preserving stock behavior.
             if let Some(body) = level_colliders.get_mut(&(object_id as LevelColliderID)) {
                 if body.has_own_chunks() {
                     body.insert_chunk(&chunk, x, y, z, collider_map);

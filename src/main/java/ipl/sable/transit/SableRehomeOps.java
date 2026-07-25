@@ -489,9 +489,16 @@ public final class SableRehomeOps {
                 ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) != null
                     ? ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) : oldParent;
             ipl.sable.dim.IplSceneOwnership.migrate(hosted, from, newParent);
-        } else {
-            rebakeTerrainAround(hosted, newParent, pipeline);
         }
+
+        // Retire the old source-frame seam BEFORE the parent-frame handoff reaches clients.
+        // Atlas keeps its image collider until the caller clears the completed session after
+        // this method returns, but the old clip must not follow the now-native destination
+        // pose for one client frame or it cuts the last exiting part of the sub-level.
+        // This RPC is queued immediately before handoff, preserving client order:
+        // session-end, mapped parent handoff, then any eager reverse-session start.
+        IplStraddleSessionSync.onSessionEnd(
+            server, new StraddleKey(uuid, portal.getUUID()), "rehomed");
 
         // Keep existing trackers through the flip. Removing them here creates a visible gap:
         // the destination projection is gone as soon as the ship clears the portal, while a
@@ -540,47 +547,6 @@ public final class SableRehomeOps {
             Double.toHexString(portal.getNormal().z),
             portal.getUUID().toString()
         );
-    }
-
-    /**
-     * Overwrite the hosting pipeline's terrain voxels around {@code hosted} with fresh
-     * content from {@code parent} (reads routed through {@link IplTerrainReadOverride}).
-     * Unlike the ticket manager's enrollment, this re-bakes EXISTING sections too.
-     * The vertical range is extended downward to cover post-arrival settling.
-     */
-    private static void rebakeTerrainAround(
-        ServerSubLevel hosted, ServerLevel parent, PhysicsPipeline pipeline
-    ) {
-        dev.ryanhcode.sable.companion.math.BoundingBox3d b =
-            new dev.ryanhcode.sable.companion.math.BoundingBox3d();
-        b.set(hosted.boundingBox());
-        b.expand(4.0, b);
-        dev.ryanhcode.sable.companion.math.BoundingBox3i chunkBounds = b.chunkBoundsFrom();
-
-        IplTerrainReadOverride.set(parent);
-        try {
-            for (int x = chunkBounds.minX(); x <= chunkBounds.maxX(); x++) {
-                for (int z = chunkBounds.minZ(); z <= chunkBounds.maxZ(); z++) {
-                    net.minecraft.world.level.chunk.LevelChunk parentChunk;
-                    try {
-                        parentChunk = parent.getChunk(x, z);
-                    } catch (Throwable t) {
-                        continue;
-                    }
-                    // -2 sections below covers the immediate post-arrival fall/settle.
-                    for (int y = chunkBounds.minY() - 2; y <= chunkBounds.maxY(); y++) {
-                        int parentIndex = parent.getSectionIndexFromSectionY(y);
-                        if (parentIndex < 0 || parentIndex >= parent.getSectionsCount()) continue;
-                        pipeline.handleChunkSectionAddition(
-                            parentChunk.getSection(parentIndex), x, y, z, false);
-                    }
-                }
-            }
-        } finally {
-            IplTerrainReadOverride.clear();
-        }
-        LOG.info("[IPL-FLIP] re-baked arrival terrain for {} from {}",
-            hosted.getUniqueId(), parent.dimension().location());
     }
 
     /**

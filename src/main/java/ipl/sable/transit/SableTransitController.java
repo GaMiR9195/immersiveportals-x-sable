@@ -53,8 +53,7 @@ public final class SableTransitController {
      * on the reverse portal next tick (the minority-face rule picks it), so the
      * remaining part keeps physics/render/collision through the handoff — and the
      * majority-native invariant that makes parity geometric is actively maintained.
-     * Matches the servo's authority-swap threshold; the swap remains as the fallback
-     * when the rehome can't execute. {@code -Dipl.sable.majorityRehome=false} restores
+     * {@code -Dipl.sable.majorityRehome=false} restores
      * rehome-at-fully-CROSSED.
      */
     private static final boolean MAJORITY_REHOME =
@@ -85,10 +84,9 @@ public final class SableTransitController {
         IplGrabChain.clearAll();
         IplStraddleSessionSync.clearAll();
         IplPortalRimManager.clearAll();
-        IplStraddleCloneBody.clearAll();
+        IplAtlasStraddleSession.clearAll();
         IplShipPortalAnchor.clearAll();
         IplShipNetherPortal.clearPending();
-        IplStraddleTerrainClone.clearAll();
         SableRehomeOps.resetBootRestore();
         ipl.sable.dim.IplSceneOwnership.clearAll();
     }
@@ -194,8 +192,7 @@ public final class SableTransitController {
                 StraddleKey key = new StraddleKey(
                     airship.getUniqueId(), portalUuid
                 );
-                boolean haveSession = IplStraddleCloneBody.hasSessionKey(key)
-                    || IplStraddleTerrainClone.hasSessionKey(key);
+                boolean haveSession = IplAtlasStraddleSession.hasSessionKey(key);
 
                 // Staff-held bodies ride the SAME declarative pipeline as free ones. The
                 // old staff freeze (no same-dim transit while held, plus a held-portal pin
@@ -247,8 +244,7 @@ public final class SableTransitController {
                         LOG.warn("[IPL-TRANSIT] dual-parity sessions on coincident "
                             + "faces for uuid={} — clearing minority face {}",
                             airship.getUniqueId(), portalUuid);
-                        IplStraddleCloneBody.clear(key, "dual-parity-heal");
-                        IplStraddleTerrainClone.clear(key);
+                        IplAtlasStraddleSession.clear(key, "dual-parity-heal");
                         IplStraddleSessionSync.onSessionEnd(
                             level.getServer(), key, "dual-parity-heal");
                         continue;
@@ -273,13 +269,8 @@ public final class SableTransitController {
                     // any other spawn decline) must be able to veto BEFORE the client
                     // hears about the session — announced-but-blocked sessions were
                     // unreapable phantoms that left stale clip planes on the ship.
-                    if (IplStraddleCloneBody.isEnabled()) {
-                        IplStraddleCloneBody.onStraddleTick(airship, portal, normal);
-                    } else {
-                        IplStraddleTerrainClone.onStraddleTick(airship, portal, normal);
-                    }
-                    if (!haveSession && (IplStraddleCloneBody.hasSessionKey(key)
-                        || IplStraddleTerrainClone.hasSessionKey(key))) {
+                    IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
+                    if (!haveSession && IplAtlasStraddleSession.hasSessionKey(key)) {
                         IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
                     }
                     continue;
@@ -290,8 +281,7 @@ public final class SableTransitController {
                     if (haveSession) {
                         IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
                     }
-                    IplStraddleCloneBody.clear(key, "crossed");
-                    IplStraddleTerrainClone.clear(key);
+                    IplAtlasStraddleSession.clear(key, "crossed");
                     if (candidates == null) candidates = new ArrayList<>(1);
                     candidates.add(new TransitCandidate(airship, portal, false));
                     candidateAddedForAirship = true;
@@ -299,8 +289,7 @@ public final class SableTransitController {
                     String reason = state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
                         ? "backed-out" : "left-aperture";
                     if (haveSession) {
-                        IplStraddleCloneBody.clear(key, reason);
-                        IplStraddleTerrainClone.clear(key);
+                        IplAtlasStraddleSession.clear(key, reason);
                     }
                     // Unconditional + idempotent: a synced session whose spawn kept
                     // failing has no local session key but must still be retracted.
@@ -319,15 +308,13 @@ public final class SableTransitController {
         // hosted ships live in the hosting container, so only its tick sweeps.
         if (IplDimAgnostic.isHostingLevel(level)) {
             java.util.Set<StraddleKey> live = new java.util.HashSet<>(
-                IplStraddleCloneBody.sessionKeys());
-            live.addAll(IplStraddleTerrainClone.sessionKeys());
+                IplAtlasStraddleSession.sessionKeys());
             // Sync-advertised keys too: an advertised session without a physical
             // backing must never outlive its geometry (stale clip planes client-side).
             live.addAll(IplStraddleSessionSync.activeKeys());
             for (StraddleKey k : live) {
                 if (!seenHostedKeys.contains(k)) {
-                    IplStraddleCloneBody.clear(k, "reaped");
-                    IplStraddleTerrainClone.clear(k);
+                    IplAtlasStraddleSession.clear(k, "reaped");
                     IplStraddleSessionSync.onSessionEnd(level.getServer(), k, "reaped");
                 }
             }
@@ -345,9 +332,10 @@ public final class SableTransitController {
                     // 0.5, where the minority rule can only re-open inverted parity).
                     if (c.rehome()) {
                         StraddleKey key = new StraddleKey(uuid, c.portal.getUUID());
-                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "rehomed");
-                        IplStraddleCloneBody.clear(key, "rehomed");
-                        IplStraddleTerrainClone.clear(key);
+                        // executeHostedTransit queues the client session-end immediately
+                        // before the parent handoff. Keep the native Atlas image alive until
+                        // that successful flip is complete, then retire it here.
+                        IplAtlasStraddleSession.clear(key, "rehomed");
                     }
                     // No exit lock anymore (declarative phase 3): re-transiting the
                     // reverse portal requires a genuine majority back-crossing — the
@@ -358,7 +346,7 @@ public final class SableTransitController {
                     IplGrabChain.onBodyTransit(level.getServer(), c.airship.getUniqueId(), c.portal);
                     // EAGER re-derivation: a majority rehome leaves the minority part
                     // still straddling. Waiting for the next tick's recompute opened a
-                    // one-tick hole (no image, no clone, no collision in the old dim —
+                    // one-tick hole (no image and no collision in the old dim —
                     // riders fell through). Deriving the reverse session NOW is the same
                     // declarative rule, just evaluated immediately: the client receives
                     // session-end + handoff + session-start in one packet flush.
@@ -423,8 +411,7 @@ public final class SableTransitController {
 
     private static boolean ipl$hasAnySession(UUID shipId, Portal face) {
         StraddleKey key = new StraddleKey(shipId, face.getUUID());
-        return IplStraddleCloneBody.hasSessionKey(key)
-            || IplStraddleTerrainClone.hasSessionKey(key);
+        return IplAtlasStraddleSession.hasSessionKey(key);
     }
 
     /**
@@ -490,14 +477,9 @@ public final class SableTransitController {
             // Session first, sync second: the sync must never announce a session
             // whose spawn was declined (e.g. the body's scene migration lands a tick
             // later) — the next tick's recompute then derives it normally.
-            if (IplStraddleCloneBody.isEnabled()) {
-                IplStraddleCloneBody.onStraddleTick(airship, face, normal);
-            } else {
-                IplStraddleTerrainClone.onStraddleTick(airship, face, normal);
-            }
+            IplAtlasStraddleSession.onStraddleTick(airship, face, normal);
             StraddleKey key = new StraddleKey(airship.getUniqueId(), face.getUUID());
-            if (IplStraddleCloneBody.hasSessionKey(key)
-                || IplStraddleTerrainClone.hasSessionKey(key)) {
+            if (IplAtlasStraddleSession.hasSessionKey(key)) {
                 IplStraddleSessionSync.onSessionStart(newParent.getServer(), airship, face);
                 LOG.info("[IPL-TRANSIT] eager reverse session uuid={} portal={}",
                     airship.getUniqueId(), face.getUUID());

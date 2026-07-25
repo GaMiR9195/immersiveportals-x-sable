@@ -42,7 +42,6 @@ public abstract class IplRapierBlockChangeReadFixMixin {
         if (override == null) {
             return original.call(level, pos);
         }
-        BlockPos offset = IplTerrainReadOverride.getOffset();
-        return override.getBlockState(offset != null ? pos.offset(offset) : pos);
+        return override.getBlockState(pos);
     }
 }

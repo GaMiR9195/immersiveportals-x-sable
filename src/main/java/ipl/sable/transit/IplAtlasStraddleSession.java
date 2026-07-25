@@ -6,7 +6,6 @@ import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import ipl.sable.dim.IplDimAgnostic;
 import ipl.sable.dim.IplSceneOwnership;
 import ipl.sable.mixin.IplRapierPipelineAccess;
-import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
@@ -18,7 +17,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Atlas straddle sessions (spec v3 §2.2-2.3): IMAGE COLLIDERS.
+ * Atlas straddle sessions (spec v3 §2.2-2.3): image colliders.
  *
  * <p>While a hosted ship straddles a portal, its REAL body gains an image collider in
  * the destination chart — extra geometry portal-prefixed by the full isometry
@@ -27,27 +26,22 @@ import java.util.UUID;
  * servo, no feedback lag, no authority swap. Multi-straddle is just multiple images
  * on one body; a body never contacts its own image (engine same-parent filter).
  *
- * <p>This class owns the session registry (one per ship×portal), the image collider
+ * <p>This class owns the Atlas session registry (one per ship×portal), the image collider
      * lifecycle, the half-open portal-plane clip regions (real set keeps the near half,
      * image set the far half), and the mapping queries the entity/render/router layers
- * use. The v2 clone/servo machinery was deleted after the M4 in-game verification
- * (2026-07-21) — see git history for the coupling-era implementation.
+ * use. There is one real rigid body; destination presence is image geometry.
  *
- * <p>Scope: any scale-1 isometry pair. Kill switch: {@code -Dipl.sable.cloneBodies=false}
- * disables straddle sessions entirely (legacy property name kept for compatibility).
+ * <p>Scope: any scale-1 isometry pair.
  */
-public final class IplStraddleCloneBody {
+public final class IplAtlasStraddleSession {
 
-    private static final Logger LOG = LoggerFactory.getLogger("ipl-straddle-clone");
-
-    private static final boolean ENABLED =
-        !"false".equalsIgnoreCase(System.getProperty("ipl.sable.cloneBodies", "true"));
+    private static final Logger LOG = LoggerFactory.getLogger("ipl-atlas-straddle");
 
     private static final Map<StraddleKey, Session> SESSIONS = new HashMap<>();
 
     private static boolean loggedSkip = false;
 
-    private IplStraddleCloneBody() {}
+    private IplAtlasStraddleSession() {}
 
     private static final class Session {
         final ServerSubLevel sub;
@@ -86,7 +80,7 @@ public final class IplStraddleCloneBody {
     }
 
     public static boolean isEnabled() {
-        return ENABLED && IplSceneOwnership.isEnabled();
+        return IplSceneOwnership.isEnabled();
     }
 
     /** Called each tick a hosted ship is STRADDLING (from the transit controller). */
@@ -251,10 +245,8 @@ public final class IplStraddleCloneBody {
             System.arraycopy(regions.get(i), 0, flat, i * 14, 14);
         }
         ipl.sable.natives.IplRapierNatives.setClipRegions(parentScene, realId, flat);
-        // Diagnostic for the source-side wall bug: show exactly what half-space the real
-        // body is being clipped against (a reversed locked normal clips the wrong half).
         for (double[] r : regions) {
-            LOG.info("[IPL-CLONE-CLIP] realId={} plane=({},{},{}) normal=({},{},{})", 
+            LOG.debug("[IPL-IMAGE-CLIP] realId={} plane=({},{},{}) normal=({},{},{})",
                 realId,
                 String.format("%.1f", r[0]), String.format("%.1f", r[1]), String.format("%.1f", r[2]),
                 String.format("%.2f", r[3]), String.format("%.2f", r[4]), String.format("%.2f", r[5]));
@@ -282,7 +274,7 @@ public final class IplStraddleCloneBody {
         loggedSkip = false;
     }
 
-    /** Whether any clone session is active for this ship (server-side straddle truth). */
+    /** Whether any Atlas session is active for this ship (server-side straddle truth). */
     public static boolean hasSession(UUID shipUuid) {
         for (Session s : SESSIONS.values()) {
             if (s.sub.getUniqueId().equals(shipUuid)) return true;
@@ -291,7 +283,7 @@ public final class IplStraddleCloneBody {
     }
 
     /**
-     * The active clone session's portal isometry mapping {@code sub}'s source frame into
+     * The active Atlas session's portal isometry mapping {@code sub}'s source frame into
      * {@code destLevel}, or null. Feeds the frame mapping for entity collision /
      * interaction on the through-part.
      */
@@ -365,14 +357,6 @@ public final class IplStraddleCloneBody {
         return null;
     }
 
-    /** Legacy BlockPos view of {@link #getMappingInto} (translation-only sessions). */
-    public static BlockPos getOffsetInto(
-        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
-    ) {
-        IplStraddlePoseMap.StraddleMapping mapping = getMappingInto(sub, destLevel);
-        return mapping == null ? null : mapping.blockOffsetOrNull();
-    }
-
     /** True when {@code position} is on the destination side of a same-dimension session. */
     public static boolean isInMappedHalf(
         dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level, Vec3 position
@@ -390,11 +374,8 @@ public final class IplStraddleCloneBody {
     }
 
     /**
-     * Visit every active clone session whose DESTINATION is {@code destLevel}: the ship and
-     * the source→dest block offset. Used by the ticket enrollment — the dest scene must hold
-     * terrain around the CLONE's region (ship bounds ⊕ offset), which no stock path covers:
-     * the ticket manager only enrolls around ships whose parent is that level, and the clone
-     * is pure native state.
+     * Visit every active Atlas session whose DESTINATION is {@code destLevel}: the ship and
+     * the mapped image region. Used by Atlas chart ticket enrollment.
      */
     public static void forEachSessionInto(
         ServerLevel destLevel,

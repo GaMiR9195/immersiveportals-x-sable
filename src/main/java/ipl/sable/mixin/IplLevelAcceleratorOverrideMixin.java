@@ -53,16 +53,7 @@ public abstract class IplLevelAcceleratorOverrideMixin {
     private void ipl$readFromOverrideLevel(int chunkX, int chunkZ, CallbackInfoReturnable<LevelChunk> cir) {
         Level override = IplTerrainReadOverride.get();
         if (override != null) {
-            net.minecraft.core.BlockPos offset = IplTerrainReadOverride.getOffset();
-            if (offset != null) {
-                // Approximate chunk translation — content reads are caught per-block below,
-                // this just keeps the synchronous chunk loads in the right area.
-                cir.setReturnValue(override.getChunk(
-                    chunkX + Math.floorDiv(offset.getX(), 16),
-                    chunkZ + Math.floorDiv(offset.getZ(), 16)));
-            } else {
-                cir.setReturnValue(override.getChunk(chunkX, chunkZ));
-            }
+            cir.setReturnValue(override.getChunk(chunkX, chunkZ));
         }
     }
 
@@ -83,13 +74,7 @@ public abstract class IplLevelAcceleratorOverrideMixin {
     ) {
         Level override = IplTerrainReadOverride.get();
         if (override != null) {
-            net.minecraft.core.BlockPos offset = IplTerrainReadOverride.getOffset();
-            if (offset != null) {
-                // Translated read (straddle terrain clone): source-frame P → dest-frame P+offset.
-                cir.setReturnValue(override.getBlockState(pos.offset(offset)));
-            } else {
-                cir.setReturnValue(chunk.getBlockState(pos));
-            }
+            cir.setReturnValue(chunk.getBlockState(pos));
             return;
         }
 

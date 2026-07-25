@@ -40,15 +40,10 @@ import java.util.UUID;
  *       boot restore, parent flipped by transit). Runs once per hosting-container tick.</li>
  * </ul>
  *
- * <p>Kill switch: {@code -Dipl.sable.perScene=false} reverts to the single-hosting-scene
- * model (parent terrain fed into the hosting scene with read overrides).
  */
 public final class IplSceneOwnership {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-scene-ownership");
-
-    private static final boolean PER_SCENE =
-        !"false".equalsIgnoreCase(System.getProperty("ipl.sable.perScene", "true"));
 
     /** Where each hosted body currently lives (recorded by the routed pipeline add/remove). */
     private static final Map<UUID, ServerLevel> bodyHome = new HashMap<>();
@@ -56,7 +51,7 @@ public final class IplSceneOwnership {
     private IplSceneOwnership() {}
 
     public static boolean isEnabled() {
-        return PER_SCENE;
+        return true;
     }
 
     /** The level whose Rapier scene should own this sub-level's body. */

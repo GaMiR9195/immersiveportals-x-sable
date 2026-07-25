@@ -204,6 +204,10 @@ public final class IplParentDimSync {
             // space. A pass already in progress may otherwise render a stale source
             // projection as well as the newly native destination sub-level.
             setParent(clientSubLevel, parentDimId);
+            // The retired split only bridges server session-end to this exact mapped pose.
+            // Once the parent frame becomes visible, retaining its old portal would clip the
+            // native destination draw with a source-frame plane.
+            IplStraddleSessionStore.clearRetiredForHandoff(subLevelId);
             // Staff drag frame changes ride the dedicated grab-chain rebase RPC (ordered
             // after this handoff on the same channel); nothing staff-related to do here.
             // Straddle parity is server-synced state now (IplStraddleSessionStore); the
