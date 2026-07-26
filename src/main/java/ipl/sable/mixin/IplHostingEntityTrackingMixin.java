@@ -11,6 +11,7 @@ import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -27,9 +28,8 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * ENTITY TRACKING for the hosting dimension — make plot-space entities (item frames and
- * seats relocated at rehome, plungers migrated on ship contact) sync to the players who
- * track their SHIP.
+ * ENTITY TRACKING for hosted plots — make both hosting-owned and parent-owned plot-frame
+ * entities sync to the players who track their ship.
  *
  * <p>Stock Sable already handles everything else about plot-space entities within one
  * level: {@code TrackedEntityMixin} projects the entity's position through the sub-level
@@ -79,16 +79,36 @@ public abstract class IplHostingEntityTrackingMixin {
     /** Viewer sweep: hosted entities are watched by their ship's tracking players. */
     @Inject(method = "tick()V", at = @At("TAIL"))
     private void ipl$hostedEntityViewerSweep(CallbackInfo ci) {
-        if (!IplDimAgnostic.isHostingLevel(this.level)) return;
         if (this.entityMap.isEmpty()) return;
 
-        List<ServerPlayer> viewers = ipl$unionTrackingPlayers();
-        // Run even when empty: a viewer set shrinking to zero must still remove pairings.
-        PacketRedirection.withForceRedirect(this.level, () -> {
-            for (Object tracked : this.entityMap.values()) {
-                ((IplTrackedEntityInvoker) tracked).ipl$updatePlayers(viewers);
+        if (IplDimAgnostic.isHostingLevel(this.level)) {
+            List<ServerPlayer> viewers = ipl$unionTrackingPlayers();
+            // Run even when empty: a viewer set shrinking to zero must still remove pairings.
+            PacketRedirection.withForceRedirect(this.level, () -> {
+                for (Object tracked : this.entityMap.values()) {
+                    ((IplTrackedEntityInvoker) tracked).ipl$updatePlayers(viewers);
+                }
+            });
+            return;
+        }
+
+        // Parent-owned entities may deliberately carry plot-local coordinates (stock Sable's
+        // entity-on-sublevel contract). Vanilla uses those raw ~plot-grid coordinates to
+        // decide visibility and repeatedly drops viewers, even though Sable correctly
+        // projects position inside updatePlayer. Feed the owning ship's exact tracker set.
+        SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(this.level);
+        if (hosting == null) return;
+        for (Object tracked : this.entityMap.values()) {
+            Entity entity = ((IplTrackedEntityInvoker) tracked).ipl$getEntity();
+            if (entity == null || entity.isRemoved()) continue;
+            var plot = hosting.getPlot(entity.chunkPosition());
+            if (!(plot != null && plot.getSubLevel() instanceof ServerSubLevel sub)
+                || sub.isRemoved() || IplDimAgnostic.getServerParentLevel(sub) != this.level) {
+                continue;
             }
-        });
+            List<ServerPlayer> viewers = ipl$trackingPlayers(sub);
+            ((IplTrackedEntityInvoker) tracked).ipl$updatePlayers(viewers);
+        }
     }
 
     /** Removal broadcasts happen outside the tracking tick — stamp them too. */
@@ -120,6 +140,17 @@ public abstract class IplHostingEntityTrackingMixin {
                     viewers.add(player);
                 }
             }
+        }
+        return viewers;
+    }
+
+    @Unique
+    private List<ServerPlayer> ipl$trackingPlayers(ServerSubLevel sub) {
+        List<ServerPlayer> viewers = new ArrayList<>();
+        var playerList = this.level.getServer().getPlayerList();
+        for (UUID uuid : sub.getTrackingPlayers()) {
+            ServerPlayer player = playerList.getPlayer(uuid);
+            if (player != null) viewers.add(player);
         }
         return viewers;
     }

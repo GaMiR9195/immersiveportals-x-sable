@@ -15,16 +15,11 @@ import java.util.UUID;
  * ENTITY-BY-UUID GLOBAL ADDRESSING for plot space — the entity twin of the sub-level UUID
  * bridge.
  *
- * <p>Entities that live in plot space (the hosting dimension) are conceptually part of a
- * ship that exists in some parent dimension, and mods hold cross-references to and from
- * them by UUID, resolved via {@code ServerLevel.getEntity(uuid)} on their OWN level:
+ * <p>Hosted plot storage can still be referenced across parent charts by UUID. Mods resolve
+ * cross-references through {@code ServerLevel.getEntity(uuid)} on their OWN level:
  * <ul>
  *   <li>Simulated's launched plunger calls {@code getOwner()} every tick and
- *       {@code discard()}s itself when the owner is unresolvable — a plunger migrated into
- *       the hosting dimension (it re-positions itself into plot coordinates on hitting a
- *       ship; see {@code IplPlotEntityMigration}) could not see its shooter in the parent
- *       dimension and self-destructed the tick it landed: "the plunger disappears the
- *       moment it touches the sub-level".</li>
+ *       {@code discard()}s itself when the owner is unresolvable.</li>
  *   <li>The plunger PAIR link resolves the partner the same way — a ground-side plunger
  *       whose partner stuck to a ship lost the pair (and discarded itself through the
  *       "pair recorded but unresolvable" branch), and vice versa.</li>

@@ -28,4 +28,5 @@ public interface IplRapierPipelineAccess {
      */
     @Accessor(value = "scene", remap = false)
     dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsScene ipl$scene();
+
 }

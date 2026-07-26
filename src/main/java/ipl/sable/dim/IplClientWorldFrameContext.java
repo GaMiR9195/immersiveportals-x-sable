@@ -53,10 +53,9 @@ public final class IplClientWorldFrameContext {
     @Nullable
     public static ClientLevel resolveParentForPlotBe(Level level, BlockPos pos) {
         if (!level.isClientSide() || !IplDimAgnostic.isHostingLevel(level)) return null;
-        if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return null;
-
         SubLevelContainer container = SubLevelContainer.getContainer(level);
         if (container == null) return null;
+        if (!container.inBounds(pos)) return null;
         LevelPlot plot = container.getPlot(pos.getX() >> 4, pos.getZ() >> 4);
         if (plot == null) return null;
         SubLevel subLevel = plot.getSubLevel();

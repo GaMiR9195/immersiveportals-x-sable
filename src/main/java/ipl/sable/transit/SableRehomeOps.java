@@ -87,9 +87,6 @@ public final class SableRehomeOps {
         if (IplDimAgnostic.isHostingLevel(level)) {
             bootRestoreHosted(container, level);
             restoreParents(container, level);
-            // Entities that entered plot space in a parent dim (plunger projectiles etc.)
-            // are teleported into the hosting dim here, once per hosting-container tick.
-            ipl.sable.dim.IplPlotEntityMigration.drain(level);
             // Low-frequency client parent re-stamp: the one-shot setParent RPC can race
             // the client's StartTracking allocation; a ship whose client parent stays
             // null is filtered out of the hosted render gather — it EXISTS (physics,
@@ -402,22 +399,9 @@ public final class SableRehomeOps {
             return;
         }
 
-        // 7. Per-scene: move the twin's body into the PARENT scene NOW instead of waiting
-        //    for the next reconcile tick. Runs AFTER the source removal so the parent
-        //    scene never briefly holds two bodies at the same pose. Closes the one-tick
-        //    cross-scene window in which constraints re-attaching against the twin
-        //    (swivel bearings re-checking persistence every tick) were refused by the
-        //    ownership guard's same-scene gate.
-        if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
-            ServerLevel bodyHome = ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted);
-            if (bodyHome != null && bodyHome != parentLevel) {
-                try {
-                    ipl.sable.dim.IplSceneOwnership.migrate(hosted, bodyHome, parentLevel);
-                } catch (Throwable t) {
-                    LOG.error("[IPL-REHOME] eager scene migration failed for {}; reconcile will retry", uuid, t);
-                }
-            }
-        }
+        // 7. Atlas keeps the real body in the hosting dimension. Publish its parent-chart
+        // image now; no body/rope/joint/third-party registry migration is permitted.
+        ipl.sable.atlas.IplAtlasBodyImages.reconcile(hosted);
 
         LOG.info("[IPL-REHOME] complete uuid={} blocks={} entities={}", uuid, blocksCopied, entitiesMoved);
 
@@ -462,16 +446,20 @@ public final class SableRehomeOps {
             uuid, oldParent.dimension().location(), newParent.dimension().location(),
             mappedPose.position().x(), mappedPose.position().y(), mappedPose.position().z());
 
-        // Capture + remap velocities through the portal rotation.
-        Vector3d lin = pipeline.getLinearVelocity(hosted, new Vector3d());
-        Vector3d ang = pipeline.getAngularVelocity(hosted, new Vector3d());
-        Vec3 mappedLin = portal.transformLocalVec(new Vec3(lin.x, lin.y, lin.z));
-        Vec3 mappedAng = portal.transformLocalVec(new Vec3(ang.x, ang.y, ang.z));
+        // The real body changes frame only after Atlas permits the group rehome. Preserve
+        // its physical velocity by rotating both velocity vectors through that same portal.
+        Vector3d linear = pipeline.getLinearVelocity(hosted, new Vector3d());
+        Vector3d angular = pipeline.getAngularVelocity(hosted, new Vector3d());
+        Vec3 mappedLin = portal.transformLocalVec(new Vec3(linear.x, linear.y, linear.z));
+        Vec3 mappedAng = portal.transformLocalVec(new Vec3(angular.x, angular.y, angular.z));
 
         // Teleport riders BEFORE moving the pose, while the deck is still under them.
         int riders = teleportRiders(hosted, oldParent, newParent, portal);
 
-        // Move the physics body + logical pose to the mapped frame.
+        // Move only this body's native frame. Connected bodies are deliberately NOT
+        // teleported: Atlas treats a portal as a window, so an active cross-aperture joint
+        // remains represented by source geometry plus image colliders until its own body
+        // legitimately completes transit.
         pipeline.teleport(hosted, mappedPose.position(), mappedPose.orientation());
         hosted.logicalPose().set(mappedPose);
         pipeline.resetVelocity(hosted);
@@ -479,17 +467,9 @@ public final class SableRehomeOps {
             new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
             new Vector3d(mappedAng.x, mappedAng.y, mappedAng.z));
 
-        // Flip the parent.
         stampParent(hosted, newParent, hosting);
-
         hosted.updateBoundingBox();
-
-        if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
-            net.minecraft.server.level.ServerLevel from =
-                ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) != null
-                    ? ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) : oldParent;
-            ipl.sable.dim.IplSceneOwnership.migrate(hosted, from, newParent);
-        }
+        ipl.sable.atlas.IplAtlasBodyImages.reconcile(hosted);
 
         // Retire the old source-frame seam BEFORE the parent-frame handoff reaches clients.
         // Atlas keeps its image collider until the caller clears the completed session after
@@ -508,28 +488,36 @@ public final class SableRehomeOps {
         // The old tracked set only contains source-side viewers. A cross-dimension exit can
         // reveal the fully crossed body to destination portal viewers before the tracking tick
         // adds them, so hand off to both sets now instead of leaving a one-way invisible ship.
-        java.util.Set<UUID> handoffRecipients = new java.util.HashSet<>(hosted.getTrackingPlayers());
-        handoffRecipients.addAll(IplGrabChain.getDraggingPlayers(uuid));
+        sendParentHandoff(server, hosted, newParent, portal);
+
+        LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
+        return true;
+    }
+
+    private static void sendParentHandoff(
+        MinecraftServer server, ServerSubLevel body, ServerLevel destination, Portal portal
+    ) {
+        java.util.Set<UUID> recipients = new java.util.HashSet<>(body.getTrackingPlayers());
+        recipients.addAll(IplGrabChain.getDraggingPlayers(body.getUniqueId()));
         net.minecraft.world.level.ChunkPos destinationChunk = new net.minecraft.world.level.ChunkPos(
-            net.minecraft.core.BlockPos.containing(mappedPose.position().x(), mappedPose.position().y(), mappedPose.position().z())
+            net.minecraft.core.BlockPos.containing(body.logicalPose().position().x(),
+                body.logicalPose().position().y(), body.logicalPose().position().z())
         );
         for (ServerPlayer viewer : ImmPtlChunkTracking.getPlayersViewingChunk(
-            newParent.dimension(), destinationChunk.x, destinationChunk.z, false
+            destination.dimension(), destinationChunk.x, destinationChunk.z, false
         )) {
-            handoffRecipients.add(viewer.getUUID());
+            recipients.add(viewer.getUUID());
         }
-        for (UUID trackerUuid : handoffRecipients) {
-            ServerPlayer player = server.getPlayerList().getPlayer(trackerUuid);
+        String transform = encodePortalTransform(portal);
+        for (UUID recipient : recipients) {
+            ServerPlayer player = server.getPlayerList().getPlayer(recipient);
             if (player == null) continue;
             qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
                 player,
                 "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
-                uuid.toString(), newParent.dimension().location().toString(), encodePortalTransform(portal)
+                body.getUniqueId().toString(), destination.dimension().location().toString(), transform
             );
         }
-
-        LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
-        return true;
     }
 
     /** Serializes the exact crossing transform for clients that do not track the source portal. */
@@ -586,11 +574,9 @@ public final class SableRehomeOps {
      * A sub-level SPLIT off a hosted ship was just recorded (core Sable's
      * {@code ServerSubLevel.setSplitFrom}, fired from {@code kickFromContainingSubLevel}
      * for every nested assembly BEFORE control returns to the splitting mod — see
-     * {@code IplSplitParentStampMixin}). Inherit the parent eagerly and move the fresh
-     * body into the parent scene, so constraints attached synchronously after the split
-     * (Simulated's swivel bearing) see both bodies in ONE scene instead of being refused
-     * by the ownership guard's same-scene gate for a tick. {@link #restoreParents} remains
-     * the deserialization-time fallback.
+     * {@code IplSplitParentStampMixin}). Inherit the parent eagerly and publish the fresh
+     * body's parent-chart image. Both real bodies remain together in the hosting pipeline,
+     * so synchronous swivel constraints use normal Sable ownership.
      */
     public static void onSplitAllocated(ServerSubLevel split, ServerSubLevel containing) {
         try {
@@ -607,12 +593,7 @@ public final class SableRehomeOps {
             }
 
             stampParent(split, parent, hosting);
-            if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
-                ServerLevel home = ipl.sable.dim.IplSceneOwnership.getBodyHome(split);
-                if (home != null && home != parent) {
-                    ipl.sable.dim.IplSceneOwnership.migrate(split, home, parent);
-                }
-            }
+            ipl.sable.atlas.IplAtlasBodyImages.reconcile(split);
             LOG.info("[IPL-REHOME] split sub-level {} eagerly inherited parent {} from {}",
                 split.getUniqueId(), parent.dimension().location(), containing.getUniqueId());
         } catch (Throwable t) {

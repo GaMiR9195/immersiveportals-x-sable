@@ -110,11 +110,10 @@ public final class IplAtlasStraddleSession {
         }
         IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.StraddleMapping.of(portal);
 
-        // The real body must actually be in the parent scene — raw native reads against a
-        // scene that doesn't hold the body are the hang/abort class the ownership guard
-        // exists to prevent. (Body lands in the parent scene via phase 1's routing; a
-        // boot-fallback body still in the hosting scene gets reconciled within a tick.)
-        if (IplSceneOwnership.getBodyHome(hosted) != parent) return;
+        // Atlas keeps the real body in its honest hosting chart. Parent/destination charts
+        // contain only image colliders; native body lookup is world-global and therefore the
+        // image may be created through either chart view without moving third-party state.
+        if (IplSceneOwnership.getBodyHome(hosted) != hosted.getLevel()) return;
 
         StraddleKey key = new StraddleKey(hosted.getUniqueId(), portal.getUUID());
         Session existing = SESSIONS.get(key);
@@ -143,7 +142,7 @@ public final class IplAtlasStraddleSession {
             rot.x, rot.y, rot.z, rot.w);
         if (session.imageHandle < 0) {
             LOG.error("[IPL-IMAGE] image collider creation failed for ship {} portal {} — "
-                + "no straddle session (body missing from the parent scene?)",
+                + "no straddle session (real body unavailable in Atlas world?)",
                 hosted.getUniqueId(), portal.getUUID());
             return;
         }

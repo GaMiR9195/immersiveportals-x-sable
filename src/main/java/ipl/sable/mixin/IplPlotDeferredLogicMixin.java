@@ -61,9 +61,6 @@ public abstract class IplPlotDeferredLogicMixin implements LevelAccessor {
     /** The hosting level when {@code pos} is a hosted plot position reached from elsewhere. */
     @Unique
     private ServerLevel ipl$plotRouteTarget(BlockPos pos) {
-        // Cheap reject: plot-grid coords are in the millions; world coords are not.
-        if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return null;
-
         ServerLevel self = (ServerLevel) (Object) this;
         ServerLevel hosting = SableSubLevelDimension.getSableSubLevelsOrNull(self.getServer());
         if (hosting == null || hosting == self) return null;
@@ -139,12 +136,13 @@ public abstract class IplPlotDeferredLogicMixin implements LevelAccessor {
         double radius, ResourceKey<Level> dimension, Packet<?> packet,
         Operation<Void> original
     ) {
-        if (Math.abs(x) > 1_000_000 || Math.abs(z) > 1_000_000) {
-            ServerLevel self = (ServerLevel) (Object) this;
-            SubLevelContainer container = SubLevelContainer.getContainer((Level) self);
-            List<ServerPlayer> tracking = container == null ? List.of()
-                : container.getPlayersTracking(
-                    new ChunkPos(((int) Math.floor(x)) >> 4, ((int) Math.floor(z)) >> 4));
+        ServerLevel self = (ServerLevel) (Object) this;
+        SubLevelContainer container = SubLevelContainer.getContainer((Level) self);
+        int chunkX = ((int) Math.floor(x)) >> 4;
+        int chunkZ = ((int) Math.floor(z)) >> 4;
+        if (container != null && container.inBounds(chunkX, chunkZ)
+            && container.getPlot(chunkX, chunkZ) != null) {
+            List<ServerPlayer> tracking = container.getPlayersTracking(new ChunkPos(chunkX, chunkZ));
             if (!tracking.isEmpty()) {
                 for (ServerPlayer player : tracking) {
                     player.connection.send(packet);

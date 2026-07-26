@@ -100,9 +100,7 @@ public final class SableTransitController {
         if (level == null) return;
         // Always-on portal containment rims track portal entity lifecycle per level.
         IplPortalRimManager.tick(level);
-        // Per-scene model: migrate any hosted body whose scene doesn't match its parent —
-        // covers boot-restored ships whose parent resolved after the body was created
-        // (fallback landed it in the hosting scene) and any missed flip path.
+        // Atlas keeps real bodies in the hosting chart and reconciles parent-chart images.
         if (ipl.sable.dim.IplSceneOwnership.isEnabled()
             && ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
             ipl.sable.dim.IplSceneOwnership.reconcile(container);
@@ -213,6 +211,16 @@ public final class SableTransitController {
                 if (straddlingAperture) {
                     double fraction = ipl$crossedFraction(airship, portal, normal);
 
+                    // A two-sided doorway is one aperture, not two independent transit
+                    // directions. Pick its owner from actual motion: a body can straddle
+                    // either face, but only the face whose source-to-destination normal
+                    // agrees with current motion may create or retain the session. This
+                    // keeps a connected trailing body from disappearing into the back face.
+                    Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
+                    if (!ipl$ownsCoincidentFace(airship, portal, twin, normal, haveSession)) {
+                        continue;
+                    }
+
                     // Minority-face parity: the opposite coincident face evaluates
                     // the same geometry with the complementary fraction and claims it.
                     if (!haveSession && fraction > 0.5 + 1.0e-6) {
@@ -229,7 +237,6 @@ public final class SableTransitController {
                     // parity; this face may not open. Scoped to coincident opposite
                     // faces only — multi-straddle sessions on DIFFERENT doorways are
                     // unaffected.
-                    Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
                     boolean twinHasSession = twin != null
                         && ipl$hasAnySession(airship.getUniqueId(), twin);
                     if (!haveSession && twinHasSession) {
@@ -258,7 +265,8 @@ public final class SableTransitController {
                     // minority rule refuses to re-open this face and would open the
                     // OPPOSITE face with inverted parity instead, making forward travel
                     // structurally impossible.
-                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION) {
+                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION
+                        && ipl$canRehomeConnectionGroup(airship, portal, normal)) {
                         if (candidates == null) candidates = new ArrayList<>(1);
                         candidates.add(new TransitCandidate(airship, portal, true));
                         candidateAddedForAirship = true;
@@ -278,6 +286,14 @@ public final class SableTransitController {
 
                 if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
                     && (haveSession || state.enteredFromSourceAperture())) {
+                    if (haveSession && !ipl$canRehomeConnectionGroup(airship, portal, normal)) {
+                        // A connected body stays source-native and is represented on the far
+                        // side by its Atlas image. This is a portal window, not a teleport
+                        // of one endpoint of a rope/bearing into unrelated world coordinates.
+                        seenHostedKeys.add(key);
+                        IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
+                        continue;
+                    }
                     if (haveSession) {
                         IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
                     }
@@ -363,6 +379,49 @@ public final class SableTransitController {
         }
     }
 
+    private static boolean ipl$canRehomeConnectionGroup(
+        ServerSubLevel body, Portal portal, Vec3 sourceToDest
+    ) {
+        if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return true;
+        try {
+            var pipeline = ipl.sable.dim.IplSceneOwnership.pipelineOf((ServerLevel) body.getLevel());
+            if (!(pipeline instanceof dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline rapier)) {
+                return true;
+            }
+            long scene = ((ipl.sable.mixin.IplRapierPipelineAccess) rapier).ipl$sceneHandle();
+            int[] ids = ipl.sable.natives.IplRapierNatives.connectedSableBodyIds(
+                scene, dev.ryanhcode.sable.physics.impl.rapier.Rapier3D.getID(body));
+            if (ids.length <= 1) {
+                return true;
+            }
+
+            var hosting = dev.ryanhcode.sable.api.sublevel.SubLevelContainer
+                .getContainer(body.getLevel());
+            if (hosting == null) return false;
+            for (int id : ids) {
+                ServerSubLevel other = null;
+                for (var sub : hosting.getAllSubLevels()) {
+                    if (sub.getRuntimeId() == id) {
+                        other = sub;
+                        break;
+                    }
+                }
+                if (other == null || other.isRemoved()) return false;
+                StraddleKey key = new StraddleKey(other.getUniqueId(), portal.getUUID());
+                if (!IplAtlasStraddleSession.hasSessionKey(key)
+                    || ipl$crossedFraction(other, portal, sourceToDest) <= REHOME_FRACTION) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (Throwable t) {
+            // A failed graph query must preserve the window invariant, never turn a local
+            // joint into cross-dimension raw-coordinate distance.
+            return false;
+        }
+    }
+
+
     /**
      * Fraction of the ship's AABB extent past the portal plane along
      * {@code sourceToDest} — the minority-face parity test for NEW sessions: of two
@@ -412,6 +471,25 @@ public final class SableTransitController {
     private static boolean ipl$hasAnySession(UUID shipId, Portal face) {
         StraddleKey key = new StraddleKey(shipId, face.getUUID());
         return IplAtlasStraddleSession.hasSessionKey(key);
+    }
+
+    /** Resolve a coincident two-sided aperture by directed motion. Zero-motion entry falls
+     * through to the existing deterministic minority/twin rule, so held bodies can create a
+     * stable session before acquiring velocity. */
+    private static boolean ipl$ownsCoincidentFace(
+        ServerSubLevel airship, Portal face, Portal twin, Vec3 sourceToDest, boolean hasSession
+    ) {
+        if (twin == null) return true;
+        StraddleKey twinKey = new StraddleKey(airship.getUniqueId(), twin.getUUID());
+        if (IplAtlasStraddleSession.hasSessionKey(twinKey)) return false;
+        if (hasSession) return true;
+        Vec3 velocity = new Vec3(
+            airship.logicalPose().position().x() - airship.lastPose().position().x(),
+            airship.logicalPose().position().y() - airship.lastPose().position().y(),
+            airship.logicalPose().position().z() - airship.lastPose().position().z());
+        double directedMotion = velocity.dot(sourceToDest);
+        if (Math.abs(directedMotion) <= 1.0e-7) return true;
+        return directedMotion > 0.0;
     }
 
     /**
@@ -475,7 +553,7 @@ public final class SableTransitController {
             if (twin != null && ipl$hasAnySession(airship.getUniqueId(), twin)) continue;
 
             // Session first, sync second: the sync must never announce a session
-            // whose spawn was declined (e.g. the body's scene migration lands a tick
+            // whose spawn was declined (e.g. a transient chart image update lands a tick
             // later) — the next tick's recompute then derives it normally.
             IplAtlasStraddleSession.onStraddleTick(airship, face, normal);
             StraddleKey key = new StraddleKey(airship.getUniqueId(), face.getUUID());

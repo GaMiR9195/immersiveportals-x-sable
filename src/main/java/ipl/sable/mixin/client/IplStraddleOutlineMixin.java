@@ -50,10 +50,7 @@ public abstract class IplStraddleOutlineMixin {
         LevelRenderer context, Camera camera, HitResult target, DeltaTracker deltaTracker,
         PoseStack poseStack, MultiBufferSource bufferSource, Operation<Boolean> original
     ) {
-        if (this.level != null
-            && target instanceof BlockHitResult blockTarget
-            && (Math.abs(blockTarget.getBlockPos().getX()) >= 1_000_000
-                || Math.abs(blockTarget.getBlockPos().getZ()) >= 1_000_000)) {
+        if (this.level != null && target instanceof BlockHitResult blockTarget) {
 
             SubLevel owner = dev.ryanhcode.sable.Sable.HELPER.getContaining(
                 this.level, blockTarget.getBlockPos());

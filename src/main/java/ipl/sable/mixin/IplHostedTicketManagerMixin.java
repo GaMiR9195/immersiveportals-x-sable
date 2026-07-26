@@ -35,9 +35,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *       always "loaded enough" — hosted ships stay active; stale terrain tickets still expire
  *       through the 20-tick outdated path.</li>
  *   <li><b>Terrain collision:</b> the stock per-sub-level loop cannot see hosted plots. The
- *       parent scene therefore enrolls native parent-dimension chunks using that level's own
+ *       parent chart therefore enrolls native parent-dimension chunks using that level's own
  *       coordinate system and height profile. Atlas sessions separately enroll the mapped
- *       destination image region in its destination scene.</li>
+ *       destination image region in its destination chart.</li>
  * </ol>
  */
 @Pseudo

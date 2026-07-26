@@ -8,6 +8,7 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JDoubleArray};
 use jni::sys::{jboolean, jdouble, jint, jlong};
+use std::collections::HashSet;
 use marten::Real;
 use rapier3d::math::Vec3;
 
@@ -112,6 +113,54 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyPairExclus
     }
 }
 
+/// Sable body ids in the full impulse-joint component containing `body_id`. Rope particles
+/// participate in the walk, so two ships tied by a rope are one portal-transition group even
+/// though the intermediate bodies have no Java ids.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBodyIds<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+) -> jni::objects::JIntArray<'local> {
+    if scene_handle == 0 || body_id < 0 {
+        return env.new_int_array(0).unwrap();
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let sable_data = scene.sable_data.read().unwrap();
+    let Some(start) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
+        return env.new_int_array(0).unwrap();
+    };
+    let sim = scene.sim_data.read().unwrap();
+    let mut connected = HashSet::from([start]);
+    loop {
+        let mut changed = false;
+        for (_, joint) in sim.impulse_joint_set.iter() {
+            if joint.body1 == scene.world.ground_handle || joint.body2 == scene.world.ground_handle {
+                continue;
+            }
+            if connected.contains(&joint.body1) && connected.insert(joint.body2) {
+                changed = true;
+            }
+            if connected.contains(&joint.body2) && connected.insert(joint.body1) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut ids: Vec<jint> = sable_data.rigid_bodies.iter()
+        .filter_map(|(id, handle)| connected.contains(handle).then_some(*id as jint))
+        .collect();
+    ids.sort_unstable();
+    let result = env.new_int_array(ids.len() as i32).unwrap();
+    if !ids.is_empty() {
+        env.set_int_array_region(&result, 0, &ids).unwrap();
+    }
+    result
+}
+
 // ---------------------------------------------------------------------------
 // Atlas M2 (spec v3 §2.2): image colliders — the body's geometry projected into
 // a far chart through a translation-only portal isometry (Tier 1). Contacts on
@@ -148,15 +197,11 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
     let mut sim_data = scene.sim_data.write().unwrap();
     let sim_data = &mut *sim_data;
 
-    let Some(body_handle) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied()
-    else {
-        eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} has no rigid body");
+    let Some(body_handle) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
+        eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} unknown");
         return -1;
     };
-    let Some(info) = sable_data
-        .level_colliders
-        .get_mut(&(body_id as LevelColliderID))
-    else {
+    let Some(info) = sable_data.level_colliders.get_mut(&(body_id as LevelColliderID)) else {
         eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} unknown");
         return -1;
     };
@@ -178,18 +223,6 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
         ..native_shape
     };
 
-    let collider = ColliderBuilder::new(SharedShape::new(image_shape))
-        .friction(0.525)
-        .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
-        .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS)
-        .density(0.0)
-        .collision_groups(crate::groups::level_group(scene.chart))
-        .build();
-
-    let handle =
-        sim_data
-            .collider_set
-            .insert_with_parent(collider, body_handle, &mut sim_data.rigid_body_set);
     let prefix = rapier3d::math::Pose {
         translation: Vec3::new(dx as Real, dy as Real, dz as Real),
         rotation: rapier3d::math::Rotation::from_xyzw(
@@ -200,11 +233,24 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
         )
         .normalize(),
     };
-    sim_data
-        .collider_set
-        .get_mut(handle)
-        .unwrap()
-        .set_portal_prefix(Some(prefix));
+    let collider = ColliderBuilder::new(SharedShape::new(image_shape))
+        .friction(0.525)
+        .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+        .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS)
+        .density(0.0)
+        .collision_groups(crate::groups::image_group(scene.chart))
+        .position(rapier3d::math::Pose::IDENTITY)
+        .build();
+
+    let handle =
+        sim_data
+            .collider_set
+            .insert_with_parent(collider, body_handle, &mut sim_data.rigid_body_set);
+    sim_data.collider_set.get_mut(handle).unwrap().set_portal_prefix(Some(prefix));
+    sim_data.collider_set.get_mut(handle).unwrap().set_position(rapier3d::math::Pose::IDENTITY);
+    // The engine's portal-prefix composition intentionally changes the collider pose only
+    // after a parent pose update. Seed that update now so a persistent parent-chart image is
+    // visible in the same tick it is registered.
 
     info.image_colliders.push(handle);
     eprintln!(

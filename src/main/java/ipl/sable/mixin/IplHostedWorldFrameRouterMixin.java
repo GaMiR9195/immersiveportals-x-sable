@@ -75,7 +75,12 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
     private ServerLevel ipl$worldFrameTarget(double x, double z) {
         ServerLevel self = (ServerLevel) (Object) this;
         if (!IplDimAgnostic.isHostingLevel(self)) return null;
-        if (Math.abs(x) >= 1_000_000 || Math.abs(z) >= 1_000_000) return null;
+        // Plot positions are in the 20M grid. World coordinates may legitimately reach
+        // Minecraft's ~30M border, so the old 1M test misclassified valid parent terrain as
+        // plot data and made generic area checks (assembler ground scan) read hosting void.
+        // A contextual world-frame call is already explicit; only reject coordinates that
+        // actually belong to a live hosted plot.
+        if (ipl$isHostedPlotPosition(self, x, z)) return null;
         ServerLevel parent = IplWorldFrameContext.current();
         if (parent == null || parent == self) return null;
 
@@ -93,6 +98,16 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
     @Nullable
     private ServerLevel ipl$worldFrameTarget(BlockPos pos) {
         return ipl$worldFrameTarget(pos.getX(), pos.getZ());
+    }
+
+    @Unique
+    private static boolean ipl$isHostedPlotPosition(ServerLevel hosting, double x, double z) {
+        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
+            dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(hosting);
+        return container != null && container.inBounds(
+            net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(x)),
+            net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(z))
+        );
     }
 
     // ------------------------------------------------------------------
@@ -146,10 +161,9 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
     private ServerLevel ipl$worldFrameChunkTarget(int chunkX, int chunkZ) {
         ServerLevel self = (ServerLevel) (Object) this;
         if (!IplDimAgnostic.isHostingLevel(self)) return null;
-        if (Math.abs(chunkX) >= 62_500 || Math.abs(chunkZ) >= 62_500) return null;
+        if (ipl$isHostedPlotPosition(self, (double) chunkX * 16.0, (double) chunkZ * 16.0)) return null;
         ServerLevel parent = IplWorldFrameContext.current();
-        if (parent == null || parent == self) return null;
-        return parent;
+        return parent == self ? null : parent;
     }
 
     @Override
@@ -198,11 +212,33 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
             : super.getEntities(typeTest, area, predicate);
     }
 
-    // Build-height accessors are deliberately NOT routed: LevelChunk section indexing
-    // chains through the level's height profile, so an armed override would shift plot
-    // chunk section math for non-overworld parents (corruption). The hosting profile
-    // matches the overworld's; disassembly placement is height-safe regardless because
-    // the routed per-position setBlock enforces the PARENT's real limits.
+    // Scalar world bounds belong to the same explicit terrain frame as routed chunks. Chunk
+    // section reads remain safe because callers receive a parent LevelChunk whose own section
+    // accessor owns its height profile; returning hosting bounds here made generic external
+    // operations reject valid Nether/modded-dimension terrain before they ever read a chunk.
+    @Override
+    public int getMinBuildHeight() {
+        ServerLevel self = (ServerLevel) (Object) this;
+        ServerLevel parent = IplWorldFrameContext.current();
+        return IplDimAgnostic.isHostingLevel(self) && parent != null && parent != self
+            ? parent.getMinBuildHeight() : super.getMinBuildHeight();
+    }
+
+    @Override
+    public int getMaxBuildHeight() {
+        ServerLevel self = (ServerLevel) (Object) this;
+        ServerLevel parent = IplWorldFrameContext.current();
+        return IplDimAgnostic.isHostingLevel(self) && parent != null && parent != self
+            ? parent.getMaxBuildHeight() : super.getMaxBuildHeight();
+    }
+
+    @Override
+    public int getSectionsCount() {
+        ServerLevel self = (ServerLevel) (Object) this;
+        ServerLevel parent = IplWorldFrameContext.current();
+        return IplDimAgnostic.isHostingLevel(self) && parent != null && parent != self
+            ? parent.getSectionsCount() : super.getSectionsCount();
+    }
 
     // ------------------------------------------------------------------
     // ServerLevel-defined methods: HEAD injects.

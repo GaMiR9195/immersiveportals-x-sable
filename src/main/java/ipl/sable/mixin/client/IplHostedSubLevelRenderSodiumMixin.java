@@ -247,6 +247,48 @@ public abstract class IplHostedSubLevelRenderSodiumMixin {
         }
     }
 
+    /**
+     * Sable queues one-block sub-level layers during {@code renderSectionLayer}, then drains
+     * that queue only from {@code renderAfterSections}. Sodium does not execute the vanilla
+     * LevelRenderer terrain lifecycle, so the existing hosted vanilla hook never drains it.
+     * Ropes are many independent one-block sub-levels and therefore vanished for the same
+     * reason. Drain after Sodium has issued the matching chunk layer.
+     */
+    @Inject(method = "drawChunkLayer", at = @At("TAIL"))
+    private void ipl$renderHostedSingleBlocks(
+        RenderType renderType, ChunkRenderMatrices matrices, double x, double y, double z,
+        CallbackInfo ci
+    ) {
+        List<ClientSubLevel> hosted = ipl$hosted();
+        List<IplClientHostedLookup.StraddleProjection> projections = ipl$projections();
+        if (hosted.isEmpty() && projections.isEmpty()) return;
+
+        Minecraft minecraft = Minecraft.getInstance();
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+        Vec3 cameraPosition = camera.getPosition();
+        float partialTick = minecraft.getTimer().getGameTimeDeltaPartialTick(false);
+        Matrix4f modelView = new Matrix4f(matrices.modelView());
+        Matrix4f projection = new Matrix4f(matrices.projection());
+        SubLevelRenderDispatcher dispatcher = SubLevelRenderDispatcher.get();
+
+        if (!hosted.isEmpty()) {
+            dispatcher.renderAfterSections(
+                hosted, cameraPosition.x, cameraPosition.y, cameraPosition.z,
+                modelView, projection, partialTick);
+        }
+        for (IplClientHostedLookup.StraddleProjection proj : projections) {
+            IplStraddleRenderState.set(
+                proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
+            try {
+                dispatcher.renderAfterSections(
+                    List.of(proj.sub()), cameraPosition.x, cameraPosition.y, cameraPosition.z,
+                    modelView, projection, partialTick);
+            } finally {
+                IplStraddleRenderState.clear();
+            }
+        }
+    }
+
     @Unique
     private void ipl$updateCulling(List<ClientSubLevel> sublevels) {
         Frustum frustum = ((IEWorldRenderer) Minecraft.getInstance().levelRenderer).portal_getFrustum();

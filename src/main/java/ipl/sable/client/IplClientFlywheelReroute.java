@@ -28,7 +28,7 @@ import java.util.WeakHashMap;
  * <p>Re-registering the BE with the PARENT level's manager (public
  * {@code VisualizationManager.get(parent).blockEntities().queueAdd/queueRemove} API) drops
  * it into Sable's own Flywheel integration: {@code BlockEntityStorageMixin.sable$createVisual}
- * resolves the containing sub-level (via the client identity fix + plot bridge) and embeds
+ * resolves the containing sub-level from the block entity's honest hosting level and embeds
  * the visual in a per-sub-level {@code VisualEmbedding} whose transform follows
  * {@code renderPose()} every frame — the stock pipeline, in the world that actually renders.
  *
@@ -86,11 +86,9 @@ public final class IplClientFlywheelReroute {
     public static void onBlockEntityAdded(Level chunkLevel, BlockEntity be) {
         if (!ipl.sable.dim.IplDimAgnostic.isHostingLevel(chunkLevel)) return;
         BlockPos pos = be.getBlockPos();
-        if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return;
-
         SubLevel sub = ipl$owningSub(chunkLevel, pos);
         if (sub == null) return;
-        ClientLevel parent = IplClientBeIdentity.resolveParentForPlotPos(chunkLevel, pos);
+        ClientLevel parent = resolveParentForPlotPos(chunkLevel, pos);
         if (parent == null) return; // parent not synced yet; renderer falls back until reload
 
         if (queueAdd(parent, be)) {
@@ -142,6 +140,15 @@ public final class IplClientFlywheelReroute {
         if (plot == null) return null;
         SubLevel sub = plot.getSubLevel();
         return sub == null || sub.isRemoved() ? null : sub;
+    }
+
+    @Nullable
+    private static ClientLevel resolveParentForPlotPos(Level hosting, BlockPos pos) {
+        SubLevel sub = ipl$owningSub(hosting, pos);
+        if (sub == null) return null;
+        Level parent = ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
+        return parent instanceof ClientLevel client && !ipl.sable.dim.IplDimAgnostic.isHostingLevel(client)
+            ? client : null;
     }
 
     // ------------------------------------------------------------------

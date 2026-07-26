@@ -46,6 +46,9 @@ public final class IplRapierNatives {
     public static native void setBodyPairExclusion(
         long sceneHandle, int idA, int idB, boolean excluded);
 
+    /** Sable bodies connected by joints or rope particles to {@code bodyId}. */
+    public static native int[] connectedSableBodyIds(long sceneHandle, int bodyId);
+
     // ------------------------------------------------------------------
     // Atlas M2 (spec v3 §2.2-2.3): image colliders — Tier-1 exact coupling.
     // ------------------------------------------------------------------

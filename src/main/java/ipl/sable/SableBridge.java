@@ -266,7 +266,7 @@ public final class SableBridge {
     public static net.minecraft.server.level.ServerLevel effectivePortalGenLevel(
         net.minecraft.server.level.ServerLevel world, BlockPos pos
     ) {
-        if (!PRESENT || !isPlotPos(pos)) return world;
+        if (!PRESENT || !isPlotPos(world, pos)) return world;
         return SableImpl.effectivePortalGenLevel(world, pos);
     }
 
@@ -279,7 +279,7 @@ public final class SableBridge {
     public static boolean hasChunkAtFrameAware(
         net.minecraft.server.level.ServerLevel world, BlockPos pos
     ) {
-        if (!PRESENT || !isPlotPos(pos)) return world.hasChunkAt(pos);
+        if (!PRESENT || !isPlotPos(world, pos)) return world.hasChunkAt(pos);
         return SableImpl.subLevelAtPlotPos(world, pos) != null;
     }
 
@@ -293,7 +293,7 @@ public final class SableBridge {
     public static Vec3 shipFrameWorldCenter(
         net.minecraft.server.level.ServerLevel world, BlockPos pos
     ) {
-        if (!PRESENT || !isPlotPos(pos)) return null;
+        if (!PRESENT || !isPlotPos(world, pos)) return null;
         return SableImpl.shipFrameWorldCenter(world, pos);
     }
 
@@ -306,7 +306,8 @@ public final class SableBridge {
      * Must run on the template BEFORE flipped/reverse portals are derived.
      */
     public static void mapShipFramePortalPose(qouteall.imm_ptl.core.portal.Portal portal) {
-        if (!PRESENT || portal == null || !isPlotPos(BlockPos.containing(portal.getOriginPos()))) {
+        if (!PRESENT || portal == null || !(portal.level() instanceof net.minecraft.server.level.ServerLevel level)
+            || !isPlotPos(level, BlockPos.containing(portal.getOriginPos()))) {
             return;
         }
         SableImpl.mapShipFramePortalPose(portal);
@@ -321,7 +322,9 @@ public final class SableBridge {
     public static void anchorShipFramePortal(
         qouteall.imm_ptl.core.portal.Portal portal, BlockPos shapeAnchor
     ) {
-        if (!PRESENT || portal == null || shapeAnchor == null || !isPlotPos(shapeAnchor)) {
+        if (!PRESENT || portal == null || shapeAnchor == null
+            || !(portal.level() instanceof net.minecraft.server.level.ServerLevel level)
+            || !isPlotPos(level, shapeAnchor)) {
             return;
         }
         SableImpl.anchorShipFramePortal(portal, shapeAnchor);
@@ -335,16 +338,18 @@ public final class SableBridge {
      * how much of the parent-level plot routing a given code path enjoys.
      */
     public static Level plotAwareLevel(Level context, @Nullable BlockPos pos) {
-        if (!PRESENT || pos == null || !isPlotPos(pos)) return context;
-        if (!(context instanceof net.minecraft.server.level.ServerLevel serverLevel)) {
-            return context;
-        }
+        if (!PRESENT || pos == null || !(context instanceof net.minecraft.server.level.ServerLevel serverLevel)
+            || !isPlotPos(serverLevel, pos)) return context;
         Level hosting = SableImpl.hostingLevelOf(serverLevel);
         return hosting != null ? hosting : context;
     }
 
-    /** Sable's plot grid lives ~20M blocks out; nothing legitimate is past 1M. */
-    private static boolean isPlotPos(BlockPos pos) {
-        return Math.abs(pos.getX()) >= 1_000_000 || Math.abs(pos.getZ()) >= 1_000_000;
+    /** Plot identity belongs to the live hosting container, never a coordinate threshold. */
+    private static boolean isPlotPos(net.minecraft.server.level.ServerLevel context, BlockPos pos) {
+        var container = ipl.sable.dim.IplDimAgnostic.getHostingContainerFor(context);
+        if (container == null) return false;
+        int chunkX = pos.getX() >> 4;
+        int chunkZ = pos.getZ() >> 4;
+        return container.inBounds(chunkX, chunkZ) && container.getPlot(chunkX, chunkZ) != null;
     }
 }

@@ -37,8 +37,6 @@ public abstract class IplStraddleInteractDistanceMixin {
     private void ipl$canInteractWithMappedBlock(
         BlockPos pos, double slop, CallbackInfoReturnable<Boolean> cir
     ) {
-        if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return;
-
         Player self = (Player) (Object) this;
         SubLevel owner = dev.ryanhcode.sable.Sable.HELPER.getContaining(self.level(), pos);
         if (owner == null) return;

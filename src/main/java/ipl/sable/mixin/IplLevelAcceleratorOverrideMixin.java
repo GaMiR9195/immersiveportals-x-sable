@@ -41,11 +41,18 @@ public abstract class IplLevelAcceleratorOverrideMixin {
         at = @At("HEAD"), cancellable = true, require = 0)
     private void ipl$worldFrameChunkFromParent(int chunkX, int chunkZ, CallbackInfoReturnable<LevelChunk> cir) {
         if (IplTerrainReadOverride.get() != null) return; // explicit override wins (below)
-        if (Math.abs(chunkX) >= 62_500 || Math.abs(chunkZ) >= 62_500) return;
         if (!ipl.sable.dim.IplDimAgnostic.isHostingLevel(this.level)) return;
+        if (ipl$isHostedPlotChunk(chunkX, chunkZ)) return;
         net.minecraft.server.level.ServerLevel parent = ipl.sable.dim.IplWorldFrameContext.current();
         if (parent == null || parent == this.level) return;
         cir.setReturnValue(parent.getChunk(chunkX, chunkZ));
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private boolean ipl$isHostedPlotChunk(int chunkX, int chunkZ) {
+        var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(this.level);
+        return container != null && container.inBounds(chunkX, chunkZ)
+            && container.getPlot(chunkX, chunkZ) != null;
     }
 
     @Inject(method = "getChunk(II)Lnet/minecraft/world/level/chunk/LevelChunk;",

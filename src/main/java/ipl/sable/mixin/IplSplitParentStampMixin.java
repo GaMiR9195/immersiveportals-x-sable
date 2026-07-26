@@ -15,18 +15,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p>A split of a HOSTED ship (swivel bearing activation, heat-map split, nested assembly)
  * allocates the new sub-level directly in the hosting container — with no parent stamp.
  * Previously the parent was inherited one hosting-container tick later
- * ({@code SableRehomeOps.restoreParents}), leaving a window in which the split body sat in
- * the HOSTING Rapier scene while its source ship's body lived in the PARENT scene.
- * Anything attaching a constraint between them inside that window (the swivel bearing does
- * so synchronously in {@code assemble()}) was refused by the ownership guard's same-scene
- * gate — the top part detached, and retries raced reconciliation.
+ * ({@code SableRehomeOps.restoreParents}), leaving a window with no parent-chart image for
+ * the split. The real split and source bodies both stay in the hosting Rapier chart, so their
+ * synchronous swivel constraint uses normal Sable ownership.
  *
  * <p>{@code ServerSubLevel.setSplitFrom} is core Sable's single chokepoint where the split
  * relationship is recorded — called from {@code kickFromContainingSubLevel} for every
  * nested assembly, BEFORE control returns to the mod that triggered the split (and thus
  * before any constraint attach). We inherit the parent from the containing ship and
- * migrate the fresh body into the parent scene right here, so by the time the swivel
- * attaches its rotary constraint both bodies share one scene.
+ * publish the fresh body's parent-chart image right here, so by the time the swivel
+ * attaches its rotary constraint both bodies already share the hosting chart.
  */
 @Pseudo
 @Mixin(value = ServerSubLevel.class, remap = false)

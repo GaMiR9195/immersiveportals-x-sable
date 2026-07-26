@@ -14,6 +14,9 @@ import java.util.List;
 @Mixin(targets = "net.minecraft.server.level.ChunkMap$TrackedEntity")
 public interface IplTrackedEntityInvoker {
 
+    @org.spongepowered.asm.mixin.gen.Accessor("entity")
+    net.minecraft.world.entity.Entity ipl$getEntity();
+
     @Invoker("updatePlayers")
     void ipl$updatePlayers(List<ServerPlayer> players);
 }

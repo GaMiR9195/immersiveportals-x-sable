@@ -51,7 +51,10 @@ public abstract class IplHostedClientWorldFrameRouterMixin extends Level {
     @Nullable
     private ClientLevel ipl$clientWorldFrameTarget(BlockPos pos) {
         if (!IplDimAgnostic.isHostingLevel(this)) return null;
-        if (Math.abs(pos.getX()) >= 1_000_000 || Math.abs(pos.getZ()) >= 1_000_000) return null;
+        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
+            dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(this);
+        if (container != null && container.inBounds(pos)
+            && container.getPlot(pos.getX() >> 4, pos.getZ() >> 4) != null) return null;
         ClientLevel parent = IplClientWorldFrameContext.current();
         return parent == null || parent == (Object) this ? null : parent;
     }

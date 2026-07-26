@@ -16,8 +16,8 @@ import org.jetbrains.annotations.Nullable;
  *   <li>{@code subLevel.getLevel()} (Sable's field) == the hosting level — chunk storage,
  *       physics pipeline, container membership, persistence all live there.</li>
  *   <li>{@link IplSubLevelDuck#ipl$getParentLevel()} == the dimension the airship visually
- *       appears in. Tracking range checks, portal queries, terrain collision enrollment and
- *       rendering all use the parent.</li>
+ *       appears in. Tracking, portal queries, rendering, and Atlas image-collider terrain
+ *       enrollment use the parent; the real Sable level remains the hosting dimension.</li>
  *   <li>Cross-portal transit flips {@code parentLevel} (plus a pose remap) — plot chunks
  *       never move again.</li>
  * </ul>

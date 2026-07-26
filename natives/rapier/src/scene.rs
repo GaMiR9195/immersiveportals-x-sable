@@ -129,6 +129,7 @@ pub struct SableSceneData {
     /// IPL: body pairs (normalized id order) that must never generate contacts. Portal
     /// rims use this to exempt an anchored portal carrier from its containment body.
     pub ipl_excluded_pairs: HashSet<(LevelColliderID, LevelColliderID)>,
+
 }
 
 impl SableSceneData {

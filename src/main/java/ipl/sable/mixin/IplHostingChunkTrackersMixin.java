@@ -28,10 +28,9 @@ import java.util.List;
  * ropes), spring/BE live state silently dropped. Stock Sable never hit this because its
  * tracking helper doubled as vanilla tracking in the player's own dimension.
  *
- * <p>Generalized beyond the hosting level: with the server identity fix
- * ({@code IplHostedBeParentIdentityMixin}), hosted plot BEs resolve their PARENT level and
- * ask the parent's chunk map about their plot-range chunk — the answer must be the same.
- * The plot grid is a universal address space; the hosting container knows the trackers.
+ * <p>Generalized beyond the hosting level: a plot-range packet sink can be reached through
+ * either the hosting level or a narrow world-frame bridge. The plot grid is a universal
+ * address space; the hosting container knows the trackers.
  *
  * <p>Same doctrine as {@code IplPlotDeferredLogicMixin}'s block-event broadcast fix, one
  * layer lower so EVERY tracking-based sink inherits it.
@@ -46,12 +45,11 @@ public abstract class IplHostingChunkTrackersMixin {
     @ModifyReturnValue(method = "getPlayers", at = @At("RETURN"))
     private List<ServerPlayer> ipl$plotChunkTrackers(List<ServerPlayer> original, ChunkPos pos, boolean boundaryOnly) {
         if (!original.isEmpty()) return original;
-        if (Math.abs(pos.x) < 62_500 && Math.abs(pos.z) < 62_500) return original;
-
         SubLevelContainer container = IplDimAgnostic.isHostingLevel(this.level)
             ? SubLevelContainer.getContainer((Level) this.level)
             : IplDimAgnostic.getHostingContainerFor(this.level);
-        if (container == null) return original;
+        if (container == null || !container.inBounds(pos)
+            || container.getPlot(pos) == null) return original;
         List<ServerPlayer> tracking = container.getPlayersTracking(pos);
         return tracking == null || tracking.isEmpty() ? original : tracking;
     }

@@ -1,5 +1,85 @@
 # Sub-Level Mod Compatibility — One Root: Level Identity
 
+## Round 9 — Atlas Frame Boundaries, Parent-Owned Plot Entities, and Single-Block Rendering
+
+### Atlas contract retained
+
+- Real `SubLevel`, plot chunks, hosted BEs, body ownership, native Sable pipeline and
+  constraint managers remain honestly in `ipl_sable:sublevels`.
+- Atlas/Rapier provides one shared native world with per-dimension charts. A ship has one
+  real body; parent/destination presence is image collider geometry with portal-prefix
+  transform. No fake `BlockEntity.getLevel()`, fake `dimension()`, clone body, or native
+  body scene migration.
+- Portal-connected body groups are not remapped as a component: that turns a portal window
+  into a teleport and stretches ropes/bearings across raw Overworld/Nether coordinates.
+  Parent flip is blocked while a connected body has not crossed the same portal; Atlas image
+  geometry represents the through side.
+- Bidirectional/coincident portal faces use one active owner session. Existing sessions keep
+  their aperture ownership while backing out; the opposite/back face cannot steal it.
+
+### Removed wrong approaches
+
+- Removed fake hosted BE/level identity mixins and client identity/light bridge.
+- Removed whole connected-component portal teleport/remap.
+- Removed coordinate-magnitude identity tests (`1_000_000`, `62_500`, etc.) from generic
+  plot/frame paths. A plot is recognized only by exact hosting container membership:
+  `inBounds(chunk) && getPlot(chunk) != null`.
+- Removed spatial parent-world fallback that guessed a ship parent from nearby AABB/bounds.
+  Parent terrain/chart ownership must never be inferred from proximity.
+- Removed `Entity.setPosRaw` migration into hosting dimension and all newly-added
+  Plunger/staff/assembler-specific mixins. Moving a parent entity into hosting storage broke
+  arbitrary addon `WorldAttached`, owner/pair, packet, renderer and saved-data state.
+
+### Generic parent plot entity model
+
+Upstream Sable semantics are restored for a parent-owned entity that becomes plot-local:
+
+```text
+entity Level / addon state: parent dimension
+entity raw coordinate: hosted plot-local coordinate
+plot blocks/chunks: hosting dimension physical storage
+visible position/network range: Sable SubLevel pose projection
+```
+
+- `IplParentPlotChunkCacheMixin` and client counterpart route parent-level plot-local
+  `getChunk`, `getChunkNow`, `hasChunk` reads to the exact live hosting plot chunk.
+- `IplParentPlotEntityTicking` marks exact parent plot chunks `ENTITY_TICKING` for entities
+  whose local coordinate belongs to a hosted plot. Reference counts prevent one entity
+  leaving a plot chunk from disabling another entity in it.
+- `IplHostingEntityTrackingMixin` now also re-evaluates viewers for parent-owned entities
+  on an exact hosted plot using that ship's exact tracking players. This avoids vanilla raw
+  plot-coordinate range churn (entity packet flicker/despawn) while retaining parent-level
+  addon storage and packet identity.
+
+This is intended to cover any entity that uses normal Sable plot-local coordinates, not a
+Plunger-specific path.
+
+### World-frame and rendering bridges
+
+- `IplWorldFrameContext` routes only explicit parent-world terrain coordinates. It does not
+  change Java `Level` identity, dimension key, storage, manager buckets or physics pipeline.
+- Hosted BE tick, physics actor tick and vanilla interaction paths establish this context.
+  Parent terrain chunk/block queries and parent build-height scalars resolve through it.
+- A direct arbitrary addon custom-packet method has no generic way to identify its owning
+  sub-level unless its API supplies a plot position or `ServerSubLevel`; Rapier cannot see a
+  Java method entry or infer that ownership safely. Required long-term shared API boundary:
+  `withWorldFrame(ServerSubLevel, action)` at Sable operation ingress.
+- Hosted one-block rendering is generic `VanillaSingleSubLevelRenderData`, not rope-specific.
+  Sodium parent passes now call Sable's `renderAfterSections` drain after chunk layers, so
+  one-block sub-levels and rope segments can render outside direct hosting-dimension views.
+
+### Unresolved / runtime verification
+
+- Plunger still needs runtime validation after parent plot chunk cache, entity-ticking and
+  parent viewer tracking bridges. Reported blink/discard indicated all three were missing.
+- Assembler direct custom packet operation still lacks a generic Sable-owned operation-frame
+  ingress. It currently proves terrain reads are occurring in hosting storage when blocks
+  placed there make it succeed; do not add another addon-specific assembler mixin.
+- Physics Staff lock marker state remains an old handler-routing design issue: constraints
+  execute in hosting pipeline, while display state must be available in parent render chart.
+  Replace handler-specific routing with shared body-frame state transport, not staff mixins.
+- No Gradle build, tests, Git/diff, runtime launch, or native Rapier compilation was run.
+
 ## Round 8 — Invisible Single-Block Sub-Levels: The Client Parent Stamp Race
 
 ### The report that cracked it
