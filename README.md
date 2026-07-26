@@ -10,6 +10,7 @@
 9) One-block sub-levels are visible again.
 10) New “Physics Staff” mixin, works with recursion (still kinda WIP).
 11) New, portals now have colliders.
+12) New, connected sub-levels (with blocks like bearing, springs, ropes) work through portals.
 
 # Immersive Portals × Sable Compatibility Fork
 Version: NeoForge 1.21.1; Targets: Sable 2.0.3+ · Create Aeronautics 1.3.0+ · Create 6.0.10
