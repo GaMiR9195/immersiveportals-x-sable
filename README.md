@@ -7,8 +7,9 @@
 6) A small 0.01 z-fighting offset was compensated (0.01 pixel visual gap).
 7) Breaking sub-level into 2 pieces works again.
 8) Multi-part global blocks (e.g., swivel bearings, wheels, springs) are working again (WIP).
-9) New “Physics Staff” mixin, works with recursion (still kinda WIP).
-10) New, portals now have colliders.
+9) One-block sub-levels are visible again.
+10) New “Physics Staff” mixin, works with recursion (still kinda WIP).
+11) New, portals now have colliders.
 
 # Immersive Portals × Sable Compatibility Fork
 Version: NeoForge 1.21.1; Targets: Sable 2.0.3+ · Create Aeronautics 1.3.0+ · Create 6.0.10
