@@ -2,11 +2,9 @@ package ipl.sable.atlas;
 
 import dev.ryanhcode.sable.api.physics.PhysicsPipeline;
 import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
-import dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicketManager;
 import ipl.sable.dim.IplSceneOwnership;
-import ipl.sable.mixin.IplRapierPipelineAccess;
 import ipl.sable.natives.IplRapierNatives;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
@@ -34,9 +32,10 @@ import java.util.UUID;
  * entirely. No chunks are force-loaded. A player wandering back re-loads the area, the
  * gate flips, the body returns to Dynamic and wakes at rest exactly where it froze.
  *
- * <p>The dormant re-apply runs every tick (idempotent native), which also re-freezes a
- * body recreated mid-dormancy (rehome twin swap). Kill switch:
- * {@code -Dipl.sable.parentLoadGate=false}.
+ * <p>The freeze is applied on transition and re-asserted from the hosted body-add seam
+ * ({@code onHostedBodyAdded}, guard-mixin TAIL) so a body recreated mid-dormancy (rehome
+ * twin swap, deserialization restore) is Fixed from its first tick — plus a slow periodic
+ * re-assert as belt-and-braces. Kill switch: {@code -Dipl.sable.parentLoadGate=false}.
  */
 public final class IplHostedTerrainGate {
 
@@ -73,22 +72,39 @@ public final class IplHostedTerrainGate {
         }
 
         if (DORMANT.add(id)) {
+            setDormant(sub, true);
             LOG.info("[IPL-TERRAIN-GATE] ship {} dormant in {} — parent chunk [{}, {}] not "
                 + "loaded", id, parent.dimension().location(), cx, cz);
+        } else if ((parent.getGameTime() & 63) == 0) {
+            setDormant(sub, true); // slow re-assert: belt-and-braces for unknown re-add paths
         }
-        setDormant(sub, true); // every tick: idempotent, and re-freezes a rehome twin
         return true;
+    }
+
+    /**
+     * Hosted body-add seam (guard-mixin TAIL — fires for rehome twin swaps and
+     * deserialization restores): a body recreated while its ship is dormant must be
+     * Fixed from its FIRST tick, not after the next enrollment pass re-polls.
+     */
+    public static void onHostedBodyAdded(ServerSubLevel sub) {
+        if (!ENABLED || !DORMANT.contains(sub.getUniqueId())) return;
+        setDormant(sub, true);
+    }
+
+    /** Prune dormancy entries for ships no longer in the hosting container. */
+    public static void retainLive(Iterable<? extends ServerSubLevel> subLevels) {
+        if (DORMANT.isEmpty()) return;
+        Set<UUID> live = new HashSet<>();
+        for (ServerSubLevel sub : subLevels) {
+            if (!sub.isRemoved()) live.add(sub.getUniqueId());
+        }
+        DORMANT.retainAll(live);
     }
 
     private static void setDormant(ServerSubLevel sub, boolean dormant) {
         if (!IplRapierNatives.isAvailable()) return;
-        RapierPhysicsPipeline owning =
-            IplSceneOwnership.pipelineOf((ServerLevel) sub.getLevel());
-        if (owning == null) return;
-        // Liveness via the raw scene FIELD: the sceneHandle invoker NPEs on a torn-down
-        // pipeline (server-stop ordering).
-        if (((IplRapierPipelineAccess) owning).ipl$scene() == null) return;
-        long scene = ((IplRapierPipelineAccess) owning).ipl$sceneHandle();
+        long scene = IplSceneOwnership.liveSceneHandle((ServerLevel) sub.getLevel());
+        if (scene == 0) return;
         IplRapierNatives.setBodyDormant(scene, Rapier3D.getID(sub), dormant);
     }
 

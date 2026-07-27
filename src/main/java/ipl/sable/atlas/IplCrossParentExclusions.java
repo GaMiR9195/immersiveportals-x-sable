@@ -1,12 +1,11 @@
 package ipl.sable.atlas;
 
 import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
-import dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import ipl.sable.dim.IplDimAgnostic;
 import ipl.sable.dim.IplSceneOwnership;
-import ipl.sable.mixin.IplRapierPipelineAccess;
 import ipl.sable.natives.IplRapierNatives;
+import ipl.sable.transit.IplAtlasStraddleSession;
 import net.minecraft.server.level.ServerLevel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +31,10 @@ import java.util.Set;
  * Same-parent pairs stay collidable; pairs are re-derived every hosting tick so parent
  * flips (transit) update exclusions within a tick. A ship whose parent is still
  * unresolved (boot restore window) is conservatively excluded from everything.
+ *
+ * <p>Deeper follow-up on record: a parent-frame id on the native collider info, checked
+ * in the dispatcher beside the chart guard, would replace this pair bookkeeping AND the
+ * straddle carve-out below with a per-body scalar. This class is the Java-side interim.
  */
 public final class IplCrossParentExclusions {
 
@@ -55,25 +58,23 @@ public final class IplCrossParentExclusions {
         }
         if (hosted.isEmpty() && EXCLUDED.isEmpty()) return;
 
-        long scene = 0;
-        if (!hosted.isEmpty()) {
-            RapierPhysicsPipeline pipeline =
-                IplSceneOwnership.pipelineOf((ServerLevel) hosted.get(0).getLevel());
-            if (pipeline == null || ((IplRapierPipelineAccess) pipeline).ipl$scene() == null) {
-                return;
-            }
-            scene = ((IplRapierPipelineAccess) pipeline).ipl$sceneHandle();
+        long scene = hosted.isEmpty() ? 0
+            : IplSceneOwnership.liveSceneHandle((ServerLevel) hosted.get(0).getLevel());
+        if (!hosted.isEmpty() && scene == 0) return;
+
+        int n = hosted.size();
+        ServerLevel[] parents = new ServerLevel[n];
+        int[] ids = new int[n];
+        for (int i = 0; i < n; i++) {
+            parents[i] = IplDimAgnostic.getServerParentLevel(hosted.get(i));
+            ids[i] = Rapier3D.getID(hosted.get(i));
         }
 
         Set<Long> desired = new HashSet<>();
-        for (int i = 0; i < hosted.size(); i++) {
-            ServerSubLevel a = hosted.get(i);
-            ServerLevel parentA = IplDimAgnostic.getServerParentLevel(a);
-            int idA = Rapier3D.getID(a);
-            for (int j = i + 1; j < hosted.size(); j++) {
-                ServerSubLevel b = hosted.get(j);
-                ServerLevel parentB = IplDimAgnostic.getServerParentLevel(b);
-                boolean cross = parentA == null || parentB == null || parentA != parentB;
+        for (int i = 0; i < n; i++) {
+            for (int j = i + 1; j < n; j++) {
+                boolean cross = parents[i] == null || parents[j] == null
+                    || parents[i] != parents[j];
                 // Image colliders SHARE their real body's id, so this exclusion would
                 // also drop the legitimate image-vs-image contact when one ship
                 // straddles a portal INTO the other's dimension. Carve that out: while
@@ -81,33 +82,31 @@ public final class IplCrossParentExclusions {
                 // collidable — their raw hosting-chart poses are portal-source vs dest
                 // coordinates, far apart numerically, so the accidental-overlap case
                 // this class exists for cannot occur in that window anyway.
-                if (cross && parentA != null && parentB != null
-                    && (ipl.sable.transit.IplAtlasStraddleSession.getMappingInto(a, parentB) != null
-                        || ipl.sable.transit.IplAtlasStraddleSession.getMappingInto(b, parentA) != null)) {
+                if (cross && parents[i] != null && parents[j] != null
+                    && (IplAtlasStraddleSession.getMappingInto(hosted.get(i), parents[j]) != null
+                        || IplAtlasStraddleSession.getMappingInto(hosted.get(j), parents[i]) != null)) {
                     cross = false;
                 }
                 if (cross) {
-                    desired.add(pack(idA, Rapier3D.getID(b)));
+                    desired.add(pack(ids[i], ids[j]));
                 }
             }
         }
 
+        final long sceneF = scene;
         for (long key : desired) {
-            if (EXCLUDED.add(key) && scene != 0) {
-                IplRapierNatives.setBodyPairExclusion(scene, idA(key), idB(key), true);
-                LOG.debug("[IPL-CROSS-PARENT] excluded pair {}<->{}", idA(key), idB(key));
+            if (EXCLUDED.add(key) && sceneF != 0) {
+                IplRapierNatives.setBodyPairExclusion(sceneF, pairLo(key), pairHi(key), true);
+                LOG.debug("[IPL-CROSS-PARENT] excluded pair {}<->{}", pairLo(key), pairHi(key));
             }
         }
-        if (EXCLUDED.size() > desired.size()) {
-            final long sceneF = scene;
-            EXCLUDED.removeIf(key -> {
-                if (desired.contains(key)) return false;
-                if (sceneF != 0) {
-                    IplRapierNatives.setBodyPairExclusion(sceneF, idA(key), idB(key), false);
-                }
-                return true;
-            });
-        }
+        EXCLUDED.removeIf(key -> {
+            if (desired.contains(key)) return false;
+            if (sceneF != 0) {
+                IplRapierNatives.setBodyPairExclusion(sceneF, pairLo(key), pairHi(key), false);
+            }
+            return true;
+        });
     }
 
     public static void clearAll() {
@@ -120,11 +119,11 @@ public final class IplCrossParentExclusions {
         return ((long) lo << 32) | (hi & 0xFFFF_FFFFL);
     }
 
-    private static int idA(long key) {
+    private static int pairLo(long key) {
         return (int) (key >>> 32);
     }
 
-    private static int idB(long key) {
+    private static int pairHi(long key) {
         return (int) key;
     }
 }

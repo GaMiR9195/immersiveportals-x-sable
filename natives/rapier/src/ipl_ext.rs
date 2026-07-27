@@ -35,10 +35,9 @@ impl IplClipRegion {
     #[inline]
     pub fn contains(&self, p: Vec3) -> bool {
         let rel = p - self.point;
-        if rel.dot(self.normal) < 0.0 {
-            return false;
-        }
-        rel.dot(self.axis_w).abs() <= self.half_w && rel.dot(self.axis_h).abs() <= self.half_h
+        rel.dot(self.normal) >= 0.0
+            && rel.dot(self.axis_w).abs() <= self.half_w
+            && rel.dot(self.axis_h).abs() <= self.half_h
     }
 }
 
@@ -90,10 +89,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
             half_h: c[13] as Real,
         });
     }
-    eprintln!(
-        "[ipl-natives] setClipRegions: body {body_id} <- {} region(s) in scene {scene_handle:x}",
-        info.clip_regions.len()
-    );
+    // No success log: straddle sessions re-push regions per tick — an unconditional
+    // stderr write here is a server-thread tick cost. The MISS branch above stays.
 }
 
 /// Register (`excluded != 0`) or clear a contact exclusion between two bodies in one
