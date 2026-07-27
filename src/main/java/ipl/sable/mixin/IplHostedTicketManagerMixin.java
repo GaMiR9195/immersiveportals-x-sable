@@ -117,6 +117,13 @@ public abstract class IplHostedTicketManagerMixin {
             }
             b.expand(1.0, b);
 
+            // Always-live ships need always-loaded terrain: region-ticket the window in
+            // the parent dim and freeze the body until the ground chunk arrives (a nether
+            // ship with no players in the nether otherwise simulates against nothing and
+            // falls through the world).
+            ipl.sable.atlas.IplHostedTerrainGate.tick(level, pipeline, subLevel,
+                b.chunkBoundsFrom());
+
             ipl$enrollSections(level, pipeline, b, gameTime);
         }
 
@@ -127,6 +134,7 @@ public abstract class IplHostedTicketManagerMixin {
             // corners go through the full isometry).
             BoundingBox3d cb = mapping.mapAabb(ship.boundingBox());
             cb.expand(1.0, cb);
+            ipl.sable.atlas.IplHostedTerrainGate.ticketRegion(level, cb.chunkBoundsFrom());
             ipl$enrollSections(level, pipeline, cb, gameTime);
             imageRegions[0]++;
         });

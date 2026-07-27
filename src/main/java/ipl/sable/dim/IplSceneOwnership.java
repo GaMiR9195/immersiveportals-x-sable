@@ -76,6 +76,7 @@ public final class IplSceneOwnership {
     /** Server stopping: drop all state. */
     public static void clearAll() {
         ipl.sable.atlas.IplAtlasBodyImages.clearAll();
+        ipl.sable.atlas.IplHostedTerrainGate.clearAll();
         bodyHome.clear();
     }
 
