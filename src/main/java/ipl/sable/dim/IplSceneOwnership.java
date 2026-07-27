@@ -77,6 +77,7 @@ public final class IplSceneOwnership {
     public static void clearAll() {
         ipl.sable.atlas.IplAtlasBodyImages.clearAll();
         ipl.sable.atlas.IplHostedTerrainGate.clearAll();
+        ipl.sable.atlas.IplCrossParentExclusions.clearAll();
         bodyHome.clear();
     }
 
@@ -106,6 +107,7 @@ public final class IplSceneOwnership {
             recordBodyAdded(sub, (ServerLevel) sub.getLevel());
         }
         ipl.sable.atlas.IplAtlasBodyImages.reconcileAll(hostingContainer.getAllSubLevels());
+        ipl.sable.atlas.IplCrossParentExclusions.reconcile(hostingContainer.getAllSubLevels());
     }
 
 }
