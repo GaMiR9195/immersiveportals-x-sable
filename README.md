@@ -23,7 +23,7 @@ Goal: ships (and other physics-assembled sub-levels) can:
 - keep working physics on both sides while straddling
 - move through dimensions as one continuous motion (not a hard teleport)
 - have portals on sub-levels, bound to them like a monolith
-- GFSGIHDIUGHDIGHDIUGHDIUGHIUFGHFDIGUHDIUGHIUGHDIUFHIGUHIUDFHGIUDHFGIHFGIUHDFIUGHIUDFHGUIHFGIUHGIGDFGHDI
+- portals can traverse through protals
 
 Not a general IP release. It’s experimental, and built for this stack, with love.
 
@@ -58,12 +58,11 @@ Deep nerd notes live in: `REFACTOR_SPEC.md`
 - Create stuff on ships (drills/deployers/etc) can interact with the parent world (world-frame routing).
 - Physics staff: lock/drag works on the through-part from either side.
 - Dimension stack seams: IP vertical stacking portals behave (scaled/inverted stacks: transit works).
-- SSGHDSIUFGHDIFGHDIUGIOSJFHDSIUGHSIOGISGHIDHGIUDHGISDOFJIJSHDVOLJVIJHSDIUGHOISJFDIOHUISHFUIDFSDFSDF
 
 # Known limitations
-- First problem in ass
-- Second problem in ass
-- Third problem in ass
+- Performance (Sub Level stuttering)
+- DH + Voxy Support
+- Bugs
 
 # Build
 NeoForge 1.21.1, JDK 21: `./gradlew jarJar` → jar in `build/libs/`
