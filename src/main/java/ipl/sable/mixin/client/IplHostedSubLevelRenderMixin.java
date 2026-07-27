@@ -307,28 +307,39 @@ public abstract class IplHostedSubLevelRenderMixin {
         Vec3 cameraPosition = camera.getPosition();
         float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
 
-        for (ClientSubLevel sub : hosted) {
-            SubLevelBlockEntityRenderScope.renderAndFlush(sub, this.renderBuffers.bufferSource(), () ->
-                SubLevelRenderDispatcher.get().renderBlockEntities(
-                    List.of(sub), ipl$hostedBeRenderer,
-                    cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick)
-            );
-        }
-
-        for (IplClientHostedLookup.StraddleProjection proj : projections) {
-            ipl.sable.client.IplStraddleRenderState.set(
-                proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
-            try {
-                SubLevelBlockEntityRenderScope.renderAndFlush(
-                    proj.sub(), this.renderBuffers.bufferSource(), () ->
-                        SubLevelRenderDispatcher.get().renderBlockEntities(
-                            List.of(proj.sub()), ipl$hostedBeRenderer,
-                            cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick
-                        )
+        // Arm the CLIENT world-frame context for the whole hosted BE render pass: renderers
+        // resolve partner/pair state through the BE's level FIELD at world-frame positions
+        // (SpringRenderer's getPairedSpring, connector lookups) — hosted, that's the void.
+        // With the context armed, IplHostedClientWorldFrameRouterMixin reads them from THIS
+        // pass's level: exactly the dimension these ships are being drawn into.
+        net.minecraft.client.multiplayer.ClientLevel ipl$prevCtx =
+            ipl.sable.dim.IplClientWorldFrameContext.push(this.level);
+        try {
+            for (ClientSubLevel sub : hosted) {
+                SubLevelBlockEntityRenderScope.renderAndFlush(sub, this.renderBuffers.bufferSource(), () ->
+                    SubLevelRenderDispatcher.get().renderBlockEntities(
+                        List.of(sub), ipl$hostedBeRenderer,
+                        cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick)
                 );
-            } finally {
-                ipl.sable.client.IplStraddleRenderState.clear();
             }
+
+            for (IplClientHostedLookup.StraddleProjection proj : projections) {
+                ipl.sable.client.IplStraddleRenderState.set(
+                    proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
+                try {
+                    SubLevelBlockEntityRenderScope.renderAndFlush(
+                        proj.sub(), this.renderBuffers.bufferSource(), () ->
+                            SubLevelRenderDispatcher.get().renderBlockEntities(
+                                List.of(proj.sub()), ipl$hostedBeRenderer,
+                                cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick
+                            )
+                    );
+                } finally {
+                    ipl.sable.client.IplStraddleRenderState.clear();
+                }
+            }
+        } finally {
+            ipl.sable.dim.IplClientWorldFrameContext.pop(ipl$prevCtx);
         }
     }
 

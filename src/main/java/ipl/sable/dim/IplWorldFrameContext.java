@@ -57,15 +57,36 @@ public final class IplWorldFrameContext {
     public static ServerLevel resolveParentForPlotBe(Level level, BlockPos pos) {
         if (!IplDimAgnostic.isHostingLevel(level)) return null;
         if (!(level instanceof ServerLevel hosting)) return null;
-        // Plot-grid coords are in the millions; nothing else on the hosting level ticks.
-        if (Math.abs(pos.getX()) < 1_000_000 && Math.abs(pos.getZ()) < 1_000_000) return null;
+        // The grid begins near 20M, but use the actual container occupancy rather than a
+        // coarse magnitude gate: valid parent-world terrain near the world border must not
+        // be mistaken for plot storage.
 
         SubLevelContainer container = SubLevelContainer.getContainer((Level) hosting);
         if (container == null) return null;
+        if (!container.inBounds(pos.getX() >> 4, pos.getZ() >> 4)) return null;
         LevelPlot plot = container.getPlot(pos.getX() >> 4, pos.getZ() >> 4);
         if (plot == null) return null;
         SubLevel subLevel = plot.getSubLevel();
         if (subLevel == null) return null;
+        return IplDimAgnostic.getServerParentLevel(subLevel);
+    }
+
+    /**
+     * For an INTERACTION (use / attack) at a plot position reached from ANY server level:
+     * the parent level of the owning hosted sub-level. Unlike
+     * {@link #resolveParentForPlotBe} the context level here is usually the PLAYER's level
+     * — Sable maps ship clicks to plot coordinates, and the plot bridge resolves them from
+     * every dimension — so the plot is looked up through the hosting container directly.
+     */
+    @Nullable
+    public static ServerLevel resolveParentForPlotInteraction(ServerLevel contextLevel, BlockPos pos) {
+        SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(contextLevel);
+        if (hosting == null) return null;
+        if (!hosting.inBounds(pos.getX() >> 4, pos.getZ() >> 4)) return null;
+        LevelPlot plot = hosting.getPlot(pos.getX() >> 4, pos.getZ() >> 4);
+        if (plot == null) return null;
+        SubLevel subLevel = plot.getSubLevel();
+        if (subLevel == null || subLevel.isRemoved()) return null;
         return IplDimAgnostic.getServerParentLevel(subLevel);
     }
 }

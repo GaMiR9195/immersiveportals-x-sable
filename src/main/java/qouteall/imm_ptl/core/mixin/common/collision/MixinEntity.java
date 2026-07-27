@@ -195,7 +195,7 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
         // deferred until/unless the frame-edge case actually bites.
         if (SableBridge.hasSubLevelFloorThisTick((Entity) (Object) this)) {
             // Riding a ship that's STRADDLING the portal: Sable's collision is now
-            // both-frame aware (mapped poses + cross-seam terrain clone), so it is
+            // both-frame aware through Atlas image mappings, so it is
             // authoritative. Folding IP's portal result in here constrained the rider
             // against dest-world geometry beyond the plane (the ground the linked portal
             // stands on, the frame at mapped coords) — phantom floors that reduced

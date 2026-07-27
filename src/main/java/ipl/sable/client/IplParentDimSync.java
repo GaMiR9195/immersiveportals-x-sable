@@ -42,6 +42,11 @@ public final class IplParentDimSync {
     /** RPC delivery can precede the redirected full-sync that creates the client sub-level. */
     private static final Map<UUID, PendingHandoff> PENDING_HANDOFFS = new HashMap<>();
 
+    /** Parent stamps that arrived before their client sub-level was created (retried per tick). */
+    private static final Map<UUID, PendingParentStamp> PENDING_PARENT_STAMPS = new HashMap<>();
+
+    private record PendingParentStamp(String parentDimId, long queuedAtMs) {}
+
     private IplParentDimSync() {}
 
         private record PendingHandoff(String parentDimId, String portalTransform) {}
@@ -75,6 +80,7 @@ public final class IplParentDimSync {
 
     /** Retries handoffs that arrived before their client sub-level was created. */
     public static void applyPendingHandoffs() {
+        applyPendingParentStamps();
         if (PENDING_HANDOFFS.isEmpty()) return;
 
         Iterator<Map.Entry<UUID, PendingHandoff>> iterator = PENDING_HANDOFFS.entrySet().iterator();
@@ -94,13 +100,51 @@ public final class IplParentDimSync {
         }
     }
 
+    /** Retries parent stamps that raced their StartTracking allocation. */
+    private static void applyPendingParentStamps() {
+        if (PENDING_PARENT_STAMPS.isEmpty()) return;
+
+        long now = System.currentTimeMillis();
+        Iterator<Map.Entry<UUID, PendingParentStamp>> iterator = PENDING_PARENT_STAMPS.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, PendingParentStamp> entry = iterator.next();
+            try {
+                if (now - entry.getValue().queuedAtMs() > 30_000) {
+                    iterator.remove(); // ship never materialized client-side — stop retrying
+                    continue;
+                }
+                SubLevel subLevel = RemoteCallables.findHostedSubLevel(
+                    entry.getKey().toString(), entry.getValue().parentDimId());
+                if (subLevel != null) {
+                    RemoteCallables.setParent(subLevel, entry.getValue().parentDimId());
+                    LOG.info("[IPL-PARENT-SYNC] deferred parent stamp applied: {} parent={}",
+                        entry.getKey(), entry.getValue().parentDimId());
+                    iterator.remove();
+                }
+            } catch (Throwable t) {
+                iterator.remove();
+                LOG.error("[IPL-PARENT-SYNC] failed deferred parent stamp for {}", entry.getKey(), t);
+            }
+        }
+    }
+
     public static final class RemoteCallables {
 
         public static void setParent(String subLevelUuid, String parentDimId) {
             try {
                 SubLevel subLevel = findHostedSubLevel(subLevelUuid, parentDimId);
-                if (subLevel == null) return;
+                if (subLevel == null) {
+                    // The RPC raced the StartTracking allocation. Without a retry the ship
+                    // keeps a null client parent and the hosted render gather filters it out
+                    // FOREVER — "the ship exists (physics, collision) but is invisible".
+                    // Single-block ships (swivel tops, shattered blocks, rope connectors)
+                    // never emit further updates that could heal it, so they stayed gone.
+                    PENDING_PARENT_STAMPS.put(UUID.fromString(subLevelUuid),
+                        new PendingParentStamp(parentDimId, System.currentTimeMillis()));
+                    return;
+                }
                 setParent(subLevel, parentDimId);
+                PENDING_PARENT_STAMPS.remove(UUID.fromString(subLevelUuid));
 
                 LOG.info("[IPL-PARENT-SYNC] sub-level {} parent={} (client)",
                     subLevelUuid, parentDimId);
@@ -160,6 +204,10 @@ public final class IplParentDimSync {
             // space. A pass already in progress may otherwise render a stale source
             // projection as well as the newly native destination sub-level.
             setParent(clientSubLevel, parentDimId);
+            // The retired split only bridges server session-end to this exact mapped pose.
+            // Once the parent frame becomes visible, retaining its old portal would clip the
+            // native destination draw with a source-frame plane.
+            IplStraddleSessionStore.clearRetiredForHandoff(subLevelId);
             // Staff drag frame changes ride the dedicated grab-chain rebase RPC (ordered
             // after this handoff on the same channel); nothing staff-related to do here.
             // Straddle parity is server-synced state now (IplStraddleSessionStore); the
@@ -254,8 +302,16 @@ public final class IplParentDimSync {
             ClientLevel parent = ClientWorldLoader.getWorld(parentKey);
 
             IplSubLevelDuck duck = (IplSubLevelDuck) subLevel;
+            ClientLevel oldParent = duck.ipl$getParentLevel() instanceof ClientLevel old ? old : null;
             duck.ipl$setParentLevel(parent);
             duck.ipl$setHostingLevel(hosting);
+
+            // Flywheel visuals live in the parent's visualization world — re-home them
+            // with the flip so swivel bearings / throttle levers keep rendering after
+            // a cross-portal transit.
+            if (oldParent != parent) {
+                ipl.sable.client.IplClientFlywheelReroute.onParentFlip(subLevel, oldParent, parent);
+            }
         }
     }
 }

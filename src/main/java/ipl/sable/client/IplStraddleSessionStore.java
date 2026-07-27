@@ -1,6 +1,7 @@
 package ipl.sable.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import dev.ryanhcode.sable.companion.math.BoundingBox3ic;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
@@ -51,6 +52,14 @@ public final class IplStraddleSessionStore {
     /** Ship → active session portals (session-start order; empty never stored). */
     private static final ConcurrentMap<UUID, List<SessionPortal>> SESSIONS = new ConcurrentHashMap<>();
 
+    /**
+     * Sessions the server has retired but the delayed render pose has not finished leaving.
+     * Atlas physics removes its image at the authoritative exit tick; rendering must keep the
+     * complementary clipped instances until the client catches up or a parent handoff remaps
+     * the pose atomically.
+     */
+    private static final ConcurrentMap<UUID, List<SessionPortal>> RETIRED = new ConcurrentHashMap<>();
+
     /** Detached surrogate portals built from snapshot NBT, by portal id. */
     private static final ConcurrentMap<UUID, Portal> SURROGATES = new ConcurrentHashMap<>();
 
@@ -64,11 +73,11 @@ public final class IplStraddleSessionStore {
     @Nullable
     public static Portal resolvePortal(ClientSubLevel sub) {
         if (sub == null) return null;
-        List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
-        if (portals == null) return null;
         if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
             return null;
         }
+        List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
+        if (portals == null) return null;
         for (SessionPortal sessionPortal : portals) {
             Portal live = findPortal(level, sessionPortal.portalId());
             if (live != null) return live;
@@ -85,11 +94,45 @@ public final class IplStraddleSessionStore {
     /** ALL resolvable session portals for this ship, session-start order (multi-straddle). */
     public static List<Portal> resolveAllPortals(ClientSubLevel sub) {
         if (sub == null) return List.of();
-        List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
-        if (portals == null) return List.of();
         if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
             return List.of();
         }
+        List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
+        if (portals == null) return List.of();
+        if (portals.isEmpty()) return List.of();
+        List<Portal> out = new ArrayList<>(portals.size());
+        for (SessionPortal sessionPortal : portals) {
+            Portal live = findPortal(level, sessionPortal.portalId());
+            Portal resolved = live != null ? live : surrogate(sessionPortal, level);
+            if (resolved != null) out.add(resolved);
+        }
+        return out;
+    }
+
+    /** Render-only counterpart of {@link #resolvePortal}; includes a delayed exit tail. */
+    @Nullable
+    public static Portal resolveRenderPortal(ClientSubLevel sub) {
+        if (sub == null) return null;
+        if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
+            return null;
+        }
+        for (SessionPortal sessionPortal : portalsForRender(sub, level)) {
+            Portal live = findPortal(level, sessionPortal.portalId());
+            if (live != null) return live;
+            Portal surrogate = surrogate(sessionPortal, level);
+            if (surrogate != null) return surrogate;
+        }
+        return null;
+    }
+
+    /** Render-only counterpart of {@link #resolveAllPortals}; never use for collision. */
+    public static List<Portal> resolveAllRenderPortals(ClientSubLevel sub) {
+        if (sub == null) return List.of();
+        if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
+            return List.of();
+        }
+        List<SessionPortal> portals = portalsForRender(sub, level);
+        if (portals.isEmpty()) return List.of();
         List<Portal> out = new ArrayList<>(portals.size());
         for (SessionPortal sessionPortal : portals) {
             Portal live = findPortal(level, sessionPortal.portalId());
@@ -102,11 +145,98 @@ public final class IplStraddleSessionStore {
     /** Diagnostic: how a ship's session portal currently resolves. */
     public static String debugPortalKind(ClientSubLevel sub) {
         List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
-        if (portals == null) return "no-session";
-        Portal resolved = resolvePortal(sub);
-        if (resolved == null) return "session-UNRESOLVED(" + portals.size() + ")";
+        List<SessionPortal> retired = RETIRED.get(sub.getUniqueId());
+        if (portals == null && retired == null) return "no-session";
+        Portal resolved = resolveRenderPortal(sub);
+        int count = (portals == null ? 0 : portals.size()) + (retired == null ? 0 : retired.size());
+        if (resolved == null) return "session-UNRESOLVED(" + count + ")";
         return SURROGATES.get(resolved.getUUID()) == resolved
             ? "surrogate:" + resolved.getUUID() : "live:" + resolved.getUUID();
+    }
+
+    /**
+     * Drops a render-only exit tail once {@code renderPose} is wholly on the session's
+     * native/source side. The portal normal points toward that side, so any negative corner
+     * is still an image-side fragment which needs the old source clip and projection.
+     */
+    private static boolean stillRenderingThroughHalf(ClientSubLevel sub, Portal portal) {
+        BoundingBox3ic bounds = sub.getPlot().getBoundingBox();
+        net.minecraft.world.phys.Vec3 origin = portal.getOriginPos();
+        net.minecraft.world.phys.Vec3 normal = portal.getNormal();
+        for (int x = 0; x < 2; x++) {
+            double px = x == 0 ? bounds.minX() : bounds.maxX() + 1.0;
+            for (int y = 0; y < 2; y++) {
+                double py = y == 0 ? bounds.minY() : bounds.maxY() + 1.0;
+                for (int z = 0; z < 2; z++) {
+                    double pz = z == 0 ? bounds.minZ() : bounds.maxZ() + 1.0;
+                    net.minecraft.world.phys.Vec3 world = sub.renderPose().transformPosition(
+                        new net.minecraft.world.phys.Vec3(px, py, pz));
+                    if (world.subtract(origin).dot(normal) < 0.0) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Active sessions plus only the retired sessions still present in the delayed pose. */
+    private static List<SessionPortal> portalsForRender(ClientSubLevel sub, ClientLevel level) {
+        List<SessionPortal> active = SESSIONS.get(sub.getUniqueId());
+        List<SessionPortal> retired = RETIRED.get(sub.getUniqueId());
+        if (retired == null || retired.isEmpty()) {
+            return active == null ? List.of() : active;
+        }
+
+        List<SessionPortal> visibleRetired = new ArrayList<>(retired.size());
+        for (SessionPortal sessionPortal : retired) {
+            Portal portal = findPortal(level, sessionPortal.portalId());
+            if (portal == null) portal = surrogate(sessionPortal, level);
+            if (portal != null && stillRenderingThroughHalf(sub, portal)) {
+                visibleRetired.add(sessionPortal);
+            }
+        }
+        if (visibleRetired.isEmpty()) {
+            RETIRED.remove(sub.getUniqueId(), retired);
+            discardUnreferencedSurrogates();
+            return active == null ? List.of() : active;
+        }
+        if (visibleRetired.size() != retired.size()) {
+            RETIRED.replace(sub.getUniqueId(), retired, List.copyOf(visibleRetired));
+        }
+        if (active == null || active.isEmpty()) return visibleRetired;
+
+        List<SessionPortal> combined = new ArrayList<>(active.size() + visibleRetired.size());
+        combined.addAll(active);
+        for (SessionPortal sessionPortal : visibleRetired) {
+            if (!containsPortal(active, sessionPortal.portalId())) combined.add(sessionPortal);
+        }
+        return combined;
+    }
+
+    private static boolean containsPortal(List<SessionPortal> portals, UUID portalId) {
+        for (SessionPortal portal : portals) {
+            if (portal.portalId().equals(portalId)) return true;
+        }
+        return false;
+    }
+
+    /** Called by the atomic mapped-pose parent handoff; old-frame tails are invalid there. */
+    public static void clearRetiredForHandoff(UUID shipId) {
+        if (RETIRED.remove(shipId) != null) discardUnreferencedSurrogates();
+    }
+
+    private static void discardUnreferencedSurrogates() {
+        Set<UUID> referenced = new HashSet<>();
+        collectReferencedPortals(SESSIONS, referenced);
+        collectReferencedPortals(RETIRED, referenced);
+        SURROGATES.keySet().retainAll(referenced);
+    }
+
+    private static void collectReferencedPortals(
+        Map<UUID, List<SessionPortal>> sessions, Set<UUID> referenced
+    ) {
+        for (List<SessionPortal> list : sessions.values()) {
+            for (SessionPortal sessionPortal : list) referenced.add(sessionPortal.portalId());
+        }
     }
 
     @Nullable
@@ -162,33 +292,57 @@ public final class IplStraddleSessionStore {
         public static void snapshot(String shipUuid, String portalPayload) {
             try {
                 UUID shipId = UUID.fromString(shipUuid);
+                List<SessionPortal> previous = SESSIONS.get(shipId);
+                List<SessionPortal> parsed = List.of();
                 if (portalPayload == null || portalPayload.isEmpty()) {
                     SESSIONS.remove(shipId);
                 } else {
-                    List<SessionPortal> parsed = new ArrayList<>(2);
+                    List<SessionPortal> next = new ArrayList<>(2);
                     for (String part : portalPayload.split(";")) {
                         if (part.isEmpty()) continue;
                         int sep = part.indexOf(':');
                         if (sep < 0) {
-                            parsed.add(new SessionPortal(UUID.fromString(part), ""));
+                            next.add(new SessionPortal(UUID.fromString(part), ""));
                         } else {
-                            parsed.add(new SessionPortal(
+                            next.add(new SessionPortal(
                                 UUID.fromString(part.substring(0, sep)), part.substring(sep + 1)));
                         }
                     }
+                    parsed = List.copyOf(next);
                     if (parsed.isEmpty()) {
                         SESSIONS.remove(shipId);
                     } else {
-                        SESSIONS.put(shipId, List.copyOf(parsed));
+                        SESSIONS.put(shipId, parsed);
                     }
                 }
 
-                // Retain only surrogates still referenced by some ship's session set.
-                Set<UUID> referenced = new HashSet<>();
-                for (List<SessionPortal> list : SESSIONS.values()) {
-                    for (SessionPortal sp : list) referenced.add(sp.portalId());
+                // Keep an ended split only until the delayed render pose clears its plane.
+                // It covers both native eye-space and the portal render pass without keeping
+                // a retired Atlas image collider alive on the server.
+                if (previous != null) {
+                    List<SessionPortal> retired = new ArrayList<>(previous.size());
+                    List<SessionPortal> alreadyRetired = RETIRED.get(shipId);
+                    if (alreadyRetired != null) retired.addAll(alreadyRetired);
+                    for (SessionPortal old : previous) {
+                        if (!containsPortal(parsed, old.portalId())
+                            && !containsPortal(retired, old.portalId())) {
+                            retired.add(old);
+                        }
+                    }
+                    if (!retired.isEmpty()) RETIRED.put(shipId, List.copyOf(retired));
                 }
-                SURROGATES.keySet().retainAll(referenced);
+                List<SessionPortal> oldRetired = RETIRED.get(shipId);
+                if (oldRetired != null && !parsed.isEmpty()) {
+                    List<SessionPortal> remaining = new ArrayList<>(oldRetired.size());
+                    for (SessionPortal retired : oldRetired) {
+                        if (!containsPortal(parsed, retired.portalId())) remaining.add(retired);
+                    }
+                    if (remaining.isEmpty()) RETIRED.remove(shipId, oldRetired);
+                    else if (remaining.size() != oldRetired.size()) {
+                        RETIRED.replace(shipId, oldRetired, List.copyOf(remaining));
+                    }
+                }
+                discardUnreferencedSurrogates();
 
                 // Straddle decisions are cached per frame; drop them so this snapshot
                 // takes effect within the same client tick it arrives in.

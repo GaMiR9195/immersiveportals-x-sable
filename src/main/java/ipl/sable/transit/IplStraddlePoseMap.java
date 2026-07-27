@@ -13,10 +13,9 @@ import qouteall.q_misc_util.my_util.DQuaternion;
 
 /**
  * Frame mapping for straddling hosted sub-levels: from a given context dimension, a ship
- * straddling INTO that dimension has a portal-mapped pose (translation-only portal pairs —
- * the pose translates by the portal offset; orientation is unchanged).
+ * straddling INTO that dimension has a portal-mapped pose.
  *
- * <p>Server side the offset comes from the active {@link IplStraddleTerrainClone} session;
+ * <p>Server side the isometry comes from the active Atlas image session;
  * client side it is derived from the straddle portal found by
  * {@code SourceClipPortalFinder} (lazily, via the client-only lookup class).
  */
@@ -54,13 +53,6 @@ public final class IplStraddlePoseMap {
                 ? new org.joml.Quaterniond()
                 : new org.joml.Quaterniond(q.x, q.y, q.z, q.w);
             return new StraddleMapping(portal.getOriginPos(), portal.getDestPos(), rot, identity);
-        }
-
-        /** Pure-translation mapping (legacy terrain-clone interop). */
-        public static StraddleMapping ofTranslation(BlockPos offset) {
-            return new StraddleMapping(Vec3.ZERO,
-                new Vec3(offset.getX(), offset.getY(), offset.getZ()),
-                new org.joml.Quaterniond(), true);
         }
 
         private static Vec3 rotate(org.joml.Quaterniond q, Vec3 v) {
@@ -129,8 +121,7 @@ public final class IplStraddlePoseMap {
 
         /**
          * The dest→source view of this isometry (endpoints swapped, rotation
-         * conjugated). {@code inverse().mapX ≡ unmapX} — lets role-parametrized code
-         * (the mirrored straddle servo) treat both authority directions uniformly.
+         * conjugated). {@code inverse().mapX ≡ unmapX}.
          */
         public StraddleMapping inverse() {
             return new StraddleMapping(
@@ -141,16 +132,6 @@ public final class IplStraddlePoseMap {
             return identityRotation;
         }
 
-        /**
-         * The legacy BlockPos offset when this mapping is a block-aligned pure
-         * translation; null otherwise. Old-API shims degrade through this, so
-         * un-migrated callers behave exactly as before rotation support.
-         */
-        @Nullable
-        public BlockPos blockOffsetOrNull() {
-            if (!identityRotation) return null;
-            return blockAligned(dest.subtract(origin));
-        }
     }
 
     /**
@@ -169,19 +150,9 @@ public final class IplStraddlePoseMap {
     }
 
     /**
-     * Legacy BlockPos view of {@link #getMappingInto}: non-null only for block-aligned
-     * translation-only pairs, exactly the pre-rotation behavior for un-migrated callers.
-     */
-    @Nullable
-    public static BlockPos getOffsetInto(@Nullable SubLevel sub, @Nullable Level contextLevel) {
-        StraddleMapping mapping = getMappingInto(sub, contextLevel);
-        return mapping == null ? null : mapping.blockOffsetOrNull();
-    }
-
-    /**
      * Whether {@code sub} is currently straddling a portal at all, judged from
      * {@code contextLevel}'s side. Client: the straddle-portal finder (same source the
-     * renderer and collision mapping use). Server: an active terrain-clone session.
+     * renderer and collision mapping use). Server: an active Atlas image session.
      */
     public static boolean isStraddling(@Nullable SubLevel sub, @Nullable Level contextLevel) {
         if (sub == null || contextLevel == null) return false;
@@ -189,12 +160,10 @@ public final class IplStraddlePoseMap {
         if (contextLevel.isClientSide()) {
             return ipl.sable.client.IplClientHostedLookup.isClientStraddling(sub);
         }
-        return IplStraddleCloneBody.hasSession(sub.getUniqueId())
-            || IplStraddleTerrainClone.hasSession(sub.getUniqueId());
+        return IplAtlasStraddleSession.hasSession(sub.getUniqueId());
     }
 
-    /** One straddle image's frame: the portal (null for legacy terrain-clone
-     *  translations) and its isometry. */
+    /** One straddle image's portal and isometry. */
     public record StraddleFrame(
         @Nullable qouteall.imm_ptl.core.portal.Portal portal, StraddleMapping mapping
     ) {}
@@ -209,16 +178,12 @@ public final class IplStraddlePoseMap {
             ipl.sable.client.IplClientHostedLookup.forEachClientStraddleInto(sub, ctx, visitor);
             return;
         }
-        IplStraddleCloneBody.forEachSessionInto(sub, ctx, visitor);
-        BlockPos terrainOffset = IplStraddleTerrainClone.getOffsetInto(sub, ctx);
-        if (terrainOffset != null) {
-            visitor.accept(null, StraddleMapping.ofTranslation(terrainOffset));
-        }
+        IplAtlasStraddleSession.forEachSessionInto(sub, ctx, visitor);
     }
 
     /**
      * Atlas pick fix: a world point that lies on a straddling ship's THROUGH half
-     * (past the portal plane, inside the aperture column — the physics clip's cut)
+     * (past the portal plane — the physics clip's cut)
      * physically exists at its MAPPED position. Remaps such points; returns null when
      * the point is on the source half (caller keeps the unmapped projection).
      * Multi-straddle: the first session whose cut contains the point wins.
@@ -238,14 +203,6 @@ public final class IplStraddlePoseMap {
             double d = (world.x - origin.x) * n.x + (world.y - origin.y) * n.y
                 + (world.z - origin.z) * n.z;
             if (d >= 0.0) return; // source half
-            Vec3 w = portal.getAxisW();
-            Vec3 h = portal.getAxisH();
-            double lw = (world.x - origin.x) * w.x + (world.y - origin.y) * w.y
-                + (world.z - origin.z) * w.z;
-            if (Math.abs(lw) > portal.getWidth() * 0.5 + APERTURE_CLIP_MARGIN) return;
-            double lh = (world.x - origin.x) * h.x + (world.y - origin.y) * h.y
-                + (world.z - origin.z) * h.z;
-            if (Math.abs(lh) > portal.getHeight() * 0.5 + APERTURE_CLIP_MARGIN) return;
             result[0] = mapping.mapPoint(world);
         });
         return result[0];
@@ -261,7 +218,7 @@ public final class IplStraddlePoseMap {
             ipl.sable.client.IplClientHostedLookup.forEachClientStraddleFrom(sub, ctx, visitor);
             return;
         }
-        IplStraddleCloneBody.forEachSessionFrom(sub, ctx, visitor);
+        IplAtlasStraddleSession.forEachSessionFrom(sub, ctx, visitor);
     }
 
     /**
@@ -335,15 +292,6 @@ public final class IplStraddlePoseMap {
         return frame == null ? null : frame.mapping();
     }
 
-    /** Legacy BlockPos view of {@link #getCollisionMappingInto}. */
-    @Nullable
-    public static BlockPos getCollisionOffsetInto(
-        @Nullable SubLevel sub, @Nullable Level contextLevel, AABB entityBounds
-    ) {
-        StraddleMapping mapping = getCollisionMappingInto(sub, contextLevel, entityBounds);
-        return mapping == null ? null : mapping.blockOffsetOrNull();
-    }
-
     /** Destination mapping even when source and destination share the same Level. */
     @Nullable
     public static StraddleMapping getStraddleDestinationMapping(
@@ -354,28 +302,8 @@ public final class IplStraddlePoseMap {
             // Client-only class; loaded lazily when this branch executes.
             return ipl.sable.client.IplClientHostedLookup.getClientStraddleMappingInto(sub, contextLevel);
         }
-        StraddleMapping cloneMapping = IplStraddleCloneBody.getMappingInto(sub, contextLevel);
-        if (cloneMapping != null) return cloneMapping;
-        BlockPos terrainOffset = IplStraddleTerrainClone.getOffsetInto(sub, contextLevel);
-        return terrainOffset == null ? null : StraddleMapping.ofTranslation(terrainOffset);
+        return IplAtlasStraddleSession.getMappingInto(sub, contextLevel);
     }
-
-    /** Legacy BlockPos view of {@link #getStraddleDestinationMapping}. */
-    @Nullable
-    public static BlockPos getStraddleDestinationOffset(
-        @Nullable SubLevel sub, @Nullable Level contextLevel
-    ) {
-        StraddleMapping mapping = getStraddleDestinationMapping(sub, contextLevel);
-        return mapping == null ? null : mapping.blockOffsetOrNull();
-    }
-
-    /**
-     * Lateral slack around the aperture rectangle for {@link #getBlockCollisionKeepFilter}:
-     * block CENTERS of edge blocks flush with the portal frame sit up to half a block
-     * outside the exact aperture. Over-covering is safe — ship geometry past the plane
-     * outside the aperture column cannot exist mid-crossing (it would have been blocked).
-     */
-    private static final double APERTURE_CLIP_MARGIN = 0.5;
 
     /**
      * Blocks. Plane slack for COLLISION filters only (raycast/wireframe stays strict).
@@ -395,8 +323,7 @@ public final class IplStraddlePoseMap {
      * a portal, or null when no clipping applies. Selects the frame the collision code
      * uses for this entity (the chosen image's mapped filter, or the AND of every
      * source-side cut) — both from the same {@link #chooseCollisionFrame} the pose
-     * wraps use, so filter and pose can never disagree. Legacy terrain-clone sessions
-     * expose no portal snapshot and keep full collision (pre-existing behavior).
+     * wraps use, so filter and pose can never disagree.
      */
     @Nullable
     public static java.util.function.Predicate<BlockPos> getBlockCollisionKeepFilter(
@@ -406,24 +333,20 @@ public final class IplStraddlePoseMap {
         if (!IplDimAgnostic.isHosted(sub)) return null;
         StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
         if (frame != null) {
-            if (frame.portal() == null) return null; // terrain-clone: no aperture data
             return buildKeepFilter(
                 frame.mapping().mapPose(sub.logicalPose()),
                 frame.mapping().mapPoint(frame.portal().getOriginPos()),
                 frame.mapping().mapVec(frame.portal().getNormal().scale(-1.0)),
-                SEAM_SUPPORT_MARGIN,
-                null, null, 0.0, 0.0);
+                SEAM_SUPPORT_MARGIN);
         }
         return getSourceHalfKeepFilter(sub, contextLevel, SEAM_SUPPORT_MARGIN);
     }
 
     /**
      * Keep-filter for plot blocks reached through the ship's NATIVE frame (real pose):
-     * drops the through-half — past the portal plane, inside the aperture column only.
-     * A ship part reaching past the plane's lateral extension BESIDE the portal frame is
-     * still physically on this side and stays. This is the gameplay counterpart of the
-     * native aperture contact clip (spec §2.5). Null when the ship isn't straddling out
-     * of {@code contextLevel}.
+     * drops the through-half — past the portal plane across its full infinite span. This
+     * matches the native portal-plane contact clip for an active straddle session. Null
+     * when the ship isn't straddling out of {@code contextLevel}.
      */
     @Nullable
     public static java.util.function.Predicate<BlockPos> getSourceHalfKeepFilter(
@@ -451,11 +374,7 @@ public final class IplStraddlePoseMap {
         forEachStraddleFrom(sub, contextLevel, (portal, mapping) -> {
             if (portal == null) return;
             parts.add(buildKeepFilter(
-                pose,
-                portal.getOriginPos(), portal.getNormal(), planeMargin,
-                portal.getAxisW(), portal.getAxisH(),
-                portal.getWidth() * 0.5 + APERTURE_CLIP_MARGIN,
-                portal.getHeight() * 0.5 + APERTURE_CLIP_MARGIN));
+                pose, portal.getOriginPos(), portal.getNormal(), planeMargin));
         });
         if (parts.isEmpty()) return null;
         if (parts.size() == 1) return parts.get(0);
@@ -468,14 +387,13 @@ public final class IplStraddlePoseMap {
     }
 
     /**
-     * Compile a world-frame half-space cut (optionally aperture-column-bounded) into a
-     * plot-local block-center predicate: transformed once, three dot products per block.
+     * Compile a world-frame half-space cut into a plot-local block-center predicate:
+     * transformed once, one dot product per block.
      * Uses the end-of-tick pose rather than any substep lerp — within-tick ship motion
      * is far below the block-center granularity this test operates at.
      */
     private static java.util.function.Predicate<BlockPos> buildKeepFilter(
-        Pose3dc pose, Vec3 point, Vec3 keepNormal, double planeMargin,
-        @Nullable Vec3 axisW, @Nullable Vec3 axisH, double halfW, double halfH
+        Pose3dc pose, Vec3 point, Vec3 keepNormal, double planeMargin
     ) {
         org.joml.Vector3d lp = pose.transformPositionInverse(
             new org.joml.Vector3d(point.x, point.y, point.z));
@@ -483,25 +401,9 @@ public final class IplStraddlePoseMap {
             new org.joml.Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
             new org.joml.Vector3d());
         double keepThreshold = -planeMargin;
-        if (axisW == null || axisH == null) {
-            return pos -> (pos.getX() + 0.5 - lp.x) * ln.x
-                        + (pos.getY() + 0.5 - lp.y) * ln.y
-                        + (pos.getZ() + 0.5 - lp.z) * ln.z >= keepThreshold;
-        }
-        org.joml.Vector3d lw = pose.transformNormalInverse(
-            new org.joml.Vector3d(axisW.x, axisW.y, axisW.z), new org.joml.Vector3d());
-        org.joml.Vector3d lh = pose.transformNormalInverse(
-            new org.joml.Vector3d(axisH.x, axisH.y, axisH.z), new org.joml.Vector3d());
-        return pos -> {
-            double px = pos.getX() + 0.5 - lp.x;
-            double py = pos.getY() + 0.5 - lp.y;
-            double pz = pos.getZ() + 0.5 - lp.z;
-            double d = px * ln.x + py * ln.y + pz * ln.z;
-            if (d >= keepThreshold) return true;
-            double w = Math.abs(px * lw.x + py * lw.y + pz * lw.z);
-            double h = Math.abs(px * lh.x + py * lh.y + pz * lh.z);
-            return w > halfW || h > halfH;
-        };
+        return pos -> (pos.getX() + 0.5 - lp.x) * ln.x
+                    + (pos.getY() + 0.5 - lp.y) * ln.y
+                    + (pos.getZ() + 0.5 - lp.z) * ln.z >= keepThreshold;
     }
 
     /**
@@ -618,25 +520,10 @@ public final class IplStraddlePoseMap {
         return dx * dx + dy * dy + dz * dz;
     }
 
-    /** Copy of {@code pose} translated into the mapped frame. */
-    public static Pose3d mapped(Pose3dc pose, BlockPos offset) {
-        Pose3d out = new Pose3d(pose);
-        out.position().add(offset.getX(), offset.getY(), offset.getZ());
-        return out;
-    }
-
     public static boolean isApproxIdentity(@Nullable DQuaternion q) {
         if (q == null) return true;
         return Math.abs(Math.abs(q.w) - 1.0) < 1e-4
             && Math.abs(q.x) < 1e-4 && Math.abs(q.y) < 1e-4 && Math.abs(q.z) < 1e-4;
     }
 
-    @Nullable
-    public static BlockPos blockAligned(Vec3 d) {
-        long rx = Math.round(d.x), ry = Math.round(d.y), rz = Math.round(d.z);
-        if (Math.abs(d.x - rx) > 0.01 || Math.abs(d.y - ry) > 0.01 || Math.abs(d.z - rz) > 0.01) {
-            return null;
-        }
-        return new BlockPos((int) rx, (int) ry, (int) rz);
-    }
 }

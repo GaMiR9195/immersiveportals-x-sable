@@ -34,17 +34,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *       ticket cleanup pass would thrash terrain sections every tick. Fix: the hosting dim is
  *       always "loaded enough" — hosted ships stay active; stale terrain tickets still expire
  *       through the 20-tick outdated path.</li>
- *   <li><b>Terrain collision:</b> {@code addTicket} feeds {@code level.getChunk(x,z)} sections
- *       into the Rapier pipeline — the terrain the airship collides with. Reading the hosting
- *       dim would enroll void chunks. Fix: inside the per-sub-level loop, read the chunk from
- *       the sub-level's PARENT dim (recomputing the section index against the parent's height
- *       profile — nether and overworld differ) and feed it to the HOSTING pipeline. The ship's
- *       pose and the terrain coords share the parent's frame, so collision is consistent.</li>
+ *   <li><b>Terrain collision:</b> the stock per-sub-level loop cannot see hosted plots. The
+ *       parent chart therefore enrolls native parent-dimension chunks using that level's own
+ *       coordinate system and height profile. Atlas sessions separately enroll the mapped
+ *       destination image region in its destination chart.</li>
  * </ol>
- *
- * <p>Known accepted limitation: ships from different parent dims share the hosting Rapier
- * scene, so two ships whose parent-frame positions overlap would see each other's terrain
- * copies. Revisit with per-parent scene keys if it ever matters in practice.
  */
 @Pseudo
 @Mixin(value = PhysicsChunkTicketManager.class, remap = false)
@@ -60,99 +54,6 @@ public abstract class IplHostedTicketManagerMixin {
 
     @Unique
     private static long ipl$lastTerrainLogMs = 0;
-
-    /**
-     * Pre-enroll PARENT-dim terrain sections for every hosted sub-level, before the vanilla
-     * per-sub-level loop runs. {@code addSectionIfNotTracked} registers the section with the
-     * HOSTING pipeline and creates the ticket; the original loop's {@code addTicket} then
-     * finds an existing ticket for the same SectionPos and only refreshes its
-     * last-inhabited tick (never re-reading the hosting dim's void chunks). The bounds math
-     * mirrors the original loop exactly (incl. the falling-velocity prediction) so every
-     * SectionPos the loop touches is pre-enrolled with real terrain.
-     */
-    @Inject(method = "update", at = @At("HEAD"), require = 1)
-    private void ipl$preEnrollParentTerrain(
-        ServerLevel level,
-        ServerSubLevelContainer container,
-        SubLevelPhysicsSystem system,
-        PhysicsPipeline pipeline,
-        double timeStep,
-        CallbackInfo ci
-    ) {
-        // Per-scene model: the hosting scene holds no terrain at all — the parent's own
-        // manager enrolls terrain natively (ipl$enrollHostedShipTerrain below).
-        if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
-            return;
-        }
-        if (!IplDimAgnostic.isHostingLevel(level)) {
-            return;
-        }
-
-        PhysicsChunkTicketManager self = (PhysicsChunkTicketManager) (Object) this;
-        BoundingBox3d b = new BoundingBox3d();
-        BoundingBox3d b2 = new BoundingBox3d();
-        Vector3d velocity = new Vector3d();
-        int hostedCount = 0;
-        ServerLevel firstParent = null;
-
-        for (int i = 0; i < container.getAllSubLevels().size(); i++) {
-            ServerSubLevel subLevel = container.getAllSubLevels().get(i);
-            if (subLevel.isRemoved()) continue;
-
-            ServerLevel parent = IplDimAgnostic.getServerParentLevel(subLevel);
-            if (parent == null) continue;
-            hostedCount++;
-            if (firstParent == null) firstParent = parent;
-
-            // Same bounds expansion as the original loop, so coverage is identical.
-            b.set(subLevel.boundingBox());
-            b2.set(b);
-            if (subLevel.lastPose().position()
-                .distanceSquared(subLevel.logicalPose().position()) > 0.05 * 0.05) {
-                system.getPipeline().getLinearVelocity(subLevel, velocity.zero()).mul(timeStep);
-                b2.move(0.0, Mth.clamp(velocity.y,
-                    -PhysicsChunkTicketManager.MAX_PREDICTION_DISTANCE,
-                    PhysicsChunkTicketManager.MAX_PREDICTION_DISTANCE), 0.0);
-                b.expandTo(b2);
-            }
-            b.expand(1.0, b);
-
-            BoundingBox3i chunkBounds = b.chunkBoundsFrom();
-            // The pipeline's voxel bake re-reads block content through its LevelAccelerator
-            // (bound to the hosting level) — the section argument's content is ignored. The
-            // override makes those reads come from the PARENT level for the duration of the
-            // enrollment, so the baked collider is real terrain instead of hosting-dim void.
-            ipl.sable.transit.IplTerrainReadOverride.set(parent);
-            try {
-                for (int x = chunkBounds.minX(); x <= chunkBounds.maxX(); x++) {
-                    for (int z = chunkBounds.minZ(); z <= chunkBounds.maxZ(); z++) {
-                        LevelChunk parentChunk;
-                        try {
-                            parentChunk = parent.getChunk(x, z);
-                        } catch (Throwable t) {
-                            continue; // parent chunk unavailable; original loop adds a void filler
-                        }
-                        for (int y = chunkBounds.minY(); y <= chunkBounds.maxY(); y++) {
-                            int parentIndex = parent.getSectionIndexFromSectionY(y);
-                            if (parentIndex < 0 || parentIndex >= parent.getSectionsCount()) continue;
-                            self.addSectionIfNotTracked(
-                                level, parentChunk.getSection(parentIndex), SectionPos.of(x, y, z), pipeline);
-                        }
-                    }
-                }
-            } finally {
-                ipl.sable.transit.IplTerrainReadOverride.clear();
-            }
-        }
-
-        long now = System.currentTimeMillis();
-        if (hostedCount > 0 && now - ipl$lastTerrainLogMs > 5000) {
-            ipl$lastTerrainLogMs = now;
-            org.slf4j.LoggerFactory.getLogger("ipl-hosted-terrain").info(
-                "[IPL-HOSTED-TERRAIN] pre-enrolled parent terrain for {} hosted sub-level(s), firstParent={}",
-                hostedCount, firstParent.dimension().location());
-        }
-    }
 
     // ======================================================================
     // Per-scene model (spec §2.2 phase 1): terrain enrolls in the PARENT's
@@ -219,26 +120,23 @@ public abstract class IplHostedTicketManagerMixin {
             ipl$enrollSections(level, pipeline, b, gameTime);
         }
 
-        // Straddle CLONE bodies whose DESTINATION is this level: the clone needs terrain
-        // around the portal-mapped region (ship bounds ⊕ offset). Nothing else enrolls it —
-        // the straddler's parent is still the source side, and the clone is pure native
-        // state no container knows about.
-        int[] cloneRegions = {0};
-        ipl.sable.transit.IplStraddleCloneBody.forEachSessionInto(level, (ship, mapping) -> {
+        // Atlas image colliders need destination-chart terrain around their mapped region.
+        int[] imageRegions = {0};
+        ipl.sable.transit.IplAtlasStraddleSession.forEachSessionInto(level, (ship, mapping) -> {
             // Enclosing AABB of the portal-mapped ship bounds (rotation-capable: the 8
             // corners go through the full isometry).
             BoundingBox3d cb = mapping.mapAabb(ship.boundingBox());
             cb.expand(1.0, cb);
             ipl$enrollSections(level, pipeline, cb, gameTime);
-            cloneRegions[0]++;
+            imageRegions[0]++;
         });
-        enrolledShips += cloneRegions[0];
+        enrolledShips += imageRegions[0];
 
         long now = System.currentTimeMillis();
         if (enrolledShips > 0 && now - ipl$lastTerrainLogMs > 5000) {
             ipl$lastTerrainLogMs = now;
             org.slf4j.LoggerFactory.getLogger("ipl-hosted-terrain").info(
-                "[IPL-SCENE-TERRAIN] {} enrolled native terrain for {} hosted ship/clone region(s)",
+                "[IPL-SCENE-TERRAIN] {} enrolled native terrain for {} hosted ship/image region(s)",
                 level.dimension().location(), enrolledShips);
         }
     }

@@ -168,14 +168,6 @@ impl SablePhysicsHooks {
             if regions.is_empty() {
                 continue;
             }
-            // Diagnostics: record the last contact point this pass judged, and count
-            // seen/dropped (atomics — we only hold the scene READ lock here).
-            if let Some(c) = context.solver_contacts.first() {
-                use std::sync::atomic::Ordering;
-                info.ipl_last_contact[0].store((c.point.x as f64).to_bits(), Ordering::Relaxed);
-                info.ipl_last_contact[1].store((c.point.y as f64).to_bits(), Ordering::Relaxed);
-                info.ipl_last_contact[2].store((c.point.z as f64).to_bits(), Ordering::Relaxed);
-            }
             // NEUTRALIZE in place — do NOT retain()/shrink the list. Partially removing
             // solver contacts is a state stock code never produces (its remove path only
             // ever clears ALL), and every session where the retain pass partially shrank
@@ -184,7 +176,6 @@ impl SablePhysicsHooks {
             // lane-gathers contacts unchecked. A far-separated zero-friction contact
             // yields zero impulse: physically identical to removal, structurally
             // invisible to the batcher.
-            let total = context.solver_contacts.len() as u64;
             let mut clipped = 0u64;
             for c in context.solver_contacts.iter_mut() {
                 if regions.iter().any(|r| r.contains(c.point)) {
@@ -194,11 +185,6 @@ impl SablePhysicsHooks {
                     c.tangent_velocity = Vec3::ZERO;
                     clipped += 1;
                 }
-            }
-            {
-                use std::sync::atomic::Ordering;
-                info.ipl_clip_seen.fetch_add(total, Ordering::Relaxed);
-                info.ipl_clip_dropped.fetch_add(clipped, Ordering::Relaxed);
             }
             // Diagnostic: prove in-game that the clip pass fires at all (once).
             if clipped > 0 {

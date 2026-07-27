@@ -242,7 +242,10 @@ public class O_O {
     
     @Nullable
     public static String getModName(String modid) {
-        return FMLLoader.getLoadingModList().getModFileById(modid).getMods().stream().findFirst().get().getDisplayName();
+        if (ModList.get().getModFileById(modid) == null) {
+            return modid;
+        }
+        return ModList.get().getModFileById(modid).getMods().stream().findFirst().get().getDisplayName();
     }
     
     // most quilt installations use quilted fabric api

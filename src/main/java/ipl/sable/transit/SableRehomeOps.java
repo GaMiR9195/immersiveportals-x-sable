@@ -87,6 +87,13 @@ public final class SableRehomeOps {
         if (IplDimAgnostic.isHostingLevel(level)) {
             bootRestoreHosted(container, level);
             restoreParents(container, level);
+            // Low-frequency client parent re-stamp: the one-shot setParent RPC can race
+            // the client's StartTracking allocation; a ship whose client parent stays
+            // null is filtered out of the hosted render gather — it EXISTS (physics,
+            // collision) but is invisible. The client retries pending stamps per tick;
+            // this sweep guarantees a fresh stamp eventually reaches every tracker even
+            // if the original RPC was dropped or expired.
+            restampClientParents(container, level);
             return;
         }
 
@@ -247,15 +254,68 @@ public final class SableRehomeOps {
             return;
         }
 
-        int[] plotXZ = SableTransitOps.findFirstEmptyPlotForMirror(hostingContainer);
+        // SAME-SLOT rehome: allocate the twin at the source's GLOBAL plot coordinates
+        // whenever that slot is free in the hosting grid. Every persisted plot-coordinate
+        // reference then survives the rehome — constraint anchors, mods' stored link/plate
+        // positions (Simulated's swivel bearing kept the split part's platePos and
+        // re-attached its rotary constraint against the OLD slot's coordinates: with a
+        // moved slot, Sable's anchor validation threw "pos2 does not fall within the plot"
+        // and crashed the server). Slot delta zero also means the verbatim pose carries
+        // over exactly.
+        int[] plotXZ = null;
+        {
+            ChunkPos srcCenter = source.getPlot().getCenterChunk();
+            int logPlot = hostingContainer.getLogPlotSize();
+            int globalX = srcCenter.x >> logPlot;
+            int globalZ = srcCenter.z >> logPlot;
+            int localX = globalX - ((ipl.sable.mixin.IplSubLevelContainerOriginAccessor) hostingContainer).ipl$originX();
+            int localZ = globalZ - ((ipl.sable.mixin.IplSubLevelContainerOriginAccessor) hostingContainer).ipl$originZ();
+            int side = 1 << hostingContainer.getLogSideLength();
+            if (localX >= 0 && localX < side && localZ >= 0 && localZ < side
+                && !hostingContainer.getOccupancy().get(hostingContainer.getIndex(localX, localZ))) {
+                plotXZ = new int[]{localX, localZ};
+            } else {
+                LOG.warn("[IPL-REHOME] same-slot ({},{}) unavailable in hosting grid for uuid={}; "
+                        + "falling back to first-free (stored plot references may go stale)",
+                    globalX, globalZ, source.getUniqueId());
+            }
+        }
+        if (plotXZ == null) {
+            plotXZ = SableTransitOps.findFirstEmptyPlotForMirror(hostingContainer);
+        }
         if (plotXZ == null) {
             LOG.warn("[IPL-REHOME] hosting plot grid full; uuid={} stays in legacy model",
                 source.getUniqueId());
             return;
         }
 
+        // Slot block delta (dst − src): zero for a same-slot rehome (the normal case since
+        // union-free allocation), the plot-grid translation otherwise. Everything expressed
+        // in plot coordinates must move by exactly this delta: the pose's rotation point
+        // AND the seeded mass baseline below. (Blocks are copied local→local, so their
+        // global plot coordinates shift by the same delta.)
+        ChunkPos srcMinChunk = source.getPlot().getChunkMin();
+        int logPlot = hostingContainer.getLogPlotSize();
+        int dstMinChunkX = (plotXZ[0]
+            + ((ipl.sable.mixin.IplSubLevelContainerOriginAccessor) hostingContainer).ipl$originX()) << logPlot;
+        int dstMinChunkZ = (plotXZ[1]
+            + ((ipl.sable.mixin.IplSubLevelContainerOriginAccessor) hostingContainer).ipl$originZ()) << logPlot;
+        double slotDeltaX = (double) (dstMinChunkX - srcMinChunk.x) * 16.0;
+        double slotDeltaZ = (double) (dstMinChunkZ - srcMinChunk.z) * 16.0;
+
         UUID uuid = source.getUniqueId();
         Pose3d pose = new Pose3d(source.logicalPose());
+        if (slotDeltaX != 0.0 || slotDeltaZ != 0.0) {
+            // Cross-slot fallback: the rotation point is a PLOT coordinate — translate it
+            // with the blocks so the verbatim world mapping still holds in the new slot.
+            // (The old verbatim copy left it pointing at the SOURCE slot; the first mass
+            // upload then "corrected" it without position compensation — the size-scaled
+            // assembly offset.)
+            pose.rotationPoint().add(slotDeltaX, 0.0, slotDeltaZ);
+            LOG.warn("[IPL-REHOME] cross-slot rehome for uuid={}: translated rotation point by ({}, {});"
+                + " mod-persisted plot references (swivel plate positions etc.) cannot be translated"
+                + " and may go stale", uuid, slotDeltaX, slotDeltaZ);
+        }
         Vector3d linVel = new Vector3d(source.latestLinearVelocity);
         Vector3d angVel = new Vector3d(source.latestAngularVelocity);
 
@@ -274,6 +334,17 @@ public final class SableRehomeOps {
         //    firing during the copy already sees the correct parent.
         stampParent(hosted, parentLevel, hosting);
 
+        // 2.5 Seed the twin's merged-mass baseline from the settled SOURCE tracker
+        //     (slot-translated). The fresh tracker's first upload otherwise null-baselines
+        //     lastCenterOfMass and jumps rotationPoint from the copied ship CoM to the
+        //     FIRST copied block's partial CoM without position compensation — shifting
+        //     the ship by R·(shipCoM − firstBlockCoM): the +0.5-along-facing assembly
+        //     offset that grew with size and vanished for single blocks. With the baseline
+        //     seeded, every upload during the copy walks the invariant-preserving path
+        //     (position += R·ΔCoM), and the final mapping equals the source mapping by
+        //     construction.
+        seedMassBaseline(source, hosted, slotDeltaX, slotDeltaZ);
+
         // 3. Copy blocks + block entities (3-pass: place, notify, register tickers).
         int blocksCopied = SableTransitOps.copyPlotBlocksPublic(
             source.getPlot(), hosted.getPlot(), parentLevel, hosting);
@@ -281,6 +352,30 @@ public final class SableRehomeOps {
         // 4. Relocate plot-resident entities (item frames, seats, hanging entities moved into
         //    the plot at assembly). Without this, removeSubLevel(REMOVED) deletes them.
         int entitiesMoved = relocatePlotEntities(source, hosted, parentLevel, hosting);
+
+        // 4.5 DIAGNOSTIC ONLY (an earlier active re-anchor here made freshly assembled
+        //     ships vanish — pose mutation at this point is not safe against the live
+        //     enrollment/upload ordering). Log the source-vs-new-slot pose relation so the
+        //     size-scaled assembly height offset can be pinned from a runtime trace:
+        //     position, rotation point, both plots' anchors and the new-slot self CoM.
+        {
+            Pose3d hostedPose = hosted.logicalPose();
+            org.joml.Vector3dc comNew = hosted.getSelfMassTracker().getCenterOfMass();
+            ChunkPos srcCenter = source.getPlot().getCenterChunk();
+            ChunkPos dstCenter = hosted.getPlot().getCenterChunk();
+            LOG.info("[IPL-REHOME-POSE] uuid={} pos=({},{},{}) rp=({},{},{}) srcPlotMin=({},{}) "
+                    + "dstPlotMin=({},{}) comNew={}",
+                uuid,
+                String.format("%.3f", hostedPose.position().x()),
+                String.format("%.3f", hostedPose.position().y()),
+                String.format("%.3f", hostedPose.position().z()),
+                String.format("%.3f", hostedPose.rotationPoint().x()),
+                String.format("%.3f", hostedPose.rotationPoint().y()),
+                String.format("%.3f", hostedPose.rotationPoint().z()),
+                srcCenter.getMinBlockX(), srcCenter.getMinBlockZ(),
+                dstCenter.getMinBlockX(), dstCenter.getMinBlockZ(),
+                comNew == null ? "null" : String.format("(%.3f,%.3f,%.3f)", comNew.x(), comNew.y(), comNew.z()));
+        }
 
         // 5. Transfer physics velocity verbatim (no portal rotation — same world frame).
         if (linVel.lengthSquared() > 1e-8 || angVel.lengthSquared() > 1e-8) {
@@ -303,6 +398,10 @@ public final class SableRehomeOps {
             }
             return;
         }
+
+        // 7. Atlas keeps the real body in the hosting dimension. Publish its parent-chart
+        // image now; no body/rope/joint/third-party registry migration is permitted.
+        ipl.sable.atlas.IplAtlasBodyImages.reconcile(hosted);
 
         LOG.info("[IPL-REHOME] complete uuid={} blocks={} entities={}", uuid, blocksCopied, entitiesMoved);
 
@@ -347,16 +446,20 @@ public final class SableRehomeOps {
             uuid, oldParent.dimension().location(), newParent.dimension().location(),
             mappedPose.position().x(), mappedPose.position().y(), mappedPose.position().z());
 
-        // Capture + remap velocities through the portal rotation.
-        Vector3d lin = pipeline.getLinearVelocity(hosted, new Vector3d());
-        Vector3d ang = pipeline.getAngularVelocity(hosted, new Vector3d());
-        Vec3 mappedLin = portal.transformLocalVec(new Vec3(lin.x, lin.y, lin.z));
-        Vec3 mappedAng = portal.transformLocalVec(new Vec3(ang.x, ang.y, ang.z));
+        // The real body changes frame only after Atlas permits the group rehome. Preserve
+        // its physical velocity by rotating both velocity vectors through that same portal.
+        Vector3d linear = pipeline.getLinearVelocity(hosted, new Vector3d());
+        Vector3d angular = pipeline.getAngularVelocity(hosted, new Vector3d());
+        Vec3 mappedLin = portal.transformLocalVec(new Vec3(linear.x, linear.y, linear.z));
+        Vec3 mappedAng = portal.transformLocalVec(new Vec3(angular.x, angular.y, angular.z));
 
         // Teleport riders BEFORE moving the pose, while the deck is still under them.
         int riders = teleportRiders(hosted, oldParent, newParent, portal);
 
-        // Move the physics body + logical pose to the mapped frame.
+        // Move only this body's native frame. Connected bodies are deliberately NOT
+        // teleported: Atlas treats a portal as a window, so an active cross-aperture joint
+        // remains represented by source geometry plus image colliders until its own body
+        // legitimately completes transit.
         pipeline.teleport(hosted, mappedPose.position(), mappedPose.orientation());
         hosted.logicalPose().set(mappedPose);
         pipeline.resetVelocity(hosted);
@@ -364,19 +467,18 @@ public final class SableRehomeOps {
             new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
             new Vector3d(mappedAng.x, mappedAng.y, mappedAng.z));
 
-        // Flip the parent.
         stampParent(hosted, newParent, hosting);
-
         hosted.updateBoundingBox();
+        ipl.sable.atlas.IplAtlasBodyImages.reconcile(hosted);
 
-        if (ipl.sable.dim.IplSceneOwnership.isEnabled()) {
-            net.minecraft.server.level.ServerLevel from =
-                ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) != null
-                    ? ipl.sable.dim.IplSceneOwnership.getBodyHome(hosted) : oldParent;
-            ipl.sable.dim.IplSceneOwnership.migrate(hosted, from, newParent);
-        } else {
-            rebakeTerrainAround(hosted, newParent, pipeline);
-        }
+        // Retire the old source-frame seam BEFORE the parent-frame handoff reaches clients.
+        // Atlas keeps its image collider until the caller clears the completed session after
+        // this method returns, but the old clip must not follow the now-native destination
+        // pose for one client frame or it cuts the last exiting part of the sub-level.
+        // This RPC is queued immediately before handoff, preserving client order:
+        // session-end, mapped parent handoff, then any eager reverse-session start.
+        IplStraddleSessionSync.onSessionEnd(
+            server, new StraddleKey(uuid, portal.getUUID()), "rehomed");
 
         // Keep existing trackers through the flip. Removing them here creates a visible gap:
         // the destination projection is gone as soon as the ship clears the portal, while a
@@ -386,28 +488,36 @@ public final class SableRehomeOps {
         // The old tracked set only contains source-side viewers. A cross-dimension exit can
         // reveal the fully crossed body to destination portal viewers before the tracking tick
         // adds them, so hand off to both sets now instead of leaving a one-way invisible ship.
-        java.util.Set<UUID> handoffRecipients = new java.util.HashSet<>(hosted.getTrackingPlayers());
-        handoffRecipients.addAll(IplGrabChain.getDraggingPlayers(uuid));
+        sendParentHandoff(server, hosted, newParent, portal);
+
+        LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
+        return true;
+    }
+
+    private static void sendParentHandoff(
+        MinecraftServer server, ServerSubLevel body, ServerLevel destination, Portal portal
+    ) {
+        java.util.Set<UUID> recipients = new java.util.HashSet<>(body.getTrackingPlayers());
+        recipients.addAll(IplGrabChain.getDraggingPlayers(body.getUniqueId()));
         net.minecraft.world.level.ChunkPos destinationChunk = new net.minecraft.world.level.ChunkPos(
-            net.minecraft.core.BlockPos.containing(mappedPose.position().x(), mappedPose.position().y(), mappedPose.position().z())
+            net.minecraft.core.BlockPos.containing(body.logicalPose().position().x(),
+                body.logicalPose().position().y(), body.logicalPose().position().z())
         );
         for (ServerPlayer viewer : ImmPtlChunkTracking.getPlayersViewingChunk(
-            newParent.dimension(), destinationChunk.x, destinationChunk.z, false
+            destination.dimension(), destinationChunk.x, destinationChunk.z, false
         )) {
-            handoffRecipients.add(viewer.getUUID());
+            recipients.add(viewer.getUUID());
         }
-        for (UUID trackerUuid : handoffRecipients) {
-            ServerPlayer player = server.getPlayerList().getPlayer(trackerUuid);
+        String transform = encodePortalTransform(portal);
+        for (UUID recipient : recipients) {
+            ServerPlayer player = server.getPlayerList().getPlayer(recipient);
             if (player == null) continue;
             qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
                 player,
                 "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
-                uuid.toString(), newParent.dimension().location().toString(), encodePortalTransform(portal)
+                body.getUniqueId().toString(), destination.dimension().location().toString(), transform
             );
         }
-
-        LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
-        return true;
     }
 
     /** Serializes the exact crossing transform for clients that do not track the source portal. */
@@ -428,44 +538,98 @@ public final class SableRehomeOps {
     }
 
     /**
-     * Overwrite the hosting pipeline's terrain voxels around {@code hosted} with fresh
-     * content from {@code parent} (reads routed through {@link IplTerrainReadOverride}).
-     * Unlike the ticket manager's enrollment, this re-bakes EXISTING sections too.
-     * The vertical range is extended downward to cover post-arrival settling.
+     * Seed the hosted twin's {@code MergedMassTracker} baseline from the settled SOURCE
+     * tracker (slot-translated), so the block copy's first mass upload cannot
+     * null-baseline and jump the rotation point without position compensation. See the
+     * call site in {@link #rehome} and {@code IplMergedMassBaselineAccessor} for the math.
      */
-    private static void rebakeTerrainAround(
-        ServerSubLevel hosted, ServerLevel parent, PhysicsPipeline pipeline
+    private static void seedMassBaseline(
+        ServerSubLevel source, ServerSubLevel hosted, double slotDeltaX, double slotDeltaZ
     ) {
-        dev.ryanhcode.sable.companion.math.BoundingBox3d b =
-            new dev.ryanhcode.sable.companion.math.BoundingBox3d();
-        b.set(hosted.boundingBox());
-        b.expand(4.0, b);
-        dev.ryanhcode.sable.companion.math.BoundingBox3i chunkBounds = b.chunkBoundsFrom();
-
-        IplTerrainReadOverride.set(parent);
         try {
-            for (int x = chunkBounds.minX(); x <= chunkBounds.maxX(); x++) {
-                for (int z = chunkBounds.minZ(); z <= chunkBounds.maxZ(); z++) {
-                    net.minecraft.world.level.chunk.LevelChunk parentChunk;
-                    try {
-                        parentChunk = parent.getChunk(x, z);
-                    } catch (Throwable t) {
-                        continue;
-                    }
-                    // -2 sections below covers the immediate post-arrival fall/settle.
-                    for (int y = chunkBounds.minY() - 2; y <= chunkBounds.maxY(); y++) {
-                        int parentIndex = parent.getSectionIndexFromSectionY(y);
-                        if (parentIndex < 0 || parentIndex >= parent.getSectionsCount()) continue;
-                        pipeline.handleChunkSectionAddition(
-                            parentChunk.getSection(parentIndex), x, y, z, false);
-                    }
-                }
+            if (!(source.getMassTracker() instanceof dev.ryanhcode.sable.api.physics.mass.MergedMassTracker srcTracker)
+                || !(hosted.getMassTracker() instanceof dev.ryanhcode.sable.api.physics.mass.MergedMassTracker dstTracker)) {
+                return;
             }
-        } finally {
-            IplTerrainReadOverride.clear();
+            org.joml.Vector3dc srcCoM = srcTracker.getCenterOfMass();
+            if (srcCoM == null) {
+                return; // source ship has no solid blocks — nothing to seed
+            }
+            Object accessor = dstTracker;
+            if (!(accessor instanceof ipl.sable.mixin.IplMergedMassBaselineAccessor access)) {
+                LOG.warn("[IPL-REHOME] mass tracker accessor mixin missing; "
+                    + "first-upload offset protection inactive for {}", hosted.getUniqueId());
+                return;
+            }
+            access.ipl$setLastCenterOfMass(new Vector3d(srcCoM).add(slotDeltaX, 0.0, slotDeltaZ));
+            access.ipl$setLastInertiaTensor(new org.joml.Matrix3d(srcTracker.getInertiaTensor()));
+            access.ipl$setLastMass(srcTracker.getMass());
+        } catch (Throwable t) {
+            LOG.warn("[IPL-REHOME] mass-baseline seeding failed for {}; "
+                + "first-upload offset may reappear", hosted.getUniqueId(), t);
         }
-        LOG.info("[IPL-FLIP] re-baked arrival terrain for {} from {}",
-            hosted.getUniqueId(), parent.dimension().location());
+    }
+
+    /**
+     * A sub-level SPLIT off a hosted ship was just recorded (core Sable's
+     * {@code ServerSubLevel.setSplitFrom}, fired from {@code kickFromContainingSubLevel}
+     * for every nested assembly BEFORE control returns to the splitting mod — see
+     * {@code IplSplitParentStampMixin}). Inherit the parent eagerly and publish the fresh
+     * body's parent-chart image. Both real bodies remain together in the hosting pipeline,
+     * so synchronous swivel constraints use normal Sable ownership.
+     */
+    public static void onSplitAllocated(ServerSubLevel split, ServerSubLevel containing) {
+        try {
+            if (containing == null || split == null || split.isRemoved()) return;
+            if (!IplDimAgnostic.isHosted(split)) return; // parent-dim split rehomes normally
+            ServerLevel parent = IplDimAgnostic.getServerParentLevel(containing);
+            if (parent == null) return;
+            ServerLevel hosting = split.getLevel();
+
+            IplSubLevelDuck duck = (IplSubLevelDuck) split;
+            if (duck.ipl$getParentLevel() != null
+                && !IplDimAgnostic.isHostingLevel(duck.ipl$getParentLevel())) {
+                return; // already stamped
+            }
+
+            stampParent(split, parent, hosting);
+            ipl.sable.atlas.IplAtlasBodyImages.reconcile(split);
+            LOG.info("[IPL-REHOME] split sub-level {} eagerly inherited parent {} from {}",
+                split.getUniqueId(), parent.dimension().location(), containing.getUniqueId());
+        } catch (Throwable t) {
+            LOG.error("[IPL-REHOME] eager split parent stamp failed for {}",
+                split != null ? split.getUniqueId() : null, t);
+        }
+    }
+
+    private static int restampCounter = 0;
+
+    /**
+     * Every ~5 seconds, re-send the client parent stamp for every hosted sub-level to
+     * every player tracking it. Idempotent client-side (same-parent stamps change
+     * nothing); closes every "client parent never arrived" race for good.
+     */
+    private static void restampClientParents(ServerSubLevelContainer container, ServerLevel hosting) {
+        if (++restampCounter < 100) return;
+        restampCounter = 0;
+
+        MinecraftServer server = hosting.getServer();
+        if (server == null) return;
+        for (SubLevel sub : container.getAllSubLevels()) {
+            if (!(sub instanceof ServerSubLevel hosted) || hosted.isRemoved()) continue;
+            ServerLevel parent = IplDimAgnostic.getServerParentLevel(hosted);
+            if (parent == null) continue;
+            for (UUID trackerUuid : hosted.getTrackingPlayers()) {
+                ServerPlayer viewer = server.getPlayerList().getPlayer(trackerUuid);
+                if (viewer == null) continue;
+                qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                    viewer,
+                    "ipl.sable.client.IplParentDimSync.RemoteCallables.setParent",
+                    hosted.getUniqueId().toString(),
+                    parent.dimension().location().toString()
+                );
+            }
+        }
     }
 
     /** Duck + persistent-NBT parent stamp. */

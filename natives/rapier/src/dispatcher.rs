@@ -180,10 +180,8 @@ where
             if g1.is_static && !g2.is_static {
                 self.world_vs_world::<ContactData>(pos12, g1, g2, prediction, manifolds, false);
             } else if !g1.is_static && !g2.is_static {
-                // IPL: a same-dimension straddle puts a ship and its clone (or two clones
-                // of one ship) in ONE scene; registered pairs generate no contacts. Clear
-                // rather than keep the persisted manifolds — stale contacts must not
-                // survive the exclusion.
+                // Portal rims can exclude a registered pair from contacts. Clear rather
+                // than keep persisted manifolds: stale contacts must not survive exclusion.
                 if let (Some(id1), Some(id2)) = (g1.id, g2.id) {
                     let key = if id1 <= id2 { (id1, id2) } else { (id2, id1) };
                     if self
@@ -199,8 +197,8 @@ where
                 }
                 let swap = {
                     let sable_data = self.sable_data.read().unwrap();
-                    // IPL defensive: a pair can outlive one body by a beat (mid-tick
-                    // clone despawn) or reach here before stats/bounds landed. The old
+                    // IPL defensive: a pair can outlive one body by a beat during teardown
+                    // or reach here before stats/bounds landed. The old
                     // `[]`-index + unwrap chain panicked across the FFI boundary (JVM
                     // abort, no crash report) — skip the pair instead.
                     let (Some(id1), Some(id2)) = (g1.id, g2.id) else {

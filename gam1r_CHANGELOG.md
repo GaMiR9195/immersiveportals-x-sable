@@ -1,3 +1,730 @@
+# Sub-Level Mod Compatibility — One Root: Level Identity
+
+## Round 9 — Atlas Frame Boundaries, Parent-Owned Plot Entities, and Single-Block Rendering
+
+### Atlas contract retained
+
+- Real `SubLevel`, plot chunks, hosted BEs, body ownership, native Sable pipeline and
+  constraint managers remain honestly in `ipl_sable:sublevels`.
+- Atlas/Rapier provides one shared native world with per-dimension charts. A ship has one
+  real body; parent/destination presence is image collider geometry with portal-prefix
+  transform. No fake `BlockEntity.getLevel()`, fake `dimension()`, clone body, or native
+  body scene migration.
+- Portal-connected body groups are not remapped as a component: that turns a portal window
+  into a teleport and stretches ropes/bearings across raw Overworld/Nether coordinates.
+  Parent flip is blocked while a connected body has not crossed the same portal; Atlas image
+  geometry represents the through side.
+- Bidirectional/coincident portal faces use one active owner session. Existing sessions keep
+  their aperture ownership while backing out; the opposite/back face cannot steal it.
+
+### Removed wrong approaches
+
+- Removed fake hosted BE/level identity mixins and client identity/light bridge.
+- Removed whole connected-component portal teleport/remap.
+- Removed coordinate-magnitude identity tests (`1_000_000`, `62_500`, etc.) from generic
+  plot/frame paths. A plot is recognized only by exact hosting container membership:
+  `inBounds(chunk) && getPlot(chunk) != null`.
+- Removed spatial parent-world fallback that guessed a ship parent from nearby AABB/bounds.
+  Parent terrain/chart ownership must never be inferred from proximity.
+- Removed `Entity.setPosRaw` migration into hosting dimension and all newly-added
+  Plunger/staff/assembler-specific mixins. Moving a parent entity into hosting storage broke
+  arbitrary addon `WorldAttached`, owner/pair, packet, renderer and saved-data state.
+
+### Generic parent plot entity model
+
+Upstream Sable semantics are restored for a parent-owned entity that becomes plot-local:
+
+```text
+entity Level / addon state: parent dimension
+entity raw coordinate: hosted plot-local coordinate
+plot blocks/chunks: hosting dimension physical storage
+visible position/network range: Sable SubLevel pose projection
+```
+
+- `IplParentPlotChunkCacheMixin` and client counterpart route parent-level plot-local
+  `getChunk`, `getChunkNow`, `hasChunk` reads to the exact live hosting plot chunk.
+- `IplParentPlotEntityTicking` marks exact parent plot chunks `ENTITY_TICKING` for entities
+  whose local coordinate belongs to a hosted plot. Reference counts prevent one entity
+  leaving a plot chunk from disabling another entity in it.
+- `IplHostingEntityTrackingMixin` now also re-evaluates viewers for parent-owned entities
+  on an exact hosted plot using that ship's exact tracking players. This avoids vanilla raw
+  plot-coordinate range churn (entity packet flicker/despawn) while retaining parent-level
+  addon storage and packet identity.
+
+This is intended to cover any entity that uses normal Sable plot-local coordinates, not a
+Plunger-specific path.
+
+### World-frame and rendering bridges
+
+- `IplWorldFrameContext` routes only explicit parent-world terrain coordinates. It does not
+  change Java `Level` identity, dimension key, storage, manager buckets or physics pipeline.
+- Hosted BE tick, physics actor tick and vanilla interaction paths establish this context.
+  Parent terrain chunk/block queries and parent build-height scalars resolve through it.
+- A direct arbitrary addon custom-packet method has no generic way to identify its owning
+  sub-level unless its API supplies a plot position or `ServerSubLevel`; Rapier cannot see a
+  Java method entry or infer that ownership safely. Required long-term shared API boundary:
+  `withWorldFrame(ServerSubLevel, action)` at Sable operation ingress.
+- Hosted one-block rendering is generic `VanillaSingleSubLevelRenderData`, not rope-specific.
+  Sodium parent passes now call Sable's `renderAfterSections` drain after chunk layers, so
+  one-block sub-levels and rope segments can render outside direct hosting-dimension views.
+
+### Unresolved / runtime verification
+
+- Plunger still needs runtime validation after parent plot chunk cache, entity-ticking and
+  parent viewer tracking bridges. Reported blink/discard indicated all three were missing.
+- Assembler direct custom packet operation still lacks a generic Sable-owned operation-frame
+  ingress. It currently proves terrain reads are occurring in hosting storage when blocks
+  placed there make it succeed; do not add another addon-specific assembler mixin.
+- Physics Staff lock marker state remains an old handler-routing design issue: constraints
+  execute in hosting pipeline, while display state must be available in parent render chart.
+  Replace handler-specific routing with shared body-frame state transport, not staff mixins.
+- No Gradle build, tests, Git/diff, runtime launch, or native Rapier compilation was run.
+
+## Round 8 — Invisible Single-Block Sub-Levels: The Client Parent Stamp Race
+
+### The report that cracked it
+
+"Single block sub-levels are just not visible." A hosted ship is rendered ONLY when the
+client knows its parent dimension: `getHostedSubLevelsFor` filters the hosting container
+by the client-side parent duck. That parent arrives via ONE `setParent` RPC sent right
+after the tracking full-sync — and the client handler silently DROPPED it when it raced
+the StartTracking allocation (`findHostedSubLevel == null → return`, no retry; unlike the
+handoff RPC, which has a pending queue). A ship that loses this race exists (physics,
+collision) but never renders. Big ships kept winning the race or self-healing through
+later traffic; small static ones — swivel-split tops ("with one block it did nothing"),
+shattered blocks, and every quiet single-block sub-level — stayed invisible forever.
+
+### Changes
+
+- **Client parent-stamp retry** (`IplParentDimSync`): a `setParent` that arrives before
+  its client sub-level exists is queued (`PENDING_PARENT_STAMPS`, 30s expiry) and retried
+  from the same per-tick drain the handoff retry uses. The race is now harmless.
+- **Server periodic re-stamp** (`SableRehomeOps.restampClientParents`): every ~5s the
+  hosting sweep re-sends the parent stamp for every hosted sub-level to every tracker.
+  Idempotent client-side; guarantees a stamp eventually lands even if the original RPC was
+  dropped entirely (relog, packet loss, unknown races).
+- **Client entity-by-id addressing** (`IplHostedClientEntityLookupMixin` +
+  `IplLevelEntityGetterInvoker` + `client/IplClientEntityLookup`, new): the CLIENT half of
+  Round 7's entity bridge. A hosted plunger's client copy resolved its spawn-packet owner
+  id against the hosting client level (the shooter lives in the parent) → `cachedOwner`
+  null → the client copy `discard()`ed itself on its first tick — invisible even with a
+  healthy server entity; the pair-id lookup missed the same way from the ground side.
+  Network-id misses now fall through across the plot-space boundary (hosting ⇄ parents),
+  through raw entity getters (non-recursive).
+- **Removed the temporary [IPL-ROPE] diagnostics** (`IplRopeDiagMixin`,
+  `IplRopePacketDiagMixin`, `client/IplRopeRenderDiagMixin`) — superseded: the reporter's
+  single-block observation identified the dead link (ropes attached to/near sub-levels
+  suffer the same parent-stamp loss; ground-rope strands ride holder BEs whose ships must
+  render for their strands to be dispatched).
+
+### Verification Needed
+
+Assemble/shatter a SINGLE block: it must render immediately and stay rendered. Activate a
+single-block swivel: the top must be visible and attached. Ropes: ground↔ground and
+ship↔ground must both show segments. Plungers: ship + ground shots must stick, stay
+visible and connected (server pair survives via Round 7's bridge, the client copy now
+survives via the client bridge). Watch for `[IPL-PARENT-SYNC] deferred parent stamp
+applied` — its presence confirms the race was real and is being healed.
+
+No build or automated check was run for these changes (verified statically against
+`OTHERREQUIREDSOURCES`).
+
+## Round 7 — Plot-Space Entities Are Ship Parts; Rope Chain Instrumented
+
+### Test results after Round 6
+
+Assembly offset, disassembly, swivel bearing (both directions), and springs verified
+working. Two survivors: rope strands still fully invisible, and plunger projectiles
+still disappear the moment they hit a sub-level (fine on normal ground).
+
+### Plunger — the actual death, found in source
+
+Round 6 correctly migrated the plunger into the hosting dimension when it re-positions
+itself into plot coordinates (stock behavior — plot coords are the "stuck to the ship"
+frame). What killed it was the FIRST TICK after migration:
+`LaunchedPlungerEntity.tick()` resolves `getOwner()` (and the pair partner via
+`getOther()`) through `ServerLevel.getEntity(uuid)` on its OWN level — the hosting
+dimension, where the shooter does not exist — and `discard()`s itself on a null owner.
+The ground-side partner then discards through the "pair recorded but unresolvable"
+branch. And even a surviving plunger would have been invisible: nothing ever synced or
+rendered entities living in the hosting dimension.
+
+Three structural pieces complete the "plot-space entities are ship parts" doctrine:
+
+- **Entity-by-UUID global addressing** (`IplHostedEntityLookupMixin` +
+  `IplServerEntityGetterInvoker`, new): a `getEntity(uuid)` MISS on the hosting level
+  falls through to the parent levels; a miss on any other level additionally checks the
+  hosting level. Entity references (owners, pair links) now resolve across the plot-space
+  boundary in both directions — the entity twin of the sub-level UUID bridge. Reads go
+  through the raw entity getter, so the fallthrough cannot recurse.
+- **Hosting entity tracking** (`IplHostingEntityTrackingMixin` +
+  `IplTrackedEntityInvoker`, new): stock Sable already projects plot-entity positions for
+  tracking distance and answers plot-chunk `isChunkTracked` from sub-level trackers — the
+  only hosted gap was the INPUT (no players ever inhabit the hosting dim, so
+  `updatePlayers` never ran). A per-tick viewer sweep now feeds every hosting-level
+  tracked entity the union of hosted sub-levels' tracking players, and the whole tracking
+  tick (spawns, `sendChanges` movement, removals) is wrapped in IP's `PacketRedirection`
+  so clients apply those packets to the hosting `ClientLevel` — same doctrine as the plot
+  chunk send stamp.
+- **Hosted plot-entity render pass** (`client/IplHostedPlotEntityRenderMixin` +
+  `IplLevelRendererEntityInvoker`, new): during the parent level's render (the hosted BE
+  pass phase), entities of the hosting client level whose plot's ship is parented to the
+  rendered level are dispatched through the real `LevelRenderer.renderEntity` — Sable's
+  own `renderEntityOnSubLevel` transform then places them on the ship exactly like stock
+  (light sampled plot-local from the hosting level, as stock).
+
+Known cosmetic gap: the client-side `getOwner()` of a hosting-dim plunger resolves null
+(client entity lookup is not bridged), so the shooter's HUD link duck is not set while
+the plunger sticks to a ship. Server logic and the pair constraint are unaffected.
+
+### Ropes — every static link passes; the chain is now instrumented
+
+The full chain was re-traced against the vendored sources with Round 6 in place:
+creation frame math (`projectOutOfSubLevel` world-frame points), parent-identity physics
+system + manager bucket + `wouldBeLoaded` gate, the tracking-player resolution
+(`ChunkMap.getPlayers` plot-range → Sable's own mixin → BRIDGED `getPlayersTracking` →
+sub-level trackers — verified to route through the bridged `getPlot`), the per-container
+tracking plugin (fires regardless of ship count; the fused step publishes the same
+pre/post physics events stock does), the Veil data packet, the client BE resolve at plot
+coordinates (client chunk-cache mixin → bridged container chunk), client bucket identity,
+interpolation timeline consistency (parent-side end to end), and the native atlas rope
+path (`createRope` stamps the creating chart, `Rapier3D.tick` runs rope maintenance for
+EVERY pipeline unarmed, points are world-step bodies). Everything checks out — including
+several links runtime-proven by the features Round 6 fixed.
+
+Since a static trace cannot find the dead link when every link traces alive, this round
+ships throttled [IPL-ROPE] diagnostics at each stage (TEMPORARY — remove when verified):
+
+- `IplRopeDiagMixin` (new): `createRope` result + frame; per-2s server strand probe
+  (active flag, BOTH add-gate inputs recomputed, tracker count, point count);
+  `receiveClientStrand` acceptance.
+- `IplRopePacketDiagMixin` (new): client packet arrival — an arrival without a matching
+  receive isolates the client BE-resolve link.
+- `client/IplRopeRenderDiagMixin` (new): render-gate probe (ownsRope / client strand
+  present / point count) — closes the chain at the renderer's silent early-outs.
+
+One test run with ropes placed on ground AND on a ship pins the dead link: compare which
+[IPL-ROPE] stage stops reporting.
+
+### Files
+
+- `src/main/java/ipl/sable/mixin/IplHostedEntityLookupMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplServerEntityGetterInvoker.java` (new)
+- `src/main/java/ipl/sable/mixin/IplHostingEntityTrackingMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplTrackedEntityInvoker.java` (new)
+- `src/main/java/ipl/sable/mixin/IplRopeDiagMixin.java` (new, TEMPORARY)
+- `src/main/java/ipl/sable/mixin/IplRopePacketDiagMixin.java` (new, TEMPORARY)
+- `src/main/java/ipl/sable/mixin/client/IplHostedPlotEntityRenderMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplLevelRendererEntityInvoker.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplRopeRenderDiagMixin.java` (new, TEMPORARY)
+- `src/main/resources/ipl_sable.mixins.json`
+
+### Verification Needed
+
+Plunger: shoot one plunger at a hosted ship and one at the ground — both must stick,
+stay visible (the ship one rendered ON the ship, moving with it), keep their pair link,
+and neither may vanish. Then break the plunged block: the plunger must release cleanly
+(the stamped removal packet cleans the client copy).
+
+Ropes: create one ground↔ground rope and one ship↔ground rope, then collect the log.
+For each rope the [IPL-ROPE] sequence should read: createRope → server strand
+(active=true, attachmentsLoaded=true, wouldBeLoaded=true, trackers≥1, points≥2) →
+client packet arrived → client received → render probe (ownsRope=true, clientStrand=true,
+points≥2). The FIRST stage whose values go wrong (or which never logs) is the dead link —
+report those lines.
+
+No build or automated check was run for these changes (verified statically against
+`OTHERREQUIREDSOURCES`).
+
+## Round 6 — The Root, Finished: Server Identity + Coherent Hosted Lifecycle
+
+### Why Rounds 2–4 could not hold (found by static trace against the vendored sources)
+
+1. **Same-slot rehome almost never fired.** Every parent-dim assembly allocates at the
+   parent grid's FIRST-FREE slot — and the parent grid is always near-empty (ships rehome
+   away a tick later), so every assembly gets local (0,0) = global (10000,10000). That
+   slot is occupied in the HOSTING grid by the first ship ever hosted, so Round 4's
+   same-slot claim fell back to first-free for practically every rehome: the plot slot
+   MOVED, every persisted plot-coordinate reference went stale (Simulated's swivel
+   `platePos`, constraint anchors — the validation crash), or WORSE, a stale reference
+   silently resolved against whatever other ship now owned the old slot. And with the slot
+   moving, Round 3's first-upload compensation disarmed itself through its own >512
+   plot-translation guard — the 0.5-per-facing offset survived exactly as observed.
+2. **The identity fix was half-done.** Round 1 restored Level identity on the CLIENT but
+   deliberately left the server on "field identity + thread-local contextual routing".
+   Simulated resolves its physics system, `WorldAttached` buckets (`ServerLevelRopeManager`,
+   plunger collections), packet sinks (`chunkMap.getPlayers`), and physics load gates
+   (`wouldBeLoaded`) from `be.getLevel()` ON THE SERVER — and no finite set of arming
+   sites covers every such path.
+3. **The rope fix fought itself.** Round 3 routed the strand OBJECT into the parent
+   physics system while the strand stayed REGISTERED in the hosting-level rope-manager
+   bucket: the parent system's rope pass never ticked it (wrong bucket), and the hosting
+   system's own pass removed it every substep (`areAttachmentsLoaded` fails for
+   world-frame attachment chunks on the void). Add/remove tug-of-war — never simulated,
+   never synced, invisible.
+4. **The hosted split ran in two scenes.** A swivel split of a hosted ship allocates the
+   new sub-level directly in the hosting container with no parent stamp; its body landed
+   in the HOSTING scene while the source ship's body lives in the PARENT scene
+   (per-scene ownership). The rotary constraint attaches synchronously after the split —
+   refused by the ownership guard's same-scene gate; retries raced reconciliation. The
+   guard also CANCELLED stock `add()`'s internal `onStatsChanged` for every hosted body
+   (the body isn't in `activeSubLevels` until add returns), leaving native bodies without
+   `local_bounds` — a hard process abort on the first chunk insert whenever the plot was
+   already populated at add time (multi-block split), i.e. the multi-block swivel crash.
+5. **Disassembly's entity path was unroutable.** `disassembleSubLevel` re-adds
+   plot-resident entities via `ServerLevel.addDuringTeleport` — which the world-frame
+   router never covered. And Simulated's plunger converts its own POSITION into plot
+   coordinates on hitting a ship (`setPosRaw(transformPositionInverse(...))`) — in the
+   parent dim that is 20.5M blocks of empty far land: the projectile "disappears the
+   moment it touches the sub-level".
+
+### Changes (the root fix, in dependency order)
+
+- **Server BE identity** (`IplHostedBeParentIdentityMixin`, new): `getLevel()` on a hosted
+  plot BE returns the sub-level's PARENT `ServerLevel` — the exact mirror of the proven
+  client fix (getter only; the `level` field and all vanilla storage/tick machinery keep
+  hosting semantics). Rope system resolution, manager buckets, tracking-player lookups,
+  `wouldBeLoaded` gates, swivel container lookups, spring loaded-area checks — all resolve
+  stock semantics with zero per-mod code. Plot-range reads/writes against the parent keep
+  resolving through Sable's chunk-cache mixins + the plot bridge (already in place).
+- **Union-free plot allocation** (`IplUnionPlotAllocationMixin`, new): a parent-dim
+  container's `getFirstEmptyPlot` picks the first slot free in BOTH its own grid and the
+  hosting grid — same-slot rehome now succeeds by construction, so every persisted
+  plot-coordinate reference (swivel plates, constraint anchors) survives rehoming.
+- **Mass-baseline seeding** (`IplMergedMassBaselineAccessor` new; `SableRehomeOps`):
+  the hosted twin's `MergedMassTracker` baseline (`lastCenterOfMass`/`lastInertiaTensor`/
+  `lastMass`) is seeded from the settled SOURCE tracker (slot-translated) BEFORE the block
+  copy. The first upload can no longer null-baseline and jump `rotationPoint` to the first
+  copied block's partial CoM without position compensation — THE assembly/split offset
+  (R·(shipCoM − firstBlockCoM): 0.5·facing for assembler+block, size-scaled, zero for one
+  block) is eliminated by construction, not compensated after the fact.
+- **Cross-slot fallback correctness** (`SableRehomeOps`): if a rehome ever does change
+  slots (two dims assembling the same tick), the pose's rotation point — a PLOT coordinate
+  — is translated by the slot delta with the blocks, so the verbatim world mapping still
+  holds; the seeded baseline uses the same delta. Loud warn remains for the mod-NBT
+  references we cannot translate.
+- **Eager split parenting + scene coherence** (`IplSplitParentStampMixin` new;
+  `SableRehomeOps.onSplitAllocated`): core Sable's `setSplitFrom` (fired for every nested
+  assembly, BEFORE control returns to the splitting mod) now inherits the parent from the
+  containing ship and migrates the fresh body into the parent scene immediately — the
+  swivel's synchronous constraint attach sees both bodies in ONE scene. The plain rehome
+  also migrates its twin eagerly at completion instead of waiting a reconcile tick.
+- **Structural `onStatsChanged` ordering** (`SableRapierPipelineOwnershipGuardMixin`):
+  a TAIL on `add()` re-fires `onStatsChanged` for hosted bodies once they are registered,
+  so native `local_bounds`/CoM exist before ANY chunk insert — populated-plot adds
+  (splits, deserialization restores) no longer depend on incidental mass-upload ordering.
+  The cross-scene constraint refusal is now a throttled "deferred" log (callers retry).
+- **Disassembly completeness** (`IplHostedWorldFrameRouterMixin`): `addDuringTeleport`
+  (the plot-entity return path), `addWithUUID`, and `onBlockStateChange` (POI) are routed
+  like `addFreshEntity`, with the same re-leveling.
+- **Entity plot-space migration** (`IplPlotSpaceEntityMigrationMixin` +
+  `IplPlotEntityMigration`, new): any entity whose position enters the hosting plot grid
+  while in a parent dimension (plunger projectiles "boarding" a ship) is queued from
+  `setPosRaw` (two-compare hot-path gate) and teleported into the hosting dimension on the
+  next hosting-container tick — the runtime twin of rehome's `relocatePlotEntities`.
+- **Tracking sinks generalized** (`IplHostingChunkTrackersMixin`): plot-range
+  `ChunkMap.getPlayers` resolves to the owning sub-level's tracking players from ANY
+  level's chunk map (parent-identity BEs now ask their parent's), not just the hosting one.
+
+### Removed (superseded point patches)
+
+- `IplHostedPhysicsObjectRoutingMixin` + `IplHostedTicketQueryRoutingMixin` +
+  `IplHostedPhysicsObjects` — with parent identity, the only `addObject` caller in the
+  whole Simulated project (the rope holder) resolves the parent system natively; object,
+  manager bucket, ticket gate and removal all agree on one system.
+- `IplMergedMassFirstUploadMixin` — replaced by baseline seeding (deterministic, no wrap
+  ordering, covers splits).
+- `IplConstraintValidationSoftFailMixin` — with union-slot allocation + eager scene
+  coherence the validation legitimately passes; fail-fast semantics restored. NOTE: saves
+  from the broken era can carry stale swivel `platePos` values; those swivels may need to
+  be broken and re-placed once.
+
+### Static path walks (all six symptoms, against vendored sources)
+
+- Rope on hosted ship: holder BE getLevel()=parent → parent system + parent bucket +
+  parent gate (world chunks near players) → added & simulated; snapshots via
+  `getPlayers(plot chunk)` on the parent chunk map → generalized redirect → sub-level
+  trackers; client: packet BE lookup at plot coords resolves through the client chunk
+  cache + plot bridge, strand registers in the parent bucket (client identity), parent
+  container ticks its interpolation, light bridged. Rope on ground winch attached to a
+  ship: UUID bridge resolves the hosted attachment from the parent container.
+- Plunger: hits hosted ship → repositions into plot coords → migration hook → hosting dim;
+  its tick then reads loaded plot chunks natively; the pair constraint forwards to the
+  parent pipeline (both ends' bodies live there) and validates against plot/world anchors.
+- Swivel on ground: assembly → union slot → rehome same-slot (platePos valid) → seeded
+  baseline (no offset) → eager migrate → reattach: plate block read through the plot
+  bridge, sub-level via the UUID bridge, constraint on the parent pipeline — owned, valid,
+  attached. Swivel on hosted ship: split → `setSplitFrom` stamps parent + migrates body →
+  synchronous attach sees both bodies in the parent scene; anchors validate against both
+  plots.
+- Assembly offset: seeding removes the null-baseline jump; union slot removes the
+  >512-guard interaction; nested/split assembly keeps stock Step-4 + kick math (heals
+  in-place, then re-transforms through the containing pose).
+- Disassembly: armed BE tick (vanilla ticker on the hosting level — Sable registers plot
+  chunk tick containers) routes accelerator chunk writes, BE restores, `addFreshEntity`,
+  and now `addDuringTeleport`/`onBlockStateChange` to the parent.
+- Springs: server physics tick armed (physics-actor context) routes the world-frame
+  partner BE read; client render-pass arming + client router cover the renderer's field
+  reads; the partner sub-level resolves via the UUID bridge from `minecraft.level`.
+
+Known gaps (documented, not blocking): `moveTrackingPoints` reads the hosting level's
+SavedData during hosted disassembly (tracking points created parent-side pre-rehome are
+not found — minor, unrelated to the reported bugs); plot-resident entity visibility rides
+the existing seat/item-frame pipeline.
+
+### Files
+
+- `src/main/java/ipl/sable/mixin/IplHostedBeParentIdentityMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplUnionPlotAllocationMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplMergedMassBaselineAccessor.java` (new)
+- `src/main/java/ipl/sable/mixin/IplSplitParentStampMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplPlotSpaceEntityMigrationMixin.java` (new)
+- `src/main/java/ipl/sable/dim/IplPlotEntityMigration.java` (new)
+- `src/main/java/ipl/sable/transit/SableRehomeOps.java`
+- `src/main/java/ipl/sable/mixin/SableRapierPipelineOwnershipGuardMixin.java`
+- `src/main/java/ipl/sable/mixin/IplHostedWorldFrameRouterMixin.java`
+- `src/main/java/ipl/sable/mixin/IplHostingChunkTrackersMixin.java`
+- `src/main/resources/ipl_sable.mixins.json`
+- deleted: `IplHostedPhysicsObjectRoutingMixin.java`, `IplHostedTicketQueryRoutingMixin.java`,
+  `IplHostedPhysicsObjects.java`, `IplMergedMassFirstUploadMixin.java`,
+  `IplConstraintValidationSoftFailMixin.java`
+
+### Verification Needed
+
+Fresh world (or new ships in an existing world — old-save swivels may need re-placing):
+assembler + one block assembles with ZERO offset (and bigger builds too); disassembly
+places blocks AND entities in the ship's actual dimension; ropes visible with live
+physics from ship-mounted and ground-mounted holders; plunger pairs survive hitting a
+ship and stay connected; swivel bearing splits on ground and on ships with the top
+staying attached, single- and multi-block, no crash; springs render their coil between
+ship and ground and between two ships. Watch for `[IPL-REHOME] cross-slot rehome` warns —
+they should be RARE (two same-tick assemblies in different dims); frequent warns mean the
+union allocation is not applying.
+
+No build or automated check was run for these changes (per instruction; verified
+statically against `OTHERREQUIREDSOURCES`).
+
+## Round 4 — Same-Slot Rehome + Constraint Soft-Fail (Swivel Crash)
+
+### Crash trace analysis
+
+`SwivelBearingBlockEntity.checkPersistence → reattachConstraint → addConstraint →
+validateAnchors: "pos2 does not fall within the plot of the second sub-level"`.
+Simulated persists the split part's link position (`platePos`) in PLOT
+coordinates and re-attaches its rotary constraint from a BE tick. A swivel
+activated on a WORLD structure creates the split part in the parent container;
+our rehome then moved it to a DIFFERENT hosting slot — the stored anchor now
+points outside the twin's plot, Sable's validation throws mid-tick, whole
+server crashes.
+
+### Changes
+
+- **Same-slot rehome** (`SableRehomeOps` + `IplSubLevelContainerOriginAccessor`,
+  new): the hosted twin is allocated at the source's GLOBAL plot coordinates
+  whenever that slot is free in the hosting grid. Every persisted
+  plot-coordinate reference (constraint anchors, mods' stored link/plate
+  positions) survives the rehome, and the verbatim pose carries over with slot
+  delta zero. Falls back to first-free with a warning when the slot is taken
+  (two dimensions' ships on the same source slot).
+- **Constraint validation soft-fail**
+  (`IplConstraintValidationSoftFailMixin`, new): a stale persisted anchor is
+  data, not a code invariant — `RapierPhysicsPipeline.addConstraint` now
+  returns null with a throttled warning instead of throwing out of a ticking
+  block entity and killing the server. Callers already handle a null handle
+  (Simulated re-checks persistence and retries).
+
+### Files
+
+- `src/main/java/ipl/sable/transit/SableRehomeOps.java`
+- `src/main/java/ipl/sable/mixin/IplSubLevelContainerOriginAccessor.java` (new)
+- `src/main/java/ipl/sable/mixin/IplConstraintValidationSoftFailMixin.java` (new)
+- `src/main/resources/ipl_sable.mixins.json`
+
+### Verification Needed
+
+Swivel bearing activated on a ground structure: split works, top stays
+attached, no crash (old saves may log `[IPL-CONSTRAINT] rejected invalid
+constraint` once per stale anchor — freshly split swivels must not).
+`[IPL-REHOME]` should stop reporting differing src/dst plot minima in the
+`[IPL-REHOME-POSE]` line.
+
+No build or automated check was run for these changes.
+
+## Round 3 — Connections: Physics Objects, Accelerator Routing, First-Upload Jump
+
+### The pattern from the second test
+
+Everything that CONNECTS two points broke identically: rope strands (fully
+invisible), plunger-gun pairs (lying disconnected), swivel bearing tops
+(detached from their base), spring coils (endpoints render, middle missing).
+Plus: disassembly placed the ship's blocks into the void dimension at world
+coordinates, and assembly still shifted ships by 0.5 along the assembler's
+facing (scaling with size; swivel splits identical, single-block splits
+unaffected).
+
+### Causes and changes
+
+- **Arbitrary physics objects never activated / lived in the wrong system**
+  (`IplHostedPhysicsObjectRoutingMixin` + `IplHostedTicketQueryRoutingMixin` +
+  `IplHostedPhysicsObjects`, new): mods resolve their physics system from
+  `be.getLevel()` — the hosting void. A world-frame `ArbitraryPhysicsObject`
+  (rope strand, joint, connection) added there is gated by
+  `wouldBeLoaded(hostingLevel, object)`, which always answers no over void
+  terrain — Simulated's rope strands were never simulated at all (hence no
+  points even after the tracking-sink fix). Armed adds and the ticket query now
+  route to the PARENT's system; removals follow a recorded object→system map so
+  unarmed unload paths clean up correctly.
+- **`LevelAccelerator` bypassed the world-frame router**
+  (`IplLevelAcceleratorOverrideMixin`): Sable's `moveBlocks` reads/writes
+  chunks through the accelerator's own cache, not `Level` methods — an armed
+  hosted DISASSEMBLY therefore materialized the ship's blocks in the void at
+  world coordinates. The accelerator's `getChunk` now applies the same gate as
+  the router: hosting level + armed context + world-frame chunk → the parent's
+  chunk.
+- **Assembly/split offset root confirmed and fixed**
+  (`IplMergedMassFirstUploadMixin`): `MergedMassTracker.uploadData` keeps the
+  world mapping invariant on CoM moves (`position += R·(CoM − lastCoM)`), but
+  the FIRST upload null-baselines `lastCenterOfMass`, computes zero movement,
+  and still jumps `rotationPoint` from assembly's `plotAnchor + 0.5` fallback
+  to the real CoM — shifting the ship by `R·(rpBefore − CoM)`: 0.5 along the
+  assembler's facing for assembler+block, growing with size, zero for a single
+  split block (CoM == rotation point) — matching every observation. The wrap
+  applies the missing position compensation and re-teleports. A rehome guard
+  skips plot-slot-translation jumps (> 512 blocks), which are correct
+  uncompensated; the world-assembly case is fixed parent-side before the
+  rehome copies the pose.
+- **Spring coil / partner renders** (`IplHostedSubLevelRenderMixin`): the
+  hosted BE render pass now arms the client world-frame context, so renderers
+  resolving partners through the BE's level FIELD at world coordinates
+  (SpringRenderer's `getPairedSpring`) read this pass's dimension instead of
+  the void.
+
+### Files
+
+- `src/main/java/ipl/sable/mixin/IplHostedPhysicsObjectRoutingMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplHostedTicketQueryRoutingMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplMergedMassFirstUploadMixin.java` (new)
+- `src/main/java/ipl/sable/dim/IplHostedPhysicsObjects.java` (new)
+- `src/main/java/ipl/sable/mixin/IplLevelAcceleratorOverrideMixin.java`
+- `src/main/java/ipl/sable/mixin/client/IplHostedSubLevelRenderMixin.java`
+- `src/main/resources/ipl_sable.mixins.json`
+
+### Verification Needed
+
+Ropes visible and simulated (plunger pairs connected, winch/connector strands);
+swivel bearing top stays attached, split has no offset and no crash (if it
+still crashes, capture the crash report); springs show the coil between ship
+and ground; assembler+block assembly lands exactly in place (watch for
+`[IPL-MASS] first-upload rotation-point jump compensated` — nonzero values
+confirm the fix engaging); disassembly places blocks into the ship's actual
+dimension. Multi-block swivel split crash needs its log if it persists.
+
+No build or automated check was run for these changes.
+
+## Round 2 — Tracking Sinks, Flywheel Sweep, Re-anchor Rollback
+
+### Findings from the first runtime test
+
+Wheels fixed. Ropes still fully invisible, Flywheel parts (swivel bearing,
+throttle lever, torsion springs) still missing, springs still camera-dependent,
+assembler "too far from ground" unchanged, and the rehome pose re-anchor made
+freshly assembled ships VANISH (regression).
+
+### Causes and changes
+
+- **Tracking-based packet sinks sent to nobody** (`IplHostingChunkTrackersMixin`,
+  new): mods address per-chunk packet sinks through `ChunkMap.getPlayers`
+  (NeoForge `PacketDistributor.trackingChunk`, Veil's
+  `VeilPacketManager.tracking(be)` — which carries Simulated's rope strand
+  point snapshots — Create chunk syncs). Hosting plot chunks have no vanilla
+  trackers, so those packets were dropped: rope strands never received points
+  (fully invisible regardless of light), spring/BE live state never synced.
+  Plot-chunk `getPlayers` on the hosting level now resolves to the owning
+  sub-level's tracking players — the block-event broadcast fix generalized one
+  layer lower.
+- **Flywheel reroute never fired** for Sable-managed plot chunks (custom chunk
+  pipeline bypasses the vanilla `LevelChunk` add path; parent can also sync
+  after the BE arrives). Added a safety-net sweep from the hosting container's
+  client tick (`IplClientFlywheelReroute.sweepHostedContainer`, wired in
+  `SableAltContainerTickMixin`): any hosted plot BE not yet queued is
+  registered into its parent's visualization world; already-queued BEs cost a
+  weak-map hit.
+- **Rehome pose re-anchor rolled back to a diagnostic log** (`SableRehomeOps`):
+  the active mutation was unsafe against live enrollment/upload ordering.
+  `[IPL-REHOME-POSE]` now logs position, rotation point, both plot anchors and
+  the new-slot self CoM per rehome — one runtime trace pins the size-scaled
+  assembly offset exactly.
+- **Interaction arming instrumented** (`IplHostedInteractionContextMixin`):
+  throttled `[IPL-USE] armed ...` / `... did NOT resolve` logs show whether the
+  assembler's click-time ground check actually runs armed — if the miss log
+  fires (or neither fires) on an assembler click, the disassembly entry point
+  bypasses `useItemOn` and needs its own arming site.
+
+### Files
+
+- `src/main/java/ipl/sable/mixin/IplHostingChunkTrackersMixin.java` (new)
+- `src/main/java/ipl/sable/client/IplClientFlywheelReroute.java`
+- `src/main/java/ipl/sable/mixin/client/SableAltContainerTickMixin.java`
+- `src/main/java/ipl/sable/transit/SableRehomeOps.java`
+- `src/main/java/ipl/sable/mixin/IplHostedInteractionContextMixin.java`
+- `src/main/resources/ipl_sable.mixins.json`
+
+### Verification Needed
+
+Ropes visible with live physics points; torsion springs / swivel bearing /
+throttle lever rendered on hosted ships; springs stable from all angles;
+assembling a structure no longer vanishes it (offset may be back — capture
+`[IPL-REHOME-POSE]` lines); on an assembler click capture `[IPL-USE]` lines.
+
+No build or automated check was run for these changes.
+
+## Hosted Level Identity For Third-Party Mods
+
+### Symptom
+
+With the mod loaded, every mod built for Sable sub-levels misbehaved on hosted
+ships: Offroad wheels did not move or find ground, Simulated ropes rendered
+invisible, springs appeared only from some camera positions, Flywheel-visualized
+block-entity parts (swivel bearing, throttle lever) were missing, the physics
+assembler spawned assembled ships too high (0.5 blocks for a single block,
+scaling with size) and disassembled into the wrong dimension, and sub-levels
+ignored ambient occlusion and lighting.
+
+### Cause
+
+One root: rehoming plots into `ipl_sable:sublevels` splits the Level-object
+identity that stock Sable guarantees. In stock Sable a ship's plot chunks live
+in the SAME level the ship occupies, so `be.getLevel()`, `Minecraft.level`, the
+container level and the interaction level are one object. Hosted, a plot BE's
+level is the void hosting dimension, and every mod keys something off the
+difference:
+
+- `LevelRenderer.getLightColor(be.getLevel(), worldPos)` sampled the void at
+  world-frame positions → light 0 → world-frame BE geometry (rope strands)
+  rendered black.
+- `WorldAttached` registries split buckets: rope strands registered under the
+  hosting level, zipline and render-side lookups searched the parent's.
+- `SubLevelContainer.getContainer(minecraft.level)` vs
+  `getContainer(be.getLevel())` resolved different containers.
+- Flywheel visuals registered with the hosting level's visualization world,
+  which never renders; renderers meanwhile skip their vanilla path when
+  `VisualizationManager.supportsVisualization(be.getLevel())`.
+- Client BE ticks on the hosting level probed world-frame terrain
+  (wheel suspension `clip`, `getSignal`) in the void.
+- Server interaction handlers (assembler `placeIntoWorld`) ran against
+  `this.getLevel()` = the void: ground/build-height checks and the disassembly
+  target were wrong.
+- The hosting dimension type declared `ambient_light: 1.0`, flattening all
+  baked sub-level lighting to fullbright (no AO variation).
+
+### Implemented Change
+
+Client — restore the stock identity invariant:
+
+- `BlockEntity.getLevel()` on a hosted plot BE returns the owning sub-level's
+  PARENT `ClientLevel` (`IplHostedBeLevelIdentityMixin` +
+  `IplClientBeIdentity`). Getter only; the `level` field, chunk storage,
+  ticking and packet application stay on the hosting level. Plot-coordinate
+  block reads from the parent already resolve through Sable's client
+  chunk-cache mixins + the plot bridge.
+- Plot light bridge (`IplPlotLightBridgeMixin`): plot-range positions on a
+  non-hosting `ClientLevel` read the hosting level's light engine, so the BE
+  dispatcher's `getLightColor(parent, plotPos)` returns the plot-local light
+  stock Sable would have had.
+- Client world-frame router + arming (`IplHostedClientWorldFrameRouterMixin`,
+  `IplClientWorldFrameContext`, client half of `IplHostedBeTickContextMixin`
+  via `IplClientBeTickArming`): hosted plot BE client ticks read world-frame
+  terrain (suspension probes, redstone) from the ship's parent dimension.
+  Read-only surface.
+- Flywheel visual reroute (`IplHostedFlywheelVisualRerouteMixin`,
+  `IplClientFlywheelReroute`): BEs entering/leaving hosting-level plot chunks
+  are queued into the PARENT level's `VisualizationManager` through Flywheel's
+  public API. Sable's own `BlockEntityStorageMixin` then embeds them
+  per-sub-level with `renderPose()` transforms in the world that actually
+  renders. Parent flips re-home the visuals (`IplParentDimSync`).
+
+Server — complete the contextual router:
+
+- `IplHostedWorldFrameRouterMixin` now also routes `getChunk` (both overloads,
+  chunk-grid gate |chunk| >= 62,500) and `getEntities` (both overloads, AABB
+  center gate). Build-height accessors are deliberately NOT routed: chunk
+  section indexing chains through the level height profile, and the routed
+  per-position `setBlock` already enforces the parent's real limits.
+- Interaction arming (`IplHostedInteractionContextMixin`): block-use on a
+  hosted ship (plot-range hit position) arms the world-frame context for the
+  click, so synchronous handlers — assembler assemble/disassemble, swivel
+  bearing split — route their world-frame access structurally.
+
+Assembly offset:
+
+- `SableRehomeOps.rehome` re-anchors the hosted twin's pose after the block
+  copy: `rotationPoint := new-slot self center-of-mass`, `position := the world
+  position that material point had under the source mapping`. The fresh
+  `MergedMassTracker`'s first `uploadData()` null-baselines `lastCenterOfMass`
+  and jumps `rotationPoint` WITHOUT position compensation; any skew between the
+  verbatim-copied rotation point (translated across plot slots) and the
+  recomputed center of mass displaced the ship by exactly that delta — +0.5 on
+  a fresh single-block assembly, scaling with ship size. The re-anchor makes
+  the world mapping identical by construction and turns the first upload into
+  a no-op. A one-line INFO log reports any nonzero correction.
+
+Lighting:
+
+- `dimension_type/sublevels.json`: `ambient_light` 1.0 → 0.0 (skylight stays
+  on). Plot sections bake real skylight + block light again — ambient
+  occlusion and light gradients return to stock appearance.
+
+Removed point patches (superseded by the structural routing above):
+
+- `IplAssemblerDisassemblyParentMixin` — covered by interaction arming + the
+  router's `getChunk`/set-block routing. Its portal-restore piece (a ship-borne
+  portal FEATURE hook, not a bug patch) moved to
+  `IplDisassemblyPortalRestoreMixin` at Simulated's single disassembly
+  chokepoint.
+- `IplWheelMountLevelFilterMixin` + `IplWheelMountInvoker` — under the fused
+  step each container's wheels are queued by its own actor pass and drained by
+  its own event in the same substep; the global-drain filter is unnecessary,
+  and `applyBatchedForces` applies through the sub-level's own handle with no
+  world reads.
+
+### Files
+
+- `src/main/java/ipl/sable/client/IplClientBeIdentity.java` (new)
+- `src/main/java/ipl/sable/client/IplClientBeTickArming.java` (new)
+- `src/main/java/ipl/sable/client/IplClientFlywheelReroute.java` (new)
+- `src/main/java/ipl/sable/dim/IplClientWorldFrameContext.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplHostedBeLevelIdentityMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplPlotLightBridgeMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplHostedClientWorldFrameRouterMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/client/IplHostedFlywheelVisualRerouteMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplHostedInteractionContextMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplDisassemblyPortalRestoreMixin.java` (new)
+- `src/main/java/ipl/sable/mixin/IplHostedWorldFrameRouterMixin.java`
+- `src/main/java/ipl/sable/mixin/IplHostedBeTickContextMixin.java`
+- `src/main/java/ipl/sable/dim/IplWorldFrameContext.java`
+- `src/main/java/ipl/sable/transit/SableRehomeOps.java`
+- `src/main/java/ipl/sable/client/IplParentDimSync.java`
+- `src/main/resources/data/ipl_sable/dimension_type/sublevels.json`
+- `src/main/resources/ipl_sable.mixins.json`
+- deleted: `IplAssemblerDisassemblyParentMixin.java`,
+  `IplWheelMountLevelFilterMixin.java`, `IplWheelMountInvoker.java`
+
+### Verification Needed
+
+Runtime-check on a hosted ship: rope strands visible and correctly lit in the
+parent dimension; springs visible from all camera angles between ship and
+ground and between two ships; swivel bearing and throttle lever fully rendered
+(Flywheel backend on AND off); Offroad wheels find ground, spin and steer;
+assembling a single block yields no vertical offset (watch for the
+`[IPL-REHOME] pose re-anchor` log line — a nonzero correction confirms the
+fixed skew); assembler disassembly places blocks in the ship's dimension with
+correct ground/height checks; ship-borne portal frames still restore on
+disassembly; sub-level lighting shows AO and light gradients; cross-portal
+transit keeps ropes/springs/visuals alive after the parent flip; dedicated
+server boots (client classes untouched server-side).
+
+No build or automated check was run for these changes.
+
 # Straddling Portal Rendering
 
 ## Current Fix: Rotated Destination Clone Cut

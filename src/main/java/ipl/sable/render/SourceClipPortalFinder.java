@@ -4,6 +4,8 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.render.FrontClipping;
+import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.q_misc_util.my_util.Plane;
 
 /**
@@ -44,8 +46,15 @@ public final class SourceClipPortalFinder {
         qouteall.q_misc_util.my_util.Plane projectionPlane =
             ipl.sable.client.IplStraddleRenderState.getPlaneFor(sub);
         if (projectionPlane != null) {
+            // IP keeps its destination terrain clip at -ADJUSTMENT to avoid z-fighting
+            // around portal planes. The mapped sub-level half previously kept its cut on
+            // the mathematical plane, leaving a moving-only empty hairline between CD0 and
+            // this CD1 split. Preserve IP's offset and move only the projection's kept
+            // half by the identical amount, making the two clips meet with no exposed gap.
+            Plane seamMatchedProjectionPlane = isUsingMatchingPortalClip(projectionPlane)
+                ? projectionPlane.move(-FrontClipping.ADJUSTMENT) : projectionPlane;
             return new ClipDecision(
-                ipl.sable.client.IplStraddleRenderState.getPortalFor(sub), projectionPlane);
+                ipl.sable.client.IplStraddleRenderState.getPortalFor(sub), seamMatchedProjectionPlane);
         }
 
         if (ipl.sable.client.IplStraddleRenderCache.hasDecision(sub)) {
@@ -57,6 +66,19 @@ public final class SourceClipPortalFinder {
     }
 
     /**
+     * The overlap belongs only to IP's offset portal terrain pass. A same-dimension image
+     * drawn in the ordinary main pass has no slot-0 offset and must retain its exact
+     * half-open split, otherwise its source and mapped instances would z-fight.
+     */
+    private static boolean isUsingMatchingPortalClip(Plane projectionPlane) {
+        if (!PortalRendering.isRendering() || !FrontClipping.isClippingEnabled) return false;
+        Plane active = PortalRendering.getActiveClippingPlane();
+        return active != null
+            && active.normal().dot(projectionPlane.normal()) > 0.999999
+            && active.pos().distanceToSqr(projectionPlane.pos()) < 1.0e-8;
+    }
+
+    /**
      * The session store's portal, with the plane rebuilt from its live transform. The
      * session is keyed on the canonical ENTRANCE face, whose normal by IP convention
      * points at the remaining (source) half — exactly the kept side, no orientation
@@ -64,7 +86,7 @@ public final class SourceClipPortalFinder {
      */
     @Nullable
     private static ClipDecision ipl$findAuthoritative(ClientSubLevel sub) {
-        Portal portal = ipl.sable.client.IplStraddleSessionStore.resolvePortal(sub);
+        Portal portal = ipl.sable.client.IplStraddleSessionStore.resolveRenderPortal(sub);
         if (portal == null) return null;
 
         Vec3 origin = portal.getOriginPos();
@@ -82,7 +104,7 @@ public final class SourceClipPortalFinder {
     public static java.util.List<ClipDecision> findStraddlingPortalPlanes(ClientSubLevel sub) {
         if (sub == null) return java.util.List.of();
         java.util.List<Portal> portals =
-            ipl.sable.client.IplStraddleSessionStore.resolveAllPortals(sub);
+            ipl.sable.client.IplStraddleSessionStore.resolveAllRenderPortals(sub);
         if (portals.isEmpty()) return java.util.List.of();
         java.util.List<ClipDecision> out = new java.util.ArrayList<>(portals.size());
         for (Portal portal : portals) {

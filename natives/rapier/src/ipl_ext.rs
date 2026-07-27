@@ -8,39 +8,33 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JDoubleArray};
 use jni::sys::{jboolean, jdouble, jint, jlong};
+use std::collections::HashSet;
 use marten::Real;
 use rapier3d::math::Vec3;
 
-use crate::scene::{ChunkMap, LevelColliderID, PhysicsScene};
+use crate::scene::{LevelColliderID, PhysicsScene};
 
-/// An oriented clip volume for aperture contact clipping (spec §2.5): solver contacts past
-/// the plane (signed distance >= 0 along `normal`) AND within the lateral rectangle
-/// (|projection on axis_w| <= half_w, |projection on axis_h| <= half_h) are dropped from
-/// the owning body's manifolds. The lateral bound is what makes geometry passing BESIDE a
-/// free-standing portal frame collide normally.
+/// A portal-plane clip region for straddling contact clipping (spec §2.5): solver contacts
+/// past the plane (signed distance >= 0 along `normal`) are dropped from the owning body's
+/// manifolds. A live straddle session means the through-half is in the destination chart,
+/// even when it crossed the plane sideways beyond the visual aperture.
 #[derive(Debug, Clone)]
 pub struct IplClipRegion {
     pub point: Vec3,
     pub normal: Vec3,
-    pub axis_w: Vec3,
-    pub half_w: Real,
-    pub axis_h: Vec3,
-    pub half_h: Real,
 }
 
 impl IplClipRegion {
     #[inline]
     pub fn contains(&self, p: Vec3) -> bool {
         let rel = p - self.point;
-        if rel.dot(self.normal) < 0.0 {
-            return false;
-        }
-        rel.dot(self.axis_w).abs() <= self.half_w && rel.dot(self.axis_h).abs() <= self.half_h
+        rel.dot(self.normal) >= 0.0
     }
 }
 
 /// Set (or clear, with an empty array) the clip regions of a body.
 /// Layout: N regions x 14 doubles: [px py pz  nx ny nz  wx wy wz  halfW  hx hy hz  halfH].
+/// The final eight legacy aperture fields are ignored; clipping is plane-only.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'local>(
     env: JNIEnv<'local>,
@@ -81,10 +75,6 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
         info.clip_regions.push(IplClipRegion {
             point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
             normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
-            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
-            half_w: c[9] as Real,
-            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
-            half_h: c[13] as Real,
         });
     }
     eprintln!(
@@ -93,42 +83,9 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
     );
 }
 
-/// Give a body private voxel section storage, detaching it from the scene-wide
-/// `main_level_chunks`. Subsequent body-targeted `addChunk` calls store sections in the
-/// body's own `chunk_map` (the storage native kinematic contraptions already use), and
-/// `removeSubLevel` frees them with the body.
-///
-/// Required for straddle clone bodies through same-dimension portals: the clone and the
-/// real body live in ONE scene but describe the same ship-local section coordinates at
-/// different world poses — shared storage lets one overwrite (or, on cleanup, delete)
-/// the other's collision data.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_useDedicatedChunks<'local>(
-    _env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    scene_handle: jlong,
-    body_id: jint,
-) {
-    if scene_handle == 0 {
-        return;
-    }
-    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap();
-    let Some(info) = sable_data
-        .level_colliders
-        .get_mut(&(body_id as LevelColliderID))
-    else {
-        return; // body already gone
-    };
-    if info.chunk_map.is_none() {
-        info.chunk_map = Some(ChunkMap::new());
-    }
-}
-
 /// Register (`excluded != 0`) or clear a contact exclusion between two bodies in one
 /// scene. The dispatcher's dynamic-vs-dynamic path generates no manifolds for excluded
-/// pairs (and drops persisted ones). Used for a straddle clone vs its own real body —
-/// and clone↔clone of one ship — when a same-dimension portal puts them in one scene.
+/// pairs (and drops persisted ones). Portal rims use this to exclude their carrier.
 ///
 /// Defensive by design: no body-existence check (ids are just set keys), idempotent in
 /// both directions, no-op on a null scene. Entries for despawned bodies are inert
@@ -156,39 +113,52 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyPairExclus
     }
 }
 
-/// Diagnostics readback for the aperture clip pass: writes
-/// `[contactsSeen, contactsDropped, lastContactX, lastContactY, lastContactZ]` into
-/// `out` (5 doubles). Counters accumulate since body creation; the last-contact point
-/// is the most recent solver contact the clip pass judged for this body. No-op (out
-/// untouched) on a null scene or unknown body.
+/// Sable body ids in the full impulse-joint component containing `body_id`. Rope particles
+/// participate in the walk, so two ships tied by a rope are one portal-transition group even
+/// though the intermediate bodies have no Java ids.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_getClipStats<'local>(
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBodyIds<'local>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
     scene_handle: jlong,
     body_id: jint,
-    out: JDoubleArray<'local>,
-) {
+) -> jni::objects::JIntArray<'local> {
     if scene_handle == 0 || body_id < 0 {
-        return;
+        return env.new_int_array(0).unwrap();
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
     let sable_data = scene.sable_data.read().unwrap();
-    let Some(info) = sable_data
-        .level_colliders
-        .get(&(body_id as LevelColliderID))
-    else {
-        return;
+    let Some(start) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
+        return env.new_int_array(0).unwrap();
     };
-    use std::sync::atomic::Ordering;
-    let vals = [
-        info.ipl_clip_seen.load(Ordering::Relaxed) as f64,
-        info.ipl_clip_dropped.load(Ordering::Relaxed) as f64,
-        f64::from_bits(info.ipl_last_contact[0].load(Ordering::Relaxed)),
-        f64::from_bits(info.ipl_last_contact[1].load(Ordering::Relaxed)),
-        f64::from_bits(info.ipl_last_contact[2].load(Ordering::Relaxed)),
-    ];
-    let _ = env.set_double_array_region(&out, 0, &vals);
+    let sim = scene.sim_data.read().unwrap();
+    let mut connected = HashSet::from([start]);
+    loop {
+        let mut changed = false;
+        for (_, joint) in sim.impulse_joint_set.iter() {
+            if joint.body1 == scene.world.ground_handle || joint.body2 == scene.world.ground_handle {
+                continue;
+            }
+            if connected.contains(&joint.body1) && connected.insert(joint.body2) {
+                changed = true;
+            }
+            if connected.contains(&joint.body2) && connected.insert(joint.body1) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut ids: Vec<jint> = sable_data.rigid_bodies.iter()
+        .filter_map(|(id, handle)| connected.contains(handle).then_some(*id as jint))
+        .collect();
+    ids.sort_unstable();
+    let result = env.new_int_array(ids.len() as i32).unwrap();
+    if !ids.is_empty() {
+        env.set_int_array_region(&result, 0, &ids).unwrap();
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -227,15 +197,11 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
     let mut sim_data = scene.sim_data.write().unwrap();
     let sim_data = &mut *sim_data;
 
-    let Some(body_handle) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied()
-    else {
-        eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} has no rigid body");
+    let Some(body_handle) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
+        eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} unknown");
         return -1;
     };
-    let Some(info) = sable_data
-        .level_colliders
-        .get_mut(&(body_id as LevelColliderID))
-    else {
+    let Some(info) = sable_data.level_colliders.get_mut(&(body_id as LevelColliderID)) else {
         eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} unknown");
         return -1;
     };
@@ -257,18 +223,6 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
         ..native_shape
     };
 
-    let collider = ColliderBuilder::new(SharedShape::new(image_shape))
-        .friction(0.525)
-        .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
-        .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS)
-        .density(0.0)
-        .collision_groups(crate::groups::level_group(scene.chart))
-        .build();
-
-    let handle =
-        sim_data
-            .collider_set
-            .insert_with_parent(collider, body_handle, &mut sim_data.rigid_body_set);
     let prefix = rapier3d::math::Pose {
         translation: Vec3::new(dx as Real, dy as Real, dz as Real),
         rotation: rapier3d::math::Rotation::from_xyzw(
@@ -279,11 +233,24 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
         )
         .normalize(),
     };
-    sim_data
-        .collider_set
-        .get_mut(handle)
-        .unwrap()
-        .set_portal_prefix(Some(prefix));
+    let collider = ColliderBuilder::new(SharedShape::new(image_shape))
+        .friction(0.525)
+        .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+        .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS)
+        .density(0.0)
+        .collision_groups(crate::groups::image_group(scene.chart))
+        .position(rapier3d::math::Pose::IDENTITY)
+        .build();
+
+    let handle =
+        sim_data
+            .collider_set
+            .insert_with_parent(collider, body_handle, &mut sim_data.rigid_body_set);
+    sim_data.collider_set.get_mut(handle).unwrap().set_portal_prefix(Some(prefix));
+    sim_data.collider_set.get_mut(handle).unwrap().set_position(rapier3d::math::Pose::IDENTITY);
+    // The engine's portal-prefix composition intentionally changes the collider pose only
+    // after a parent pose update. Seed that update now so a persistent parent-chart image is
+    // visible in the same tick it is registered.
 
     info.image_colliders.push(handle);
     eprintln!(
@@ -336,8 +303,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollid
 }
 
 /// Set (or clear, with an empty array) the clip regions of one IMAGE collider —
-/// the far side of the half-open aperture seam. Layout matches `setClipRegions`
-/// (N × 14 doubles).
+/// the far side of the half-open portal-plane seam. Layout matches `setClipRegions`
+/// (N x 14 doubles; final eight legacy aperture fields are ignored).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegions<'local>(
     env: JNIEnv<'local>,
@@ -379,10 +346,6 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegio
         regions.push(IplClipRegion {
             point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
             normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
-            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
-            half_w: c[9] as Real,
-            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
-            half_h: c[13] as Real,
         });
     }
     if regions.is_empty() {

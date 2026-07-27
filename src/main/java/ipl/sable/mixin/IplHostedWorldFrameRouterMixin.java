@@ -50,8 +50,10 @@ import java.util.function.Supplier;
  * drops, events and neighbor updates are native. Drop items created against the hosting
  * level are re-leveled before insertion ({@link IplEntityLevelInvoker}).
  *
- * <p>Known gap (deliberate): entity queries ({@code getEntities*}) are not routed — a
- * deployer punching mobs in the parent world stays dead until the entity-interaction pass.
+ * <p>Chunk lookups ({@code getChunk}) and entity queries ({@code getEntities*}) are routed
+ * too, gated on chunk-grid / AABB coordinates: third-party content (Simulated's assembler
+ * disassembling into the world, deployers interacting with parent-world mobs, ground
+ * checks) reaches the dimension the ship actually occupies with no per-mod patches.
  */
 @Mixin(value = ServerLevel.class, priority = 1200)
 public abstract class IplHostedWorldFrameRouterMixin extends Level {
@@ -73,7 +75,12 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
     private ServerLevel ipl$worldFrameTarget(double x, double z) {
         ServerLevel self = (ServerLevel) (Object) this;
         if (!IplDimAgnostic.isHostingLevel(self)) return null;
-        if (Math.abs(x) >= 1_000_000 || Math.abs(z) >= 1_000_000) return null;
+        // Plot positions are in the 20M grid. World coordinates may legitimately reach
+        // Minecraft's ~30M border, so the old 1M test misclassified valid parent terrain as
+        // plot data and made generic area checks (assembler ground scan) read hosting void.
+        // A contextual world-frame call is already explicit; only reject coordinates that
+        // actually belong to a live hosted plot.
+        if (ipl$isHostedPlotPosition(self, x, z)) return null;
         ServerLevel parent = IplWorldFrameContext.current();
         if (parent == null || parent == self) return null;
 
@@ -91,6 +98,16 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
     @Nullable
     private ServerLevel ipl$worldFrameTarget(BlockPos pos) {
         return ipl$worldFrameTarget(pos.getX(), pos.getZ());
+    }
+
+    @Unique
+    private static boolean ipl$isHostedPlotPosition(ServerLevel hosting, double x, double z) {
+        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
+            dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(hosting);
+        return container != null && container.inBounds(
+            net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(x)),
+            net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(z))
+        );
     }
 
     // ------------------------------------------------------------------
@@ -138,6 +155,91 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
         return target != null ? target.isLoaded(pos) : super.isLoaded(pos);
     }
 
+    /** Chunk-grid variant of the world-frame gate: plot chunks live at |chunk| >= 62,500. */
+    @Unique
+    @Nullable
+    private ServerLevel ipl$worldFrameChunkTarget(int chunkX, int chunkZ) {
+        ServerLevel self = (ServerLevel) (Object) this;
+        if (!IplDimAgnostic.isHostingLevel(self)) return null;
+        if (ipl$isHostedPlotPosition(self, (double) chunkX * 16.0, (double) chunkZ * 16.0)) return null;
+        ServerLevel parent = IplWorldFrameContext.current();
+        return parent == self ? null : parent;
+    }
+
+    @Override
+    public net.minecraft.world.level.chunk.LevelChunk getChunk(int chunkX, int chunkZ) {
+        ServerLevel target = ipl$worldFrameChunkTarget(chunkX, chunkZ);
+        return target != null ? target.getChunk(chunkX, chunkZ) : super.getChunk(chunkX, chunkZ);
+    }
+
+    @Override
+    public net.minecraft.world.level.chunk.ChunkAccess getChunk(
+        int chunkX, int chunkZ, net.minecraft.world.level.chunk.status.ChunkStatus status, boolean requireChunk
+    ) {
+        ServerLevel target = ipl$worldFrameChunkTarget(chunkX, chunkZ);
+        return target != null
+            ? target.getChunk(chunkX, chunkZ, status, requireChunk)
+            : super.getChunk(chunkX, chunkZ, status, requireChunk);
+    }
+
+    /** AABB variant of the world-frame gate (entity queries), keyed on the box center. */
+    @Unique
+    @Nullable
+    private ServerLevel ipl$worldFrameTarget(net.minecraft.world.phys.AABB area) {
+        return ipl$worldFrameTarget(
+            (area.minX + area.maxX) * 0.5, (area.minZ + area.maxZ) * 0.5);
+    }
+
+    @Override
+    public java.util.List<Entity> getEntities(
+        @Nullable Entity entity, net.minecraft.world.phys.AABB area,
+        java.util.function.Predicate<? super Entity> predicate
+    ) {
+        ServerLevel target = ipl$worldFrameTarget(area);
+        return target != null
+            ? target.getEntities(entity, area, predicate)
+            : super.getEntities(entity, area, predicate);
+    }
+
+    @Override
+    public <T extends Entity> java.util.List<T> getEntities(
+        net.minecraft.world.level.entity.EntityTypeTest<Entity, T> typeTest,
+        net.minecraft.world.phys.AABB area, java.util.function.Predicate<? super T> predicate
+    ) {
+        ServerLevel target = ipl$worldFrameTarget(area);
+        return target != null
+            ? target.getEntities(typeTest, area, predicate)
+            : super.getEntities(typeTest, area, predicate);
+    }
+
+    // Scalar world bounds belong to the same explicit terrain frame as routed chunks. Chunk
+    // section reads remain safe because callers receive a parent LevelChunk whose own section
+    // accessor owns its height profile; returning hosting bounds here made generic external
+    // operations reject valid Nether/modded-dimension terrain before they ever read a chunk.
+    @Override
+    public int getMinBuildHeight() {
+        ServerLevel self = (ServerLevel) (Object) this;
+        ServerLevel parent = IplWorldFrameContext.current();
+        return IplDimAgnostic.isHostingLevel(self) && parent != null && parent != self
+            ? parent.getMinBuildHeight() : super.getMinBuildHeight();
+    }
+
+    @Override
+    public int getMaxBuildHeight() {
+        ServerLevel self = (ServerLevel) (Object) this;
+        ServerLevel parent = IplWorldFrameContext.current();
+        return IplDimAgnostic.isHostingLevel(self) && parent != null && parent != self
+            ? parent.getMaxBuildHeight() : super.getMaxBuildHeight();
+    }
+
+    @Override
+    public int getSectionsCount() {
+        ServerLevel self = (ServerLevel) (Object) this;
+        ServerLevel parent = IplWorldFrameContext.current();
+        return IplDimAgnostic.isHostingLevel(self) && parent != null && parent != self
+            ? parent.getSectionsCount() : super.getSectionsCount();
+    }
+
     // ------------------------------------------------------------------
     // ServerLevel-defined methods: HEAD injects.
     // ------------------------------------------------------------------
@@ -152,6 +254,52 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
                 ((IplEntityLevelInvoker) entity).ipl$invokeSetLevel(target);
             }
             cir.setReturnValue(target.addFreshEntity(entity));
+        }
+    }
+
+    /**
+     * Disassembly's entity return path: {@code SimAssemblyHelper.disassembleSubLevel} moves
+     * plot-resident entities (glue, item frames, seats) back to world coordinates via
+     * {@code entity.levelCallback.onRemove(CHANGED_DIMENSION)} + {@code addDuringTeleport}
+     * on the BE's own level — hosted, the void. Route it like {@code addFreshEntity}, so
+     * the entities re-enter the dimension the ship actually occupied.
+     */
+    @Inject(method = "addDuringTeleport", at = @At("HEAD"), cancellable = true)
+    private void ipl$routeAddDuringTeleport(Entity entity, CallbackInfo ci) {
+        ServerLevel target = ipl$worldFrameTarget(entity.getX(), entity.getZ());
+        if (target != null) {
+            if (entity.level() == (Object) this) {
+                ((IplEntityLevelInvoker) entity).ipl$invokeSetLevel(target);
+            }
+            target.addDuringTeleport(entity);
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "addWithUUID", at = @At("HEAD"), cancellable = true)
+    private void ipl$routeAddWithUUID(Entity entity, CallbackInfoReturnable<Boolean> cir) {
+        ServerLevel target = ipl$worldFrameTarget(entity.getX(), entity.getZ());
+        if (target != null) {
+            if (entity.level() == (Object) this) {
+                ((IplEntityLevelInvoker) entity).ipl$invokeSetLevel(target);
+            }
+            cir.setReturnValue(target.addWithUUID(entity));
+        }
+    }
+
+    /** POI bookkeeping for routed world-frame block moves (disassembly placements). */
+    @Inject(
+        method = "onBlockStateChange(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/block/state/BlockState;)V",
+        at = @At("HEAD"),
+        cancellable = true
+    )
+    private void ipl$routeOnBlockStateChange(
+        BlockPos pos, BlockState oldState, BlockState newState, CallbackInfo ci
+    ) {
+        ServerLevel target = ipl$worldFrameTarget(pos);
+        if (target != null) {
+            target.onBlockStateChange(pos, oldState, newState);
+            ci.cancel();
         }
     }
 

@@ -107,7 +107,6 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
     /** Owner sub-level of a plot-space hit (coords in the millions), or null. */
     private static SubLevel ipl$plotHitOwner(ClientLevel level, BlockHitResult hit) {
         Vec3 loc = hit.getLocation();
-        if (Math.abs(loc.x) < 1_000_000 && Math.abs(loc.z) < 1_000_000) return null;
         dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
             dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(
                 (net.minecraft.world.level.Level) level);
@@ -124,10 +123,6 @@ public abstract class IplProjectionAwareClipMixin implements BlockGetter {
      * used to produce the hit.
      */
     private static double ipl$frameDistanceSq(ClientLevel level, Vec3 from, Vec3 hitLoc) {
-        if (Math.abs(hitLoc.x) < 1_000_000 && Math.abs(hitLoc.z) < 1_000_000) {
-            return from.distanceToSqr(hitLoc);
-        }
-
         dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
             dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(
                 (net.minecraft.world.level.Level) level);

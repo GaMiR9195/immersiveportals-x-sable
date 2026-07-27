@@ -69,3 +69,12 @@ pub fn level_group(chart: ChartId) -> InteractionGroups {
 pub fn rope_group(chart: ChartId) -> InteractionGroups {
     InteractionGroups::new(rope_bit(chart), level_bit(chart), InteractionTestMode::And)
 }
+
+/// An Atlas image is geometry belonging to a body whose real chart is elsewhere. It must
+/// interact with the far chart without making that real body collide with every chart. Give
+/// the image the far chart's normal level membership; its parent-body mapping is handled by
+/// the engine fork during constraint generation.
+#[inline]
+pub fn image_group(chart: ChartId) -> InteractionGroups {
+    level_group(chart)
+}

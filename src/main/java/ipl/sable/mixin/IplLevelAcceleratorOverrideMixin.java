@@ -25,21 +25,42 @@ public abstract class IplLevelAcceleratorOverrideMixin {
     @org.spongepowered.asm.mixin.Final
     private int minBuildHeight;
 
+    @org.spongepowered.asm.mixin.Shadow(remap = false)
+    @org.spongepowered.asm.mixin.Final
+    private Level level;
+
+    /**
+     * WORLD-FRAME routing, accelerator edition: {@code LevelAccelerator} reads and writes
+     * chunks directly (its own cache over the chunk source), BYPASSING every routed
+     * {@code Level} method — so Sable's {@code moveBlocks} during an armed hosted
+     * DISASSEMBLY resolved world-frame chunks on the hosting void and placed the ship's
+     * blocks there. Mirror the router's gate here: hosting-level accelerator + armed
+     * context + world-frame chunk → the parent's chunk. Plot-range chunks stay native.
+     */
+    @Inject(method = "getChunk(II)Lnet/minecraft/world/level/chunk/LevelChunk;",
+        at = @At("HEAD"), cancellable = true, require = 0)
+    private void ipl$worldFrameChunkFromParent(int chunkX, int chunkZ, CallbackInfoReturnable<LevelChunk> cir) {
+        if (IplTerrainReadOverride.get() != null) return; // explicit override wins (below)
+        if (!ipl.sable.dim.IplDimAgnostic.isHostingLevel(this.level)) return;
+        if (ipl$isHostedPlotChunk(chunkX, chunkZ)) return;
+        net.minecraft.server.level.ServerLevel parent = ipl.sable.dim.IplWorldFrameContext.current();
+        if (parent == null || parent == this.level) return;
+        cir.setReturnValue(parent.getChunk(chunkX, chunkZ));
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private boolean ipl$isHostedPlotChunk(int chunkX, int chunkZ) {
+        var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(this.level);
+        return container != null && container.inBounds(chunkX, chunkZ)
+            && container.getPlot(chunkX, chunkZ) != null;
+    }
+
     @Inject(method = "getChunk(II)Lnet/minecraft/world/level/chunk/LevelChunk;",
         at = @At("HEAD"), cancellable = true, require = 0)
     private void ipl$readFromOverrideLevel(int chunkX, int chunkZ, CallbackInfoReturnable<LevelChunk> cir) {
         Level override = IplTerrainReadOverride.get();
         if (override != null) {
-            net.minecraft.core.BlockPos offset = IplTerrainReadOverride.getOffset();
-            if (offset != null) {
-                // Approximate chunk translation — content reads are caught per-block below,
-                // this just keeps the synchronous chunk loads in the right area.
-                cir.setReturnValue(override.getChunk(
-                    chunkX + Math.floorDiv(offset.getX(), 16),
-                    chunkZ + Math.floorDiv(offset.getZ(), 16)));
-            } else {
-                cir.setReturnValue(override.getChunk(chunkX, chunkZ));
-            }
+            cir.setReturnValue(override.getChunk(chunkX, chunkZ));
         }
     }
 
@@ -60,13 +81,7 @@ public abstract class IplLevelAcceleratorOverrideMixin {
     ) {
         Level override = IplTerrainReadOverride.get();
         if (override != null) {
-            net.minecraft.core.BlockPos offset = IplTerrainReadOverride.getOffset();
-            if (offset != null) {
-                // Translated read (straddle terrain clone): source-frame P → dest-frame P+offset.
-                cir.setReturnValue(override.getBlockState(pos.offset(offset)));
-            } else {
-                cir.setReturnValue(chunk.getBlockState(pos));
-            }
+            cir.setReturnValue(chunk.getBlockState(pos));
             return;
         }
 

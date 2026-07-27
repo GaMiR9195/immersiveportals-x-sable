@@ -78,7 +78,7 @@ impl ChartData {
 /// IPL fix: this was `RefCell<Vec>` with an `unsafe impl Sync` — but the event handler
 /// extends it from rapier's PARALLEL island solver threads (the `parallel` feature is
 /// on), so concurrent pushes raced and corrupted the Vec (0xc0000005 JVM death under
-/// heavy contact-force volume, e.g. a straddle clone wedged into terrain). A Mutex keeps
+/// heavy contact-force volume, e.g. a straddling body wedged into terrain). A Mutex keeps
 /// the same call-site shape; per-batch locking is negligible next to the solve.
 pub struct ReportedCollisionBuffer(Mutex<Vec<ReportedCollision>>);
 
@@ -126,10 +126,10 @@ pub struct SableSceneData {
     pub level_colliders: HashMap<LevelColliderID, ActiveLevelColliderInfo>,
     pub rigid_bodies: HashMap<LevelColliderID, RigidBodyHandle>,
 
-    /// IPL: body pairs (normalized id order) that must never generate contacts — a
-    /// straddle clone vs its own real body, or two clones of one ship, sharing a scene
-    /// through a same-dimension portal.
+    /// IPL: body pairs (normalized id order) that must never generate contacts. Portal
+    /// rims use this to exempt an anchored portal carrier from its containment body.
     pub ipl_excluded_pairs: HashSet<(LevelColliderID, LevelColliderID)>,
+
 }
 
 impl SableSceneData {

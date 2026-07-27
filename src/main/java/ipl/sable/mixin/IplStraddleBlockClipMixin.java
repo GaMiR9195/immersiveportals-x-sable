@@ -17,15 +17,15 @@ import java.util.NoSuchElementException;
 import java.util.function.Predicate;
 
 /**
- * Aperture clip for ENTITY-vs-ship collision on straddling hosted sub-levels — the
+ * Portal-plane clip for ENTITY-vs-ship collision on straddling hosted sub-levels — the
  * gameplay-collision counterpart of the native solver contact clip (spec §2.5).
  *
  * <p>{@code SubLevelEntityCollision.collide} SATs the entity's OBB against every ship
  * block near it, oblivious to the portal: from the source side an entity kept colliding
  * with the through-part (rendered and physically present dest-side only), and via the
  * mapped image it would collide with the not-yet-through part. This wrap filters the
- * candidate block iterable so blocks on the wrong side of the portal plane (inside the
- * aperture column) simply don't exist for collision — the same iterable feeds the main
+ * candidate block iterable so blocks on the wrong side of the portal plane simply don't
+ * exist for collision — the same iterable feeds the main
  * SAT loop, step-up probing, and the tracking check, so all stay consistent.
  *
  * <p>Non-straddling ships get a null filter and pass through unchanged. The lookahead in

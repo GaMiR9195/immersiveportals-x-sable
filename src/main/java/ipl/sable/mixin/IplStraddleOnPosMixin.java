@@ -60,13 +60,8 @@ public abstract class IplStraddleOnPosMixin {
     )
     private BlockPos ipl$correctOnPosFrame(BlockPos original) {
         Entity self = (Entity) (Object) this;
-        // Cheap reject: plot-grid coords are in the millions; world coords are not.
-        if (Math.abs(original.getX()) < 1_000_000 && Math.abs(original.getZ()) < 1_000_000) {
-            return original;
-        }
-
         dev.ryanhcode.sable.api.sublevel.SubLevelContainer container = ipl$hostingContainer(self);
-        if (container == null) return original;
+        if (container == null || !container.inBounds(original)) return original;
 
         dev.ryanhcode.sable.sublevel.plot.LevelPlot plot =
             container.getPlot(original.getX() >> 4, original.getZ() >> 4);
