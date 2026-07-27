@@ -201,15 +201,23 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyDormant<'l
     }
 }
 
-/// Sable body ids in the full impulse-joint component containing `body_id`. Rope particles
-/// participate in the walk, so two ships tied by a rope are one portal-transition group even
-/// though the intermediate bodies have no Java ids.
+/// Sable body ids in the impulse-joint component containing `body_id`.
+///
+/// `rigid_only != 0`: traverse only joints whose BOTH endpoints are Sable ship bodies —
+/// the rigid assembly (swivel bearings, direct couplings) that must transit portals as
+/// one unit. Rope particle chains (intermediate bodies with no Java ids) do NOT bridge
+/// components in this mode: roped ships transit independently and the rope spans the
+/// portal instead.
+///
+/// `rigid_only == 0`: the full walk — rope particles participate, so two ships tied by
+/// a rope are one component.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBodyIds<'local>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
     scene_handle: jlong,
     body_id: jint,
+    rigid_only: jboolean,
 ) -> jni::objects::JIntArray<'local> {
     if scene_handle == 0 || body_id < 0 {
         return env.new_int_array(0).unwrap();
@@ -219,12 +227,18 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBod
     let Some(start) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
         return env.new_int_array(0).unwrap();
     };
+    let sable_handles: HashSet<_> = sable_data.rigid_bodies.values().copied().collect();
     let sim = scene.sim_data.read().unwrap();
     let mut connected = HashSet::from([start]);
     loop {
         let mut changed = false;
         for (_, joint) in sim.impulse_joint_set.iter() {
             if joint.body1 == scene.world.ground_handle || joint.body2 == scene.world.ground_handle {
+                continue;
+            }
+            if rigid_only != 0
+                && (!sable_handles.contains(&joint.body1) || !sable_handles.contains(&joint.body2))
+            {
                 continue;
             }
             if connected.contains(&joint.body1) && connected.insert(joint.body2) {
