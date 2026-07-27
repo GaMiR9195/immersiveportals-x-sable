@@ -101,10 +101,18 @@ public abstract class IplHostedTicketManagerMixin {
             if (!(anySub instanceof ServerSubLevel subLevel)) continue;
             if (subLevel.isRemoved()) continue;
             if (IplDimAgnostic.getServerParentLevel(subLevel) != level) continue;
+
+            // Parent-pointer load gate: a ship whose parent chunk is unloaded goes
+            // DORMANT (native body Fixed) and is skipped entirely — always-live plot
+            // chunks would otherwise simulate it in mid-air against terrain that was
+            // never baked (nether ship, everyone in the overworld → falls into void).
+            if (ipl.sable.atlas.IplHostedTerrainGate.tick(level, pipeline, subLevel)) {
+                continue;
+            }
             enrolledShips++;
 
             // Same bounds expansion as the stock loop (incl. fall-velocity prediction);
-            // this pipeline owns the body under per-scene, so the velocity read is local.
+            // per-body calls forward to the owning pipeline through the ownership guard.
             b.set(subLevel.boundingBox());
             b2.set(b);
             if (subLevel.lastPose().position()
@@ -117,13 +125,6 @@ public abstract class IplHostedTicketManagerMixin {
             }
             b.expand(1.0, b);
 
-            // Always-live ships need always-loaded terrain: region-ticket the window in
-            // the parent dim and freeze the body until the ground chunk arrives (a nether
-            // ship with no players in the nether otherwise simulates against nothing and
-            // falls through the world).
-            ipl.sable.atlas.IplHostedTerrainGate.tick(level, pipeline, subLevel,
-                b.chunkBoundsFrom());
-
             ipl$enrollSections(level, pipeline, b, gameTime);
         }
 
@@ -134,7 +135,6 @@ public abstract class IplHostedTicketManagerMixin {
             // corners go through the full isometry).
             BoundingBox3d cb = mapping.mapAabb(ship.boundingBox());
             cb.expand(1.0, cb);
-            ipl.sable.atlas.IplHostedTerrainGate.ticketRegion(level, cb.chunkBoundsFrom());
             ipl$enrollSections(level, pipeline, cb, gameTime);
             imageRegions[0]++;
         });

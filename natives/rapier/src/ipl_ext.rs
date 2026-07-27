@@ -126,6 +126,52 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyPairExclus
     }
 }
 
+/// Dormancy switch for a hosted body whose parent-pointer chunks are unloaded: a Fixed
+/// body skips integration entirely (no gravity, immovable, still a valid joint/rope
+/// anchor), so an unloaded-area ship cannot fall through terrain that was never baked.
+/// Idempotent — Java re-applies it every tick while dormant, which also re-freezes a
+/// body that was recreated (rehome twin) mid-dormancy. Velocities are zeroed on freeze
+/// so the ship resumes at rest.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyDormant<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    dormant: jboolean,
+) {
+    use rapier3d::prelude::RigidBodyType;
+
+    if scene_handle == 0 || body_id < 0 {
+        return;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let handle = {
+        let sable_data = scene.sable_data.read().unwrap();
+        let Some(handle) = sable_data
+            .rigid_bodies
+            .get(&(body_id as LevelColliderID))
+            .copied()
+        else {
+            return;
+        };
+        handle
+    };
+    let mut sim_data = scene.sim_data.write().unwrap();
+    let Some(body) = sim_data.rigid_body_set.get_mut(handle) else {
+        return;
+    };
+    if dormant != 0 {
+        if body.body_type() != RigidBodyType::Fixed {
+            body.set_linvel(Vec3::new(0.0, 0.0, 0.0), false);
+            body.set_angvel(Vec3::new(0.0, 0.0, 0.0), false);
+            body.set_body_type(RigidBodyType::Fixed, true);
+        }
+    } else if body.body_type() != RigidBodyType::Dynamic {
+        body.set_body_type(RigidBodyType::Dynamic, true);
+    }
+}
+
 /// Sable body ids in the full impulse-joint component containing `body_id`. Rope particles
 /// participate in the walk, so two ships tied by a rope are one portal-transition group even
 /// though the intermediate bodies have no Java ids.

@@ -49,6 +49,14 @@ public final class IplRapierNatives {
     /** Sable bodies connected by joints or rope particles to {@code bodyId}. */
     public static native int[] connectedSableBodyIds(long sceneHandle, int bodyId);
 
+    /**
+     * Dormancy switch: {@code dormant=true} makes the body Fixed (no integration, no
+     * gravity, immovable — still a valid joint/rope anchor) with velocities zeroed;
+     * {@code false} restores Dynamic. Idempotent — safe to re-apply every tick. Used
+     * for hosted ships whose parent-pointer chunks are unloaded.
+     */
+    public static native void setBodyDormant(long sceneHandle, int bodyId, boolean dormant);
+
     // ------------------------------------------------------------------
     // Atlas M2 (spec v3 §2.2-2.3): image colliders — Tier-1 exact coupling.
     // ------------------------------------------------------------------
