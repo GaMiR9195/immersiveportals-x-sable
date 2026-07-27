@@ -123,6 +123,38 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyPairExclus
     }
 }
 
+/// Tag a hosted body's collider info with its parent-frame id. The dispatcher's
+/// dynamic-vs-dynamic path drops native-vs-native manifolds between bodies whose
+/// nonzero frames differ (see `ActiveLevelColliderInfo::ipl_parent_frame`); image
+/// colliders are unaffected — their frame is the shape's chart, which the chart
+/// guard already scopes. Java calls this only when a ship's parent dimension flips
+/// (or its body/scene is recreated), not per tick.
+///
+/// Returns JNI_TRUE when the tag landed; JNI_FALSE when the body id is unknown in
+/// this scene (registration race — Java retries next hosting tick).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setParentFrame<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    frame_id: jint,
+) -> jboolean {
+    if scene_handle == 0 || body_id < 0 {
+        return 0;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene.sable_data.write().unwrap();
+    let Some(info) = sable_data
+        .level_colliders
+        .get_mut(&(body_id as LevelColliderID))
+    else {
+        return 0; // body not registered yet (or already gone) — caller retries
+    };
+    info.ipl_parent_frame = frame_id;
+    1
+}
+
 /// Dormancy switch for a hosted body whose parent-pointer chunks are unloaded: a Fixed
 /// body skips integration entirely (no gravity, immovable, still a valid joint/rope
 /// anchor), so an unloaded-area ship cannot fall through terrain that was never baked.

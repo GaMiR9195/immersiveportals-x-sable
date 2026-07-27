@@ -54,6 +54,13 @@ pub struct ActiveLevelColliderInfo {
     /// IPL atlas: which chart (dimension frame) this body lives in. Drives chunk-map
     /// selection in the dispatcher, buoyancy scoping, and collision-report routing.
     pub chart: scene::ChartId,
+    /// IPL atlas: parent-frame id of a hosted body. Real hosted bodies share the
+    /// hosting chart at their own parents' coordinates, so numeric overlap between
+    /// bodies with different parents is meaningless — the dispatcher's dynamic pair
+    /// path drops native-vs-native manifolds when nonzero frames differ. 0 = untagged
+    /// (non-hosted bodies, contraptions, boot window): collides with everything,
+    /// matching pre-tag behavior. Set from Java on parent flips (`setParentFrame`).
+    pub ipl_parent_frame: i32,
     pub static_mount: Option<RigidBodyHandle>,
     pub fake_velocities: Option<RigidBodyVelocity<Real>>,
     pub local_bounds_min: Option<IVec3>,
@@ -96,6 +103,7 @@ impl ActiveLevelColliderInfo {
         Self {
             collider,
             chart,
+            ipl_parent_frame: 0,
             static_mount: None,
             fake_velocities: None,
             chunk_map: None,

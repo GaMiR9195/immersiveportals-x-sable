@@ -46,6 +46,20 @@ public final class IplRapierNatives {
     public static native void setBodyPairExclusion(
         long sceneHandle, int idA, int idB, boolean excluded);
 
+    /**
+     * Tag a hosted body's native collider info with its parent-frame id. The dispatcher's
+     * dynamic-vs-dynamic path drops native-vs-native contacts between bodies whose nonzero
+     * frames differ (real hosted bodies share the hosting chart at parent-frame coordinates,
+     * so cross-parent numeric overlap is meaningless). Image colliders are unaffected —
+     * their frame is the shape's chart, which the native chart guard already scopes, so
+     * straddle image-vs-image contacts in a shared chart resolve on their own. Call on
+     * parent flips only, not per tick.
+     *
+     * @return true when the tag landed; false when the body is not (yet) registered in the
+     *         scene — the caller should retry next hosting tick.
+     */
+    public static native boolean setParentFrame(long sceneHandle, int bodyId, int frameId);
+
     /** Sable bodies connected by joints or rope particles to {@code bodyId}. */
     public static native int[] connectedSableBodyIds(long sceneHandle, int bodyId);
 
