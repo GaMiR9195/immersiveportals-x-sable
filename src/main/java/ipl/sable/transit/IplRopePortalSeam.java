@@ -74,8 +74,15 @@ public final class IplRopePortalSeam {
         }
 
         boolean nearlyEquals(Prefix other) {
-            return Math.abs(rot.dot(other.rot)) > 1.0 - 1.0e-9
-                && trans.distanceSquared(other.trans) < 1.0e-10;
+            // Loose on purpose: the two ends' prefixes are derived from the same portal
+            // on different ticks — centimeter-scale agreement means "same seam".
+            return Math.abs(rot.dot(other.rot)) > 1.0 - 1.0e-6
+                && trans.distanceSquared(other.trans) < 1.0e-4;
+        }
+
+        String describe() {
+            return String.format("t=(%.3f,%.3f,%.3f) q=(%.4f,%.4f,%.4f,%.4f)",
+                trans.x, trans.y, trans.z, rot.x, rot.y, rot.z, rot.w);
         }
     }
 
@@ -121,13 +128,19 @@ public final class IplRopePortalSeam {
                 IplRapierNatives.setRopePortalPrefix(scene, ropeId, end, true,
                     next.trans.x, next.trans.y, next.trans.z,
                     next.rot.x, next.rot.y, next.rot.z, next.rot.w);
-                LOG.info("[IPL-ROPE-SEAM] rope {} end {} seamed through portal {}",
-                    ropeId, end, portal.getUUID());
 
                 // Both ends now in the SAME displaced frame → the whole chain follows:
                 // remap particles through the common mapping, restamp to the ships'
                 // chart, clear both prefixes.
                 Prefix other = PREFIXES.get(key ^ 1L);
+                LOG.info("[IPL-ROPE-SEAM] rope {} end {} seamed through portal {} [{}] "
+                    + "other={}", ropeId, end, portal.getUUID(), next.describe(),
+                    other == null ? "absent" : (next.nearlyEquals(other) ? "match" : "MISMATCH"));
+                if (other != null && !next.nearlyEquals(other)) {
+                    LOG.warn("[IPL-ROPE-SEAM] rope {} seam MISMATCH: this end [{}] vs "
+                        + "other end [{}] — chain stays split", ropeId,
+                        next.describe(), other.describe());
+                }
                 if (other != null && next.nearlyEquals(other)) {
                     Quaterniond chainRot = next.rot.conjugate(new Quaterniond());
                     Vector3d chainT = chainRot.transform(new Vector3d(next.trans)).negate();
@@ -196,8 +209,17 @@ public final class IplRopePortalSeam {
                     PREFIXES.remove((id << 1) | 1L);
                 }
             }
-            // Prune seam state for ropes that no longer exist anywhere.
-            PREFIXES.keySet().removeIf(key -> !liveRopeIds.contains(key >>> 1));
+            // Prune seam state for ropes that no longer exist anywhere — clearing the
+            // NATIVE prefix too, so Java and native seam state never drift apart.
+            final long sceneF = scene;
+            PREFIXES.keySet().removeIf(key -> {
+                if (liveRopeIds.contains(key >>> 1)) return false;
+                LOG.info("[IPL-ROPE-SEAM] pruning seam state for dead rope {} end {}",
+                    key >>> 1, (key & 1) != 0);
+                IplRapierNatives.setRopePortalPrefix(sceneF, key >>> 1, (key & 1) != 0,
+                    false, 0, 0, 0, 0, 0, 0, 1);
+                return true;
+            });
         } catch (Throwable t) {
             LOG.error("[IPL-ROPE-SEAM] break monitor failed", t);
         }
