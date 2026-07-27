@@ -203,14 +203,15 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyDormant<'l
 
 /// Sable body ids in the impulse-joint component containing `body_id`.
 ///
-/// `rigid_only != 0`: traverse only joints whose BOTH endpoints are Sable ship bodies —
-/// the rigid assembly (swivel bearings, direct couplings) that must transit portals as
-/// one unit. Rope particle chains (intermediate bodies with no Java ids) do NOT bridge
-/// components in this mode: roped ships transit independently and the rope spans the
-/// portal instead.
+/// `rigid_only != 0`: traverse only joints that make a RIGID assembly — both endpoints
+/// Sable ship bodies AND at least one ANGULAR axis locked (bearing/fixed/prismatic
+/// couplings). This excludes flexible links regardless of construction: native rope
+/// particle chains (endpoints aren't ship bodies) and rope/chain links built as
+/// one-block sub-levels joined by ball-type joints (linear-only locks) or springs
+/// (empty lock mask). Roped ships transit independently and the rope spans the portal;
+/// only genuinely rigid assemblies cross as one unit.
 ///
-/// `rigid_only == 0`: the full walk — rope particles participate, so two ships tied by
-/// a rope are one component.
+/// `rigid_only == 0`: the full walk — every joint bridges.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBodyIds<'local>(
     env: JNIEnv<'local>,
@@ -236,10 +237,20 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBod
             if joint.body1 == scene.world.ground_handle || joint.body2 == scene.world.ground_handle {
                 continue;
             }
-            if rigid_only != 0
-                && (!sable_handles.contains(&joint.body1) || !sable_handles.contains(&joint.body2))
-            {
-                continue;
+            if rigid_only != 0 {
+                if !sable_handles.contains(&joint.body1) || !sable_handles.contains(&joint.body2) {
+                    continue;
+                }
+                // Rope/chain links can be sub-levels too: a ball-type link (linear-only
+                // locks) or spring (empty mask) is flexible, not rigid. Rigid couplings
+                // (bearing = revolute, fixed) always lock at least one angular axis.
+                if !joint
+                    .data
+                    .locked_axes
+                    .intersects(rapier3d::prelude::JointAxesMask::ANG_AXES)
+                {
+                    continue;
+                }
             }
             if connected.contains(&joint.body1) && connected.insert(joint.body2) {
                 changed = true;
