@@ -14,27 +14,36 @@ use rapier3d::math::Vec3;
 
 use crate::scene::{LevelColliderID, PhysicsScene};
 
-/// A portal-plane clip region for straddling contact clipping (spec §2.5): solver contacts
-/// past the plane (signed distance >= 0 along `normal`) are dropped from the owning body's
-/// manifolds. A live straddle session means the through-half is in the destination chart,
-/// even when it crossed the plane sideways beyond the visual aperture.
+/// An oriented clip volume for aperture contact clipping (spec §2.5): solver contacts past
+/// the plane (signed distance >= 0 along `normal`) AND within the lateral rectangle
+/// (|projection on axis_w| <= half_w, |projection on axis_h| <= half_h) are dropped from
+/// the owning body's manifolds. The lateral bound is load-bearing twice over: geometry
+/// passing BESIDE a free-standing portal frame collides normally, and multi-portal
+/// straddles union safely — unbounded half-spaces from two sessions can cover the whole
+/// ship (or, facing planes, all of space), dropping every source contact.
 #[derive(Debug, Clone)]
 pub struct IplClipRegion {
     pub point: Vec3,
     pub normal: Vec3,
+    pub axis_w: Vec3,
+    pub half_w: Real,
+    pub axis_h: Vec3,
+    pub half_h: Real,
 }
 
 impl IplClipRegion {
     #[inline]
     pub fn contains(&self, p: Vec3) -> bool {
         let rel = p - self.point;
-        rel.dot(self.normal) >= 0.0
+        if rel.dot(self.normal) < 0.0 {
+            return false;
+        }
+        rel.dot(self.axis_w).abs() <= self.half_w && rel.dot(self.axis_h).abs() <= self.half_h
     }
 }
 
 /// Set (or clear, with an empty array) the clip regions of a body.
 /// Layout: N regions x 14 doubles: [px py pz  nx ny nz  wx wy wz  halfW  hx hy hz  halfH].
-/// The final eight legacy aperture fields are ignored; clipping is plane-only.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'local>(
     env: JNIEnv<'local>,
@@ -75,6 +84,10 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
         info.clip_regions.push(IplClipRegion {
             point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
             normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
+            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
+            half_w: c[9] as Real,
+            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
+            half_h: c[13] as Real,
         });
     }
     eprintln!(
@@ -303,8 +316,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollid
 }
 
 /// Set (or clear, with an empty array) the clip regions of one IMAGE collider —
-/// the far side of the half-open portal-plane seam. Layout matches `setClipRegions`
-/// (N x 14 doubles; final eight legacy aperture fields are ignored).
+/// the far side of the half-open aperture seam. Layout matches `setClipRegions`
+/// (N x 14 doubles).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegions<'local>(
     env: JNIEnv<'local>,
@@ -346,6 +359,10 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegio
         regions.push(IplClipRegion {
             point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
             normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
+            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
+            half_w: c[9] as Real,
+            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
+            half_h: c[13] as Real,
         });
     }
     if regions.is_empty() {
