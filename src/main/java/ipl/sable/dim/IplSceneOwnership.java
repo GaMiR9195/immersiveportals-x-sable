@@ -56,6 +56,20 @@ public final class IplSceneOwnership {
         return pipelineOf(owningLevel(sub));
     }
 
+    /**
+     * Teardown-safe native scene handle for {@code level}'s pipeline, or 0 when there is
+     * no live scene. Liveness is checked via the raw scene FIELD — the sceneHandle invoker
+     * dereferences the scene and NPEs once the pipeline is torn down (server-stop closes
+     * levels overworld-first, so cross-level native ops must always check).
+     */
+    public static long liveSceneHandle(@Nullable ServerLevel level) {
+        RapierPhysicsPipeline pipeline = pipelineOf(level);
+        if (pipeline == null) return 0;
+        ipl.sable.mixin.IplRapierPipelineAccess access =
+            (ipl.sable.mixin.IplRapierPipelineAccess) pipeline;
+        return access.ipl$scene() == null ? 0 : access.ipl$sceneHandle();
+    }
+
     // ------------------------------------------------------------------
     // Body-home bookkeeping (called from the guard mixin's add/remove routing).
     // ------------------------------------------------------------------
@@ -76,6 +90,8 @@ public final class IplSceneOwnership {
     /** Server stopping: drop all state. */
     public static void clearAll() {
         ipl.sable.atlas.IplAtlasBodyImages.clearAll();
+        ipl.sable.atlas.IplHostedTerrainGate.clearAll();
+        ipl.sable.atlas.IplParentFrames.clearAll();
         bodyHome.clear();
     }
 
@@ -105,6 +121,8 @@ public final class IplSceneOwnership {
             recordBodyAdded(sub, (ServerLevel) sub.getLevel());
         }
         ipl.sable.atlas.IplAtlasBodyImages.reconcileAll(hostingContainer.getAllSubLevels());
+        ipl.sable.atlas.IplParentFrames.reconcile(hostingContainer.getAllSubLevels());
+        ipl.sable.atlas.IplHostedTerrainGate.retainLive(hostingContainer.getAllSubLevels());
     }
 
 }

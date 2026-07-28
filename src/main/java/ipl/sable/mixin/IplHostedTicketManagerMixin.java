@@ -101,10 +101,18 @@ public abstract class IplHostedTicketManagerMixin {
             if (!(anySub instanceof ServerSubLevel subLevel)) continue;
             if (subLevel.isRemoved()) continue;
             if (IplDimAgnostic.getServerParentLevel(subLevel) != level) continue;
+
+            // Parent-pointer load gate: a ship whose parent chunk is unloaded goes
+            // DORMANT (native body Fixed) and is skipped entirely — always-live plot
+            // chunks would otherwise simulate it in mid-air against terrain that was
+            // never baked (nether ship, everyone in the overworld → falls into void).
+            if (ipl.sable.atlas.IplHostedTerrainGate.tick(level, pipeline, subLevel)) {
+                continue;
+            }
             enrolledShips++;
 
             // Same bounds expansion as the stock loop (incl. fall-velocity prediction);
-            // this pipeline owns the body under per-scene, so the velocity read is local.
+            // per-body calls forward to the owning pipeline through the ownership guard.
             b.set(subLevel.boundingBox());
             b2.set(b);
             if (subLevel.lastPose().position()

@@ -148,20 +148,28 @@ public final class IplAtlasStraddleSession {
         }
         SESSIONS.put(key, session);
 
-        // Portal-plane contact clipping (spec v3 §2.4), half-open seam:
-        //  - REAL body set: contacts past the portal plane are dropped. A live straddle
-        //    session owns the full plane, including sideways crossings beyond the aperture.
+        // Aperture contact clipping (spec v3 §2.4), half-open seam:
+        //  - REAL body set: contacts past the portal plane inside the aperture dropped
+        //    (the through-part stops colliding with SOURCE-side terrain and ships).
         //  - IMAGE collider: the complementary half — contacts BEFORE the mapped plane
         //    dropped, so only the through-part is physically present dest-side.
+        // The lateral aperture bound (vs full-plane clipping) is load-bearing: ship parts
+        // BESIDE a free-standing frame keep source collision, and multi-portal unions
+        // stay local to each aperture window instead of unioning infinite half-spaces.
         {
             Vec3 origin = portal.getOriginPos();
             session.lastOrigin = origin;
-            session.realClipRegion = clipRegion(origin, sourceToDest);
+            session.realClipRegion = clipRegion(
+                origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
+                portal.getWidth() * 0.5, portal.getHeight() * 0.5);
             applyRealClipRegions(hosted, session.parentScene, session.realId);
 
             double[] imageRegion = clipRegion(
                 mapping.mapPoint(origin),
-                mapping.mapVec(sourceToDest).scale(-1.0));
+                mapping.mapVec(sourceToDest).scale(-1.0),
+                mapping.mapVec(portal.getAxisW()),
+                mapping.mapVec(portal.getAxisH()),
+                portal.getWidth() * 0.5, portal.getHeight() * 0.5);
             ipl.sable.natives.IplRapierNatives.setImageClipRegions(
                 session.destScene, session.realId, session.imageHandle, imageRegion);
         }
@@ -208,25 +216,28 @@ public final class IplAtlasStraddleSession {
                 newRot.x, newRot.y, newRot.z, newRot.w);
         }
 
-        s.realClipRegion = clipRegion(origin, sourceToDest);
+        s.realClipRegion = clipRegion(
+            origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
+            portal.getWidth() * 0.5, portal.getHeight() * 0.5);
         applyRealClipRegions(s.sub, s.parentScene, s.realId);
         double[] imageRegion = clipRegion(
             fresh.mapPoint(origin),
-            fresh.mapVec(sourceToDest).scale(-1.0));
+            fresh.mapVec(sourceToDest).scale(-1.0),
+            fresh.mapVec(portal.getAxisW()),
+            fresh.mapVec(portal.getAxisH()),
+            portal.getWidth() * 0.5, portal.getHeight() * 0.5);
         ipl.sable.natives.IplRapierNatives.setImageClipRegions(
             s.destScene, s.realId, s.imageHandle, imageRegion);
     }
 
-    /**
-     * Native layout remains 14 doubles for JNI compatibility. The unused lateral slots
-     * are zero because active Atlas straddle sessions clip across the full portal plane.
-     */
-    private static double[] clipRegion(Vec3 point, Vec3 normal) {
+    private static double[] clipRegion(
+        Vec3 point, Vec3 normal, Vec3 axisW, Vec3 axisH, double halfW, double halfH
+    ) {
         return new double[]{
             point.x, point.y, point.z,
             normal.x, normal.y, normal.z,
-            0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0
+            axisW.x, axisW.y, axisW.z, halfW,
+            axisH.x, axisH.y, axisH.z, halfH
         };
     }
 

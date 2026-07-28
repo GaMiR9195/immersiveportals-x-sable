@@ -61,6 +61,7 @@
     "IplEntityLevelInvoker",
     "IplRapierPipelineAccess",
     "IplRapier3DInvoker",
+    "IplRopeObjectAccess",
     "IplNativesOverrideMixin",
     "IplFusedStepMixin",
     "IplPhysicsSystemFusionAccess",

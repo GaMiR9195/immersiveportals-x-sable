@@ -265,10 +265,10 @@ public final class SableTransitController {
                     // minority rule refuses to re-open this face and would open the
                     // OPPOSITE face with inverted parity instead, making forward travel
                     // structurally impossible.
-                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION
-                        && ipl$canRehomeConnectionGroup(airship, portal, normal)) {
+                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION) {
                         if (candidates == null) candidates = new ArrayList<>(1);
-                        candidates.add(new TransitCandidate(airship, portal, true));
+                        candidates.add(new TransitCandidate(
+                            airship, portal, true, ipl$rigidGroupMates(airship)));
                         candidateAddedForAirship = true;
                         break;
                     }
@@ -286,20 +286,13 @@ public final class SableTransitController {
 
                 if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
                     && (haveSession || state.enteredFromSourceAperture())) {
-                    if (haveSession && !ipl$canRehomeConnectionGroup(airship, portal, normal)) {
-                        // A connected body stays source-native and is represented on the far
-                        // side by its Atlas image. This is a portal window, not a teleport
-                        // of one endpoint of a rope/bearing into unrelated world coordinates.
-                        seenHostedKeys.add(key);
-                        IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
-                        continue;
-                    }
                     if (haveSession) {
                         IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
                     }
                     IplAtlasStraddleSession.clear(key, "crossed");
                     if (candidates == null) candidates = new ArrayList<>(1);
-                    candidates.add(new TransitCandidate(airship, portal, false));
+                    candidates.add(new TransitCandidate(
+                        airship, portal, false, ipl$rigidGroupMates(airship)));
                     candidateAddedForAirship = true;
                 } else {
                     String reason = state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
@@ -338,11 +331,15 @@ public final class SableTransitController {
 
         if (candidates == null) return;
 
+        java.util.Set<UUID> flippedThisTick = new java.util.HashSet<>();
         for (TransitCandidate c : candidates) {
             UUID uuid = c.airship.getUniqueId();
+            // Already carried through as another candidate's rigid mate this tick.
+            if (flippedThisTick.contains(uuid)) continue;
             try {
                 boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal);
                 if (flipped) {
+                    flippedThisTick.add(uuid);
                     // Rehome candidates keep their session until the transit SUCCEEDS
                     // (a pre-cleared session on a failed transit strands the ship past
                     // 0.5, where the minority rule can only re-open inverted parity).
@@ -360,6 +357,9 @@ public final class SableTransitController {
                     // Grab chains of every player holding this body rebase through the
                     // exact crossing portal (goal, orientation, beam — one event).
                     IplGrabChain.onBodyTransit(level.getServer(), c.airship.getUniqueId(), c.portal);
+                    // Ropes span the portal instead of gating it: re-seam this ship's
+                    // rope ends through the transit isometry (pull-through behavior).
+                    IplRopePortalSeam.onShipTransit(c.airship, c.portal);
                     // EAGER re-derivation: a majority rehome leaves the minority part
                     // still straddling. Waiting for the next tick's recompute opened a
                     // one-tick hole (no image and no collision in the old dim —
@@ -367,6 +367,29 @@ public final class SableTransitController {
                     // declarative rule, just evaluated immediately: the client receives
                     // session-end + handoff + session-start in one packet flush.
                     ipl$deriveReverseSessionNow(c.airship, c.portal);
+
+                    // Rigid mates (swivel bearings, couplings) cross ATOMICALLY with
+                    // this body — a rigid assembly is one construction, and any split
+                    // leaves a joint spanning raw source/dest coordinates.
+                    for (ServerSubLevel mate : c.mates()) {
+                        UUID mateId = mate.getUniqueId();
+                        if (mate.isRemoved() || !flippedThisTick.add(mateId)) continue;
+                        boolean mateFlipped = SableRehomeOps.executeHostedTransit(mate, c.portal);
+                        if (!mateFlipped) {
+                            flippedThisTick.remove(mateId);
+                            LOG.warn("[IPL-TRANSIT] rigid mate {} declined group transit "
+                                + "through {} — will re-derive next tick",
+                                mateId, c.portal.getUUID());
+                            continue;
+                        }
+                        StraddleKey mateKey = new StraddleKey(mateId, c.portal.getUUID());
+                        IplAtlasStraddleSession.clear(mateKey, "rehomed-group");
+                        IplStraddleSessionSync.onSessionEnd(
+                            level.getServer(), mateKey, "rehomed-group");
+                        IplGrabChain.onBodyTransit(level.getServer(), mateId, c.portal);
+                        IplRopePortalSeam.onShipTransit(mate, c.portal);
+                        ipl$deriveReverseSessionNow(mate, c.portal);
+                    }
                 } else if (c.rehome()) {
                     LOG.warn("[IPL-TRANSIT] majority rehome transit declined for uuid={} "
                         + "portal={} — session retained, retrying next tick",
@@ -379,45 +402,46 @@ public final class SableTransitController {
         }
     }
 
-    private static boolean ipl$canRehomeConnectionGroup(
-        ServerSubLevel body, Portal portal, Vec3 sourceToDest
-    ) {
-        if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return true;
+    /**
+     * The rigid assembly containing {@code body}: every other ship reachable through
+     * ship-to-ship joints only (swivel bearings, couplings). Rope chains do NOT bridge —
+     * roped ships transit independently and the rope spans the portal.
+     *
+     * <p>These mates cross the portal ATOMICALLY with the evaluated body in the same
+     * candidate execution. The previous per-member readiness gate deadlocked: it
+     * required every member's live session, but the first member to flip cleared its
+     * own session and never straddled the portal again, blocking the rest forever —
+     * the "stuck on the wrong logical side" state.
+     */
+    private static java.util.List<ServerSubLevel> ipl$rigidGroupMates(ServerSubLevel body) {
+        if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return java.util.List.of();
         try {
-            var pipeline = ipl.sable.dim.IplSceneOwnership.pipelineOf((ServerLevel) body.getLevel());
-            if (!(pipeline instanceof dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline rapier)) {
-                return true;
-            }
-            long scene = ((ipl.sable.mixin.IplRapierPipelineAccess) rapier).ipl$sceneHandle();
+            long scene = ipl.sable.dim.IplSceneOwnership
+                .liveSceneHandle((ServerLevel) body.getLevel());
+            if (scene == 0) return java.util.List.of();
             int[] ids = ipl.sable.natives.IplRapierNatives.connectedSableBodyIds(
-                scene, dev.ryanhcode.sable.physics.impl.rapier.Rapier3D.getID(body));
-            if (ids.length <= 1) {
-                return true;
-            }
+                scene, dev.ryanhcode.sable.physics.impl.rapier.Rapier3D.getID(body), true);
+            if (ids.length <= 1) return java.util.List.of();
 
             var hosting = dev.ryanhcode.sable.api.sublevel.SubLevelContainer
                 .getContainer(body.getLevel());
-            if (hosting == null) return false;
+            if (hosting == null) return java.util.List.of();
+            int selfId = body.getRuntimeId();
+            java.util.List<ServerSubLevel> mates = new java.util.ArrayList<>(ids.length - 1);
             for (int id : ids) {
-                ServerSubLevel other = null;
+                if (id == selfId) continue;
                 for (var sub : hosting.getAllSubLevels()) {
-                    if (sub.getRuntimeId() == id) {
-                        other = sub;
+                    if (sub.getRuntimeId() == id && !sub.isRemoved()) {
+                        mates.add(sub);
                         break;
                     }
                 }
-                if (other == null || other.isRemoved()) return false;
-                StraddleKey key = new StraddleKey(other.getUniqueId(), portal.getUUID());
-                if (!IplAtlasStraddleSession.hasSessionKey(key)
-                    || ipl$crossedFraction(other, portal, sourceToDest) <= REHOME_FRACTION) {
-                    return false;
-                }
             }
-            return true;
+            return mates;
         } catch (Throwable t) {
-            // A failed graph query must preserve the window invariant, never turn a local
-            // joint into cross-dimension raw-coordinate distance.
-            return false;
+            LOG.warn("[IPL-TRANSIT] rigid-group walk failed for uuid={}",
+                body.getUniqueId(), t);
+            return java.util.List.of();
         }
     }
 
@@ -569,5 +593,8 @@ public final class SableTransitController {
         }
     }
 
-    private record TransitCandidate(ServerSubLevel airship, Portal portal, boolean rehome) {}
+    private record TransitCandidate(
+        ServerSubLevel airship, Portal portal, boolean rehome,
+        java.util.List<ServerSubLevel> mates
+    ) {}
 }

@@ -1,13 +1,11 @@
 package ipl.sable.atlas;
 
 import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
-import dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import ipl.sable.dim.IplDimAgnostic;
-import ipl.sable.mixin.IplRapierPipelineAccess;
+import ipl.sable.dim.IplSceneOwnership;
 import ipl.sable.natives.IplRapierNatives;
 import net.minecraft.server.level.ServerLevel;
-import org.jetbrains.annotations.Nullable;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -59,10 +57,8 @@ public final class IplAtlasBodyImages {
             return;
         }
 
-        RapierPhysicsPipeline parentPipeline = pipelineOf(parent);
-        if (parentPipeline == null) return;
-
-        long parentScene = ((IplRapierPipelineAccess) parentPipeline).ipl$sceneHandle();
+        long parentScene = IplSceneOwnership.liveSceneHandle(parent);
+        if (parentScene == 0) return;
         int bodyId = Rapier3D.getID(sub);
         UUID id = sub.getUniqueId();
         Image current = IMAGES.get(id);
@@ -112,12 +108,5 @@ public final class IplAtlasBodyImages {
         // hook. The shared native world then owns the remaining collider destruction; do not
         // dereference a stale raw scene handle during shutdown.
         IMAGES.clear();
-    }
-
-    @Nullable
-    private static RapierPhysicsPipeline pipelineOf(ServerLevel level) {
-        var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);
-        return container != null && container.physicsSystem().getPipeline() instanceof RapierPhysicsPipeline pipeline
-            ? pipeline : null;
     }
 }

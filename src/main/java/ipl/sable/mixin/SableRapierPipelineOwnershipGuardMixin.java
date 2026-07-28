@@ -343,6 +343,10 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
     ) {
         if (!ipl.sable.dim.IplDimAgnostic.isHosted(subLevel)) return;
         if (!this.activeSubLevels.containsKey(subLevel.getRuntimeId())) return; // add bailed
+        // A body recreated while its ship is dormant (rehome twin, deserialization
+        // restore) must be Fixed from its FIRST tick — the gate's own poll runs a tick
+        // later, which is exactly the void-fall window it exists to close.
+        ipl.sable.atlas.IplHostedTerrainGate.onHostedBodyAdded(subLevel);
         if (subLevel.getMassTracker() == null
             || subLevel.getMassTracker().getCenterOfMass() == null) {
             return; // empty plot: no stats to push yet; first block change uploads them

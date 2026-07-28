@@ -212,6 +212,27 @@ where
                         manifolds.clear();
                         return Ok(());
                     };
+                    // IPL atlas cross-parent guard: real hosted bodies share the
+                    // hosting chart at their own parents' coordinates, so numeric
+                    // overlap between different parent frames is meaningless. A
+                    // shape whose chart matches its body info is the NATIVE
+                    // collider (images carry the far chart on the shape) — drop
+                    // native-vs-native pairs with differing nonzero frames, stale
+                    // manifolds included, like the chart guard in world_vs_world.
+                    // Image shapes skip this on purpose: an image pair meeting in
+                    // a shared far chart is a legitimate portal-mediated contact
+                    // (straddle into the other ship's dimension) regardless of
+                    // parents, and cross-chart image pairs are already dropped by
+                    // the chart guard. 0 = untagged, collides with everything.
+                    if g1.chart == body_1.chart
+                        && g2.chart == body_2.chart
+                        && body_1.ipl_parent_frame != 0
+                        && body_2.ipl_parent_frame != 0
+                        && body_1.ipl_parent_frame != body_2.ipl_parent_frame
+                    {
+                        manifolds.clear();
+                        return Ok(());
+                    }
                     let (Some(min_1), Some(max_1), Some(min_2), Some(max_2)) = (
                         body_1.local_bounds_min,
                         body_1.local_bounds_max,

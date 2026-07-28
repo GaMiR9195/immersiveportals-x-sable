@@ -14,14 +14,21 @@ use rapier3d::math::Vec3;
 
 use crate::scene::{LevelColliderID, PhysicsScene};
 
-/// A portal-plane clip region for straddling contact clipping (spec §2.5): solver contacts
-/// past the plane (signed distance >= 0 along `normal`) are dropped from the owning body's
-/// manifolds. A live straddle session means the through-half is in the destination chart,
-/// even when it crossed the plane sideways beyond the visual aperture.
+/// An oriented clip volume for aperture contact clipping (spec §2.5): solver contacts past
+/// the plane (signed distance >= 0 along `normal`) AND within the lateral rectangle
+/// (|projection on axis_w| <= half_w, |projection on axis_h| <= half_h) are dropped from
+/// the owning body's manifolds. The lateral bound is load-bearing twice over: geometry
+/// passing BESIDE a free-standing portal frame collides normally, and multi-portal
+/// straddles union safely — unbounded half-spaces from two sessions can cover the whole
+/// ship (or, facing planes, all of space), dropping every source contact.
 #[derive(Debug, Clone)]
 pub struct IplClipRegion {
     pub point: Vec3,
     pub normal: Vec3,
+    pub axis_w: Vec3,
+    pub half_w: Real,
+    pub axis_h: Vec3,
+    pub half_h: Real,
 }
 
 impl IplClipRegion {
@@ -29,12 +36,13 @@ impl IplClipRegion {
     pub fn contains(&self, p: Vec3) -> bool {
         let rel = p - self.point;
         rel.dot(self.normal) >= 0.0
+            && rel.dot(self.axis_w).abs() <= self.half_w
+            && rel.dot(self.axis_h).abs() <= self.half_h
     }
 }
 
 /// Set (or clear, with an empty array) the clip regions of a body.
 /// Layout: N regions x 14 doubles: [px py pz  nx ny nz  wx wy wz  halfW  hx hy hz  halfH].
-/// The final eight legacy aperture fields are ignored; clipping is plane-only.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'local>(
     env: JNIEnv<'local>,
@@ -75,12 +83,14 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
         info.clip_regions.push(IplClipRegion {
             point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
             normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
+            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
+            half_w: c[9] as Real,
+            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
+            half_h: c[13] as Real,
         });
     }
-    eprintln!(
-        "[ipl-natives] setClipRegions: body {body_id} <- {} region(s) in scene {scene_handle:x}",
-        info.clip_regions.len()
-    );
+    // No success log: straddle sessions re-push regions per tick — an unconditional
+    // stderr write here is a server-thread tick cost. The MISS branch above stays.
 }
 
 /// Register (`excluded != 0`) or clear a contact exclusion between two bodies in one
@@ -113,15 +123,102 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyPairExclus
     }
 }
 
-/// Sable body ids in the full impulse-joint component containing `body_id`. Rope particles
-/// participate in the walk, so two ships tied by a rope are one portal-transition group even
-/// though the intermediate bodies have no Java ids.
+/// Tag a hosted body's collider info with its parent-frame id. The dispatcher's
+/// dynamic-vs-dynamic path drops native-vs-native manifolds between bodies whose
+/// nonzero frames differ (see `ActiveLevelColliderInfo::ipl_parent_frame`); image
+/// colliders are unaffected — their frame is the shape's chart, which the chart
+/// guard already scopes. Java calls this only when a ship's parent dimension flips
+/// (or its body/scene is recreated), not per tick.
+///
+/// Returns JNI_TRUE when the tag landed; JNI_FALSE when the body id is unknown in
+/// this scene (registration race — Java retries next hosting tick).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setParentFrame<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    frame_id: jint,
+) -> jboolean {
+    if scene_handle == 0 || body_id < 0 {
+        return 0;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene.sable_data.write().unwrap();
+    let Some(info) = sable_data
+        .level_colliders
+        .get_mut(&(body_id as LevelColliderID))
+    else {
+        return 0; // body not registered yet (or already gone) — caller retries
+    };
+    info.ipl_parent_frame = frame_id;
+    1
+}
+
+/// Dormancy switch for a hosted body whose parent-pointer chunks are unloaded: a Fixed
+/// body skips integration entirely (no gravity, immovable, still a valid joint/rope
+/// anchor), so an unloaded-area ship cannot fall through terrain that was never baked.
+/// Idempotent — Java re-applies it every tick while dormant, which also re-freezes a
+/// body that was recreated (rehome twin) mid-dormancy. Velocities are zeroed on freeze
+/// so the ship resumes at rest.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyDormant<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    dormant: jboolean,
+) {
+    use rapier3d::prelude::RigidBodyType;
+
+    if scene_handle == 0 || body_id < 0 {
+        return;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let handle = {
+        let sable_data = scene.sable_data.read().unwrap();
+        let Some(handle) = sable_data
+            .rigid_bodies
+            .get(&(body_id as LevelColliderID))
+            .copied()
+        else {
+            return;
+        };
+        handle
+    };
+    let mut sim_data = scene.sim_data.write().unwrap();
+    let Some(body) = sim_data.rigid_body_set.get_mut(handle) else {
+        return;
+    };
+    if dormant != 0 {
+        if body.body_type() != RigidBodyType::Fixed {
+            body.set_linvel(Vec3::new(0.0, 0.0, 0.0), false);
+            body.set_angvel(Vec3::new(0.0, 0.0, 0.0), false);
+            body.set_body_type(RigidBodyType::Fixed, true);
+        }
+    } else if body.body_type() != RigidBodyType::Dynamic {
+        body.set_body_type(RigidBodyType::Dynamic, true);
+    }
+}
+
+/// Sable body ids in the impulse-joint component containing `body_id`.
+///
+/// `rigid_only != 0`: traverse only joints that make a RIGID assembly — both endpoints
+/// Sable ship bodies AND at least one ANGULAR axis locked (bearing/fixed/prismatic
+/// couplings). This excludes flexible links regardless of construction: native rope
+/// particle chains (endpoints aren't ship bodies) and rope/chain links built as
+/// one-block sub-levels joined by ball-type joints (linear-only locks) or springs
+/// (empty lock mask). Roped ships transit independently and the rope spans the portal;
+/// only genuinely rigid assemblies cross as one unit.
+///
+/// `rigid_only == 0`: the full walk — every joint bridges.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBodyIds<'local>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
     scene_handle: jlong,
     body_id: jint,
+    rigid_only: jboolean,
 ) -> jni::objects::JIntArray<'local> {
     if scene_handle == 0 || body_id < 0 {
         return env.new_int_array(0).unwrap();
@@ -131,6 +228,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBod
     let Some(start) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
         return env.new_int_array(0).unwrap();
     };
+    let sable_handles: HashSet<_> = sable_data.rigid_bodies.values().copied().collect();
     let sim = scene.sim_data.read().unwrap();
     let mut connected = HashSet::from([start]);
     loop {
@@ -138,6 +236,21 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBod
         for (_, joint) in sim.impulse_joint_set.iter() {
             if joint.body1 == scene.world.ground_handle || joint.body2 == scene.world.ground_handle {
                 continue;
+            }
+            if rigid_only != 0 {
+                if !sable_handles.contains(&joint.body1) || !sable_handles.contains(&joint.body2) {
+                    continue;
+                }
+                // Rope/chain links can be sub-levels too: a ball-type link (linear-only
+                // locks) or spring (empty mask) is flexible, not rigid. Rigid couplings
+                // (bearing = revolute, fixed) always lock at least one angular axis.
+                if !joint
+                    .data
+                    .locked_axes
+                    .intersects(rapier3d::prelude::JointAxesMask::ANG_AXES)
+                {
+                    continue;
+                }
             }
             if connected.contains(&joint.body1) && connected.insert(joint.body2) {
                 changed = true;
@@ -303,8 +416,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollid
 }
 
 /// Set (or clear, with an empty array) the clip regions of one IMAGE collider —
-/// the far side of the half-open portal-plane seam. Layout matches `setClipRegions`
-/// (N x 14 doubles; final eight legacy aperture fields are ignored).
+/// the far side of the half-open aperture seam. Layout matches `setClipRegions`
+/// (N x 14 doubles).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegions<'local>(
     env: JNIEnv<'local>,
@@ -346,6 +459,10 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegio
         regions.push(IplClipRegion {
             point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
             normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
+            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
+            half_w: c[9] as Real,
+            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
+            half_h: c[13] as Real,
         });
     }
     if regions.is_empty() {
