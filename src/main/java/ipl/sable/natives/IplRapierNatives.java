@@ -26,9 +26,9 @@ public final class IplRapierNatives {
     }
 
     /**
-     * Set (or clear, with an empty array) the aperture clip regions of a body: solver
-     * contacts past the region's plane and within its lateral rectangle are dropped from
-     * the body's manifolds (spec §2.5).
+     * Set (or clear, with an empty array) body clip regions: solver contacts past the
+     * region's plane and within its lateral rectangle are dropped from its manifolds.
+     * Infinite lateral half extents encode a full plane.
      *
      * <p>Layout: N regions × 14 doubles —
      * {@code [px py pz  nx ny nz  wx wy wz  halfW  hx hy hz  halfH]}.
@@ -45,6 +45,26 @@ public final class IplRapierNatives {
      */
     public static native void setBodyPairExclusion(
         long sceneHandle, int idA, int idB, boolean excluded);
+
+    /**
+     * Create a portal rim as four native Rapier cuboids, not as Sable voxel terrain.
+     * All dimensions are in the rim's local frame: X=portal width, Y=portal normal,
+     * Z=portal height. The opening remains exact; bars extend only outside it.
+     *
+     * @return body id for transform/removal, or -1 on an unavailable scene.
+     */
+    public static native int createPortalRim(
+        long sceneHandle,
+        double holeWidth, double holeHeight, double width, double halfThickness);
+
+    /** Set a native portal-rim body's world transform. */
+    public static native void setPortalRimTransform(
+        long sceneHandle, int rimId,
+        double x, double y, double z,
+        double qx, double qy, double qz, double qw);
+
+    /** Remove a native portal-rim body. */
+    public static native void removePortalRim(long sceneHandle, int rimId);
 
     /**
      * Tag a hosted body's native collider info with its parent-frame id. The dispatcher's

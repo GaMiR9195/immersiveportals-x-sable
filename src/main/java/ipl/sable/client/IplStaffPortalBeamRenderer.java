@@ -20,12 +20,10 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 import qouteall.imm_ptl.core.ClientWorldLoader;
-import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.render.context_management.PortalRendering;
+import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -38,10 +36,10 @@ import java.util.UUID;
  *       (staff → first aperture) therefore renders whether or not the portal is on screen,
  *       and a same-dimension far segment renders at the exit aperture even when the player
  *       is not looking through the portal — both endpoints exist in this world.</li>
- *   <li><b>Each portal pass draws the segment whose traversed-portal prefix matches IP's
- *       active render path</b> (by portal UUID, so a session-store surrogate still matches
- *       the live entity), giving the through-the-aperture view its correctly framed
- *       piece.</li>
+ *   <li><b>Each portal pass draws every segment physically in its rendered world.</b>
+ *       IP's stencil and destination clip decide whether it is visible through that
+ *       aperture. This makes a beam a real world object from either portal face and
+ *       through recursive portal renders, rather than only along its own traversal path.</li>
  *   <li><b>The staff focus position is sampled only on the main pass</b> and cached per
  *       owner. Portal passes reuse the cached tip: recomputing it there mixes the virtual
  *       portal camera with root-world player state and made the beam pivot with the
@@ -75,8 +73,11 @@ public final class IplStaffPortalBeamRenderer {
         }
         FOCUS.keySet().retainAll(beams.keySet());
 
-        boolean mainPass = !PortalRendering.isRendering();
-        List<Portal> renderPath = mainPass ? List.of() : PortalRendering.getPortalPath();
+        // IP reuses one LevelRenderer across recursive worlds. Its `level` field remains
+        // the root level, so portal-pass geometry must select WorldRenderInfo.world instead.
+        ClientLevel activeLevel = WorldRenderInfo.isRendering()
+            ? WorldRenderInfo.getTopRenderInfo().world : renderLevel;
+        boolean mainPass = !WorldRenderInfo.isRendering();
         float partialTick = AnimationTickHolder.getPartialTicks();
         SuperRenderTypeBuffer buffer = DefaultSuperRenderTypeBuffer.getInstance();
         boolean drew = false;
@@ -102,7 +103,7 @@ public final class IplStaffPortalBeamRenderer {
             if (route == null) continue;
 
             for (IplStaffBeamRoutes.Segment segment : IplStaffBeamRoutes.segments(route)) {
-                if (!shouldDrawInThisPass(segment, renderLevel, mainPass, renderPath)) continue;
+                if (!shouldDrawInThisPass(segment, activeLevel)) continue;
                 renderPhysicalBeam(beam, segment, poseStack, buffer, camera.getPosition(), partialTick);
                 drew = true;
             }
@@ -122,9 +123,7 @@ public final class IplStaffPortalBeamRenderer {
         boolean mainPass, float partialTick
     ) {
         if (mainPass) {
-            boolean mainHand = owner.getMainHandItem().getItem() instanceof PhysicsStaffItem
-                || !(owner.getOffhandItem().getItem() instanceof PhysicsStaffItem);
-            Vec3 fresh = PhysicsStaffClientHandler.getStaffFocusPos(owner, mainHand, partialTick);
+            Vec3 fresh = staffFocus(owner, partialTick);
             FOCUS.put(ownerId, fresh);
             return fresh;
         }
@@ -134,19 +133,18 @@ public final class IplStaffPortalBeamRenderer {
         return access.ipl$getPreviousStart().lerp(access.ipl$getStart(), partialTick);
     }
 
-    /** Main pass: everything located in this world. Portal pass: the matching-prefix piece. */
+    /** Same physical held-item tip used by both beam geometry and held-staff aiming. */
+    public static Vec3 staffFocus(Player owner, float partialTick) {
+        boolean mainHand = owner.getMainHandItem().getItem() instanceof PhysicsStaffItem
+            || !(owner.getOffhandItem().getItem() instanceof PhysicsStaffItem);
+        return PhysicsStaffClientHandler.getStaffFocusPos(owner, mainHand, partialTick);
+    }
+
+    /** Draw any physical segment in its world; IP clips it to the active portal aperture. */
     private static boolean shouldDrawInThisPass(
-        IplStaffBeamRoutes.Segment segment, ClientLevel renderLevel,
-        boolean mainPass, List<Portal> renderPath
+        IplStaffBeamRoutes.Segment segment, ClientLevel renderLevel
     ) {
-        if (!segment.dim().equals(renderLevel.dimension())) return false;
-        if (mainPass) return true;
-        List<java.util.UUID> prefix = segment.prefixPortalIds();
-        if (renderPath.size() != prefix.size()) return false;
-        for (int i = 0; i < prefix.size(); i++) {
-            if (!renderPath.get(i).getUUID().equals(prefix.get(i))) return false;
-        }
-        return true;
+        return segment.dim().equals(renderLevel.dimension());
     }
 
     public static boolean isPhysicalBeamPass() {

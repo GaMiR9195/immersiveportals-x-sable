@@ -405,6 +405,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ini
             rope_map: RopeMap::default(),
             level_colliders: HashMap::<LevelColliderID, ActiveLevelColliderInfo>::new(),
             rigid_bodies: HashMap::<LevelColliderID, RigidBodyHandle>::new(),
+            bodies_by_chart: HashMap::<scene::ChartId, std::collections::HashSet<LevelColliderID>>::new(),
             ipl_excluded_pairs: std::collections::HashSet::new(),
         }));
         let manifold_info_map = Arc::new(SableManifoldInfoMap::default());
@@ -784,6 +785,11 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
         sable_data
             .rigid_bodies
             .insert(id as LevelColliderID, handle);
+        sable_data
+            .bodies_by_chart
+            .entry(scene.chart)
+            .or_default()
+            .insert(id as LevelColliderID);
     })
 }
 
@@ -799,11 +805,16 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
     with_handle(handle, |scene| {
         let mut sable_data = scene.sable_data.write().unwrap();
 
-        sable_data.level_colliders.remove(&(id as LevelColliderID));
+        let body_id = id as LevelColliderID;
+        if let Some(info) = sable_data.level_colliders.remove(&body_id) {
+            if let Some(ids) = sable_data.bodies_by_chart.get_mut(&info.chart) {
+                ids.remove(&body_id);
+            }
+        }
         // Java-side cleanup can race scene teardown or repeat after a body was already
         // removed during transit. JNI panics cannot unwind into Java, so an absent body
         // must mean "already cleaned up", not abort the process.
-        let Some(handle) = sable_data.rigid_bodies.remove(&(id as LevelColliderID)) else {
+        let Some(handle) = sable_data.rigid_bodies.remove(&body_id) else {
             return;
         };
 

@@ -45,23 +45,29 @@ impl SableJointSet {
             joints: HashMap::new(),
         }
     }
+
 }
 
 pub fn tick(scene: &PhysicsScene) {
     let mut sable_data = scene.sable_data.write().unwrap();
     let mut sim = scene.sim_data.write().unwrap();
 
-    // filter the joints
-    sable_data
-        .joint_set
-        .joints
-        .retain(|_handle, joint| sim.impulse_joint_set.contains(joint.handle));
+    // The shared Atlas world is visited once per chart. Pruning a world-global map here
+    // was O(charts * joints) even though only the body's owning chart can change a joint.
+    // A stale entry is harmless: all mutation paths already check the native set below.
+    if scene.chart == 0 {
+        sable_data
+            .joint_set
+            .joints
+            .retain(|_handle, joint| sim.impulse_joint_set.contains(joint.handle));
+    }
 
     // update every joint
     for (_handle, joint) in sable_data.joint_set.joints.iter() {
-        // Atlas: each view maintains only its own chart's joints (chart derived from
-        // a member body; a joint with no sub-level bodies has no chart and is
-        // maintained by every view — the update is idempotent).
+        // Atlas: each view maintains only its own chart's joints. A staff joint has
+        // the static world on one side, so id_a is None and id_b selects its body
+        // chart. Without this filter every chart re-updated every held staff joint
+        // before every fused substep, making drag cost grow with loaded dimensions.
         let joint_chart = joint
             .id_a
             .or(joint.id_b)
@@ -70,7 +76,9 @@ pub fn tick(scene: &PhysicsScene) {
         if joint_chart.is_some() && joint_chart != Some(scene.chart) {
             continue;
         }
-        let impulse_joint = sim.impulse_joint_set.get_mut(joint.handle, false).unwrap();
+        let Some(impulse_joint) = sim.impulse_joint_set.get_mut(joint.handle, false) else {
+            continue;
+        };
         impulse_joint.data.contacts_enabled = joint.contacts_enabled;
         if !joint.fixed && joint.rotation_a.is_none() {
             impulse_joint.data.set_local_axis1(joint.normal_a.as_vec3());
@@ -716,16 +724,44 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
             local_q_w as Real,
         );
 
-        match side {
+        let (body_id, local_anchor, local_rotation, first) = match side {
             0 => {
                 joint.pos_a = position;
                 joint.rotation_a = Some(rotation);
+                (joint.id_a, joint.pos_a, rotation, true)
             }
             1 => {
                 joint.pos_b = position;
                 joint.rotation_b = Some(rotation);
+                (joint.id_b, joint.pos_b, rotation, false)
             }
             _ => panic!("Invalid constraint frame side: {}", side),
+        };
+        let joint_handle = joint.handle;
+
+        // The Java staff sends a new target in this frame in the SAME substep. Waiting
+        // for joints::tick (which runs at the next chart-prepass under Atlas) leaves the
+        // Rapier motor solving that target in the previous orientation for one tick,
+        // producing the sideways kick when a held ship rotates. Apply both registry and
+        // live joint state atomically here.
+        let center_of_mass = body_id
+            .and_then(|id| sable_data.level_colliders.get(&id))
+            .and_then(|info| info.center_of_mass)
+            .unwrap_or(DVec3::ZERO);
+        let mut sim = scene.sim_data.write().unwrap();
+        let Some(impulse_joint) = sim.impulse_joint_set.get_mut(joint_handle, false) else {
+            return;
+        };
+        if first {
+            impulse_joint
+                .data
+                .set_local_anchor1((local_anchor - center_of_mass).as_vec3());
+            impulse_joint.data.local_frame1.rotation = local_rotation;
+        } else {
+            impulse_joint
+                .data
+                .set_local_anchor2((local_anchor - center_of_mass).as_vec3());
+            impulse_joint.data.local_frame2.rotation = local_rotation;
         }
     })
 }

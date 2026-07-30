@@ -309,6 +309,10 @@ public final class IplShipPortalAnchor {
             ship.getUniqueId(), level.dimension(), localPos, localOrient, destLock));
         markDirty(level.getServer());
         applyCarrierSideEffects(portal, ship, true);
+        // A normal command anchor does not need to re-pose an already aligned portal,
+        // so it previously waited for the manager's later scan to get a rim. Weld both
+        // carrier faces now, including a completely stationary ship.
+        followCarrierRims(portal);
         syncToClients(level.getServer(), portal.getUUID());
         LOG.info("[IPL-SHIP-PORTAL] anchored portal {} to ship {} at plot ({}, {}, {})",
             portal.getUUID(), ship.getUniqueId(),
@@ -382,6 +386,22 @@ public final class IplShipPortalAnchor {
             || (ext.flippedPortal != null && ANCHORS.containsKey(ext.flippedPortal.getUUID()))
             || (ext.reversePortal != null && ANCHORS.containsKey(ext.reversePortal.getUUID()))
             || (ext.parallelPortal != null && ANCHORS.containsKey(ext.parallelPortal.getUUID()));
+    }
+
+    /**
+     * True for the anchored origin face and its same-level flipped face. These are the
+     * carrier's physical aperture faces; reverse and parallel faces are destination-world
+     * portals and keep their ordinary world block frame.
+     */
+    public static boolean isCarrierPortalFace(Portal portal) {
+        Anchor direct = ANCHORS.get(portal.getUUID());
+        if (direct != null) return true;
+        PortalExtension ext = PortalExtension.get(portal);
+        Anchor flipped = ext.flippedPortalId == null ? null : ANCHORS.get(ext.flippedPortalId);
+        if (flipped == null && ext.flippedPortal != null) {
+            flipped = ANCHORS.get(ext.flippedPortal.getUUID());
+        }
+        return flipped != null && portal.level().dimension().equals(flipped.portalDim());
     }
 
     /**
@@ -480,6 +500,24 @@ public final class IplShipPortalAnchor {
         portal.setRotation(rtNow);
         portal.reloadAndSyncToClientNextTick();
         PortalExtension.get(portal).rectifyClusterPortals(portal, true);
+        // Weld the physical rim at the same point that welds the portal aperture to
+        // the ship. Rectification moves the same-level flipped face too.
+        followCarrierRims(portal);
+    }
+
+    /** Create/update both same-level carrier-face rims from their rectified portal poses. */
+    private static void followCarrierRims(Portal portal) {
+        if (!(portal.level() instanceof ServerLevel level)) return;
+        IplPortalRimManager.followDrivenPortal(level, portal);
+        PortalExtension ext = PortalExtension.get(portal);
+        Portal flipped = ext.flippedPortal;
+        if (flipped == null && ext.flippedPortalId != null
+            && level.getEntity(ext.flippedPortalId) instanceof Portal byId) {
+            flipped = byId;
+        }
+        if (flipped != null && flipped.level() == portal.level()) {
+            IplPortalRimManager.followDrivenPortal(level, flipped);
+        }
     }
 
     // ------------------------------------------------------------------

@@ -158,10 +158,13 @@ public final class IplGrabChain {
 
             if (!identityRotation) {
                 frame.pendingRotations.add(new PendingRotation(frame.revision, new Quaterniond(rotation)));
-                IplStaffDragSessionControl session = liveSession(server, frame.playerId);
-                if (session != null) {
-                    session.ipl$reframeAfterTransit(rotation);
-                }
+            }
+            // The body is now in portal destination frame while its native motor still
+            // holds the prior source-frame target. Reframe it NOW, including identity-
+            // rotation portals, rather than letting the next physics substep correct it.
+            IplStaffDragSessionControl session = liveSession(server, frame.playerId);
+            if (session != null) {
+                session.ipl$reframeAfterTransit(portal);
             }
 
             ServerPlayer player = server.getPlayerList().getPlayer(frame.playerId);

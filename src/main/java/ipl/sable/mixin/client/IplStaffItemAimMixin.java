@@ -54,7 +54,13 @@ public abstract class IplStaffItemAimMixin {
                 player, sub, new Vec3(anchor.x(), anchor.y(), anchor.z()),
                 AnimationTickHolder.getPartialTicks()
             );
-            if (aim != null) return new Vector3d(aim.x, aim.y, aim.z);
+            // Item renderer normalizes this target into a barrel direction. Keep its
+            // target in the beam's visible frame, including an aperture endpoint.
+            if (aim != null) {
+                if (aim.distanceToSqr(player.getEyePosition(AnimationTickHolder.getPartialTicks())) > 1.0e-8) {
+                    return new Vector3d(aim.x, aim.y, aim.z);
+                }
+            }
         }
         return original.call(pose, local);
     }

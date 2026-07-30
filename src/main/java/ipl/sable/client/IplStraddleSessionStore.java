@@ -63,6 +63,9 @@ public final class IplStraddleSessionStore {
     /** Detached surrogate portals built from snapshot NBT, by portal id. */
     private static final ConcurrentMap<UUID, Portal> SURROGATES = new ConcurrentHashMap<>();
 
+    /** Server flips without a full client straddle keep this portal as a render-only tail. */
+    private static final ConcurrentMap<UUID, SessionPortal> HANDOFF_VISUALS = new ConcurrentHashMap<>();
+
     private IplStraddleSessionStore() {}
 
     /**
@@ -91,6 +94,48 @@ public final class IplStraddleSessionStore {
         return SESSIONS.containsKey(shipId);
     }
 
+    /**
+     * Resolves portal geometry carried by a parent-handoff RPC. The server may finish a
+     * crossing before IP tracks the source portal for this viewer, so an exact detached
+     * portal is required for the client AABB A→B proof.
+     */
+    @Nullable
+    public static Portal resolveHandoffPortal(
+        UUID portalId, String portalNbtB64, ClientLevel sourceLevel
+    ) {
+        Portal live = findPortal(sourceLevel, portalId);
+        return live != null ? live : surrogate(new SessionPortal(portalId, portalNbtB64), sourceLevel);
+    }
+
+    /** Drop an unreferenced handoff surrogate after its pending frame switch commits. */
+    public static void releaseHandoffPortal() {
+        discardUnreferencedSurrogates();
+    }
+
+    /** Starts a handoff visual tail before client A→B confirmation. */
+    public static void beginHandoffVisual(UUID shipId, UUID portalId, String portalNbtB64) {
+        SessionPortal next = new SessionPortal(portalId, portalNbtB64);
+        if (!next.equals(HANDOFF_VISUALS.put(shipId, next))) {
+            IplStraddleRenderCache.invalidateActivePasses();
+        }
+    }
+
+    /** Removes a completed or superseded handoff visual tail. */
+    public static void clearHandoffVisual(UUID shipId) {
+        if (HANDOFF_VISUALS.remove(shipId) != null) {
+            discardUnreferencedSurrogates();
+            IplStraddleRenderCache.invalidateActivePasses();
+        }
+    }
+
+    /** Discards a tail whose client object never materialized. */
+    public static void clearAllVisualState(UUID shipId) {
+        HANDOFF_VISUALS.remove(shipId);
+        discardUnreferencedSurrogates();
+        IplClientVisualTransitLatch.clear(shipId);
+        IplStraddleRenderCache.invalidateActivePasses();
+    }
+
     /** ALL resolvable session portals for this ship, session-start order (multi-straddle). */
     public static List<Portal> resolveAllPortals(ClientSubLevel sub) {
         if (sub == null) return List.of();
@@ -116,13 +161,8 @@ public final class IplStraddleSessionStore {
         if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
             return null;
         }
-        for (SessionPortal sessionPortal : portalsForRender(sub, level)) {
-            Portal live = findPortal(level, sessionPortal.portalId());
-            if (live != null) return live;
-            Portal surrogate = surrogate(sessionPortal, level);
-            if (surrogate != null) return surrogate;
-        }
-        return null;
+        List<Portal> portals = resolveRenderPortals(sub, level);
+        return portals.isEmpty() ? null : portals.get(0);
     }
 
     /** Render-only counterpart of {@link #resolveAllPortals}; never use for collision. */
@@ -131,24 +171,50 @@ public final class IplStraddleSessionStore {
         if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
             return List.of();
         }
+        return resolveRenderPortals(sub, level);
+    }
+
+    private static List<Portal> resolveRenderPortals(ClientSubLevel sub, ClientLevel level) {
         List<SessionPortal> portals = portalsForRender(sub, level);
-        if (portals.isEmpty()) return List.of();
-        List<Portal> out = new ArrayList<>(portals.size());
+        List<SessionPortal> active = SESSIONS.get(sub.getUniqueId());
+        List<Portal> out = new ArrayList<>(portals.size() + 1);
+        List<Portal> visibleActive = new ArrayList<>(portals.size());
         for (SessionPortal sessionPortal : portals) {
             Portal live = findPortal(level, sessionPortal.portalId());
             Portal resolved = live != null ? live : surrogate(sessionPortal, level);
-            if (resolved != null) out.add(resolved);
+            if (resolved == null) continue;
+
+            // A server session establishes the face immediately, but its physics pose is
+            // ahead of Sable's delayed render stream. Do not expose the source/destination
+            // split until that delayed volume reaches this finite aperture. Retired entries
+            // are already visual tails selected by portalsForRender and must stay visible.
+            boolean isActive = active != null && containsPortal(active, sessionPortal.portalId());
+            if (isActive && !IplClientVisualTransitLatch.isVisible(sub, resolved)) continue;
+            if (isActive) visibleActive.add(resolved);
+            out.add(resolved);
         }
-        return out;
+        SessionPortal handoffPortal = HANDOFF_VISUALS.get(sub.getUniqueId());
+        if (handoffPortal != null && !containsPortal(portals, handoffPortal.portalId())) {
+            Portal live = findPortal(level, handoffPortal.portalId());
+            Portal resolvedHandoff = live != null ? live : surrogate(handoffPortal, level);
+            // A one-tick server crossing has no regular session. Start its split only once
+            // delayed geometry reaches the finite aperture; then the pending handoff maps it.
+            if (resolvedHandoff != null && IplClientVisualTransitLatch.isVisible(sub, resolvedHandoff)) {
+                out.add(resolvedHandoff);
+            }
+        }
+        return IplClientVisualTransitLatch.append(sub, level, visibleActive, out);
     }
 
     /** Diagnostic: how a ship's session portal currently resolves. */
     public static String debugPortalKind(ClientSubLevel sub) {
         List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
         List<SessionPortal> retired = RETIRED.get(sub.getUniqueId());
-        if (portals == null && retired == null) return "no-session";
+        SessionPortal handoff = HANDOFF_VISUALS.get(sub.getUniqueId());
+        if (portals == null && retired == null && handoff == null) return "no-session";
         Portal resolved = resolveRenderPortal(sub);
-        int count = (portals == null ? 0 : portals.size()) + (retired == null ? 0 : retired.size());
+        int count = (portals == null ? 0 : portals.size()) + (retired == null ? 0 : retired.size())
+            + (handoff == null ? 0 : 1);
         if (resolved == null) return "session-UNRESOLVED(" + count + ")";
         return SURROGATES.get(resolved.getUUID()) == resolved
             ? "surrogate:" + resolved.getUUID() : "live:" + resolved.getUUID();
@@ -228,6 +294,7 @@ public final class IplStraddleSessionStore {
         Set<UUID> referenced = new HashSet<>();
         collectReferencedPortals(SESSIONS, referenced);
         collectReferencedPortals(RETIRED, referenced);
+        for (SessionPortal portal : HANDOFF_VISUALS.values()) referenced.add(portal.portalId());
         SURROGATES.keySet().retainAll(referenced);
     }
 

@@ -5,6 +5,8 @@ use jni::sys::{jboolean, jdouble, jint, jvalue};
 use marten::Real;
 use marten::level::VoxelColliderData;
 use rapier3d::geometry::{Collider, SolverContact};
+use rapier3d::pipeline::PairFilterContext;
+use rapier3d::prelude::SolverFlags;
 use rapier3d::glamx::DVec3;
 use rapier3d::math::{Pose, Vec3};
 use rapier3d::pipeline::{ContactModificationContext, PhysicsHooks};
@@ -21,6 +23,11 @@ pub struct SablePhysicsHooks {
 }
 
 impl PhysicsHooks for SablePhysicsHooks {
+    fn filter_contact_pair(&self, context: &PairFilterContext) -> Option<SolverFlags> {
+        if !crate::ipl_ext::portal_rim_contact_allowed(context) { return None; }
+        Some(SolverFlags::COMPUTE_IMPULSES)
+    }
+
     fn modify_solver_contacts(&self, context: &mut ContactModificationContext) {
         // IPSable aperture clipping (spec §2.5): runs for EVERY manifold that reaches the
         // hook, independent of the NEEDS_HOOKS block-property gate below. Reads go through

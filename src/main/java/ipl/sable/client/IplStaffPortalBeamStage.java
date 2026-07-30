@@ -1,10 +1,9 @@
 package ipl.sable.client;
 
-import foundry.veil.api.event.VeilRenderLevelStageEvent;
-import foundry.veil.platform.VeilEventPlatform;
 import ipl.sable.mixin.client.IplStaffPortalBeamPassMixin;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 
-/** Draw where Simulated normally draws: active world matrix, active portal camera, live stage. */
+/** Vanilla NeoForge stage, independent from Veil's shader and buffer pipeline. */
 public final class IplStaffPortalBeamStage {
 
     private static boolean initialized;
@@ -14,13 +13,16 @@ public final class IplStaffPortalBeamStage {
     public static void init() {
         if (initialized) return;
         initialized = true;
-        VeilEventPlatform.INSTANCE.onVeilRenderLevelStage((stage, renderer, buffer, matrixStack,
-            frustumMatrix, projectionMatrix, renderTick, deltaTracker, camera, frustum) -> {
-            if (stage != VeilRenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
-            IplStaffPortalBeamRenderer.render(
-                matrixStack.toPoseStack(), camera,
-                ((IplStaffPortalBeamPassMixin) (Object) renderer).ipl$getLevel()
-            );
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(RenderLevelStageEvent.class, event -> {
+            if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES
+                && event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
+            var level = ((IplStaffPortalBeamPassMixin) (Object) event.getLevelRenderer()).ipl$getLevel();
+            if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
+                IplEnteringVolumeRenderer.render(event.getPoseStack(),
+                    net.minecraft.client.Minecraft.getInstance().renderBuffers().bufferSource(), event.getCamera(), level);
+            } else {
+                IplStaffPortalBeamRenderer.render(event.getPoseStack(), event.getCamera(), level);
+            }
         });
     }
 }

@@ -45,21 +45,9 @@ public final class SableTransitController {
 
     /** Lateral aperture keep-margin for EXISTING sessions (grazing-flap hysteresis). */
     private static final double EXIT_APERTURE_MARGIN = 0.5;
-
-    /**
-     * Majority rehome (declarative-straddle phase 3): the transit fires when a live
-     * session's crossing fraction exceeds this threshold, instead of waiting for the
-     * trailing edge to clear. The declarative recompute derives the mirrored session
-     * on the reverse portal next tick (the minority-face rule picks it), so the
-     * remaining part keeps physics/render/collision through the handoff — and the
-     * majority-native invariant that makes parity geometric is actively maintained.
-     * {@code -Dipl.sable.majorityRehome=false} restores
-     * rehome-at-fully-CROSSED.
-     */
-    private static final boolean MAJORITY_REHOME =
-        !"false".equals(System.getProperty("ipl.sable.majorityRehome"));
-    private static final double REHOME_FRACTION =
-        Double.parseDouble(System.getProperty("ipl.sable.rehomeFraction", "0.6"));
+    /** Actor identity only changes at lifecycle seams, not on every physics tick. */
+    private static final int ACTOR_RESYNC_INTERVAL = 100;
+    private static long hostedTransitTick;
 
     private SableTransitController() {}
 
@@ -85,6 +73,8 @@ public final class SableTransitController {
         IplStraddleSessionSync.clearAll();
         IplPortalRimManager.clearAll();
         IplAtlasStraddleSession.clearAll();
+        IplPortalVolumeCache.clear();
+        PortalCrossingDetector.clearTrails();
         IplShipPortalAnchor.clearAll();
         IplShipNetherPortal.clearPending();
         SableRehomeOps.resetBootRestore();
@@ -98,6 +88,12 @@ public final class SableTransitController {
     public static void onContainerTick(ServerSubLevelContainer container) {
         ServerLevel level = (ServerLevel) container.getLevel();
         if (level == null) return;
+        level.getProfiler().push("ipl_sable_transit");
+        if (IplDimAgnostic.isHostingLevel(level)) {
+            IplEnteringVolumeVisualization.beginTick();
+            PortalCrossingDetector.beginTrailTick();
+            IplPortalVolumeCache.beginTick();
+        }
         // Always-on portal containment rims track portal entity lifecycle per level.
         IplPortalRimManager.tick(level);
         // Atlas keeps real bodies in the hosting chart and reconciles parent-chart images.
@@ -115,28 +111,30 @@ public final class SableTransitController {
             if (!(subLevel instanceof ServerSubLevel airship)) continue;
             if (airship.isRemoved()) continue;
 
-            // Self-heal stale physics-actor registrations. After a transit the dest chunk's
-            // block entities can be recreated by a chunk reprocess that doesn't re-fire
-            // plot.onBlockChange, leaving Sable's actor registry pointing at the old,
-            // orphaned BE (frozen rotationSpeed -> dead propeller/wheel-drive). This rebinds
-            // any stale actor to the live chunk BE. No-op (pure identity checks) for healthy
-            // airships, so it's safe to run every tick for every real sub-level.
-            int rebound = SableTransitOps.resyncStaleActors(airship);
-            if (rebound > 0) {
-                LOG.info("[IPL-TRANSIT] rebound {} stale physics actor(s) to live block "
-                    + "entities for uuid={}", rebound, airship.getUniqueId());
-            }
-
             boolean hosted = IplDimAgnostic.isHosted(airship);
             if (!hosted) {
                 continue;
             }
+            if (hostedTransitTick % ACTOR_RESYNC_INTERVAL == 0) {
+                int rebound = SableTransitOps.resyncStaleActors(airship);
+                if (rebound > 0) {
+                    LOG.info("[IPL-TRANSIT] rebound {} stale physics actor(s) to live block "
+                        + "entities for uuid={}", rebound, airship.getUniqueId());
+                }
+            }
+            IplPortalVolumeCache.touch(airship);
 
             ServerLevel portalQueryLevel = IplDimAgnostic.getServerParentLevel(airship);
             if (portalQueryLevel == null) continue;
+            IplEnteringVolumeVisualization.captureTick(airship, portalQueryLevel);
+            PortalCrossingDetector.captureTrail(airship);
 
             // Convert Sable's BoundingBox3d to MC AABB for the portal query.
-            AABB airshipAabb = airship.boundingBox().toMojang().inflate(PORTAL_QUERY_INFLATION);
+            // Staff's PD motor can cross a complete portal in one tick. Query the swept OBB,
+            // not only the final pose, or the source aperture is already out of range and the
+            // detector never sees its own fast-crossing path.
+            AABB airshipAabb = PortalCrossingDetector.sweptBounds(airship)
+                .inflate(PORTAL_QUERY_INFLATION);
             List<Portal> nearby = portalQueryLevel.getEntitiesOfClass(
                 Portal.class,
                 airshipAabb,
@@ -166,17 +164,10 @@ public final class SableTransitController {
             // must remain independent; UUID order makes equivalent companions stable.
             nearby.sort(Comparator.comparing(portal -> portal.getUUID().toString()));
 
-            // DECLARATIVE session derivation (phase 2 of the declarative-straddle
-            // rework): a session exists iff the ship's OBB currently STRADDLES a
-            // portal's plane THROUGH its aperture — no entry events, no latches.
-            // Existing sessions are kept with a lateral aperture margin (hysteresis
-            // against grazing flap); new sessions additionally require the minority-
-            // face parity rule: of a pair of coincident opposite faces, only the one
-            // whose crossing direction puts LESS than half the ship "through" may
-            // open a session — with the majority-native invariant, the through part
-            // is always the minority, which makes parity geometric, not historical.
-            // Transit fires when a LIVE session reaches CROSSED (the session is the
-            // straddle memory), or on a genuine single-tick aperture crossing.
+            // A session begins only from the continuous occupied-cube sweep. Its B cap is
+            // part of that same sweep, so first contact at B starts a session even when the
+            // earlier trail never met the plane. A body fully beyond B transits immediately
+            // if its trail crossed the aperture; there is no endpoint fallback detector.
             boolean candidateAddedForAirship = false;
             for (Portal portal : nearby) {
                 if (!ipl$isCanonicalEntranceFace(portal, nearby)) continue;
@@ -204,52 +195,37 @@ public final class SableTransitController {
                 PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
                     airship, portal, normal, haveSession ? EXIT_APERTURE_MARGIN : 0.0);
 
-                boolean straddlingAperture =
-                    state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
-                        && state.intersectsPortalAperture();
+                boolean straddlingAperture = state.phase()
+                    == PortalCrossingDetector.CrossingPhase.STRADDLING
+                    && state.currentIntersectsPortalAperture()
+                    // A live session is pinned to this face. A new one additionally
+                    // needs continuous source-to-destination sweep evidence.
+                    && (haveSession || state.sweptIntersectsPortalAperture());
 
                 if (straddlingAperture) {
-                    double fraction = ipl$crossedFraction(airship, portal, normal);
-
-                    // A two-sided doorway is one aperture, not two independent transit
-                    // directions. Pick its owner from actual motion: a body can straddle
-                    // either face, but only the face whose source-to-destination normal
-                    // agrees with current motion may create or retain the session. This
-                    // keeps a connected trailing body from disappearing into the back face.
                     Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
-                    if (!ipl$ownsCoincidentFace(airship, portal, twin, normal, haveSession)) {
-                        continue;
-                    }
 
-                    // Minority-face parity: the opposite coincident face evaluates
-                    // the same geometry with the complementary fraction and claims it.
-                    if (!haveSession && fraction > 0.5 + 1.0e-6) {
+                    // The aperture has two faces. New sessions belong only to the face
+                    // crossed by the real swept block volume; an existing session keeps
+                    // its face while the ship backs out through the same aperture.
+                    if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession)) {
                         continue;
                     }
 
                     // ONE SESSION PER COINCIDENT-FACE PAIR (dual-parity exclusion).
-                    // The minority rule gates only at OPEN time: oscillating through
-                    // 0.5 let the OPPOSITE face open its own session (its complement
-                    // dips under 0.5 while this face's session lives), and the back
-                    // face's majority rehome then teleported a backing-out ship
-                    // through the mirrored mapping — the "wrong logical side"
-                    // oscillation bug. A live session on the twin owns the doorway's
-                    // parity; this face may not open. Scoped to coincident opposite
-                    // faces only — multi-straddle sessions on DIFFERENT doorways are
-                    // unaffected.
+                    // A live session on the twin owns the doorway's parity; this face
+                    // may not open. Scoped to coincident opposite faces only —
+                    // multi-straddle sessions on DIFFERENT doorways are unaffected.
                     boolean twinHasSession = twin != null
                         && ipl$hasAnySession(airship.getUniqueId(), twin);
                     if (!haveSession && twinHasSession) {
                         continue;
                     }
-                    if (haveSession && twinHasSession && fraction <= 0.5 + 1.0e-6) {
-                        // Defensive self-heal — structurally unreachable once the
-                        // exclusion is in (runtime sessions can't persist a dual
-                        // state), but any unknown race resolves toward the
-                        // majority-native invariant: the minority face yields, the
-                        // majority twin proceeds to its legitimate rehome.
+                    if (haveSession && twinHasSession) {
+                        // Defensive self-heal. Runtime sessions cannot normally persist
+                        // a dual state; a deterministic UUID order chooses stale loser.
                         LOG.warn("[IPL-TRANSIT] dual-parity sessions on coincident "
-                            + "faces for uuid={} — clearing minority face {}",
+                            + "faces for uuid={} — clearing duplicate face {}",
                             airship.getUniqueId(), portalUuid);
                         IplAtlasStraddleSession.clear(key, "dual-parity-heal");
                         IplStraddleSessionSync.onSessionEnd(
@@ -257,21 +233,7 @@ public final class SableTransitController {
                         continue;
                     }
                     seenHostedKeys.add(key);
-
-                    // Majority rehome: past the threshold the dest side owns the ship —
-                    // flip NOW. The session is NOT cleared here: it dies only when the
-                    // transit actually succeeds (see the candidate execution). Clearing
-                    // first stranded ships whose transit failed once — past 0.5 the
-                    // minority rule refuses to re-open this face and would open the
-                    // OPPOSITE face with inverted parity instead, making forward travel
-                    // structurally impossible.
-                    if (MAJORITY_REHOME && haveSession && fraction > REHOME_FRACTION) {
-                        if (candidates == null) candidates = new ArrayList<>(1);
-                        candidates.add(new TransitCandidate(
-                            airship, portal, true, ipl$rigidGroupMates(airship)));
-                        candidateAddedForAirship = true;
-                        break;
-                    }
+                    IplEnteringVolumeVisualization.clearBuffer(airship);
 
                     // Session first, sync second: the one-session-per-ship gate (and
                     // any other spawn decline) must be able to veto BEFORE the client
@@ -284,21 +246,57 @@ public final class SableTransitController {
                     continue;
                 }
 
+                boolean completedOwnedCrossing = haveSession
+                    ? ipl$continuesThroughOwnedFace(state, true)
+                    : state.startedBeforePortalPlane()
+                        && state.sweptIntersectsPortalAperture()
+                        && ipl$continuesThroughOwnedFace(state, false);
                 if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
-                    && (haveSession || state.enteredFromSourceAperture())) {
-                    if (haveSession) {
-                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "crossed");
+                    && completedOwnedCrossing) {
+                    // A live session is proof that this exact face admitted the source
+                    // volume. Once every block has left through its destination side,
+                    // rehome must not depend on the short diagnostic trail still touching
+                    // the aperture: slow, long ships can finish after that trail expired.
+                    // Without a session (one-tick crossing), retain the full finite sweep
+                    // evidence before allowing the handoff.
+                    Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
+                    if (!haveSession && twin != null
+                        && ipl$hasAnySession(airship.getUniqueId(), twin)) {
+                        // Backing out can leave this opposite face fully crossed. The
+                        // already-live session owns the doorway until it reaches source.
+                        continue;
                     }
-                    IplAtlasStraddleSession.clear(key, "crossed");
+                    if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession)) {
+                        continue;
+                    }
+                    // Candidate execution happens after the declarative reap. Keep the
+                    // image/clip seam alive through the handoff, then retire it only after
+                    // the mapped body and client timeline have switched frames.
+                    if (haveSession) seenHostedKeys.add(key);
                     if (candidates == null) candidates = new ArrayList<>(1);
                     candidates.add(new TransitCandidate(
-                        airship, portal, false, ipl$rigidGroupMates(airship)));
+                        airship, portal, haveSession, ipl$rigidGroupMates(airship)));
                     candidateAddedForAirship = true;
+                } else if (haveSession
+                    && state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
+                    && state.currentSweepDirection() == PortalCrossingDetector.SweepDirection.TOWARD_SOURCE) {
+                    // A pulled-back body can remain wholly destination-side for one tick.
+                    // Keep its original face pinned until it crosses the source exit band.
+                    seenHostedKeys.add(key);
+                    IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
+                    continue;
                 } else {
                     String reason = state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
                         ? "backed-out" : "left-aperture";
                     if (haveSession) {
                         IplAtlasStraddleSession.clear(key, reason);
+                        // The source-frame debug buffer is replaced in the same tick as
+                        // a complete exit, rather than waiting for next tick's capture.
+                        IplEnteringVolumeVisualization.replaceBuffer(airship);
+                        PortalCrossingDetector.resetTrail(airship);
+                        // Do not evaluate the opposite coincident face using the unwound
+                        // segment. Fresh trail starts next tick from this real source pose.
+                        break;
                     }
                     // Unconditional + idempotent: a synced session whose spawn kept
                     // failing has no local session key but must still be retracted.
@@ -327,9 +325,18 @@ public final class SableTransitController {
                     IplStraddleSessionSync.onSessionEnd(level.getServer(), k, "reaped");
                 }
             }
+            PortalCrossingDetector.pruneTrails();
+            IplPortalVolumeCache.prune();
+            hostedTransitTick++;
         }
 
-        if (candidates == null) return;
+        if (candidates == null) {
+            if (IplDimAgnostic.isHostingLevel(level)) {
+                IplEnteringVolumeVisualization.flush(level.getServer());
+            }
+            level.getProfiler().pop();
+            return;
+        }
 
         java.util.Set<UUID> flippedThisTick = new java.util.HashSet<>();
         for (TransitCandidate c : candidates) {
@@ -340,34 +347,21 @@ public final class SableTransitController {
                 boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal);
                 if (flipped) {
                     flippedThisTick.add(uuid);
-                    // Rehome candidates keep their session until the transit SUCCEEDS
-                    // (a pre-cleared session on a failed transit strands the ship past
-                    // 0.5, where the minority rule can only re-open inverted parity).
-                    if (c.rehome()) {
+                    if (c.hadSession()) {
                         StraddleKey key = new StraddleKey(uuid, c.portal.getUUID());
-                        // executeHostedTransit queues the client session-end immediately
-                        // before the parent handoff. Keep the native Atlas image alive until
-                        // that successful flip is complete, then retire it here.
-                        IplAtlasStraddleSession.clear(key, "rehomed");
+                        IplAtlasStraddleSession.clear(key, "crossed");
                     }
-                    // No exit lock anymore (declarative phase 3): re-transiting the
-                    // reverse portal requires a genuine majority back-crossing — the
-                    // minority-face rule opens the reverse session at ~1-REHOME_FRACTION
-                    // and the ship must travel the full hysteresis band to flip again.
+                    // An immediate fast crossing may never have spent a whole tick in a
+                    // straddle session. Its source-frame debug buffer is still invalid
+                    // after the parent flip and must not linger behind the portal.
+                    IplEnteringVolumeVisualization.clearBuffer(c.airship);
+                    PortalCrossingDetector.forgetTrail(c.airship);
                     // Grab chains of every player holding this body rebase through the
                     // exact crossing portal (goal, orientation, beam — one event).
                     IplGrabChain.onBodyTransit(level.getServer(), c.airship.getUniqueId(), c.portal);
                     // Ropes span the portal instead of gating it: re-seam this ship's
                     // rope ends through the transit isometry (pull-through behavior).
                     IplRopePortalSeam.onShipTransit(c.airship, c.portal);
-                    // EAGER re-derivation: a majority rehome leaves the minority part
-                    // still straddling. Waiting for the next tick's recompute opened a
-                    // one-tick hole (no image and no collision in the old dim —
-                    // riders fell through). Deriving the reverse session NOW is the same
-                    // declarative rule, just evaluated immediately: the client receives
-                    // session-end + handoff + session-start in one packet flush.
-                    ipl$deriveReverseSessionNow(c.airship, c.portal);
-
                     // Rigid mates (swivel bearings, couplings) cross ATOMICALLY with
                     // this body — a rigid assembly is one construction, and any split
                     // leaves a joint spanning raw source/dest coordinates.
@@ -384,22 +378,22 @@ public final class SableTransitController {
                         }
                         StraddleKey mateKey = new StraddleKey(mateId, c.portal.getUUID());
                         IplAtlasStraddleSession.clear(mateKey, "rehomed-group");
+                        PortalCrossingDetector.forgetTrail(mate);
                         IplStraddleSessionSync.onSessionEnd(
                             level.getServer(), mateKey, "rehomed-group");
                         IplGrabChain.onBodyTransit(level.getServer(), mateId, c.portal);
                         IplRopePortalSeam.onShipTransit(mate, c.portal);
-                        ipl$deriveReverseSessionNow(mate, c.portal);
                     }
-                } else if (c.rehome()) {
-                    LOG.warn("[IPL-TRANSIT] majority rehome transit declined for uuid={} "
-                        + "portal={} — session retained, retrying next tick",
-                        uuid, c.portal.getUUID());
                 }
             } catch (Throwable t) {
                 LOG.error("[IPL-TRANSIT] uncaught exception executing transit for uuid={}",
                     uuid, t);
             }
         }
+        if (IplDimAgnostic.isHostingLevel(level)) {
+            IplEnteringVolumeVisualization.flush(level.getServer());
+        }
+        level.getProfiler().pop();
     }
 
     /**
@@ -447,39 +441,20 @@ public final class SableTransitController {
 
 
     /**
-     * Fraction of the ship's AABB extent past the portal plane along
-     * {@code sourceToDest} — the minority-face parity test for NEW sessions: of two
-     * coincident opposite faces, only the one seeing less than half the ship
-     * "through" may open a session, so the majority side is always the native one.
-     * (Per-session normal locking is gone: the crossing direction is a constant of
-     * the portal FACE, {@code -getNormal()}, and face selection itself is what this
-     * rule pins down.)
-     */
-    private static double ipl$crossedFraction(
-        ServerSubLevel airship, Portal portal, Vec3 sourceToDest
-    ) {
-        dev.ryanhcode.sable.companion.math.BoundingBox3dc box = airship.boundingBox();
-        Vec3 p = portal.getOriginPos();
-        double tc = ((box.minX() + box.maxX()) * 0.5 - p.x) * sourceToDest.x
-                  + ((box.minY() + box.maxY()) * 0.5 - p.y) * sourceToDest.y
-                  + ((box.minZ() + box.maxZ()) * 0.5 - p.z) * sourceToDest.z;
-        double r = (box.maxX() - box.minX()) * 0.5 * Math.abs(sourceToDest.x)
-                 + (box.maxY() - box.minY()) * 0.5 * Math.abs(sourceToDest.y)
-                 + (box.maxZ() - box.minZ()) * 0.5 * Math.abs(sourceToDest.z);
-        double tMin = tc - r, tMax = tc + r;
-        if (tMax <= 0.0) return 0.0;
-        if (tMin >= 0.0 || tMax - tMin < 1e-9) return 1.0;
-        return tMax / (tMax - tMin);
-    }
-
-    /**
      * The coincident OPPOSITE face of {@code portal} (the other side of the same
      * physical doorway), or null. The cluster link is authoritative when present;
      * the geometric fallback covers independent back-to-back portals with no
      * extension binding (same plane, opposed normals, same extents).
      */
     private static Portal ipl$oppositeCoincidentFace(Portal portal, List<Portal> candidates) {
-        Portal flipped = qouteall.imm_ptl.core.portal.PortalExtension.get(portal).flippedPortal;
+        qouteall.imm_ptl.core.portal.PortalExtension extension =
+            qouteall.imm_ptl.core.portal.PortalExtension.get(portal);
+        Portal flipped = extension.flippedPortal;
+        if (flipped == null && extension.flippedPortalId != null
+            && portal.level() instanceof ServerLevel level
+            && level.getEntity(extension.flippedPortalId) instanceof Portal byId) {
+            flipped = byId;
+        }
         if (flipped != null && !flipped.isRemoved()) return flipped;
         for (Portal other : candidates) {
             if (other == portal) continue;
@@ -497,23 +472,32 @@ public final class SableTransitController {
         return IplAtlasStraddleSession.hasSessionKey(key);
     }
 
-    /** Resolve a coincident two-sided aperture by directed motion. Zero-motion entry falls
-     * through to the existing deterministic minority/twin rule, so held bodies can create a
-     * stable session before acquiring velocity. */
+    /**
+     * A new session belongs to the signed direction of the retained swept trail. The
+     * trail covers a physics segment which may have completed before this controller
+     * observes a stationary B pose. `resetTrail` after a complete exit makes that old
+     * segment unavailable to the opposite face on the next approach.
+     */
     private static boolean ipl$ownsCoincidentFace(
-        ServerSubLevel airship, Portal face, Portal twin, Vec3 sourceToDest, boolean hasSession
+        Portal face, Portal twin, PortalCrossingDetector.CrossingState state, boolean haveSession
     ) {
         if (twin == null) return true;
-        StraddleKey twinKey = new StraddleKey(airship.getUniqueId(), twin.getUUID());
-        if (IplAtlasStraddleSession.hasSessionKey(twinKey)) return false;
-        if (hasSession) return true;
-        Vec3 velocity = new Vec3(
-            airship.logicalPose().position().x() - airship.lastPose().position().x(),
-            airship.logicalPose().position().y() - airship.lastPose().position().y(),
-            airship.logicalPose().position().z() - airship.lastPose().position().z());
-        double directedMotion = velocity.dot(sourceToDest);
-        if (Math.abs(directedMotion) <= 1.0e-7) return true;
-        return directedMotion > 0.0;
+        if (haveSession) return true;
+        return switch (state.sweptEntryDirection()) {
+            case TOWARD_DESTINATION -> true;
+            case TOWARD_SOURCE -> false;
+            // No directional physical crossing exists: never manufacture a portal face.
+            case AMBIGUOUS, NONE -> false;
+        };
+    }
+
+    /** Existing session pins its face; only forward motion may finish its parent handoff. */
+    private static boolean ipl$continuesThroughOwnedFace(
+        PortalCrossingDetector.CrossingState state, boolean haveSession
+    ) {
+        return haveSession
+            ? state.currentSweepDirection() != PortalCrossingDetector.SweepDirection.TOWARD_SOURCE
+            : state.sweptEntryDirection() == PortalCrossingDetector.SweepDirection.TOWARD_DESTINATION;
     }
 
     /**
@@ -539,62 +523,8 @@ public final class SableTransitController {
         return true;
     }
 
-    /**
-     * Evaluate the declarative session rule for the REVERSE portal immediately after a
-     * majority rehome, instead of waiting one tick for the normal recompute. Considers
-     * both faces of the reverse pair; the minority-face rule picks the correct one
-     * (the freshly-flipped ship sits at ~{@code 1 - REHOME_FRACTION} through it, and
-     * the opposite face fails the ≤0.5 test). Idempotent with the next tick's loop.
-     */
-    private static void ipl$deriveReverseSessionNow(ServerSubLevel airship, Portal entrance) {
-        ServerLevel newParent = IplDimAgnostic.getServerParentLevel(airship);
-        if (newParent == null) return;
-
-        List<Portal> faces = new ArrayList<>(2);
-        Portal reverse = qouteall.imm_ptl.core.portal.PortalExtension.get(entrance).reversePortal;
-        if (reverse != null) faces.add(reverse);
-        if (reverse != null) {
-            Portal twin = qouteall.imm_ptl.core.portal.PortalExtension.get(reverse).flippedPortal;
-            if (twin != null) faces.add(twin);
-        }
-
-        for (Portal face : faces) {
-            if (face.isRemoved() || !face.isTeleportable()) continue;
-            if (!ipl$isCanonicalEntranceFace(face, faces)) continue;
-
-            Vec3 normal = face.getNormal().scale(-1.0);
-            PortalCrossingDetector.CrossingState state =
-                PortalCrossingDetector.evaluate(airship, face, normal);
-            if (state.phase() != PortalCrossingDetector.CrossingPhase.STRADDLING
-                || !state.intersectsPortalAperture()) {
-                continue;
-            }
-            if (ipl$crossedFraction(airship, face, normal) > 0.5 + 1.0e-6) continue;
-
-            // Same dual-parity exclusion as the main loop: the doorway's parity
-            // belongs to at most one face.
-            Portal twin = ipl$oppositeCoincidentFace(face, faces);
-            if (twin != null && ipl$hasAnySession(airship.getUniqueId(), twin)) continue;
-
-            // Session first, sync second: the sync must never announce a session
-            // whose spawn was declined (e.g. a transient chart image update lands a tick
-            // later) — the next tick's recompute then derives it normally.
-            IplAtlasStraddleSession.onStraddleTick(airship, face, normal);
-            StraddleKey key = new StraddleKey(airship.getUniqueId(), face.getUUID());
-            if (IplAtlasStraddleSession.hasSessionKey(key)) {
-                IplStraddleSessionSync.onSessionStart(newParent.getServer(), airship, face);
-                LOG.info("[IPL-TRANSIT] eager reverse session uuid={} portal={}",
-                    airship.getUniqueId(), face.getUUID());
-            } else {
-                LOG.info("[IPL-TRANSIT] eager reverse session deferred for uuid={} "
-                    + "(spawn declined; next tick derives it)", airship.getUniqueId());
-            }
-            return;
-        }
-    }
-
     private record TransitCandidate(
-        ServerSubLevel airship, Portal portal, boolean rehome,
+        ServerSubLevel airship, Portal portal, boolean hadSession,
         java.util.List<ServerSubLevel> mates
     ) {}
 }

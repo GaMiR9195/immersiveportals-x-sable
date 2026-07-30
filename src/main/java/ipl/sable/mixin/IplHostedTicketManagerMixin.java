@@ -87,20 +87,16 @@ public abstract class IplHostedTicketManagerMixin {
         if (!ipl.sable.dim.IplSceneOwnership.isEnabled()) return;
         if (IplDimAgnostic.isHostingLevel(level)) return;
 
-        dev.ryanhcode.sable.api.sublevel.SubLevelContainer hostingContainer =
-            IplDimAgnostic.getHostingContainerFor(level);
-        if (hostingContainer == null) return;
-
         BoundingBox3d b = new BoundingBox3d();
         BoundingBox3d b2 = new BoundingBox3d();
         Vector3d velocity = new Vector3d();
         long gameTime = level.getGameTime();
         int enrolledShips = 0;
 
-        for (dev.ryanhcode.sable.sublevel.SubLevel anySub : hostingContainer.getAllSubLevels()) {
-            if (!(anySub instanceof ServerSubLevel subLevel)) continue;
+        // Atlas indexes bodies by parent once per hosting tick. Scanning every hosted
+        // ship from every parent chart made terrain enrollment O(charts * ships).
+        for (ServerSubLevel subLevel : ipl.sable.dim.IplSceneOwnership.hostedInParent(level)) {
             if (subLevel.isRemoved()) continue;
-            if (IplDimAgnostic.getServerParentLevel(subLevel) != level) continue;
 
             // Parent-pointer load gate: a ship whose parent chunk is unloaded goes
             // DORMANT (native body Fixed) and is skipped entirely — always-live plot

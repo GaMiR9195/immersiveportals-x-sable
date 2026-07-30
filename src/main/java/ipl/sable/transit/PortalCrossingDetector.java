@@ -1,248 +1,425 @@
 package ipl.sable.transit;
 
-import dev.ryanhcode.sable.companion.math.BoundingBox3ic;
+import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
-import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import qouteall.imm_ptl.core.portal.Portal;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
 /**
- * Edge-interval crossing model for an airship straddling a portal.
+ * History-backed finite-aperture swept-AABB detector.
  *
- * <p><b>The idea (and why it's rotation-invariant):</b> rather than track "the
- * leading edge" as a specific block -- which changes as the ship rotates -- we
- * project the ship's whole oriented bounding box onto the portal's (stable,
- * source->dest) normal and take the extremes. For a normal {@code n} pointing
- * source->dest and a plane through {@code p}, each corner {@code x} has signed
- * distance {@code d(x) = n . (x - p)}; dest-side points are positive, source-side
- * negative. Over the 8 OBB corners that yields an interval {@code [dMin, dMax]}:
- * <ul>
- *   <li>{@code dMax} = furthest toward dest = the <b>leading edge</b>;</li>
- *   <li>{@code dMin} = furthest toward source = the <b>trailing edge</b>.</li>
- * </ul>
- * {@code dMax} is a {@code max} over all corners, so as the ship rotates it
- * smoothly tracks whichever corner is currently furthest through -- no edge
- * identity to maintain, no velocity, no ship-fixed normal.
- *
- * <p>Three phases follow from the interval:
- * <table>
- *   <tr><th>Phase</th><th>Condition</th><th>Meaning</th></tr>
- *   <tr><td>APPROACHING</td><td>{@code dMax < 0}</td>
- *       <td>even the leading edge hasn't reached the plane -> mirror hidden</td></tr>
- *   <tr><td>STRADDLING</td><td>{@code dMin < 0 <= dMax}</td>
- *       <td>leading edge through, trailing not -> mirror visible</td></tr>
- *   <tr><td>CROSSED</td><td>{@code dMin >= 0}</td>
- *       <td>trailing edge passed -> whole ship dest-side -> swap</td></tr>
- * </table>
- *
- * <p>This is exactly the user's "deformation collapses when it equals the ship's
- * size" intuition: deformation depth (how far the leading edge has pushed past)
- * {@code = dMax}, ship size along the normal {@code = dMax - dMin}, and
- * {@code dMax >= dMax - dMin} simplifies to {@code dMin >= 0} -- the CROSSED
- * condition. The "deformed window" is the interval {@code [dMin, dMax]} sliding
- * through zero; it "collapses" the instant the trailing edge clears.
- *
- * <p><b>Stable normal:</b> the caller passes the source->dest normal locked at
- * first contact (see {@code SableTransitController}'s per-session normal lock),
- * NOT the portal's raw normal re-derived each tick. That lock keeps "toward dest"
- * consistent through a mid-straddle rotation -- without it, a rotating ship near a
- * two-faced portal could flip which side is dest and bounce between phases.
- *
- * <p><b>OBB, not world AABB:</b> we transform the plot's local bounds through the
- * sub-level pose to get a tight oriented box. World AABB would over-estimate --
- * showing the mirror early and swapping late. (The OBB is still the plot bounds,
- * not the exact block hull, so a sparse airship's empty corners count as "ship" --
- * swaps a hair conservatively. Acceptable; tightening to mass-tracker bounds is a
- * future refinement.)
+ * <p>For every occupied cube, each physics segment sweeps its endpoint AABB center through
+ * a portal aperture expanded by that AABB's half-extents (Minkowski sum). Plane and aperture
+ * are clipped as one continuous segment test, not tick samples or rays. Two adjacent physics
+ * segments are retained: a portal skipped between one pair of visible poses remains eligible
+ * when its final pose is inspected on the following tick.
  */
 public final class PortalCrossingDetector {
 
+    private static final double EPSILON = 1.0e-8;
+    /** Half-depth of portal entry/exit hysteresis; not part of face direction. */
+    private static final double PORTAL_HYSTERESIS_DEPTH = 0.08;
+    private static final Map<UUID, Trail> TRAILS = new HashMap<>();
+    private static long trailTick;
+
     private PortalCrossingDetector() {}
 
-    public enum CrossingPhase {
-        /** Entire ship on the source side; leading edge hasn't reached the plane. */
-        APPROACHING,
-        /** Leading edge through the plane, trailing edge not yet -> show mirror. */
-        STRADDLING,
-        /** Entire ship past the plane (trailing edge cleared) -> swap. */
-        CROSSED
+    public enum CrossingPhase { APPROACHING, STRADDLING, CROSSED }
+    public enum SweepDirection { TOWARD_DESTINATION, TOWARD_SOURCE, AMBIGUOUS, NONE }
+
+    public record CrossingState(
+        CrossingPhase phase,
+        boolean startedBeforePortalPlane,
+        boolean sweptIntersectsPortalAperture,
+        boolean currentIntersectsPortalAperture,
+        SweepDirection sweptEntryDirection,
+        SweepDirection currentSweepDirection
+    ) {
+        public boolean sweptTowardDestination() {
+            return sweptEntryDirection == SweepDirection.TOWARD_DESTINATION;
+        }
+    }
+
+    /** Starts one hosting-container sweep; stale trail entries are pruned at its end. */
+    public static void beginTrailTick() {
+        trailTick++;
+    }
+
+    /** Removes trails for ships no longer visited by the hosting container. */
+    public static void pruneTrails() {
+        TRAILS.entrySet().removeIf(entry -> entry.getValue().lastSeenTick != trailTick);
+    }
+
+    /** Capture once before broad-phase query. Retains a continuous two-tick pose trail. */
+    public static void captureTrail(ServerSubLevel airship) {
+        UUID id = airship.getUniqueId();
+        Trail trail = TRAILS.get(id);
+        if (trail == null) {
+            trail = new Trail(new Pose3d(airship.lastPose()), new Pose3d(airship.lastPose()),
+                new Pose3d(airship.logicalPose()));
+            TRAILS.put(id, trail);
+        } else {
+            // Reuse all pose objects. The old implementation allocated three poses and
+            // a record for every hosted ship every server tick.
+            trail.older.set(trail.start);
+            trail.hasOlder = true;
+            trail.start.set(airship.lastPose());
+            trail.end.set(airship.logicalPose());
+        }
+        trail.lastSeenTick = trailTick;
+    }
+
+    /** Forget source-frame history after a parent flip; it cannot be joined to destination poses. */
+    public static void forgetTrail(ServerSubLevel airship) {
+        TRAILS.remove(airship.getUniqueId());
     }
 
     /**
-     * Result of an edge-interval evaluation: the phase plus the raw edge distances
-     * (signed distance to the plane along the source->dest normal). {@code leadingEdge}
-     * is the maximum (furthest toward dest), {@code trailingEdge} the minimum
-     * (furthest toward source).
+     * A completed source-side exit starts a fresh trail at its current pose. This discards
+     * the just-unwound portal segment, so it cannot claim the coincident back face next tick.
      */
-    public record CrossingState(
-        CrossingPhase phase, double leadingEdge, double trailingEdge,
-        boolean intersectsPortalAperture,
-        boolean enteredFromSourceAperture
-    ) {}
+    public static void resetTrail(ServerSubLevel airship) {
+        Trail trail = TRAILS.get(airship.getUniqueId());
+        if (trail == null) {
+            captureTrail(airship);
+            return;
+        }
+        trail.older.set(airship.logicalPose());
+        trail.start.set(airship.logicalPose());
+        trail.end.set(airship.logicalPose());
+        trail.hasOlder = false;
+        trail.lastSeenTick = trailTick;
+    }
 
-    /**
-     * Evaluate the airship's crossing phase against {@code portal}, projecting its
-     * OBB onto {@code sourceToDestNormal} (already oriented + locked by the caller).
-     * The plane passes through {@code portal.getOriginPos()}.
-     */
+    public static void clearTrails() {
+        TRAILS.clear();
+        trailTick = 0L;
+    }
+
+    /** Debug-only prior endpoint. Null until the current ship has one completed segment. */
+    public static Pose3dc bufferedPose(ServerSubLevel airship) {
+        Trail trail = TRAILS.get(airship.getUniqueId());
+        return trail != null && trail.hasOlder ? trail.older : null;
+    }
+
+    /** Broad phase covers both retained swept segments. */
+    public static AABB sweptBounds(ServerSubLevel airship) {
+        Trail trail = trail(airship);
+        Bounds bounds = new Bounds();
+        includePlotBounds(bounds, airship, trail.start);
+        includePlotBounds(bounds, airship, trail.end);
+        if (trail.hasOlder) includePlotBounds(bounds, airship, trail.older);
+        return new AABB(bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ);
+    }
+
     public static CrossingState evaluate(ServerSubLevel airship, Portal portal, Vec3 sourceToDestNormal) {
         return evaluate(airship, portal, sourceToDestNormal, 0.0);
     }
 
-    /**
-     * Evaluates a crossing with an optional lateral aperture expansion. The
-     * expansion affects width/height only; the portal plane remains zero-thickness.
-     */
     public static CrossingState evaluate(
         ServerSubLevel airship, Portal portal, Vec3 sourceToDestNormal, double apertureMargin
     ) {
-        LevelPlot plot = airship.getPlot();
-        BoundingBox3ic local = plot.getBoundingBox();
-        ObbSample current = sample(local, airship.logicalPose(), portal.getOriginPos(), sourceToDestNormal);
-        ObbSample previous = sample(local, airship.lastPose(), portal.getOriginPos(), sourceToDestNormal);
+        List<BlockPos> blocks = IplPortalVolumeCache.blocks(airship);
+        if (blocks.isEmpty()) {
+            return new CrossingState(
+                CrossingPhase.APPROACHING, false, false, false,
+                SweepDirection.NONE, SweepDirection.NONE);
+        }
 
-        CrossingPhase phase = getPhase(current.minDistance, current.maxDistance);
-        CrossingPhase previousPhase = getPhase(previous.minDistance, previous.maxDistance);
-        boolean intersectsAperture = phase == CrossingPhase.STRADDLING
-            && intersectsPortalAperture(portal, local, airship.logicalPose(), current.corners, current.distances,
-            apertureMargin);
-        boolean previousIntersectsAperture = previousPhase == CrossingPhase.STRADDLING
-            && intersectsPortalAperture(portal, local, airship.lastPose(), previous.corners, previous.distances,
-            apertureMargin);
+        Trail trail = trail(airship);
+        Frame start = new Frame(trail.start);
+        Frame end = new Frame(trail.end);
+        Frame older = trail.hasOlder ? new Frame(trail.older) : null;
+        Sample current = sample(blocks, end, portal.getOriginPos(), sourceToDestNormal);
+        Sample oldest = sample(blocks, older == null ? start : older, portal.getOriginPos(), sourceToDestNormal);
+        SweepResult recent = sweepSegment(
+            portal, blocks, start, end, sourceToDestNormal, apertureMargin);
+        SweepResult historic = older == null ? SweepResult.NONE : sweepSegment(
+            portal, blocks, older, start, sourceToDestNormal, apertureMargin);
+        SweepResult sweep = recent.mergePreferred(historic);
 
-        Vec3 portalNormal = portal.getNormal();
-        double previousSourceDistance = previous.center.subtract(portal.getOriginPos()).dot(portalNormal);
-        boolean enteredFromSourceAperture = previousSourceDistance > 0.0
-            && previousPhase == CrossingPhase.APPROACHING
-            && phase != CrossingPhase.APPROACHING
-            && (intersectsAperture || previousIntersectsAperture
-                || sweptThroughPortalAperture(portal, previous, current));
-        return new CrossingState(
-            phase, current.maxDistance, current.minDistance, intersectsAperture,
-            enteredFromSourceAperture
-        );
+        CrossingState result = new CrossingState(
+            phase(current.minDistance, current.maxDistance),
+            // This is entry evidence, not phase hysteresis. Requiring the body to be an
+            // extra band behind the plane loses slow crossings whose leading block first
+            // touches it within that band.
+            oldest.minDistance < -EPSILON,
+            sweep.intersects,
+            overlapsAperture(portal, blocks, end, sourceToDestNormal, apertureMargin),
+            sweep.direction(),
+            recent.direction());
+        IplEnteringVolumeVisualization.record(airship, portal, result);
+        return result;
     }
 
-    private static CrossingPhase getPhase(double dMin, double dMax) {
-        if (dMin >= 0.0) {
-            return CrossingPhase.CROSSED;
-        }
-        if (dMax >= 0.0) {
-            return CrossingPhase.STRADDLING;
-        }
-        return CrossingPhase.APPROACHING;
+    private static Trail trail(ServerSubLevel airship) {
+        Trail trail = TRAILS.get(airship.getUniqueId());
+        if (trail != null) return trail;
+        return new Trail(new Pose3d(airship.lastPose()), new Pose3d(airship.lastPose()),
+            new Pose3d(airship.logicalPose()));
     }
 
-    private static ObbSample sample(
-        BoundingBox3ic local, Pose3dc pose, Vec3 planePos, Vec3 sourceToDestNormal
-    ) {
-
-        // Project the 8 OBB corners (local bounds transformed by the sub-level pose)
-        // onto the source->dest normal; track min (trailing edge) and max (leading
-        // edge) signed distance to the plane.
-        double dMin = Double.POSITIVE_INFINITY;
-        double dMax = Double.NEGATIVE_INFINITY;
-        Vec3[] corners = new Vec3[8];
-        double[] distances = new double[8];
-        int cornerIndex = 0;
-
-        // Sable's plot bounds are inclusive block indices. ServerSubLevel's own
-        // world bounding box uses max + 1.0 (see SubLevel.updateBoundingBox), so
-        // the physical OBB must do the same. Using raw max here declared the
-        // trailing block clear one block early and could flip parent dimensions
-        // while that edge was still inside the output portal.
-        double[] xs = {local.minX(), local.maxX() + 1.0};
-        double[] ys = {local.minY(), local.maxY() + 1.0};
-        double[] zs = {local.minZ(), local.maxZ() + 1.0};
-        for (double lx : xs) {
-            for (double ly : ys) {
-                for (double lz : zs) {
-                    Vec3 world = pose.transformPosition(new Vec3(lx, ly, lz));
-                    double d = (world.x - planePos.x) * sourceToDestNormal.x
-                             + (world.y - planePos.y) * sourceToDestNormal.y
-                             + (world.z - planePos.z) * sourceToDestNormal.z;
-                    corners[cornerIndex] = world;
-                    distances[cornerIndex] = d;
-                    cornerIndex++;
-                    if (d < dMin) dMin = d;
-                    if (d > dMax) dMax = d;
-                }
-            }
+    private static void includePlotBounds(Bounds out, ServerSubLevel airship, Pose3dc pose) {
+        var bounds = airship.getPlot().getBoundingBox();
+        for (int x = 0; x < 2; x++) for (int y = 0; y < 2; y++) for (int z = 0; z < 2; z++) {
+            out.include(pose.transformPosition(new Vec3(
+                x == 0 ? bounds.minX() : bounds.maxX() + 1.0,
+                y == 0 ? bounds.minY() : bounds.maxY() + 1.0,
+                z == 0 ? bounds.minZ() : bounds.maxZ() + 1.0)));
         }
+    }
 
-        Vec3 center = pose.transformPosition(new Vec3(
-            (local.minX() + local.maxX() + 1.0) * 0.5,
-            (local.minY() + local.maxY() + 1.0) * 0.5,
-            (local.minZ() + local.maxZ() + 1.0) * 0.5
-        ));
-        return new ObbSample(corners, distances, dMin, dMax, center);
+    private static CrossingPhase phase(double min, double max) {
+        if (min >= PORTAL_HYSTERESIS_DEPTH) return CrossingPhase.CROSSED;
+        return max >= -PORTAL_HYSTERESIS_DEPTH ? CrossingPhase.STRADDLING : CrossingPhase.APPROACHING;
     }
 
     /**
-     * A sampled pose can move from fully source-side to fully destination-side in one
-     * physics tick. Trace every OBB corner and its center through IP's finite portal
-     * shape, so that valid high-speed crossings do not depend on an arbitrary distance
-     * padding around the plane.
+     * Exact endpoint OBB projection using the cached pose basis, with zero per-block allocations.
+     *
+     * <p>Phase is physical block geometry. Swept aperture admission below deliberately
+     * uses a conservative endpoint AABB, so very fast motion cannot tunnel past a finite
+     * portal. These tests answer different questions and must not be conflated.
      */
-    private static boolean sweptThroughPortalAperture(Portal portal, ObbSample previous, ObbSample current) {
-        if (portal.rayTrace(previous.center, current.center) != null) {
-            return true;
+    private static Sample sample(List<BlockPos> blocks, Frame frame, Vec3 plane, Vec3 normal) {
+        double min = Double.POSITIVE_INFINITY;
+        double max = Double.NEGATIVE_INFINITY;
+        double support = frame.obbSupport(normal.x, normal.y, normal.z);
+        for (BlockPos block : blocks) {
+            double distance = (frame.centerX(block) - plane.x) * normal.x
+                + (frame.centerY(block) - plane.y) * normal.y
+                + (frame.centerZ(block) - plane.z) * normal.z;
+            min = Math.min(min, distance - support);
+            max = Math.max(max, distance + support);
         }
-        for (int i = 0; i < current.corners.length; i++) {
-            if (portal.rayTrace(previous.corners[i], current.corners[i]) != null) {
-                return true;
+        return new Sample(min, max);
+    }
+
+    /** Swept AABB vs finite portal plane. `from`/`to` can be arbitrarily far apart. */
+    private static SweepResult sweepSegment(
+        Portal portal, List<BlockPos> blocks, Frame from, Frame to, Vec3 normal, double margin
+    ) {
+        boolean intersects = false;
+        double towardTime = Double.POSITIVE_INFINITY;
+        double sourceTime = Double.POSITIVE_INFINITY;
+        Vec3 origin = portal.getOriginPos();
+        Vec3 axisW = portal.getAxisW();
+        Vec3 axisH = portal.getAxisH();
+        double fromPlaneSupport = from.aabbSupport(normal.x, normal.y, normal.z);
+        double toPlaneSupport = to.aabbSupport(normal.x, normal.y, normal.z);
+        double planeHalf = Math.max(fromPlaneSupport, toPlaneSupport);
+        double halfW = portal.getWidth() * 0.5
+            + Math.max(from.aabbSupport(axisW.x, axisW.y, axisW.z), to.aabbSupport(axisW.x, axisW.y, axisW.z)) + margin;
+        double halfH = portal.getHeight() * 0.5
+            + Math.max(from.aabbSupport(axisH.x, axisH.y, axisH.z), to.aabbSupport(axisH.x, axisH.y, axisH.z)) + margin;
+        for (BlockPos block : blocks) {
+            double fromX = from.centerX(block), fromY = from.centerY(block), fromZ = from.centerZ(block);
+            double toX = to.centerX(block), toY = to.centerY(block), toZ = to.centerZ(block);
+            double fromPlane = (fromX - origin.x) * normal.x + (fromY - origin.y) * normal.y + (fromZ - origin.z) * normal.z;
+            double toPlane = (toX - origin.x) * normal.x + (toY - origin.y) * normal.y + (toZ - origin.z) * normal.z;
+            double deltaPlane = toPlane - fromPlane;
+            double start;
+            double end;
+            if (Math.abs(deltaPlane) <= EPSILON) {
+                if (Math.abs(fromPlane) > planeHalf + PORTAL_HYSTERESIS_DEPTH + EPSILON) continue;
+                start = 0.0;
+                end = 1.0;
+            } else {
+                double a = (-planeHalf - PORTAL_HYSTERESIS_DEPTH - fromPlane) / deltaPlane;
+                double b = (planeHalf + PORTAL_HYSTERESIS_DEPTH - fromPlane) / deltaPlane;
+                start = Math.max(0.0, Math.min(a, b));
+                end = Math.min(1.0, Math.max(a, b));
+                if (start > end + EPSILON) continue;
             }
+            if (!segmentIntersectsAperture(
+                origin, axisW, axisH, fromX, fromY, fromZ, toX, toY, toZ, start, end, halfW, halfH)) continue;
+
+            intersects = true;
+            // Face selection follows the block's own continuous A-to-B trajectory.
+            // No position threshold or seam fallback: the opposite face receives the
+            // same hit with the opposite signed motion and is rejected by controller.
+            // Direction belongs to a real volume-boundary crossing only. A block that
+            // already straddles the plane may drift or jitter in either signed direction;
+            // that must retain an existing session, never choose a new portal face.
+            boolean enteredDestination = fromPlane + fromPlaneSupport < -EPSILON
+                && toPlane + toPlaneSupport >= -EPSILON;
+            boolean enteredSource = fromPlane - fromPlaneSupport > EPSILON
+                && toPlane - toPlaneSupport <= EPSILON;
+            if (enteredDestination) {
+                towardTime = Math.min(towardTime, start);
+            } else if (enteredSource) {
+                sourceTime = Math.min(sourceTime, start);
+            }
+        }
+        return new SweepResult(intersects, towardTime, sourceTime);
+    }
+
+    /** Current finite-aperture overlap for an already-owned straddle session. */
+    private static boolean overlapsAperture(
+        Portal portal, List<BlockPos> blocks, Frame frame, Vec3 normal, double margin
+    ) {
+        Vec3 origin = portal.getOriginPos();
+        Vec3 axisW = portal.getAxisW();
+        Vec3 axisH = portal.getAxisH();
+        double planeHalf = frame.aabbSupport(normal.x, normal.y, normal.z)
+            + PORTAL_HYSTERESIS_DEPTH;
+        double halfW = portal.getWidth() * 0.5
+            + frame.aabbSupport(axisW.x, axisW.y, axisW.z) + margin;
+        double halfH = portal.getHeight() * 0.5
+            + frame.aabbSupport(axisH.x, axisH.y, axisH.z) + margin;
+        for (BlockPos block : blocks) {
+            double x = frame.centerX(block) - origin.x;
+            double y = frame.centerY(block) - origin.y;
+            double z = frame.centerZ(block) - origin.z;
+            double plane = x * normal.x + y * normal.y + z * normal.z;
+            if (Math.abs(plane) > planeHalf + EPSILON) continue;
+            double width = x * axisW.x + y * axisW.y + z * axisW.z;
+            if (width < -halfW - EPSILON || width > halfW + EPSILON) continue;
+            double height = x * axisH.x + y * axisH.y + z * axisH.z;
+            if (height >= -halfH - EPSILON && height <= halfH + EPSILON) return true;
         }
         return false;
     }
 
-    /**
-     * The crossing plane alone is not a portal. Intersect the OBB's twelve edges
-     * with that plane and require at least one hit to lie inside the finite portal
-     * rectangle. This keeps an airship beside a portal from opening a straddle
-     * session merely because its bounds happen to cross the plane's infinite span.
-     */
-    private static boolean intersectsPortalAperture(
-        Portal portal, BoundingBox3ic local, Pose3dc pose, Vec3[] corners, double[] distances,
-        double apertureMargin
+    /** Liang-Barsky segment clipping against width/height aperture expanded by the swept AABB. */
+    private static boolean segmentIntersectsAperture(
+        Vec3 origin, Vec3 axisW, Vec3 axisH,
+        double fromX, double fromY, double fromZ, double toX, double toY, double toZ,
+        double planeStart, double planeEnd, double halfW, double halfH
     ) {
-        // A portal can be completely inside a large OBB's plane cross-section,
-        // leaving every OBB edge intersection outside the aperture. Its center
-        // being inside the local box still proves the finite aperture overlaps it.
-        Vec3 portalInLocal = pose.transformPositionInverse(portal.getOriginPos());
-        if (portalInLocal.x >= local.minX() && portalInLocal.x <= local.maxX() + 1.0
-            && portalInLocal.y >= local.minY() && portalInLocal.y <= local.maxY() + 1.0
-            && portalInLocal.z >= local.minZ() && portalInLocal.z <= local.maxZ() + 1.0) {
-            return true;
+        double dx = toX - fromX, dy = toY - fromY, dz = toZ - fromZ;
+        double startX = fromX + dx * planeStart - origin.x;
+        double startY = fromY + dy * planeStart - origin.y;
+        double startZ = fromZ + dz * planeStart - origin.z;
+        double endX = fromX + dx * planeEnd - origin.x;
+        double endY = fromY + dy * planeEnd - origin.y;
+        double endZ = fromZ + dz * planeEnd - origin.z;
+        double startW = startX * axisW.x + startY * axisW.y + startZ * axisW.z;
+        double startH = startX * axisH.x + startY * axisH.y + startZ * axisH.z;
+        double deltaW = (endX - startX) * axisW.x + (endY - startY) * axisW.y + (endZ - startZ) * axisW.z;
+        double deltaH = (endX - startX) * axisH.x + (endY - startY) * axisH.y + (endZ - startZ) * axisH.z;
+        double lower = 0.0;
+        double upper = 1.0;
+        if (Math.abs(deltaW) <= EPSILON) {
+            if (startW < -halfW - EPSILON || startW > halfW + EPSILON) return false;
+        } else {
+            double a = (-halfW - startW) / deltaW;
+            double b = (halfW - startW) / deltaW;
+            lower = Math.max(lower, Math.min(a, b));
+            upper = Math.min(upper, Math.max(a, b));
+            if (lower > upper + EPSILON) return false;
         }
-
-        int[][] edges = {
-            {0, 1}, {0, 2}, {0, 4}, {1, 3}, {1, 5}, {2, 3},
-            {2, 6}, {3, 7}, {4, 5}, {4, 6}, {5, 7}, {6, 7}
-        };
-        for (int[] edge : edges) {
-            int a = edge[0];
-            int b = edge[1];
-            double da = distances[a];
-            double db = distances[b];
-            if ((da < 0.0 && db < 0.0) || (da > 0.0 && db > 0.0)) continue;
-
-            double denominator = da - db;
-            double t = denominator == 0.0 ? 0.0 : da / denominator;
-            Vec3 hit = corners[a].add(corners[b].subtract(corners[a]).scale(t));
-            Vec3 fromOrigin = hit.subtract(portal.getOriginPos());
-            double width = Math.abs(fromOrigin.dot(portal.getAxisW()));
-            double height = Math.abs(fromOrigin.dot(portal.getAxisH()));
-            if (width <= portal.getWidth() * 0.5 + apertureMargin
-                && height <= portal.getHeight() * 0.5 + apertureMargin) {
-                return true;
-            }
+        if (Math.abs(deltaH) <= EPSILON) {
+            return startH >= -halfH - EPSILON && startH <= halfH + EPSILON;
         }
-        return false;
+        double a = (-halfH - startH) / deltaH;
+        double b = (halfH - startH) / deltaH;
+        lower = Math.max(lower, Math.min(a, b));
+        upper = Math.min(upper, Math.max(a, b));
+        return lower <= upper + EPSILON;
     }
 
-    private record ObbSample(
-        Vec3[] corners, double[] distances, double minDistance, double maxDistance, Vec3 center
-    ) {}
+    private static final class Trail {
+        final Pose3d older;
+        final Pose3d start;
+        final Pose3d end;
+        boolean hasOlder;
+        long lastSeenTick;
+
+        Trail(Pose3d older, Pose3d start, Pose3d end) {
+            this.older = older;
+            this.start = start;
+            this.end = end;
+        }
+    }
+
+    /** Transform basis and endpoint world-AABB support, shared by every block in one pose. */
+    private static final class Frame {
+        final double ox, oy, oz;
+        final double xx, xy, xz, yx, yy, yz, zx, zy, zz;
+        final double halfX, halfY, halfZ;
+
+        Frame(Pose3dc pose) {
+            Vec3 origin = pose.transformPosition(Vec3.ZERO);
+            Vec3 x = pose.transformPosition(new Vec3(1.0, 0.0, 0.0)).subtract(origin);
+            Vec3 y = pose.transformPosition(new Vec3(0.0, 1.0, 0.0)).subtract(origin);
+            Vec3 z = pose.transformPosition(new Vec3(0.0, 0.0, 1.0)).subtract(origin);
+            ox = origin.x; oy = origin.y; oz = origin.z;
+            xx = x.x; xy = x.y; xz = x.z;
+            yx = y.x; yy = y.y; yz = y.z;
+            zx = z.x; zy = z.y; zz = z.z;
+            halfX = (Math.abs(xx) + Math.abs(yx) + Math.abs(zx)) * 0.5;
+            halfY = (Math.abs(xy) + Math.abs(yy) + Math.abs(zy)) * 0.5;
+            halfZ = (Math.abs(xz) + Math.abs(yz) + Math.abs(zz)) * 0.5;
+        }
+
+        double centerX(BlockPos block) {
+            double x = block.getX() + 0.5, y = block.getY() + 0.5, z = block.getZ() + 0.5;
+            return ox + xx * x + yx * y + zx * z;
+        }
+
+        double centerY(BlockPos block) {
+            double x = block.getX() + 0.5, y = block.getY() + 0.5, z = block.getZ() + 0.5;
+            return oy + xy * x + yy * y + zy * z;
+        }
+
+        double centerZ(BlockPos block) {
+            double x = block.getX() + 0.5, y = block.getY() + 0.5, z = block.getZ() + 0.5;
+            return oz + xz * x + yz * y + zz * z;
+        }
+
+        double aabbSupport(double x, double y, double z) {
+            return halfX * Math.abs(x) + halfY * Math.abs(y) + halfZ * Math.abs(z);
+        }
+
+        double obbSupport(double x, double y, double z) {
+            return (Math.abs(xx * x + xy * y + xz * z)
+                + Math.abs(yx * x + yy * y + yz * z)
+                + Math.abs(zx * x + zy * y + zz * z)) * 0.5;
+        }
+    }
+
+    private record Sample(double minDistance, double maxDistance) {}
+
+    private record SweepResult(boolean intersects, double towardTime, double sourceTime) {
+        static final SweepResult NONE = new SweepResult(false, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY);
+
+        /** Current segment has priority; history only fills a stationary/absent current trail. */
+        SweepResult mergePreferred(SweepResult historic) {
+            if (direction() != SweepDirection.NONE) return this;
+            if (historic.direction() != SweepDirection.NONE) {
+                return new SweepResult(intersects || historic.intersects, historic.towardTime, historic.sourceTime);
+            }
+            return new SweepResult(intersects || historic.intersects, towardTime, sourceTime);
+        }
+
+        SweepDirection direction() {
+            boolean toward = Double.isFinite(towardTime);
+            boolean source = Double.isFinite(sourceTime);
+            if (!toward && !source) return SweepDirection.NONE;
+            if (toward && !source) return SweepDirection.TOWARD_DESTINATION;
+            if (!toward) return SweepDirection.TOWARD_SOURCE;
+            if (towardTime + EPSILON < sourceTime) return SweepDirection.TOWARD_DESTINATION;
+            if (sourceTime + EPSILON < towardTime) return SweepDirection.TOWARD_SOURCE;
+            return SweepDirection.AMBIGUOUS;
+        }
+    }
+
+    private static final class Bounds {
+        double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY, maxZ = Double.NEGATIVE_INFINITY;
+
+        void include(Vec3 point) {
+            minX = Math.min(minX, point.x); minY = Math.min(minY, point.y); minZ = Math.min(minZ, point.z);
+            maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y); maxZ = Math.max(maxZ, point.z);
+        }
+    }
 }

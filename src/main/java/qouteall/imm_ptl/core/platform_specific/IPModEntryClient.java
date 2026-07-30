@@ -88,6 +88,8 @@ public class IPModEntryClient {
             Helper.log("Sodium is not present");
         }
         
+        ipl.sable.client.IplStaffPortalBeamStage.init();
+
         // Sable-fork addition: when Veil is present, hook its preprocessor
         // pipeline so that IP's iportal_ClippingEquation injection survives
         // Veil's vanilla-shader recompile pass. Without this, Veil throws away
@@ -99,7 +101,6 @@ public class IPModEntryClient {
         if (ModList.get().isLoaded("veil")) {
             Helper.log("Veil is present -- registering IPL clip preprocessor");
             ipl.sable.render.IplVeilCompat.init(modEventBus);
-            ipl.sable.client.IplStaffPortalBeamStage.init();
         }
 
         if (ModList.get().isLoaded("iris")) {

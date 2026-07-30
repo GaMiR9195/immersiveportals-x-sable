@@ -1,6 +1,7 @@
 package ipl.sable.mixin;
 
 import ipl.sable.transit.IplGrabChain;
+import ipl.sable.duck.IplStaffDragSessionControl;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import org.joml.Quaterniond;
@@ -22,7 +23,6 @@ import java.util.UUID;
 public abstract class IplStaffServerStateMixin {
 
     @Shadow(remap = false) private ServerLevel level;
-
     @Inject(method = "drag", at = @At("HEAD"), require = 0)
     private void ipl$beginFrame(
         UUID playerId, UUID subId, Vector3dc playerRelativeGoal, Vector3dc localAnchor,
@@ -49,6 +49,12 @@ public abstract class IplStaffServerStateMixin {
 
     @Inject(method = "stopDragging", at = @At("HEAD"), require = 0)
     private void ipl$endFrame(UUID playerId, CallbackInfo ci) {
+        Object session = ((IplStaffServerHandlerAccessorMixin) (Object) this)
+            .ipl$getDraggingSessions().get(playerId);
+        if (session instanceof IplStaffDragSessionControl control) {
+            control.ipl$removeConstraint();
+        }
         IplGrabChain.end(this.level.getServer(), playerId);
     }
+
 }

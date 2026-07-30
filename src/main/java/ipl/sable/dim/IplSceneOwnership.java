@@ -8,6 +8,7 @@ import net.minecraft.server.level.ServerLevel;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -30,6 +31,8 @@ public final class IplSceneOwnership {
 
     /** Where each hosted body currently lives (recorded by the routed pipeline add/remove). */
     private static final Map<UUID, ServerLevel> bodyHome = new HashMap<>();
+    /** Parent chart -> current hosted bodies. Rebuilt once from the hosting container. */
+    private static final Map<ServerLevel, List<ServerSubLevel>> bodiesByParent = new HashMap<>();
 
     private IplSceneOwnership() {}
 
@@ -87,12 +90,19 @@ public final class IplSceneOwnership {
         return bodyHome.get(sub.getUniqueId());
     }
 
+    /** Hosted bodies belonging to this parent chart; empty until the hosting container ticks. */
+    public static List<ServerSubLevel> hostedInParent(ServerLevel parent) {
+        List<ServerSubLevel> bodies = bodiesByParent.get(parent);
+        return bodies == null ? List.of() : bodies;
+    }
+
     /** Server stopping: drop all state. */
     public static void clearAll() {
         ipl.sable.atlas.IplAtlasBodyImages.clearAll();
         ipl.sable.atlas.IplHostedTerrainGate.clearAll();
         ipl.sable.atlas.IplParentFrames.clearAll();
         bodyHome.clear();
+        bodiesByParent.clear();
     }
 
     // ------------------------------------------------------------------
@@ -114,12 +124,19 @@ public final class IplSceneOwnership {
     public static void reconcile(ServerSubLevelContainer hostingContainer) {
         if (!isEnabled()) return;
 
+        Map<ServerLevel, List<ServerSubLevel>> rebuilt = new HashMap<>();
         for (ServerSubLevel sub : hostingContainer.getAllSubLevels()) {
             if (sub.isRemoved()) continue;
             if (!IplDimAgnostic.isHosted(sub)) continue;
 
             recordBodyAdded(sub, (ServerLevel) sub.getLevel());
+            ServerLevel parent = IplDimAgnostic.getServerParentLevel(sub);
+            if (parent != null) {
+                rebuilt.computeIfAbsent(parent, ignored -> new java.util.ArrayList<>()).add(sub);
+            }
         }
+        bodiesByParent.clear();
+        bodiesByParent.putAll(rebuilt);
         ipl.sable.atlas.IplAtlasBodyImages.reconcileAll(hostingContainer.getAllSubLevels());
         ipl.sable.atlas.IplParentFrames.reconcile(hostingContainer.getAllSubLevels());
         ipl.sable.atlas.IplHostedTerrainGate.retainLive(hostingContainer.getAllSubLevels());

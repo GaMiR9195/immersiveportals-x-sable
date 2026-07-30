@@ -118,6 +118,7 @@ public final class IplStaffBeamRoutes {
     public static void forget(UUID owner) {
         LAST.remove(owner);
         LENGTHS.remove(owner);
+        BEAM_OWNERS.entrySet().removeIf(entry -> entry.getValue().equals(owner));
     }
 
     public static void clearAll() {
@@ -177,8 +178,8 @@ public final class IplStaffBeamRoutes {
      */
     @Nullable
     public static Vec3 staffAimPoint(Player player, ClientSubLevel sub, Vec3 localAnchor, float partialTick) {
-        Vec3 eye = player.getEyePosition(partialTick);
-        Route route = resolve(player.getUUID(), player.level(), eye, sub, localAnchor, partialTick);
+        Vec3 staffStart = IplStaffPortalBeamRenderer.staffFocus(player, partialTick);
+        Route route = resolve(player.getUUID(), player.level(), staffStart, sub, localAnchor, partialTick);
         if (route == null) return null;
         List<Segment> segments = segments(route);
         return segments.isEmpty() ? null : segments.get(0).end();

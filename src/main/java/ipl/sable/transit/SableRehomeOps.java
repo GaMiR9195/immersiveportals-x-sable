@@ -462,6 +462,11 @@ public final class SableRehomeOps {
         // legitimately completes transit.
         pipeline.teleport(hosted, mappedPose.position(), mappedPose.orientation());
         hosted.logicalPose().set(mappedPose);
+        // A subsequent hosting tick must begin entirely in the destination frame. Merely
+        // forgetting PortalCrossingDetector's cached trail is insufficient: captureTrail
+        // seeds a missing trail from lastPose, which would otherwise still be source-space
+        // and could create a fictitious segment through a chained or self-recursive portal.
+        hosted.updateLastPose();
         pipeline.resetVelocity(hosted);
         pipeline.addLinearAndAngularVelocity(hosted,
             new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
@@ -509,13 +514,15 @@ public final class SableRehomeOps {
             recipients.add(viewer.getUUID());
         }
         String transform = encodePortalTransform(portal);
+        String portalNbt = IplStraddleSessionSync.encodePortal(portal);
         for (UUID recipient : recipients) {
             ServerPlayer player = server.getPlayerList().getPlayer(recipient);
             if (player == null) continue;
             qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
                 player,
                 "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
-                body.getUniqueId().toString(), destination.dimension().location().toString(), transform
+                body.getUniqueId().toString(), destination.dimension().location().toString(), transform,
+                portalNbt
             );
         }
     }

@@ -65,19 +65,35 @@ public abstract class SableAltContainerTickMixin {
         Minecraft mc = (Minecraft) (Object) this;
         ClientLevel current = mc.level;
         if (current == null) return;
-        if (!ClientWorldLoader.getIsInitialized()) return;
 
         try {
-            for (ClientLevel alt : ClientWorldLoader.getClientWorlds()) {
-                if (alt == current) continue;
-                SubLevelContainer container = SubLevelContainer.getContainer((Level) alt);
-                if (container == null) continue;
-                container.tick();
-                if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(alt)) {
-                    // Flywheel visual safety net: plot BEs missed by the chunk hooks
-                    // (Sable's own chunk pipeline / late parent sync) get queued into
-                    // their parent's visualization world here.
-                    ipl.sable.client.IplClientFlywheelReroute.sweepHostedContainer(container);
+            boolean hostingTicked = false;
+            if (ClientWorldLoader.getIsInitialized()) {
+                for (ClientLevel alt : ClientWorldLoader.getClientWorlds()) {
+                    if (alt == current) continue;
+                    SubLevelContainer container = SubLevelContainer.getContainer((Level) alt);
+                    if (container == null) continue;
+                    container.tick();
+                    if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(alt)) {
+                        hostingTicked = true;
+                        // Flywheel visual safety net: plot BEs missed by the chunk hooks
+                        // (Sable's own chunk pipeline / late parent sync) get queued into
+                        // their parent's visualization world here.
+                        ipl.sable.client.IplClientFlywheelReroute.sweepHostedContainer(container);
+                    }
+                }
+            }
+            // Sable ticks only Minecraft.level before this TAIL hook. Hosted ships all
+            // interpolate in the dedicated hosting container, which is normally neither
+            // the player's current world nor an IP alt world. Tick it exactly once so
+            // staff snapshots advance every client tick instead of arriving in a buffer
+            // that renders intermittently/frozen.
+            if (!hostingTicked && !ipl.sable.dim.IplDimAgnostic.isHostingLevel(current)) {
+                SubLevelContainer hosting = ipl.sable.client.IplClientHostedLookup
+                    .getHostingContainerOrNull();
+                if (hosting != null) {
+                    hosting.tick();
+                    ipl.sable.client.IplClientFlywheelReroute.sweepHostedContainer(hosting);
                 }
             }
             ipl.sable.client.IplParentDimSync.applyPendingHandoffs();

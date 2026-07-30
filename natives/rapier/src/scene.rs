@@ -125,6 +125,9 @@ pub struct SableSceneData {
 
     pub level_colliders: HashMap<LevelColliderID, ActiveLevelColliderInfo>,
     pub rigid_bodies: HashMap<LevelColliderID, RigidBodyHandle>,
+    /// Real dynamic Sable bodies indexed by their owning chart. Atlas views share the
+    /// maps above, but buoyancy must not scan every world's ships from every chart tick.
+    pub bodies_by_chart: HashMap<ChartId, HashSet<LevelColliderID>>,
 
     /// IPL: body pairs (normalized id order) that must never generate contacts. Portal
     /// rims use this to exempt an anchored portal carrier from its containment body.

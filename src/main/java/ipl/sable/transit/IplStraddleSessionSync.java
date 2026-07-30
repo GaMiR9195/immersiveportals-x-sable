@@ -63,8 +63,8 @@ public final class IplStraddleSessionSync {
         broadcast(server, shipId);
     }
 
-    /** Global-portal-style serialization: full entity NBT + type id, base64-framed. */
-    private static String encodePortal(Portal portal) {
+    /** Full portal geometry for session snapshots and client-side handoff render tails. */
+    public static String encodePortal(Portal portal) {
         try {
             net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
             portal.saveWithoutId(tag);

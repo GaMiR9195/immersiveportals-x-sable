@@ -148,20 +148,17 @@ public final class IplAtlasStraddleSession {
         }
         SESSIONS.put(key, session);
 
-        // Aperture contact clipping (spec v3 §2.4), half-open seam:
-        //  - REAL body set: contacts past the portal plane inside the aperture dropped
-        //    (the through-part stops colliding with SOURCE-side terrain and ships).
+        // Contact clipping, half-open seam:
+        //  - REAL body set: contacts past the full portal plane are dropped. The through
+        //    portion must pass source terrain even after it has moved past the frame.
         //  - IMAGE collider: the complementary half — contacts BEFORE the mapped plane
-        //    dropped, so only the through-part is physically present dest-side.
-        // The lateral aperture bound (vs full-plane clipping) is load-bearing: ship parts
-        // BESIDE a free-standing frame keep source collision, and multi-portal unions
-        // stay local to each aperture window instead of unioning infinite half-spaces.
+        //    dropped inside the mapped aperture, so only the through-part is physically
+        //    present destination-side.
         {
             Vec3 origin = portal.getOriginPos();
             session.lastOrigin = origin;
-            session.realClipRegion = clipRegion(
-                origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
-                portal.getWidth() * 0.5, portal.getHeight() * 0.5);
+            session.realClipRegion = infinitePlaneClipRegion(
+                origin, sourceToDest, portal.getAxisW(), portal.getAxisH());
             applyRealClipRegions(hosted, session.parentScene, session.realId);
 
             double[] imageRegion = clipRegion(
@@ -216,9 +213,8 @@ public final class IplAtlasStraddleSession {
                 newRot.x, newRot.y, newRot.z, newRot.w);
         }
 
-        s.realClipRegion = clipRegion(
-            origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
-            portal.getWidth() * 0.5, portal.getHeight() * 0.5);
+        s.realClipRegion = infinitePlaneClipRegion(
+            origin, sourceToDest, portal.getAxisW(), portal.getAxisH());
         applyRealClipRegions(s.sub, s.parentScene, s.realId);
         double[] imageRegion = clipRegion(
             fresh.mapPoint(origin),
@@ -239,6 +235,14 @@ public final class IplAtlasStraddleSession {
             axisW.x, axisW.y, axisW.z, halfW,
             axisH.x, axisH.y, axisH.z, halfH
         };
+    }
+
+    /** Source collision is suppressed by the complete plane; images stay aperture-bounded. */
+    private static double[] infinitePlaneClipRegion(
+        Vec3 point, Vec3 normal, Vec3 axisW, Vec3 axisH
+    ) {
+        return clipRegion(point, normal, axisW, axisH,
+            Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY);
     }
 
     /**

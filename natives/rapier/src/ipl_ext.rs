@@ -10,17 +10,166 @@ use jni::objects::{JClass, JDoubleArray};
 use jni::sys::{jboolean, jdouble, jint, jlong};
 use std::collections::HashSet;
 use marten::Real;
+use rapier3d::dynamics::RigidBodyBuilder;
+use rapier3d::geometry::{ColliderBuilder, SharedShape};
+use rapier3d::glamx::{Pose3, Quat};
 use rapier3d::math::Vec3;
+use rapier3d::pipeline::PairFilterContext;
+use rapier3d::prelude::{ActiveHooks, RigidBodyHandle};
 
 use crate::scene::{LevelColliderID, PhysicsScene};
 
-/// An oriented clip volume for aperture contact clipping (spec §2.5): solver contacts past
-/// the plane (signed distance >= 0 along `normal`) AND within the lateral rectangle
-/// (|projection on axis_w| <= half_w, |projection on axis_h| <= half_h) are dropped from
-/// the owning body's manifolds. The lateral bound is load-bearing twice over: geometry
-/// passing BESIDE a free-standing portal frame collides normally, and multi-portal
-/// straddles union safely — unbounded half-spaces from two sessions can cover the whole
-/// ship (or, facing planes, all of space), dropping every source contact.
+/// Native portal rim: four directly-authored Rapier cuboids, deliberately outside the
+/// aperture. This bypasses Sable's voxel/neighborhood and chunk-octree machinery, which
+/// has block-sized broad-phase cells even when a baked block shape is thin.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createPortalRim<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    hole_width: jdouble,
+    hole_height: jdouble,
+    width: jdouble,
+    half_thickness: jdouble,
+) -> jint {
+    if scene_handle == 0 || hole_width <= 0.0 || hole_height <= 0.0 || width <= 0.0
+        || half_thickness <= 0.0 {
+        return -1;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let width = width as Real;
+    let half_thickness = half_thickness as Real;
+    let hole_width = hole_width as Real;
+    let hole_height = hole_height as Real;
+    let half_w = hole_width * 0.5;
+    let half_h = hole_height * 0.5;
+
+    let bars = [
+        (Vec3::new(-half_w - width * 0.5, 0.0, 0.0), width * 0.5, half_thickness, half_h + width),
+        (Vec3::new(half_w + width * 0.5, 0.0, 0.0), width * 0.5, half_thickness, half_h + width),
+        (Vec3::new(0.0, 0.0, -half_h - width * 0.5), half_w, half_thickness, width * 0.5),
+        (Vec3::new(0.0, 0.0, half_h + width * 0.5), half_w, half_thickness, width * 0.5),
+    ];
+
+    let mut sim = scene.sim_data.write().unwrap();
+    let body = sim.rigid_body_set.insert(RigidBodyBuilder::kinematic_position_based());
+    let crate::scene::SimulationSceneData { collider_set, rigid_body_set, .. } = &mut *sim;
+    for (position, x, y, z) in bars {
+        let collider = ColliderBuilder::new(SharedShape::cuboid(x, y, z))
+            .position(Pose3::from_translation(position))
+            .friction(0.45)
+            .active_hooks(ActiveHooks::FILTER_CONTACT_PAIRS | ActiveHooks::MODIFY_SOLVER_CONTACTS)
+            .collision_groups(crate::groups::level_group(scene.chart))
+            .build();
+        collider_set.insert_with_parent(collider, body, rigid_body_set);
+    }
+    // Collider handles are generational; keep an opaque native-side id instead of exposing
+    // them to Java as a body id. A kinematic body is unique to exactly one rim.
+    let id = next_portal_rim_id();
+    drop(sim);
+    let mut rims = IPL_PORTAL_RIMS.write().unwrap();
+    rims.insert((scene_handle, id), PortalRim {
+        body, exclusions: HashSet::new(), positioned: false,
+    });
+    id
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setPortalRimTransform<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    rim_id: jint,
+    x: jdouble, y: jdouble, z: jdouble,
+    qx: jdouble, qy: jdouble, qz: jdouble, qw: jdouble,
+) {
+    let Some((body_handle, first_pose)) = IPL_PORTAL_RIMS.write().unwrap()
+        .get_mut(&(scene_handle, rim_id))
+        .map(|rim| {
+            let first_pose = !rim.positioned;
+            rim.positioned = true;
+            (rim.body, first_pose)
+        }) else {
+        return;
+    };
+    if scene_handle == 0 { return; }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sim = scene.sim_data.write().unwrap();
+    if let Some(body) = sim.rigid_body_set.get_mut(body_handle) {
+        let pose = Pose3 {
+            translation: Vec3::new(x as Real, y as Real, z as Real),
+            rotation: Quat::from_xyzw(qx as Real, qy as Real, qz as Real, qw as Real).normalize(),
+        };
+        // Spawn directly at the aperture; later updates use Rapier's next pose so a
+        // moving portal remains a genuine kinematic obstacle with correct velocity.
+        if first_pose {
+            body.set_position(pose, false);
+        }
+        body.set_next_kinematic_position(pose);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removePortalRim<'local>(
+    _env: JNIEnv<'local>, _class: JClass<'local>, scene_handle: jlong, rim_id: jint,
+) {
+    let Some(rim) = IPL_PORTAL_RIMS.write().unwrap().remove(&(scene_handle, rim_id)) else {
+        return;
+    };
+    if scene_handle == 0 { return; }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sim = scene.sim_data.write().unwrap();
+    // Removing the parent body removes its attached compound collider too. Destructure
+    // the scene first so Rust can prove these mutable fields do not overlap.
+    let crate::scene::SimulationSceneData {
+        rigid_body_set, island_manager, collider_set, impulse_joint_set,
+        multibody_joint_set, ..
+    } = &mut *sim;
+    rigid_body_set.remove(rim.body, island_manager, collider_set,
+        impulse_joint_set, multibody_joint_set, true);
+}
+
+static IPL_PORTAL_RIMS: std::sync::LazyLock<std::sync::RwLock<std::collections::HashMap<
+    (jlong, jint), PortalRim
+>>> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+static IPL_PORTAL_RIM_IDS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-2);
+
+struct PortalRim {
+    body: RigidBodyHandle,
+    exclusions: HashSet<RigidBodyHandle>,
+    positioned: bool,
+}
+
+fn next_portal_rim_id() -> jint {
+    IPL_PORTAL_RIM_IDS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn portal_rim_contact_allowed(context: &PairFilterContext) -> bool {
+    let Some(body1) = context.rigid_body1 else { return true; };
+    let Some(body2) = context.rigid_body2 else { return true; };
+    IPL_PORTAL_RIMS.read().unwrap().values().all(|rim| {
+        !((body1 == rim.body && rim.exclusions.contains(&body2))
+            || (body2 == rim.body && rim.exclusions.contains(&body1)))
+    })
+}
+
+fn set_portal_rim_exclusion(
+    scene_handle: jlong, rim_id: jint, body_id: jint, excluded: jboolean,
+) {
+    if scene_handle == 0 || body_id < 0 { return; }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let Some(body) = scene.sable_data.read().unwrap().rigid_bodies
+        .get(&(body_id as LevelColliderID)).copied() else { return; };
+    let mut rims = IPL_PORTAL_RIMS.write().unwrap();
+    let Some(rim) = rims.get_mut(&(scene_handle, rim_id)) else { return; };
+    if excluded != 0 { rim.exclusions.insert(body); } else { rim.exclusions.remove(&body); }
+}
+
+/// An oriented clip volume: solver contacts past the plane (signed distance >= 0 along
+/// `normal`) and inside the lateral rectangle are dropped from the owning body's manifolds.
+/// Infinite half extents represent a full plane. Atlas uses that for a real source body so
+/// its destination portion can pass source terrain behind a portal; image colliders remain
+/// aperture-bounded in their destination chart.
 #[derive(Debug, Clone)]
 pub struct IplClipRegion {
     pub point: Vec3,
@@ -109,6 +258,14 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyPairExclus
     id_b: jint,
     excluded: jboolean,
 ) {
+    if id_a < 0 {
+        set_portal_rim_exclusion(scene_handle, id_a, id_b, excluded);
+        return;
+    }
+    if id_b < 0 {
+        set_portal_rim_exclusion(scene_handle, id_b, id_a, excluded);
+        return;
+    }
     if scene_handle == 0 || id_a == id_b || id_a < 0 || id_b < 0 {
         return;
     }

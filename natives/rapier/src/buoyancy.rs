@@ -17,18 +17,21 @@ pub fn compute_buoyancy(scene: &PhysicsScene) {
     let sable_data = scene.sable_data.read().unwrap();
     let mut sim_data = scene.sim_data.write().unwrap();
 
-    for (id, body_handle) in sable_data.rigid_bodies.iter() {
+    let Some(body_ids) = sable_data.bodies_by_chart.get(&scene.chart) else {
+        return;
+    };
+    for id in body_ids {
+        let Some(body_handle) = sable_data.rigid_bodies.get(id) else {
+            continue;
+        };
         let info = sable_data.level_colliders.get(id);
 
         if info.is_none() {
             continue;
         }
         let info = info.unwrap();
-        // Atlas: this view computes buoyancy only for its own chart's bodies —
-        // per-level `tick` calls would otherwise recompute every body N times.
-        if info.chart != scene.chart {
-            continue;
-        }
+        // `bodies_by_chart` makes this a chart-local iteration rather than a global
+        // scan performed once for every loaded dimension.
         let Some(body) = sim_data.rigid_body_set.get_mut(*body_handle) else {
             panic!("No body with given handle!");
         };
