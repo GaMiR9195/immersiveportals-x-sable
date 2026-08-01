@@ -47,6 +47,18 @@ public final class SableTransitController {
     private static final double APERTURE_MARGIN = 0.5;
     /** Actor identity only changes at lifecycle seams, not on every physics tick. */
     private static final int ACTOR_RESYNC_INTERVAL = 100;
+    /**
+     * One physics segment can contain SEVERAL complete crossings: a top/bottom portal
+     * loop re-enters the same doorway repeatedly while a body falls through it. Each
+     * executed transit re-bases the trail at its exact crossing time, so the remainder of
+     * the same segment is consumed here instead of being discarded until the next tick
+     * (which is what made a fast body fall THROUGH the portal into the terrain). The cap
+     * only bounds one tick's work; the remainder resumes on the following tick, so an
+     * endless loop keeps cycling forever.
+     */
+    private static final int MAX_CHAINED_CROSSINGS_PER_TICK = 16;
+    /** Segments of forward lookahead used to arm a straddle seam before first contact. */
+    private static final double PREARM_LOOKAHEAD_SEGMENTS = 1.0;
     private static long hostedTransitTick;
 
     private SableTransitController() {}
@@ -214,9 +226,23 @@ public final class SableTransitController {
                 // the portal plane. Requiring endpoint overlap loses that real entry.
                 // Once admitted, preserve the session until the volume fully exits a
                 // plane side; clipping remains finite and aperture-bounded in natives.
-                boolean straddlingAperture = state.phase()
+                // PREDICTIVE ARMING. Detection is swept and cannot miss a doorway, but the
+                // SEAM (image collider plus clip regions) only existed once a straddle was
+                // already observed. A body moving several blocks per physics segment meets
+                // the intact source-side wall behind the portal plane during the substeps
+                // that precede that observation, which is exactly how a loop drop ends up
+                // under the terrain instead of inside the portal. Opening the seam one
+                // segment early is physically neutral for a body still fully in front of
+                // the plane: the clip regions keep only the far half, so nothing is added
+                // on the near side until it actually arrives.
+                boolean predictedEntry = !haveSession
+                    && state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
+                    && PortalCrossingDetector.willEnterAperture(
+                        airship, portal, normal, APERTURE_MARGIN, PREARM_LOOKAHEAD_SEGMENTS);
+                boolean straddlingAperture = (state.phase()
                     == PortalCrossingDetector.CrossingPhase.STRADDLING
-                    && (haveSession || state.sweptIntersectsPortalAperture());
+                    && (haveSession || state.sweptIntersectsPortalAperture()))
+                    || predictedEntry;
 
                 if (straddlingAperture) {
                     Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
@@ -224,7 +250,7 @@ public final class SableTransitController {
                     // The aperture has two faces. New sessions belong only to the face
                     // crossed by the real swept block volume; an existing session keeps
                     // its face while the ship backs out through the same aperture.
-                    if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession)) {
+                    if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession, predictedEntry)) {
                         continue;
                     }
 
@@ -282,7 +308,7 @@ public final class SableTransitController {
                         // already-live session owns the doorway until it reaches source.
                         continue;
                     }
-                    if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession)) {
+                    if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession, false)) {
                         continue;
                     }
                     // Candidate execution happens after the declarative reap. Keep the
@@ -291,7 +317,8 @@ public final class SableTransitController {
                     if (haveSession) seenHostedKeys.add(key);
                     if (candidates == null) candidates = new ArrayList<>(1);
                     candidates.add(new TransitCandidate(
-                        airship, portal, haveSession, ipl$rigidGroupMates(airship)));
+                        airship, portal, haveSession, ipl$rigidGroupMates(airship),
+                        state.entryTime()));
                     candidateAddedForAirship = true;
                 } else if (haveSession
                     && state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
@@ -367,7 +394,8 @@ public final class SableTransitController {
                     // straddle session. Its source-frame debug buffer is still invalid
                     // after the parent flip and must not linger behind the portal.
                     IplEnteringVolumeVisualization.clearBuffer(c.airship);
-                    PortalCrossingDetector.forgetTrail(c.airship);
+                    PortalCrossingDetector.rebaseTrailThroughPortal(
+                        c.airship, c.portal, c.entryTime());
                     // Grab chains of every player holding this body rebase through the
                     // exact crossing portal (goal, orientation, beam — one event).
                     IplGrabChain.onBodyTransit(level.getServer(), c.airship.getUniqueId(), c.portal);
@@ -388,9 +416,48 @@ public final class SableTransitController {
                                 mateId, c.portal.getUUID());
                             continue;
                         }
-                        PortalCrossingDetector.forgetTrail(mate);
+                        PortalCrossingDetector.rebaseTrailThroughPortal(
+                            mate, c.portal, c.entryTime());
                         IplGrabChain.onBodyTransit(level.getServer(), mateId, c.portal);
                         IplRopePortalSeam.onShipTransit(mate, c.portal);
+                    }
+
+                    // SUB-TICK CHAIN. The trail was re-based into the destination frame at
+                    // the exact crossing time, so the REMAINDER of this same physics segment
+                    // is still unconsumed. Re-derive against the new parent and keep going:
+                    // a portal loop can legitimately be entered many times inside one tick,
+                    // and every one of those crossings must be an entry, not a fall-through.
+                    int chained = 0;
+                    while (chained < MAX_CHAINED_CROSSINGS_PER_TICK) {
+                        TransitCandidate next = ipl$findCompletedCrossing(c.airship);
+                        if (next == null) break;
+                        if (!SableRehomeOps.executeHostedTransit(c.airship, next.portal())) break;
+                        chained++;
+                        IplEnteringVolumeVisualization.clearBuffer(c.airship);
+                        PortalCrossingDetector.rebaseTrailThroughPortal(
+                            c.airship, next.portal(), next.entryTime());
+                        IplGrabChain.onBodyTransit(level.getServer(), uuid, next.portal());
+                        IplRopePortalSeam.onShipTransit(c.airship, next.portal());
+                        for (ServerSubLevel mate : next.mates()) {
+                            if (mate.isRemoved()) continue;
+                            UUID mateId = mate.getUniqueId();
+                            flippedThisTick.add(mateId);
+                            if (!SableRehomeOps.executeHostedTransit(mate, next.portal())) {
+                                LOG.warn("[IPL-TRANSIT] rigid mate {} declined chained transit "
+                                    + "through {} - will re-derive next tick",
+                                    mateId, next.portal().getUUID());
+                                continue;
+                            }
+                            PortalCrossingDetector.rebaseTrailThroughPortal(
+                                mate, next.portal(), next.entryTime());
+                            IplGrabChain.onBodyTransit(level.getServer(), mateId, next.portal());
+                            IplRopePortalSeam.onShipTransit(mate, next.portal());
+                        }
+                    }
+                    if (chained == MAX_CHAINED_CROSSINGS_PER_TICK) {
+                        LOG.warn("[IPL-TRANSIT] uuid={} reached the {} crossings/tick cap; the "
+                            + "rest of this segment continues next tick",
+                            uuid, MAX_CHAINED_CROSSINGS_PER_TICK);
                     }
                 }
             } catch (Throwable t) {
@@ -487,10 +554,14 @@ public final class SableTransitController {
      * segment unavailable to the opposite face on the next approach.
      */
     private static boolean ipl$ownsCoincidentFace(
-        Portal face, Portal twin, PortalCrossingDetector.CrossingState state, boolean haveSession
+        Portal face, Portal twin, PortalCrossingDetector.CrossingState state,
+        boolean haveSession, boolean predictedEntry
     ) {
         if (twin == null) return true;
         if (haveSession) return true;
+        // A lookahead hit is itself a directed source->destination sweep against THIS
+        // face, so it proves ownership exactly like an observed forward crossing does.
+        if (predictedEntry) return true;
         return switch (state.sweptEntryDirection()) {
             case TOWARD_DESTINATION -> true;
             case TOWARD_SOURCE -> false;
@@ -531,8 +602,61 @@ public final class SableTransitController {
         return true;
     }
 
+    /**
+     * Re-derives a completed crossing for a body that has ALREADY transited inside this tick.
+     * The re-based trail starts at the previous seam and ends at the body's current pose, so
+     * this is the unconsumed tail of the same physics segment evaluated in the new parent
+     * frame. Every gate of the main scan is repeated (canonical face, anchor ship, coincident
+     * twin ownership, directed swept entry); only the declarative session bookkeeping is
+     * skipped, because a tail crossing by definition never had a session of its own.
+     */
+    private static TransitCandidate ipl$findCompletedCrossing(ServerSubLevel airship) {
+        if (airship.isRemoved()) return null;
+        ServerLevel parent = IplDimAgnostic.getServerParentLevel(airship);
+        if (parent == null) return null;
+
+        AABB bounds = PortalCrossingDetector.sweptBounds(airship).inflate(PORTAL_QUERY_INFLATION);
+        List<Portal> nearby = new ArrayList<>(
+            parent.getEntitiesOfClass(Portal.class, bounds, Portal::isTeleportable));
+        Vec3 center = bounds.getCenter();
+        double reach = 0.5 * Math.sqrt(
+            bounds.getXsize() * bounds.getXsize()
+                + bounds.getYsize() * bounds.getYsize()
+                + bounds.getZsize() * bounds.getZsize());
+        for (Portal globalPortal :
+            qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage
+                .getGlobalPortals(parent)) {
+            if (globalPortal.isTeleportable()
+                && globalPortal.getDistanceToNearestPointInPortal(center) <= reach) {
+                nearby.add(globalPortal);
+            }
+        }
+        if (nearby.isEmpty()) return null;
+        nearby.sort(Comparator.comparing(portal -> portal.getUUID().toString()));
+
+        for (Portal portal : nearby) {
+            if (!ipl$isCanonicalEntranceFace(portal, nearby)) continue;
+            if (IplShipPortalAnchor.isAnchorShip(portal, airship.getUniqueId())) continue;
+            Vec3 normal = portal.getNormal().scale(-1.0);
+            PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
+                airship, portal, normal, APERTURE_MARGIN);
+            if (state.phase() != PortalCrossingDetector.CrossingPhase.CROSSED) continue;
+            if (!state.startedBeforePortalPlane()) continue;
+            if (!state.sweptIntersectsPortalAperture()) continue;
+            if (!ipl$continuesThroughOwnedFace(state, false)) continue;
+            Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
+            if (twin != null && ipl$hasAnySession(airship.getUniqueId(), twin)) continue;
+            if (!ipl$ownsCoincidentFace(portal, twin, state, false, false)) continue;
+            return new TransitCandidate(airship, portal, false,
+                ipl$rigidGroupMates(airship), state.entryTime());
+        }
+        return null;
+    }
+
     private record TransitCandidate(
         ServerSubLevel airship, Portal portal, boolean hadSession,
-        java.util.List<ServerSubLevel> mates
+        java.util.List<ServerSubLevel> mates,
+        /** Fraction of the observed segment at which the body entered the aperture. */
+        double entryTime
     ) {}
 }

@@ -54,8 +54,8 @@ pub struct RopeMap {
 }
 
 pub fn tick(scene: &PhysicsScene) {
-    let mut sable_data = scene.sable_data.write().unwrap();
-    let mut sim = scene.sim_data.write().unwrap();
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let mut dead_start_attachments = Vec::new();
     let mut dead_end_attachments = Vec::new();
@@ -145,8 +145,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
         .unwrap();
 
     with_handle(handle, |scene| {
-        let mut sim_data = scene.sim_data.write().unwrap();
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let universal_drag = scene.universal_drag;
 
         let mut vec = Vec::with_capacity(num_points as usize);
@@ -291,8 +291,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_que
     id: jlong,
 ) -> JDoubleArray<'local> {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let sim_data = scene.sim_data.read().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sim_data = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let strand = sable_data.rope_map.ropes.get(&(id as usize)).unwrap();
 
@@ -328,8 +328,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
     id: jlong,
 ) {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let sim_data = &mut *sim_data;
 
         let strand = sable_data.rope_map.ropes.remove(&(id as usize)).unwrap();
@@ -358,8 +358,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
     length: jdouble,
 ) {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let strand = sable_data.rope_map.ropes.get_mut(&(id as usize)).unwrap();
 
@@ -389,8 +389,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
     id: jlong,
 ) {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let sim_data = &mut *sim_data;
 
         let strand = sable_data.rope_map.ropes.get_mut(&(id as usize)).unwrap();
@@ -440,8 +440,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
     z: jdouble,
 ) {
     with_handle(handle, |scene| {
-        let mut sim_data = scene.sim_data.write().unwrap();
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let universal_drag = scene.universal_drag;
 
         let strand = sable_data.rope_map.ropes.get_mut(&(id as usize)).unwrap();
@@ -492,8 +492,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_wak
     rope_id: jlong,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let strand = sable_data.rope_map.ropes.get(&(rope_id as usize)).unwrap();
 
@@ -524,8 +524,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
 ) {
     with_handle(handle, |scene| {
         let ground_handle = scene.ground_handle.unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let SableSceneData {
             rope_map,
             rigid_bodies,
@@ -625,8 +625,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setRopePortalPref
         let Some(ground_handle) = scene.ground_handle else {
             return;
         };
-        let mut sim_data = scene.sim_data.write().unwrap();
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let SableSceneData {
             rope_map,
             rigid_bodies,
@@ -722,8 +722,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_remapRope<'local>
         } else {
             unsafe { &*(dest_scene_handle as *const PhysicsScene) }.chart
         };
-        let mut sable_data = scene.sable_data.write().unwrap();
-        let mut sim = scene.sim_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(strand) = sable_data.rope_map.ropes.get_mut(&(rope_id as usize)) else {
             return;
         };
@@ -774,7 +774,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_ropesAttachedToSa
 ) -> jni::objects::JLongArray<'local> {
     let mut packed: Vec<jlong> = Vec::new();
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         for (id, strand) in sable_data.rope_map.ropes.iter() {
             if let Some(a) = &strand.start_attachment {
                 if a.sub_level_id == Some(body_id as LevelColliderID) {
@@ -808,8 +808,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_overstretchedRope
 ) -> jni::objects::JLongArray<'local> {
     let mut over: Vec<jlong> = Vec::new();
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let sim = scene.sim_data.read().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sim = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         for (id, strand) in sable_data.rope_map.ropes.iter() {
             if strand.points.len() < 2 {
                 continue;

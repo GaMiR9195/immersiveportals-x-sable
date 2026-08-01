@@ -51,7 +51,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createPortalRim<'
         (Vec3::new(0.0, 0.0, half_h + width * 0.5), half_w, half_thickness, width * 0.5),
     ];
 
-    let mut sim = scene.sim_data.write().unwrap();
+    let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let body = sim.rigid_body_set.insert(RigidBodyBuilder::kinematic_position_based());
     let crate::scene::SimulationSceneData { collider_set, rigid_body_set, .. } = &mut *sim;
     for (position, x, y, z) in bars {
@@ -67,7 +67,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createPortalRim<'
     // them to Java as a body id. A kinematic body is unique to exactly one rim.
     let id = next_portal_rim_id();
     drop(sim);
-    let mut rims = IPL_PORTAL_RIMS.write().unwrap();
+    let mut rims = IPL_PORTAL_RIMS.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     rims.insert((scene_handle, id), PortalRim {
         body, exclusions: HashSet::new(), positioned: false,
     });
@@ -83,7 +83,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setPortalRimTrans
     x: jdouble, y: jdouble, z: jdouble,
     qx: jdouble, qy: jdouble, qz: jdouble, qw: jdouble,
 ) {
-    let Some((body_handle, first_pose)) = IPL_PORTAL_RIMS.write().unwrap()
+    let Some((body_handle, first_pose)) = IPL_PORTAL_RIMS.write().unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_mut(&(scene_handle, rim_id))
         .map(|rim| {
             let first_pose = !rim.positioned;
@@ -94,7 +94,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setPortalRimTrans
     };
     if scene_handle == 0 { return; }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sim = scene.sim_data.write().unwrap();
+    let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(body) = sim.rigid_body_set.get_mut(body_handle) {
         let pose = Pose3 {
             translation: Vec3::new(x as Real, y as Real, z as Real),
@@ -113,12 +113,12 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setPortalRimTrans
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removePortalRim<'local>(
     _env: JNIEnv<'local>, _class: JClass<'local>, scene_handle: jlong, rim_id: jint,
 ) {
-    let Some(rim) = IPL_PORTAL_RIMS.write().unwrap().remove(&(scene_handle, rim_id)) else {
+    let Some(rim) = IPL_PORTAL_RIMS.write().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&(scene_handle, rim_id)) else {
         return;
     };
     if scene_handle == 0 { return; }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sim = scene.sim_data.write().unwrap();
+    let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     // Removing the parent body removes its attached compound collider too. Destructure
     // the scene first so Rust can prove these mutable fields do not overlap.
     let crate::scene::SimulationSceneData {
@@ -147,7 +147,7 @@ fn next_portal_rim_id() -> jint {
 pub fn portal_rim_contact_allowed(context: &PairFilterContext) -> bool {
     let Some(body1) = context.rigid_body1 else { return true; };
     let Some(body2) = context.rigid_body2 else { return true; };
-    IPL_PORTAL_RIMS.read().unwrap().values().all(|rim| {
+    IPL_PORTAL_RIMS.read().unwrap_or_else(std::sync::PoisonError::into_inner).values().all(|rim| {
         !((body1 == rim.body && rim.exclusions.contains(&body2))
             || (body2 == rim.body && rim.exclusions.contains(&body1)))
     })
@@ -158,9 +158,9 @@ fn set_portal_rim_exclusion(
 ) {
     if scene_handle == 0 || body_id < 0 { return; }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let Some(body) = scene.sable_data.read().unwrap().rigid_bodies
+    let Some(body) = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner).rigid_bodies
         .get(&(body_id as LevelColliderID)).copied() else { return; };
-    let mut rims = IPL_PORTAL_RIMS.write().unwrap();
+    let mut rims = IPL_PORTAL_RIMS.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(rim) = rims.get_mut(&(scene_handle, rim_id)) else { return; };
     if excluded != 0 { rim.exclusions.insert(body); } else { rim.exclusions.remove(&body); }
 }
@@ -213,7 +213,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
 
     // Same handle-deref pattern as the upstream natives (with_handle).
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap();
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(info) = sable_data
         .level_colliders
         .get_mut(&(body_id as LevelColliderID))
@@ -269,7 +269,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyPairExclus
         return;
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap();
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (a, b) = (id_a as LevelColliderID, id_b as LevelColliderID);
     let key = if a <= b { (a, b) } else { (b, a) };
     if excluded != 0 {
@@ -300,7 +300,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setParentFrame<'l
         return 0;
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap();
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(info) = sable_data
         .level_colliders
         .get_mut(&(body_id as LevelColliderID))
@@ -332,7 +332,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyDormant<'l
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
     let handle = {
-        let sable_data = scene.sable_data.read().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(handle) = sable_data
             .rigid_bodies
             .get(&(body_id as LevelColliderID))
@@ -342,7 +342,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setBodyDormant<'l
         };
         handle
     };
-    let mut sim_data = scene.sim_data.write().unwrap();
+    let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(body) = sim_data.rigid_body_set.get_mut(handle) else {
         return;
     };
@@ -380,12 +380,12 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBod
         return env.new_int_array(0).unwrap();
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let sable_data = scene.sable_data.read().unwrap();
+    let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(start) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
         return env.new_int_array(0).unwrap();
     };
     let sable_handles: HashSet<_> = sable_data.rigid_bodies.values().copied().collect();
-    let sim = scene.sim_data.read().unwrap();
+    let sim = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut connected = HashSet::from([start]);
     loop {
         let mut changed = false;
@@ -462,8 +462,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
         return -1;
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap();
-    let mut sim_data = scene.sim_data.write().unwrap();
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let sim_data = &mut *sim_data;
 
     let Some(body_handle) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
@@ -547,8 +547,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollid
         return;
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap();
-    let mut sim_data = scene.sim_data.write().unwrap();
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let sim_data = &mut *sim_data;
 
     let handle = ColliderHandle::from_raw_parts(
@@ -599,7 +599,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegio
     }
 
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap();
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(info) = sable_data
         .level_colliders
         .get_mut(&(body_id as LevelColliderID))
@@ -653,7 +653,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImagePrefix<'l
         return;
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sim_data = scene.sim_data.write().unwrap();
+    let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let handle = ColliderHandle::from_raw_parts(
         (packed_handle >> 32) as u32,
         (packed_handle & 0xFFFF_FFFF) as u32,

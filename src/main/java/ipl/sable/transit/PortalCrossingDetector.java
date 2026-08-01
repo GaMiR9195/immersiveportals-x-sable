@@ -41,7 +41,9 @@ public final class PortalCrossingDetector {
         boolean sweptIntersectsPortalAperture,
         boolean currentIntersectsPortalAperture,
         SweepDirection sweptEntryDirection,
-        SweepDirection currentSweepDirection
+        SweepDirection currentSweepDirection,
+        /** Fraction of the CURRENT segment at which the source->destination entry happened. */
+        double entryTime
     ) {
         public boolean sweptTowardDestination() {
             return sweptEntryDirection == SweepDirection.TOWARD_DESTINATION;
@@ -99,6 +101,77 @@ public final class PortalCrossingDetector {
         trail.lastSeenTick = trailTick;
     }
 
+    /**
+     * Re-bases a trail into the destination frame at the exact crossing time of a transit that
+     * has just executed. Forgetting the trail (the previous behaviour) threw away the part of
+     * the physics segment lying BEYOND the portal plane, so a body fast enough to cross two
+     * portals inside one segment consumed only the first one and travelled the remainder in the
+     * wrong chart. The retained remainder is [crossingTime, 1] mapped through the portal
+     * isometry; history before the seam is dropped because it cannot be joined to destination
+     * poses.
+     */
+    public static void rebaseTrailThroughPortal(
+        ServerSubLevel airship, Portal portal, double crossingTime
+    ) {
+        UUID id = airship.getUniqueId();
+        Trail trail = TRAILS.get(id);
+        Pose3d entry;
+        if (trail == null || !Double.isFinite(crossingTime)) {
+            entry = new Pose3d(airship.logicalPose());
+        } else {
+            entry = IplStraddlePoseMap.StraddleMapping.of(portal).mapPose(
+                interpolate(trail.start, trail.end, Math.clamp(crossingTime, 0.0, 1.0)));
+        }
+        if (trail == null) {
+            trail = new Trail(new Pose3d(entry), new Pose3d(entry), new Pose3d(entry));
+            TRAILS.put(id, trail);
+        }
+        trail.older.set(entry);
+        trail.hasOlder = false;
+        trail.start.set(entry);
+        trail.end.set(airship.logicalPose());
+        trail.lastSeenTick = trailTick;
+    }
+
+    /**
+     * Predictive aperture arming. Answers whether the current segment, continued forward by
+     * {@code lookaheadSegments}, drives the body into this finite aperture from the source
+     * side. The straddle seam (image collider plus clip regions) is then opened one segment
+     * early, so a body moving several blocks per tick meets an already porous doorway instead
+     * of the intact source-side terrain behind the portal plane.
+     */
+    public static boolean willEnterAperture(
+        ServerSubLevel airship, Portal portal, Vec3 sourceToDestNormal,
+        double apertureMargin, double lookaheadSegments
+    ) {
+        if (lookaheadSegments <= 0.0) return false;
+        List<BlockPos> blocks = IplPortalVolumeCache.blocks(airship);
+        if (blocks.isEmpty()) return false;
+        Trail trail = trail(airship);
+        Pose3d ahead = interpolate(trail.start, trail.end, 1.0 + lookaheadSegments);
+        SweepResult predicted = sweepSegment(portal, blocks,
+            new Frame(trail.end), new Frame(ahead), sourceToDestNormal, apertureMargin);
+        return predicted.intersects()
+            && predicted.direction() == SweepDirection.TOWARD_DESTINATION;
+    }
+
+    /**
+     * Position lerp with orientation slerp. {@code t} may exceed 1 to extrapolate the segment
+     * forward; orientation is clamped at the segment end because extrapolated spin is not
+     * evidence, only translation is used for lookahead admission.
+     */
+    private static Pose3d interpolate(Pose3dc from, Pose3dc to, double t) {
+        Pose3d out = new Pose3d(from);
+        out.position().set(
+            from.position().x() + (to.position().x() - from.position().x()) * t,
+            from.position().y() + (to.position().y() - from.position().y()) * t,
+            from.position().z() + (to.position().z() - from.position().z()) * t);
+        org.joml.Quaterniond rotation = new org.joml.Quaterniond(from.orientation());
+        rotation.slerp(new org.joml.Quaterniond(to.orientation()), Math.clamp(t, 0.0, 1.0));
+        out.orientation().set(rotation);
+        return out;
+    }
+
     public static void clearTrails() {
         TRAILS.clear();
         trailTick = 0L;
@@ -131,7 +204,7 @@ public final class PortalCrossingDetector {
         if (blocks.isEmpty()) {
             return new CrossingState(
                 CrossingPhase.APPROACHING, false, false, false,
-                SweepDirection.NONE, SweepDirection.NONE);
+                SweepDirection.NONE, SweepDirection.NONE, Double.NaN);
         }
 
         Trail trail = trail(airship);
@@ -155,7 +228,9 @@ public final class PortalCrossingDetector {
             sweep.intersects,
             overlapsAperture(portal, blocks, end, sourceToDestNormal, apertureMargin),
             sweep.direction(),
-            recent.direction());
+            recent.direction(),
+            Double.isFinite(recent.towardTime()) ? recent.towardTime()
+                : (Double.isFinite(sweep.towardTime()) ? sweep.towardTime() : Double.NaN));
         IplEnteringVolumeVisualization.record(airship, portal, result);
         return result;
     }

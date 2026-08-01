@@ -7,6 +7,7 @@ import dev.ryanhcode.sable.sublevel.render.dispatcher.SubLevelRenderDispatcher;
 import foundry.veil.api.client.render.VeilRenderBridge;
 import foundry.veil.api.client.render.rendertype.VeilRenderType;
 import ipl.sable.client.IplClientHostedLookup;
+import ipl.sable.client.IplProjectionRenderSequence;
 import ipl.sable.client.IplStraddleRenderState;
 import net.caffeinemc.mods.sodium.client.SodiumClientMod;
 import net.caffeinemc.mods.sodium.client.render.SodiumWorldRenderer;
@@ -248,11 +249,16 @@ public abstract class IplHostedSubLevelRenderSodiumMixin {
     }
 
     /**
-     * Sable queues one-block sub-level layers during {@code renderSectionLayer}, then drains
-     * that queue only from {@code renderAfterSections}. Sodium does not execute the vanilla
-     * LevelRenderer terrain lifecycle, so the existing hosted vanilla hook never drains it.
-     * Ropes are many independent one-block sub-levels and therefore vanished for the same
-     * reason. Drain after Sodium has issued the matching chunk layer.
+     * Sable queues one-block sub-level layers during {@code renderSectionLayer} and drains
+     * that queue only from {@code renderAfterSections}. Sodium drives its own terrain
+     * lifecycle, so the drain has to follow the matching Sodium chunk layer.
+     *
+     * <p>The drain is ONE call over a sequence of hosted sub-levels followed by the straddle
+     * projections. The queue is shared and is cleared by the first drain, so the previous
+     * per-projection calls always ran against an empty queue: single-block sub-levels (rope
+     * ends, one-block contraptions) were simply absent from every destination projection.
+     * {@link IplProjectionRenderSequence} arms each projection's mapped pose exactly while
+     * its geometry is baked.
      */
     @Inject(method = "drawChunkLayer", at = @At("TAIL"))
     private void ipl$renderHostedSingleBlocks(
@@ -264,28 +270,20 @@ public abstract class IplHostedSubLevelRenderSodiumMixin {
         if (hosted.isEmpty() && projections.isEmpty()) return;
 
         Minecraft minecraft = Minecraft.getInstance();
-        Camera camera = minecraft.gameRenderer.getMainCamera();
-        Vec3 cameraPosition = camera.getPosition();
         float partialTick = minecraft.getTimer().getGameTimeDeltaPartialTick(false);
         Matrix4f modelView = new Matrix4f(matrices.modelView());
         Matrix4f projection = new Matrix4f(matrices.projection());
-        SubLevelRenderDispatcher dispatcher = SubLevelRenderDispatcher.get();
 
-        if (!hosted.isEmpty()) {
-            dispatcher.renderAfterSections(
-                hosted, cameraPosition.x, cameraPosition.y, cameraPosition.z,
-                modelView, projection, partialTick);
-        }
-        for (IplClientHostedLookup.StraddleProjection proj : projections) {
-            IplStraddleRenderState.set(
-                proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
-            try {
-                dispatcher.renderAfterSections(
-                    List.of(proj.sub()), cameraPosition.x, cameraPosition.y, cameraPosition.z,
-                    modelView, projection, partialTick);
-            } finally {
-                IplStraddleRenderState.clear();
-            }
+        // x/y/z are THIS pass's camera origin. The main camera belongs to the player and is
+        // the wrong origin inside an IP portal pass, which shifted every single-block draw
+        // seen through a portal.
+        IplProjectionRenderSequence sequence =
+            new IplProjectionRenderSequence(hosted, projections);
+        try {
+            SubLevelRenderDispatcher.get().renderAfterSections(
+                sequence, x, y, z, modelView, projection, partialTick);
+        } finally {
+            sequence.disarm();
         }
     }
 

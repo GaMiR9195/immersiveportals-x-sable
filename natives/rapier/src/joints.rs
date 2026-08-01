@@ -49,8 +49,8 @@ impl SableJointSet {
 }
 
 pub fn tick(scene: &PhysicsScene) {
-    let mut sable_data = scene.sable_data.write().unwrap();
-    let mut sim = scene.sim_data.write().unwrap();
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     // The shared Atlas world is visited once per chart. Pruning a world-global map here
     // was O(charts * joints) even though only the body's owning chart can change a joint.
@@ -147,8 +147,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
     max_force: jdouble,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let Some(joint) = sable_data.joint_set.joints.get(&joint_id) else {
             return;
@@ -185,8 +185,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
     max: jdouble,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let Some(joint) = sable_data.joint_set.joints.get(&joint_id) else {
             return;
@@ -213,8 +213,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_loc
     mask: jbyte,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let Some(joint) = sable_data.joint_set.joints.get(&joint_id) else {
             return;
@@ -240,7 +240,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_isC
     joint_id: jlong,
 ) -> jboolean {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if sable_data.joint_set.joints.contains_key(&joint_id) {
             1
         } else {
@@ -260,8 +260,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_get
     store: JDoubleArray<'local>,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let sim_data = scene.sim_data.read().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sim_data = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let joint = sable_data.joint_set.joints.get(&joint_id).unwrap();
         let impulse_joint = sim_data.impulse_joint_set.get(joint.handle).unwrap();
@@ -291,7 +291,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
     enabled: jboolean,
 ) {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(joint) = sable_data.joint_set.joints.get_mut(&joint_id) else {
             return;
         };
@@ -311,8 +311,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
     joint_id: jlong,
 ) {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(joint) = sable_data.joint_set.joints.remove(&joint_id) {
             sim_data.impulse_joint_set.remove(joint.handle, true);
         }
@@ -342,8 +342,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
     axis_z_b: jdouble,
 ) -> SableJointHandle {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let rb_a = if id_a == -1 {
             scene.ground_handle.unwrap()
@@ -429,8 +429,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
     local_q_w: jdouble,
 ) -> SableJointHandle {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let rb_a = if id_a == -1 {
             scene.ground_handle.unwrap()
@@ -521,8 +521,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
     local_q_w: jdouble,
 ) -> SableJointHandle {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let rb_a = if id_a == -1 {
             scene.ground_handle.unwrap()
@@ -615,8 +615,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
     locked_axes_mask: jint,
 ) -> SableJointHandle {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let rb_a = if id_a == -1 {
             scene.ground_handle.unwrap()
@@ -711,7 +711,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
     local_q_w: jdouble,
 ) {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(joint) = sable_data.joint_set.joints.get_mut(&joint_id) else {
             return;
         };
@@ -748,7 +748,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
             .and_then(|id| sable_data.level_colliders.get(&id))
             .and_then(|info| info.center_of_mass)
             .unwrap_or(DVec3::ZERO);
-        let mut sim = scene.sim_data.write().unwrap();
+        let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(impulse_joint) = sim.impulse_joint_set.get_mut(joint_handle, false) else {
             return;
         };

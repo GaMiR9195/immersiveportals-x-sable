@@ -77,7 +77,6 @@
     "client.IplHostedFlywheelVisualRerouteMixin",
     "client.IplSectionOcclusionGuardMixin",
     "client.SableSourceClipMixin",
-    "client.SableSourceClipSodiumMixin",
     "client.IplShaderInstanceClipMixin",
     "client.SableSubLevelBlockEntityClipMixin",
     "client.SableVanillaSubLevelBERMixin",

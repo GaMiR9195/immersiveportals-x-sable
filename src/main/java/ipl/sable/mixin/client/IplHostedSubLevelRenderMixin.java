@@ -363,22 +363,20 @@ public abstract class IplHostedSubLevelRenderMixin {
         Vec3 cameraPosition = camera.getPosition();
         float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
 
-        if (!hosted.isEmpty()) {
+        // ONE drain over hosted sub-levels followed by the straddle projections. The
+        // dispatcher's pending single-block layer queue is shared and is cleared by the
+        // first drain, so the previous per-projection calls saw an empty queue and every
+        // single-block sub-level (rope ends, one-block contraptions) was missing from the
+        // destination projection. The sequence arms each projection's mapped pose exactly
+        // while its geometry is baked into the buffer.
+        ipl.sable.client.IplProjectionRenderSequence sequence =
+            new ipl.sable.client.IplProjectionRenderSequence(hosted, projections);
+        try {
             SubLevelRenderDispatcher.get().renderAfterSections(
-                hosted, cameraPosition.x, cameraPosition.y, cameraPosition.z,
+                sequence, cameraPosition.x, cameraPosition.y, cameraPosition.z,
                 modelView, projection, partialTick);
-        }
-
-        for (IplClientHostedLookup.StraddleProjection proj : projections) {
-            ipl.sable.client.IplStraddleRenderState.set(
-                proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
-            try {
-                SubLevelRenderDispatcher.get().renderAfterSections(
-                    List.of(proj.sub()), cameraPosition.x, cameraPosition.y, cameraPosition.z,
-                    modelView, projection, partialTick);
-            } finally {
-                ipl.sable.client.IplStraddleRenderState.clear();
-            }
+        } finally {
+            sequence.disarm();
         }
     }
 }

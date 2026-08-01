@@ -31,6 +31,12 @@ final class IplClientVisualTransitLatch {
     private static final Map<UUID, UUID> FORWARD_SWEEPS = new HashMap<>();
     /** Last submitted pose per ship. Interpolation changes every render frame, not only per tick. */
     private static final Map<UUID, Pose3d> LAST_RENDER_POSES = new HashMap<>();
+    /** Render frame the pose above was sampled in; one sample per frame, not per pass. */
+    private static final Map<UUID, Long> LAST_SAMPLE_FRAMES = new HashMap<>();
+
+    /** Frames a pose sample survives without being re-sampled before it is dropped. */
+    private static final long SAMPLE_RETENTION_FRAMES = 600L;
+    private static long lastPruneFrame;
 
     private record Prediction(UUID portalId, long expiresAtTick) {}
 
@@ -47,10 +53,20 @@ final class IplClientVisualTransitLatch {
     ) {
         UUID shipId = sub.getUniqueId();
         long tick = level.getGameTime();
-        // Sample every render frame before examining a pending prediction. A ClientSubLevel's
-        // interpolation pose moves between network ticks, so lastPose alone cannot see a
-        // high-speed aperture crossing until after the server already decided it.
-        Pose3d previousRenderPose = LAST_RENDER_POSES.put(shipId, new Pose3d(sub.renderPose()));
+        // Sample ONCE PER RENDER FRAME before examining a pending prediction. A
+        // ClientSubLevel's interpolation pose moves between network ticks, so lastPose alone
+        // cannot see a high-speed aperture crossing until after the server already decided it.
+        //
+        // This must not re-sample per render PASS. One frame runs the main renderLevel plus
+        // one nested renderLevel per visible portal, and each pass re-resolves the same ship
+        // (the straddle cache is per pass, and every prediction change invalidates it). With
+        // a per-call sample, only the first pass of a frame saw a real from->to sweep; every
+        // later pass compared this frame's pose with itself, so `crossesAperture` was false
+        // and the projection was dropped exactly in the portal views that are supposed to
+        // show the far-side geometry. At high speed that is the whole crossing: the ship
+        // clears the aperture within one frame, and the only pass that could arm the
+        // prediction was the one that does not draw the destination side.
+        Pose3d previousRenderPose = ipl$sampleRenderPose(sub, shipId);
         Prediction prediction = PREDICTIONS.get(shipId);
         if (prediction != null) {
             if (containsPortal(visibleAuthoritativeSessions, prediction.portalId())) {
@@ -82,6 +98,37 @@ final class IplClientVisualTransitLatch {
         return appendIfMissing(resolved, candidate);
     }
 
+    /**
+     * The pose this ship had when the previous frame sampled it, refreshing the sample at
+     * most once per frame. Returns null on the very first frame a ship is seen, and the
+     * caller then falls back to `sub.lastPose()`.
+     */
+    private static Pose3d ipl$sampleRenderPose(ClientSubLevel sub, UUID shipId) {
+        long frame = IplStraddleRenderCache.frameId();
+        Long sampledFrame = LAST_SAMPLE_FRAMES.get(shipId);
+        Pose3d previous = LAST_RENDER_POSES.get(shipId);
+        if (sampledFrame == null || sampledFrame.longValue() != frame) {
+            LAST_SAMPLE_FRAMES.put(shipId, frame);
+            LAST_RENDER_POSES.put(shipId, new Pose3d(sub.renderPose()));
+        }
+        ipl$pruneSamples(frame);
+        return previous;
+    }
+
+    /**
+     * Ships leave render range, get removed, or change dimension without any latch event, so
+     * these two maps only ever grew. Drop samples nothing has refreshed for a long while.
+     */
+    private static void ipl$pruneSamples(long frame) {
+        if (frame - lastPruneFrame < SAMPLE_RETENTION_FRAMES) return;
+        lastPruneFrame = frame;
+        LAST_SAMPLE_FRAMES.entrySet().removeIf(entry -> {
+            if (frame - entry.getValue() < SAMPLE_RETENTION_FRAMES) return false;
+            LAST_RENDER_POSES.remove(entry.getKey());
+            return true;
+        });
+    }
+
     private static boolean containsPortal(List<Portal> portals, UUID portalId) {
         for (Portal portal : portals) {
             if (portal.getUUID().equals(portalId)) return true;
@@ -104,6 +151,7 @@ final class IplClientVisualTransitLatch {
         remove(shipId);
         FORWARD_SWEEPS.remove(shipId);
         LAST_RENDER_POSES.remove(shipId);
+        LAST_SAMPLE_FRAMES.remove(shipId);
     }
 
     /**

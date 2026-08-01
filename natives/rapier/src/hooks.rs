@@ -161,7 +161,7 @@ impl SablePhysicsHooks {
             let Some(id) = level_collider.id else {
                 continue; // the static world collider is never clipped
             };
-            let sable_data = self.sable_data.read().unwrap();
+            let sable_data = self.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(info) = sable_data.level_colliders.get(&(id as LevelColliderID)) else {
                 continue;
             };
@@ -213,7 +213,7 @@ impl SablePhysicsHooks {
         if let Some(level_collider_a) = level_collider_a
             && level_collider_a.id.is_some()
         {
-            let sable_data = self.sable_data.read().unwrap();
+            let sable_data = self.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
 
             let collider_info =
                 &sable_data.level_colliders[&(level_collider_a.id.unwrap() as LevelColliderID)];
@@ -242,7 +242,7 @@ impl SablePhysicsHooks {
         let state = crate::get_physics_state();
 
         let (tangent_velo, center_of_mass, skip_contact_events) = {
-            let sable_data = self.sable_data.read().unwrap();
+            let sable_data = self.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
             let collider_info =
                 level_collider.and_then(|lc| lc.id.map(|id| &sable_data.level_colliders[&(id)]));
 

@@ -43,9 +43,9 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
     rigid_body.set_rotation(quat, false);
 
     with_handle(handle, |scene| {
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let sim_data = &mut *sim_data;
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let handle = sim_data.rigid_body_set.insert(rigid_body);
 
@@ -80,9 +80,9 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
     id: jint,
 ) {
     with_handle(handle, |scene| {
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let sim_data = &mut *sim_data;
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let handle = sable_data.rigid_bodies[&(id as LevelColliderID)];
         sim_data.rigid_body_set.remove(

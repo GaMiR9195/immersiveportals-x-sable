@@ -54,9 +54,9 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
     _pose: JDoubleArray<'local>,
 ) {
     with_handle(handle, |scene| {
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let sim_data = &mut *sim_data;
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let should_be_static = mount_id == -1;
         let mount_rigid_body = if should_be_static {
@@ -136,8 +136,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
     );
 
     with_handle(handle, |scene| {
-        let mut sim_data = scene.sim_data.write().unwrap();
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let info = get_kinematic_collider_info(&mut sable_data, id);
         let collider_handle = info.collider;
@@ -216,7 +216,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
     let chunk = marten::level::ChunkSection::new(blocks);
 
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let info = get_kinematic_collider_info(&mut sable_data, id);
         if let Some(chunk_map) = &mut info.chunk_map {
             chunk_map.insert(crate::scene::pack_section_pos(x, y, z), chunk);
@@ -235,9 +235,9 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
     id: jint,
 ) {
     with_handle(handle, |scene| {
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let sim_data = &mut *sim_data;
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let info = sable_data.level_colliders.remove(&(id as LevelColliderID));
         let info = info.unwrap();

@@ -196,7 +196,7 @@ where
                     }
                 }
                 let swap = {
-                    let sable_data = self.sable_data.read().unwrap();
+                    let sable_data = self.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
                     // IPL defensive: a pair can outlive one body by a beat during teardown
                     // or reach here before stats/bounds landed. The old
                     // `[]`-index + unwrap chain panicked across the FFI boundary (JVM
@@ -302,7 +302,7 @@ impl SableDispatcher {
         swap: bool,
     ) {
         let physics_state = crate::get_physics_state();
-        let sable_data = self.sable_data.read().unwrap();
+        let sable_data = self.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let collider_info = g1
             .id
@@ -493,7 +493,7 @@ impl SableDispatcher {
         swap: bool,
     ) {
         let physics_state = crate::get_physics_state();
-        let sable_data = self.sable_data.read().unwrap();
+        let sable_data = self.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let collider_info_1 = g1
             .id

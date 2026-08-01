@@ -14,8 +14,8 @@ use rapier3d::prelude::RigidBodyVelocity;
 pub fn compute_buoyancy(scene: &PhysicsScene) {
     let physics_state = crate::get_physics_state();
     let collider_map = &physics_state.voxel_collider_map;
-    let sable_data = scene.sable_data.read().unwrap();
-    let mut sim_data = scene.sim_data.write().unwrap();
+    let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let Some(body_ids) = sable_data.bodies_by_chart.get(&scene.chart) else {
         return;

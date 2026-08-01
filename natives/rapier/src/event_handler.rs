@@ -79,7 +79,7 @@ impl EventHandler for SableEventHandler {
         // body torn down mid-step — is dropped, matching the old per-scene
         // behavior where such records could not exist).
         let chart = {
-            let sable_data = self.sable_data.read().unwrap();
+            let sable_data = self.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
             batch
                 .iter()
                 .find_map(|r| r.body_a.or(r.body_b))

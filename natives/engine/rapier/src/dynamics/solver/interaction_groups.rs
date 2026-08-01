@@ -436,6 +436,19 @@ impl InteractionGroups {
 
                 let i1 = active_set_id1;
                 let i2 = active_set_id2;
+
+                // IPL hardening: never index `body_masks` out of bounds. An id outside
+                // the island means the manifold does not belong to this island (stale
+                // `active_set_id` after a Fixed<->Dynamic switch, or a cross-island pair).
+                // A native panic here aborts the JVM, so drop the manifold for this step
+                // instead: it is re-solved once the island union is repaired.
+                let ipl_len = self.body_masks.len();
+                if (!is_fixed1 && i1 as usize >= ipl_len)
+                    || (!is_fixed2 && i2 as usize >= ipl_len)
+                {
+                    continue;
+                }
+
                 let mask1 = if !is_fixed1 {
                     self.body_masks[i1 as usize]
                 } else {

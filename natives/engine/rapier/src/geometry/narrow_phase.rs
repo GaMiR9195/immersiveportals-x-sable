@@ -1144,6 +1144,42 @@ impl NarrowPhase {
                     let _ = snd.send((rb_handle1, rb_handle2, has_any_active_contact));
                 }
             }
+
+            // IPL fix: two DYNAMIC bodies sharing an active manifold MUST be in the same
+            // island. The union above only runs on a start/stop transition, so a body that
+            // was Fixed when the contact started (terrain-gate dormancy, spec: hosted ship
+            // over unloaded parent chunks) and became Dynamic later never merges: no
+            // transition fires while the contact stays active. The solver then indexes
+            // `body_masks` (sized with island 1) using body 2 `active_set_id`
+            // (solver/interaction_groups.rs group_manifolds) -> index out of bounds, which
+            // is a native panic and aborts the JVM. Re-assert the union for the (rare)
+            // mismatching pairs on every step. Same story for image colliders whose parent
+            // body changes type or is re-registered mid-session.
+            if has_any_active_contact {
+                if let (Some(ipl_h1), Some(ipl_h2)) = (rb_handle1, rb_handle2) {
+                    let ipl_islands_differ = {
+                        let ipl_rb1 = &bodies[ipl_h1];
+                        let ipl_rb2 = &bodies[ipl_h2];
+                        ipl_rb1.is_dynamic()
+                            && ipl_rb2.is_dynamic()
+                            && ipl_rb1.ids.active_island_id != ipl_rb2.ids.active_island_id
+                    };
+                    if ipl_islands_differ {
+                        #[cfg(not(feature = "parallel"))]
+                        islands.interaction_started_or_stopped(
+                            bodies,
+                            Some(ipl_h1),
+                            Some(ipl_h2),
+                            true,
+                            true,
+                        );
+                        #[cfg(feature = "parallel")]
+                        {
+                            let _ = snd.send((Some(ipl_h1), Some(ipl_h2), true));
+                        }
+                    }
+                }
+            }
         });
 
         self.contact_graph.graph.edges.iter_mut().for_each(|edge| {
@@ -1248,6 +1284,19 @@ impl NarrowPhase {
                         } else {
                             (0, RigidBodyType::Fixed, true)
                         };
+
+                    // IPL guard: a manifold is solved inside ONE island, and the solver
+                    // indexes per-island arrays with each body `active_set_id`. If the two
+                    // dynamic bodies ended up in different islands (see the union re-assert
+                    // in `compute_contacts`), solving it here would read out of bounds and
+                    // panic. Skipping the manifold for this step is safe: the union is
+                    // repaired by the next narrow-phase pass.
+                    if rb_type1.is_dynamic()
+                        && rb_type2.is_dynamic()
+                        && active_island_id1 != active_island_id2
+                    {
+                        continue;
+                    }
 
                     if (rb_type1.is_dynamic() || rb_type2.is_dynamic())
                         && (!rb_type1.is_dynamic() || !sleeping1)

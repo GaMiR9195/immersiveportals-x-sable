@@ -388,7 +388,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ini
     // initialize creates the world (sim sets, terrain collider, ground body); every
     // call mints a new chart with its own report buffer. The registry holds a Weak so
     // the world dies with its last view (server restart in one JVM gets a fresh world).
-    let mut registry = ipl_world_registry().lock().unwrap();
+    let mut registry = ipl_world_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let world = if let Some(world) = registry.upgrade() {
         if (world.world_gravity - gravity).length() > 1e-6 {
             info!(
@@ -440,7 +440,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ini
         }));
 
         let ground_handle = {
-            let mut sim = sim_data.write().unwrap();
+            let mut sim = sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
             sim.rigid_body_set.insert(RigidBodyBuilder::fixed())
         };
 
@@ -468,14 +468,14 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ini
         .insert(chart, Arc::clone(&reported_collisions));
     {
         // Pre-create the chart's storage so read paths see an (empty) chart.
-        world.sable_data.write().unwrap().chart_mut(chart);
+        world.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner).chart_mut(chart);
     }
 
     // Per-chart static terrain collider: the shape carries the chart id (the
     // dispatcher's terrain-vs-convex path only sees shapes), and its groups make
     // cross-chart terrain pairs impossible.
     let terrain_collider = {
-        let mut sim = world.sim_data.write().unwrap();
+        let mut sim = world.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let terrain =
             ColliderBuilder::new(SharedShape::new(LevelCollider::new(None, true, chart)))
                 .collision_groups(groups::terrain_group(chart))
@@ -524,7 +524,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_dis
             // removeSubLevel before dispose (stock flow).
             scene.world.chart_buffers.remove(&scene.chart);
             if let Some(terrain) = scene.terrain_collider {
-                let mut sim = scene.sim_data.write().unwrap();
+                let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let sim = &mut *sim;
                 sim.collider_set.remove(
                     terrain,
@@ -533,7 +533,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_dis
                     false,
                 );
             }
-            scene.sable_data.write().unwrap().charts.remove(&scene.chart);
+            scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner).charts.remove(&scene.chart);
             drop(scene);
         }
     }
@@ -595,7 +595,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ste
 
             // Atlas: the world steps with the world gravity (assert-uniform, v3 §5).
             let gravity = scene.world.world_gravity;
-            let mut sim = scene.sim_data.write().unwrap();
+            let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
             let sim = &mut *sim;
 
             let params = get_physics_state();
@@ -630,11 +630,15 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_get
     store: JDoubleArray<'local>,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let sim_data = scene.sim_data.read().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sim_data = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let rb: &RigidBody =
-            &sim_data.rigid_body_set[sable_data.rigid_bodies[&(id as LevelColliderID)]];
+        let Some(ipl_body_handle) = sable_data.rigid_bodies.get(&(id as LevelColliderID)).copied() else {
+            return; // IPL hardening: body gone - never panic across JNI
+        };
+        let Some(rb) = sim_data.rigid_body_set.get(ipl_body_handle) else {
+            return;
+        };
 
         let arr: [jdouble; 7] = [
             rb.translation().x as jdouble,
@@ -663,13 +667,13 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
     z: jdouble,
 ) {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let info = sable_data
             .level_colliders
             .get_mut(&(id as LevelColliderID))
             .unwrap();
         info.center_of_mass = Some(DVec3::new(x, y, z));
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         update_collider_aabb(&mut sim_data, info);
     })
 }
@@ -692,7 +696,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
     with_handle(handle, |scene| {
         let physics_state = get_physics_state();
         let collider_map = &physics_state.voxel_collider_map;
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let SableSceneData {
             level_colliders,
             charts,
@@ -709,7 +713,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
             chart_chunks,
             collider_map,
         );
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         update_collider_aabb(&mut sim_data, info);
     })
 }
@@ -752,9 +756,9 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
         rigid_body.set_angular_damping(scene.universal_drag);
         rigid_body.enable_gyroscopic_forces(true);
 
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let sim_data = &mut *sim_data;
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let handle = sim_data.rigid_body_set.insert(rigid_body);
 
@@ -803,7 +807,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
     id: jint,
 ) {
     with_handle(handle, |scene| {
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let body_id = id as LevelColliderID;
         if let Some(info) = sable_data.level_colliders.remove(&body_id) {
@@ -818,7 +822,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
             return;
         };
 
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let sim_data = &mut *sim_data;
         let rigid_body_set = &mut sim_data.rigid_body_set;
@@ -912,7 +916,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
     with_handle(handle, |scene| {
         let physics_state = get_physics_state();
         let collider_map = &physics_state.voxel_collider_map;
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let SableSceneData {
             charts,
             level_colliders,
@@ -1043,7 +1047,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
     with_handle(handle, |scene| {
         let physics_state = get_physics_state();
         let collider_map = &physics_state.voxel_collider_map;
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let chart_data = sable_data.chart_mut(scene.chart);
 
         chart_data
@@ -1115,7 +1119,7 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cha
     with_handle(handle, |scene| {
         let physics_state = get_physics_state();
         let collider_map = &physics_state.voxel_collider_map;
-        let mut sable_data = scene.sable_data.write().unwrap();
+        let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let SableSceneData {
             charts,
             level_colliders,
@@ -1258,10 +1262,15 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
     );
 
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let rb = &mut sim_data.rigid_body_set[sable_data.rigid_bodies[&(id as LevelColliderID)]];
+        let Some(ipl_body_handle) = sable_data.rigid_bodies.get(&(id as LevelColliderID)).copied() else {
+            return; // IPL hardening: body gone - never panic across JNI
+        };
+        let Some(rb) = sim_data.rigid_body_set.get_mut(ipl_body_handle) else {
+            return;
+        };
 
         rb.set_additional_mass_properties(
             MassProperties::with_inertia_matrix(Vec3::ZERO, mass as Real, inertia_tensor.into()),
@@ -1288,10 +1297,15 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_tel
     r: jdouble,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let rb = &mut sim_data.rigid_body_set[sable_data.rigid_bodies[&(id as LevelColliderID)]];
+        let Some(ipl_body_handle) = sable_data.rigid_bodies.get(&(id as LevelColliderID)).copied() else {
+            return; // IPL hardening: body gone - never panic across JNI
+        };
+        let Some(rb) = sim_data.rigid_body_set.get_mut(ipl_body_handle) else {
+            return;
+        };
 
         let mut pose = *rb.position();
         pose.translation = Vec3::new(x as Real, y as Real, z as Real);
@@ -1311,9 +1325,14 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_wak
     id: jint,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
-        let rb = &mut sim_data.rigid_body_set[sable_data.rigid_bodies[&(id as LevelColliderID)]];
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(ipl_body_handle) = sable_data.rigid_bodies.get(&(id as LevelColliderID)).copied() else {
+            return; // IPL hardening: body gone - never panic across JNI
+        };
+        let Some(rb) = sim_data.rigid_body_set.get_mut(ipl_body_handle) else {
+            return;
+        };
         rb.wake_up(true);
     })
 }
@@ -1335,8 +1354,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_add
     wake_up: jboolean,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let rb = get_rigid_body_mut(&mut sim_data, &sable_data, id as LevelColliderID);
 
         if wake_up == 0 && rb.is_sleeping() {
@@ -1434,14 +1453,17 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_app
     wake_up: jboolean,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let body = sable_data
-            .rigid_bodies
-            .get(&(id as LevelColliderID))
-            .unwrap();
-        let rb = &mut sim_data.rigid_body_set[*body];
+        // IPL hardening: a missing body must never panic across the JNI boundary
+        // (an unwinding panic in an extern "system" fn aborts the JVM).
+        let Some(body) = sable_data.rigid_bodies.get(&(id as LevelColliderID)) else {
+            return;
+        };
+        let Some(rb) = sim_data.rigid_body_set.get_mut(*body) else {
+            return;
+        };
 
         if wake_up == 0 && rb.is_sleeping() {
             return;
@@ -1479,14 +1501,17 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_app
     wake_up: jboolean,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let mut sim_data = scene.sim_data.write().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let body = sable_data
-            .rigid_bodies
-            .get(&(id as LevelColliderID))
-            .unwrap();
-        let rb = &mut sim_data.rigid_body_set[*body];
+        // IPL hardening: a missing body must never panic across the JNI boundary
+        // (an unwinding panic in an extern "system" fn aborts the JVM).
+        let Some(body) = sable_data.rigid_bodies.get(&(id as LevelColliderID)) else {
+            return;
+        };
+        let Some(rb) = sim_data.rigid_body_set.get_mut(*body) else {
+            return;
+        };
 
         if wake_up == 0 && rb.is_sleeping() {
             return;
@@ -1516,14 +1541,17 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_get
     store: JDoubleArray<'local>,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let sim_data = scene.sim_data.read().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sim_data = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let body = sable_data
-            .rigid_bodies
-            .get(&(id as LevelColliderID))
-            .unwrap();
-        let rb = &sim_data.rigid_body_set[*body];
+        // IPL hardening: a missing body must never panic across the JNI boundary
+        // (an unwinding panic in an extern "system" fn aborts the JVM).
+        let Some(body) = sable_data.rigid_bodies.get(&(id as LevelColliderID)) else {
+            return;
+        };
+        let Some(rb) = sim_data.rigid_body_set.get(*body) else {
+            return;
+        };
 
         let vel = rb.linvel();
 
@@ -1548,14 +1576,17 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_get
     store: JDoubleArray<'local>,
 ) {
     with_handle(handle, |scene| {
-        let sable_data = scene.sable_data.read().unwrap();
-        let sim_data = scene.sim_data.read().unwrap();
+        let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sim_data = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let body = sable_data
-            .rigid_bodies
-            .get(&(id as LevelColliderID))
-            .unwrap();
-        let rb = &sim_data.rigid_body_set[*body];
+        // IPL hardening: a missing body must never panic across the JNI boundary
+        // (an unwinding panic in an extern "system" fn aborts the JVM).
+        let Some(body) = sable_data.rigid_bodies.get(&(id as LevelColliderID)) else {
+            return;
+        };
+        let Some(rb) = sim_data.rigid_body_set.get(*body) else {
+            return;
+        };
 
         let vel = rb.angvel();
 
