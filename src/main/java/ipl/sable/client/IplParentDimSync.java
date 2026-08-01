@@ -159,7 +159,7 @@ public final class IplParentDimSync {
                 SubLevel subLevel = RemoteCallables.findHostedSubLevel(
                     entry.getKey().toString(), entry.getValue().parentDimId());
                 if (subLevel != null) {
-                    RemoteCallables.setParent(subLevel, entry.getValue().parentDimId());
+                    RemoteCallables.setParentInternal(subLevel, entry.getValue().parentDimId());
                     LOG.info("[IPL-PARENT-SYNC] deferred parent stamp applied: {} parent={}",
                         entry.getKey(), entry.getValue().parentDimId());
                     iterator.remove();
@@ -190,7 +190,7 @@ public final class IplParentDimSync {
                 if (discardPreAllocationHandoffs(subLevelId, parentDimId)) {
                     // This client did not have a source-frame body when the handoff arrived.
                     // Its just-created full sync is already in the final destination frame.
-                    setParent(subLevel, parentDimId);
+                    setParentInternal(subLevel, parentDimId);
                     IplStraddleSessionStore.clearHandoffVisual(subLevelId);
                     PENDING_PARENT_STAMPS.remove(subLevelId);
                     return;
@@ -203,7 +203,7 @@ public final class IplParentDimSync {
                         new PendingParentStamp(parentDimId, System.currentTimeMillis()));
                     return;
                 }
-                setParent(subLevel, parentDimId);
+                setParentInternal(subLevel, parentDimId);
                 PENDING_PARENT_STAMPS.remove(subLevelId);
 
                 LOG.info("[IPL-PARENT-SYNC] sub-level {} parent={} (client)",
@@ -334,7 +334,7 @@ public final class IplParentDimSync {
             // Do not expose the new parent until every client pose is in destination
             // space. A pass already in progress may otherwise render a stale source
             // projection as well as the newly native destination sub-level.
-            setParent(clientSubLevel, parentDimId);
+            setParentInternal(clientSubLevel, parentDimId);
             // The retired split only bridges server session-end to this exact mapped pose.
             // Once the parent frame becomes visible, retaining its old portal would clip the
             // native destination draw with a source-frame plane.
@@ -458,7 +458,7 @@ public final class IplParentDimSync {
             return subLevel;
         }
 
-        private static void setParent(SubLevel subLevel, String parentDimId) {
+        static void setParentInternal(SubLevel subLevel, String parentDimId) {
             ClientLevel hosting = ClientWorldLoader.getWorld(SableSubLevelDimension.SUBLEVELS);
             ResourceKey<Level> parentKey = parentKey(parentDimId);
             ClientLevel parent = ClientWorldLoader.getWorld(parentKey);

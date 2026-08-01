@@ -472,18 +472,19 @@ public final class SableRehomeOps {
             new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
             new Vector3d(mappedAng.x, mappedAng.y, mappedAng.z));
 
+        // Retire every old-parent portal image before publishing the new parent image.
+        // Otherwise the completed session's P(body) and the destination's identity(body)
+        // coexist in one chart for a broad-phase step. That produces two contact histories
+        // for one rigid body: the invisible original and the visible, slightly divergent
+        // twin reported on oblique/high-speed crossings.
+        for (StraddleKey key : IplAtlasStraddleSession.sessionKeysFor(uuid)) {
+            IplAtlasStraddleSession.clear(key, "parent-flip");
+            IplStraddleSessionSync.onSessionEnd(server, key, "parent-flip");
+        }
+
         stampParent(hosted, newParent, hosting);
         hosted.updateBoundingBox();
         ipl.sable.atlas.IplAtlasBodyImages.reconcile(hosted);
-
-        // Retire the old source-frame seam BEFORE the parent-frame handoff reaches clients.
-        // Atlas keeps its image collider until the caller clears the completed session after
-        // this method returns, but the old clip must not follow the now-native destination
-        // pose for one client frame or it cuts the last exiting part of the sub-level.
-        // This RPC is queued immediately before handoff, preserving client order:
-        // session-end, mapped parent handoff, then any eager reverse-session start.
-        IplStraddleSessionSync.onSessionEnd(
-            server, new StraddleKey(uuid, portal.getUUID()), "rehomed");
 
         // Keep existing trackers through the flip. Removing them here creates a visible gap:
         // the destination projection is gone as soon as the ship clears the portal, while a

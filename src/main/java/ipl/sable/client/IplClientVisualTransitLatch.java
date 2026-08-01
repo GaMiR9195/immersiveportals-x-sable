@@ -1,6 +1,7 @@
 package ipl.sable.client;
 
 import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
@@ -21,11 +22,15 @@ import java.util.UUID;
 final class IplClientVisualTransitLatch {
 
     private static final double EPSILON = 1.0e-8;
+    /** Server detector's lateral finite-plane extension; never applied along portal normal. */
+    private static final double APERTURE_MARGIN = 0.5;
     /** Server confirmation normally arrives before the delayed render reaches the plane. */
     private static final long CONFIRMATION_GRACE_TICKS = 6;
     private static final Map<UUID, Prediction> PREDICTIONS = new HashMap<>();
     /** Exact client-side A→B proof, retained until the handoff commits or the body backs out. */
     private static final Map<UUID, UUID> FORWARD_SWEEPS = new HashMap<>();
+    /** Last submitted pose per ship. Interpolation changes every render frame, not only per tick. */
+    private static final Map<UUID, Pose3d> LAST_RENDER_POSES = new HashMap<>();
 
     private record Prediction(UUID portalId, long expiresAtTick) {}
 
@@ -42,6 +47,10 @@ final class IplClientVisualTransitLatch {
     ) {
         UUID shipId = sub.getUniqueId();
         long tick = level.getGameTime();
+        // Sample every render frame before examining a pending prediction. A ClientSubLevel's
+        // interpolation pose moves between network ticks, so lastPose alone cannot see a
+        // high-speed aperture crossing until after the server already decided it.
+        Pose3d previousRenderPose = LAST_RENDER_POSES.put(shipId, new Pose3d(sub.renderPose()));
         Prediction prediction = PREDICTIONS.get(shipId);
         if (prediction != null) {
             if (containsPortal(visibleAuthoritativeSessions, prediction.portalId())) {
@@ -58,7 +67,7 @@ final class IplClientVisualTransitLatch {
             }
         }
 
-        Portal candidate = findEnteringPortal(sub, level);
+        Portal candidate = findEnteringPortal(sub, level, previousRenderPose);
         if (candidate == null) return resolved;
 
         // Preserve the exact finite-AABB crossing proof even when the handoff RPC arrives
@@ -80,20 +89,21 @@ final class IplClientVisualTransitLatch {
         return false;
     }
 
-    /** The server owns face parity; client starts rendering that split only on visual contact. */
+    /** The server owns physics parity; prediction only decides whether geometry reaches this frame. */
     static boolean isVisible(ClientSubLevel sub, Portal portal) {
         Projection now = project(sub, sub.renderPose(), portal);
         if (now.maxPlane() < -EPSILON) return false;
         if (now.minPlane() >= EPSILON) return true;
-        return now.maxWidth() >= -portal.getWidth() * 0.5 - EPSILON
-            && now.minWidth() <= portal.getWidth() * 0.5 + EPSILON
-            && now.maxHeight() >= -portal.getHeight() * 0.5 - EPSILON
-            && now.minHeight() <= portal.getHeight() * 0.5 + EPSILON;
+        return now.maxWidth() >= -portal.getWidth() * 0.5 - APERTURE_MARGIN - EPSILON
+            && now.minWidth() <= portal.getWidth() * 0.5 + APERTURE_MARGIN + EPSILON
+            && now.maxHeight() >= -portal.getHeight() * 0.5 - APERTURE_MARGIN - EPSILON
+            && now.minHeight() <= portal.getHeight() * 0.5 + APERTURE_MARGIN + EPSILON;
     }
 
     static void clear(UUID shipId) {
         remove(shipId);
         FORWARD_SWEEPS.remove(shipId);
+        LAST_RENDER_POSES.remove(shipId);
     }
 
     /**
@@ -165,7 +175,9 @@ final class IplClientVisualTransitLatch {
     }
 
     /** Exact current visual OBB sweep against one finite aperture, not center/tick sampling. */
-    private static Portal findEnteringPortal(ClientSubLevel sub, ClientLevel level) {
+    private static Portal findEnteringPortal(
+        ClientSubLevel sub, ClientLevel level, Pose3dc previousRenderPose
+    ) {
         ProjectionBest best = null;
         List<Portal> portals = portals(level);
         for (Portal portal : portals) {
@@ -173,8 +185,9 @@ final class IplClientVisualTransitLatch {
                 || Math.abs(portal.getScaling() - 1.0) > EPSILON
                 || !isCanonicalEntranceFace(portal, portals)) continue;
 
-            Projection from = project(sub, sub.lastPose(), portal);
             Projection to = project(sub, sub.renderPose(), portal);
+            Projection from = project(sub,
+                previousRenderPose == null ? sub.lastPose() : previousRenderPose, portal);
             if (!crossesAperture(from, to, portal)) continue;
             double progress = -from.maxPlane() / (to.maxPlane() - from.maxPlane());
 
@@ -195,10 +208,10 @@ final class IplClientVisualTransitLatch {
         double maxWidth = lerp(from.maxWidth(), to.maxWidth(), progress);
         double minHeight = lerp(from.minHeight(), to.minHeight(), progress);
         double maxHeight = lerp(from.maxHeight(), to.maxHeight(), progress);
-        return maxWidth >= -portal.getWidth() * 0.5 - EPSILON
-            && minWidth <= portal.getWidth() * 0.5 + EPSILON
-            && maxHeight >= -portal.getHeight() * 0.5 + EPSILON
-            && minHeight <= portal.getHeight() * 0.5 + EPSILON;
+        return maxWidth >= -portal.getWidth() * 0.5 - APERTURE_MARGIN - EPSILON
+            && minWidth <= portal.getWidth() * 0.5 + APERTURE_MARGIN + EPSILON
+            && maxHeight >= -portal.getHeight() * 0.5 - APERTURE_MARGIN - EPSILON
+            && minHeight <= portal.getHeight() * 0.5 + APERTURE_MARGIN + EPSILON;
     }
 
     private record ProjectionBest(Portal portal, double progress) {}

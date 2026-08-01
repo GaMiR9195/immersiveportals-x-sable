@@ -99,6 +99,25 @@ impl IslandManager {
                 continue;
             }
 
+            // A contact can merge awake islands after this sleep root was queued.
+            // Atlas image colliders make that window much more common: registering or
+            // retiring an image changes far-chart contacts before the deferred sleep
+            // traversal runs. This root is stale, not an engine invariant failure.
+            if rb.ids.active_island_id != active_island_id || rb.activation.sleeping {
+                if !rb.activation.sleeping {
+                    rb.activation.sleep_root_state = SleepRootState::Unknown;
+                }
+                for visited in &new_island.bodies {
+                    if let Some(visited_rb) = bodies.get_mut_internal(*visited) {
+                        if !visited_rb.activation.sleeping {
+                            visited_rb.activation.sleep_root_state = SleepRootState::Unknown;
+                        }
+                    }
+                }
+                self.stack.clear();
+                return niter;
+            }
+
             // if rb.ids.active_set_timestamp >= frame_base_timestamp {
             //     // We already visited this body and its neighbors during this frame.
             //     // So we already know this islands cannot sleep (otherwise the bodies
@@ -112,22 +131,6 @@ impl IslandManager {
             if rb.activation.is_eligible_for_sleep() {
                 rb.activation.sleep_root_state = SleepRootState::Traversed;
             }
-
-            assert_eq!(
-                rb.ids.active_island_id,
-                active_island_id,
-                "handle: {:?}, note niter: {}, isl size: {}",
-                handle,
-                niter,
-                active_island.len()
-            );
-            assert!(
-                !rb.activation.sleeping,
-                "is sleeping: {:?} note niter: {}, isl size: {}",
-                handle,
-                niter,
-                active_island.len()
-            );
 
             if !rb.activation.is_eligible_for_sleep() {
                 // If this body cannot sleep, abort the traversal, we are not traversing

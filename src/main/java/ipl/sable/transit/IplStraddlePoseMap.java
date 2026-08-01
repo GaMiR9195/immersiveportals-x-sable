@@ -333,6 +333,7 @@ public final class IplStraddlePoseMap {
         if (!IplDimAgnostic.isHosted(sub)) return null;
         StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
         if (frame != null) {
+            if (frame.portal() == null) return null;
             return buildKeepFilter(
                 frame.mapping().mapPose(sub.logicalPose()),
                 frame.mapping().mapPoint(frame.portal().getOriginPos()),

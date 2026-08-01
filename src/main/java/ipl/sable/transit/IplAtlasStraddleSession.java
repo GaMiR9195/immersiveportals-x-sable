@@ -36,6 +36,8 @@ import java.util.UUID;
 public final class IplAtlasStraddleSession {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-atlas-straddle");
+    /** Match detector admission laterally; clip regions remain a zero-thickness plane. */
+    private static final double APERTURE_MARGIN = 0.5;
 
     private static final Map<StraddleKey, Session> SESSIONS = new HashMap<>();
 
@@ -148,17 +150,18 @@ public final class IplAtlasStraddleSession {
         }
         SESSIONS.put(key, session);
 
-        // Contact clipping, half-open seam:
-        //  - REAL body set: contacts past the full portal plane are dropped. The through
-        //    portion must pass source terrain even after it has moved past the frame.
-        //  - IMAGE collider: the complementary half — contacts BEFORE the mapped plane
-        //    dropped inside the mapped aperture, so only the through-part is physically
-        //    present destination-side.
+        // Contact clipping, half-open finite-aperture seam:
+        //  - REAL body set: contacts past the source plane are dropped only inside the
+        //    laterally extended doorway; geometry beside the frame remains source-solid.
+        //  - IMAGE collider: complementary far-half contacts are dropped in the mapped
+        //    doorway, so only the through-part is physically present destination-side.
         {
             Vec3 origin = portal.getOriginPos();
             session.lastOrigin = origin;
-            session.realClipRegion = infinitePlaneClipRegion(
-                origin, sourceToDest, portal.getAxisW(), portal.getAxisH());
+            session.realClipRegion = clipRegion(
+                origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
+                portal.getWidth() * 0.5 + APERTURE_MARGIN,
+                portal.getHeight() * 0.5 + APERTURE_MARGIN);
             applyRealClipRegions(hosted, session.parentScene, session.realId);
 
             double[] imageRegion = clipRegion(
@@ -166,7 +169,8 @@ public final class IplAtlasStraddleSession {
                 mapping.mapVec(sourceToDest).scale(-1.0),
                 mapping.mapVec(portal.getAxisW()),
                 mapping.mapVec(portal.getAxisH()),
-                portal.getWidth() * 0.5, portal.getHeight() * 0.5);
+                portal.getWidth() * 0.5 + APERTURE_MARGIN,
+                portal.getHeight() * 0.5 + APERTURE_MARGIN);
             ipl.sable.natives.IplRapierNatives.setImageClipRegions(
                 session.destScene, session.realId, session.imageHandle, imageRegion);
         }
@@ -213,15 +217,18 @@ public final class IplAtlasStraddleSession {
                 newRot.x, newRot.y, newRot.z, newRot.w);
         }
 
-        s.realClipRegion = infinitePlaneClipRegion(
-            origin, sourceToDest, portal.getAxisW(), portal.getAxisH());
+        s.realClipRegion = clipRegion(
+            origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
+            portal.getWidth() * 0.5 + APERTURE_MARGIN,
+            portal.getHeight() * 0.5 + APERTURE_MARGIN);
         applyRealClipRegions(s.sub, s.parentScene, s.realId);
         double[] imageRegion = clipRegion(
             fresh.mapPoint(origin),
             fresh.mapVec(sourceToDest).scale(-1.0),
             fresh.mapVec(portal.getAxisW()),
             fresh.mapVec(portal.getAxisH()),
-            portal.getWidth() * 0.5, portal.getHeight() * 0.5);
+            portal.getWidth() * 0.5 + APERTURE_MARGIN,
+            portal.getHeight() * 0.5 + APERTURE_MARGIN);
         ipl.sable.natives.IplRapierNatives.setImageClipRegions(
             s.destScene, s.realId, s.imageHandle, imageRegion);
     }
@@ -235,14 +242,6 @@ public final class IplAtlasStraddleSession {
             axisW.x, axisW.y, axisW.z, halfW,
             axisH.x, axisH.y, axisH.z, halfH
         };
-    }
-
-    /** Source collision is suppressed by the complete plane; images stay aperture-bounded. */
-    private static double[] infinitePlaneClipRegion(
-        Vec3 point, Vec3 normal, Vec3 axisW, Vec3 axisH
-    ) {
-        return clipRegion(point, normal, axisW, axisH,
-            Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY);
     }
 
     /**
@@ -319,6 +318,15 @@ public final class IplAtlasStraddleSession {
     /** Snapshot of active session keys (declarative lifecycle reap sweep). */
     public static java.util.List<StraddleKey> sessionKeys() {
         return new java.util.ArrayList<>(SESSIONS.keySet());
+    }
+
+    /** Snapshot all active portal sessions owned by one real body. */
+    public static java.util.List<StraddleKey> sessionKeysFor(UUID shipUuid) {
+        java.util.List<StraddleKey> keys = new java.util.ArrayList<>();
+        for (StraddleKey key : SESSIONS.keySet()) {
+            if (key.subLevelUuid().equals(shipUuid)) keys.add(key);
+        }
+        return keys;
     }
 
     /** Portal of the active session mapping this ship INTO {@code level} (dest side). */

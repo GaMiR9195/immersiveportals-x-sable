@@ -26,7 +26,7 @@ public final class PortalCrossingDetector {
 
     private static final double EPSILON = 1.0e-8;
     /** Half-depth of portal entry/exit hysteresis; not part of face direction. */
-    private static final double PORTAL_HYSTERESIS_DEPTH = 0.08;
+    private static final double PORTAL_HYSTERESIS_DEPTH = 0.1;
     private static final Map<UUID, Trail> TRAILS = new HashMap<>();
     private static long trailTick;
 
@@ -215,6 +215,11 @@ public final class PortalCrossingDetector {
         Vec3 axisH = portal.getAxisH();
         double fromPlaneSupport = from.aabbSupport(normal.x, normal.y, normal.z);
         double toPlaneSupport = to.aabbSupport(normal.x, normal.y, normal.z);
+        // Keep the endpoint AABB for conservative swept-aperture admission, but never
+        // use it to choose a portal face. Its projection is wider than the physical OBB
+        // on an inclined plane, which can hide a genuine source-side entry entirely.
+        double fromPhysicalPlaneSupport = from.obbSupport(normal.x, normal.y, normal.z);
+        double toPhysicalPlaneSupport = to.obbSupport(normal.x, normal.y, normal.z);
         double planeHalf = Math.max(fromPlaneSupport, toPlaneSupport);
         double halfW = portal.getWidth() * 0.5
             + Math.max(from.aabbSupport(axisW.x, axisW.y, axisW.z), to.aabbSupport(axisW.x, axisW.y, axisW.z)) + margin;
@@ -249,10 +254,10 @@ public final class PortalCrossingDetector {
             // Direction belongs to a real volume-boundary crossing only. A block that
             // already straddles the plane may drift or jitter in either signed direction;
             // that must retain an existing session, never choose a new portal face.
-            boolean enteredDestination = fromPlane + fromPlaneSupport < -EPSILON
-                && toPlane + toPlaneSupport >= -EPSILON;
-            boolean enteredSource = fromPlane - fromPlaneSupport > EPSILON
-                && toPlane - toPlaneSupport <= EPSILON;
+            boolean enteredDestination = fromPlane + fromPhysicalPlaneSupport < -EPSILON
+                && toPlane + toPhysicalPlaneSupport >= -EPSILON;
+            boolean enteredSource = fromPlane - fromPhysicalPlaneSupport > EPSILON
+                && toPlane - toPhysicalPlaneSupport <= EPSILON;
             if (enteredDestination) {
                 towardTime = Math.min(towardTime, start);
             } else if (enteredSource) {
@@ -269,22 +274,14 @@ public final class PortalCrossingDetector {
         Vec3 origin = portal.getOriginPos();
         Vec3 axisW = portal.getAxisW();
         Vec3 axisH = portal.getAxisH();
-        double planeHalf = frame.aabbSupport(normal.x, normal.y, normal.z)
-            + PORTAL_HYSTERESIS_DEPTH;
         double halfW = portal.getWidth() * 0.5
-            + frame.aabbSupport(axisW.x, axisW.y, axisW.z) + margin;
+            + margin;
         double halfH = portal.getHeight() * 0.5
-            + frame.aabbSupport(axisH.x, axisH.y, axisH.z) + margin;
+            + margin;
         for (BlockPos block : blocks) {
-            double x = frame.centerX(block) - origin.x;
-            double y = frame.centerY(block) - origin.y;
-            double z = frame.centerZ(block) - origin.z;
-            double plane = x * normal.x + y * normal.y + z * normal.z;
-            if (Math.abs(plane) > planeHalf + EPSILON) continue;
-            double width = x * axisW.x + y * axisW.y + z * axisW.z;
-            if (width < -halfW - EPSILON || width > halfW + EPSILON) continue;
-            double height = x * axisH.x + y * axisH.y + z * axisH.z;
-            if (height >= -halfH - EPSILON && height <= halfH + EPSILON) return true;
+            if (frame.intersectsAperture(block, origin, normal, axisW, axisH, halfW, halfH)) {
+                return true;
+            }
         }
         return false;
     }
@@ -384,6 +381,54 @@ public final class PortalCrossingDetector {
             return (Math.abs(xx * x + xy * y + xz * z)
                 + Math.abs(yx * x + yy * y + yz * z)
                 + Math.abs(zx * x + zy * y + zz * z)) * 0.5;
+        }
+
+        /** Exact SAT test between one transformed block OBB and the finite portal rectangle. */
+        boolean intersectsAperture(
+            BlockPos block, Vec3 origin, Vec3 normal, Vec3 axisW, Vec3 axisH,
+            double halfW, double halfH
+        ) {
+            double centerX = centerX(block), centerY = centerY(block), centerZ = centerZ(block);
+            return !separatesAperture(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, xx, xy, xz)
+                && !separatesAperture(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, yx, yy, yz)
+                && !separatesAperture(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, zx, zy, zz)
+                && !separatesAperture(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, axisW.x, axisW.y, axisW.z)
+                && !separatesAperture(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, axisH.x, axisH.y, axisH.z)
+                && !separatesAperture(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, normal.x, normal.y, normal.z)
+                && !crossSeparates(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, xx, xy, xz, axisW)
+                && !crossSeparates(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, xx, xy, xz, axisH)
+                && !crossSeparates(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, xx, xy, xz, normal)
+                && !crossSeparates(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, yx, yy, yz, axisW)
+                && !crossSeparates(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, yx, yy, yz, axisH)
+                && !crossSeparates(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, yx, yy, yz, normal)
+                && !crossSeparates(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, zx, zy, zz, axisW)
+                && !crossSeparates(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, zx, zy, zz, axisH)
+                && !crossSeparates(centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH, zx, zy, zz, normal);
+        }
+
+        private boolean crossSeparates(
+            double centerX, double centerY, double centerZ, Vec3 origin, Vec3 axisW, Vec3 axisH,
+            double halfW, double halfH, double ax, double ay, double az, Vec3 b
+        ) {
+            double crossX = ay * b.z - az * b.y;
+            double crossY = az * b.x - ax * b.z;
+            double crossZ = ax * b.y - ay * b.x;
+            return crossX * crossX + crossY * crossY + crossZ * crossZ > EPSILON * EPSILON
+                && separatesAperture(
+                    centerX, centerY, centerZ, origin, axisW, axisH, halfW, halfH,
+                    crossX, crossY, crossZ);
+        }
+
+        private boolean separatesAperture(
+            double centerX, double centerY, double centerZ, Vec3 origin, Vec3 axisW, Vec3 axisH,
+            double halfW, double halfH, double axisX, double axisY, double axisZ
+        ) {
+            double relX = centerX - origin.x, relY = centerY - origin.y, relZ = centerZ - origin.z;
+            double centerDistance = Math.abs(relX * axisX + relY * axisY + relZ * axisZ);
+            double blockRadius = obbSupport(axisX, axisY, axisZ);
+            double rectangleRadius = halfW * Math.abs(axisW.x * axisX + axisW.y * axisY + axisW.z * axisZ)
+                + halfH * Math.abs(axisH.x * axisX + axisH.y * axisY + axisH.z * axisZ);
+            return centerDistance > blockRadius + rectangleRadius + EPSILON;
         }
     }
 

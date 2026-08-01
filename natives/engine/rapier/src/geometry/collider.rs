@@ -409,6 +409,16 @@ impl Collider {
         }
     }
 
+    /// Recompose this image from its parent immediately after insertion. A new
+    /// collider has no parent-position change yet, so waiting for a later body move
+    /// leaves it at identity for one broad-phase step.
+    pub fn refresh_portal_prefixed_pose(&mut self, parent_pos: &Pose) {
+        if let Some(parent) = self.parent.as_ref() {
+            self.pos = ColliderPosition(parent.collider_pose(parent_pos));
+            self.changes.insert(ColliderChanges::POSITION);
+        }
+    }
+
     /// The collision groups controlling what this collider can interact with.
     ///
     /// See [`InteractionGroups`] for details on collision filtering.

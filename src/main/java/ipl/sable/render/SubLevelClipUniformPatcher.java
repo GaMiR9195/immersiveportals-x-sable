@@ -5,11 +5,9 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.duck.IplSubLevelClipShader;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Quaternionf;
-import org.joml.Vector3f;
+import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
@@ -405,20 +403,15 @@ public final class SubLevelClipUniformPatcher {
         // vanilla rendertype_entity_*, Veil-managed Simulated/Aeronautics).
         // n_eye = R_view * n_world, c stays the same.
         //
-        // Mojang's Camera.rotation() is the camera-to-world rotation; the
-        // world-to-eye (view) rotation is its conjugate (inverse for unit
-        // quaternions). Apply that to the world normal.
-        Quaternionf camToWorld = Minecraft.getInstance().gameRenderer
-            .getMainCamera().rotation();
-        Quaternionf worldToView = new Quaternionf(camToWorld).conjugate();
-        Vector3f nEye = worldToView.transform(new Vector3f(nx, ny, nz));
-        float[] eqEye = new float[]{nEye.x, nEye.y, nEye.z, cw};
+        // The active ModelView can include portal frame transforms in addition to
+        // camera rotation. Transform the plane covariantly through that exact
+        // matrix; camera.rotation() alone is wrong in portal eye-space.
+        float[] eqEye = transformEquationForModelView(eqWorld, RenderSystem.getModelViewMatrix());
         currentSubLevelEqEye = eqEye;
         latestSubLevelEqEye = eqEye;
         if (eqWorld2 != null) {
-            Vector3f nEye2 = worldToView.transform(
-                new Vector3f(eqWorld2[0], eqWorld2[1], eqWorld2[2]));
-            currentSubLevelEqEye2 = new float[]{nEye2.x, nEye2.y, nEye2.z, eqWorld2[3]};
+            currentSubLevelEqEye2 = transformEquationForModelView(
+                eqWorld2, RenderSystem.getModelViewMatrix());
         } else {
             currentSubLevelEqEye2 = null;
         }
@@ -502,6 +495,14 @@ public final class SubLevelClipUniformPatcher {
                 nx, ny, nz, cw
             );
         }
+    }
+
+    /** Converts a camera-relative world plane to the current shader eye space. */
+    private static float[] transformEquationForModelView(float[] equation, Matrix4f modelView) {
+        org.joml.Vector4f transformed = new org.joml.Vector4f(
+            equation[0], equation[1], equation[2], equation[3]);
+        new Matrix4f(modelView).invert().transpose().transform(transformed);
+        return new float[]{transformed.x, transformed.y, transformed.z, transformed.w};
     }
 
     /**

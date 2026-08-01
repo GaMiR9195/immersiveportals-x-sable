@@ -167,9 +167,8 @@ fn set_portal_rim_exclusion(
 
 /// An oriented clip volume: solver contacts past the plane (signed distance >= 0 along
 /// `normal`) and inside the lateral rectangle are dropped from the owning body's manifolds.
-/// Infinite half extents represent a full plane. Atlas uses that for a real source body so
-/// its destination portion can pass source terrain behind a portal; image colliders remain
-/// aperture-bounded in their destination chart.
+/// Infinite half extents remain available to callers, but Atlas keeps both real and image
+/// clipping bounded to the portal aperture so terrain beside a frame remains solid.
 #[derive(Debug, Clone)]
 pub struct IplClipRegion {
     pub point: Vec3,
@@ -517,10 +516,11 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
             .collider_set
             .insert_with_parent(collider, body_handle, &mut sim_data.rigid_body_set);
     sim_data.collider_set.get_mut(handle).unwrap().set_portal_prefix(Some(prefix));
-    sim_data.collider_set.get_mut(handle).unwrap().set_position(rapier3d::math::Pose::IDENTITY);
-    // The engine's portal-prefix composition intentionally changes the collider pose only
-    // after a parent pose update. Seed that update now so a persistent parent-chart image is
-    // visible in the same tick it is registered.
+    let parent_pose = sim_data.rigid_body_set[body_handle].position().clone();
+    sim_data.collider_set.get_mut(handle).unwrap()
+        .refresh_portal_prefixed_pose(&parent_pose);
+    // `insert_with_parent` composes before the Atlas prefix is attached. Recompose now so
+    // this image never enters broad phase at identity and leaves a one-step real/image twin.
 
     info.image_colliders.push(handle);
     eprintln!(

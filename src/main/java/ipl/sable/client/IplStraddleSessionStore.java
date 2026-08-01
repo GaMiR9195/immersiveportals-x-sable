@@ -184,10 +184,9 @@ public final class IplStraddleSessionStore {
             Portal resolved = live != null ? live : surrogate(sessionPortal, level);
             if (resolved == null) continue;
 
-            // A server session establishes the face immediately, but its physics pose is
-            // ahead of Sable's delayed render stream. Do not expose the source/destination
-            // split until that delayed volume reaches this finite aperture. Retired entries
-            // are already visual tails selected by portalsForRender and must stay visible.
+            // A server session establishes parity, but its physics pose is ahead of Sable's
+            // delayed render stream. Do not expose the split until this geometry reaches
+            // the aperture; prediction below supplies the pre-RPC fast path.
             boolean isActive = active != null && containsPortal(active, sessionPortal.portalId());
             if (isActive && !IplClientVisualTransitLatch.isVisible(sub, resolved)) continue;
             if (isActive) visibleActive.add(resolved);
@@ -197,8 +196,6 @@ public final class IplStraddleSessionStore {
         if (handoffPortal != null && !containsPortal(portals, handoffPortal.portalId())) {
             Portal live = findPortal(level, handoffPortal.portalId());
             Portal resolvedHandoff = live != null ? live : surrogate(handoffPortal, level);
-            // A one-tick server crossing has no regular session. Start its split only once
-            // delayed geometry reaches the finite aperture; then the pending handoff maps it.
             if (resolvedHandoff != null && IplClientVisualTransitLatch.isVisible(sub, resolvedHandoff)) {
                 out.add(resolvedHandoff);
             }

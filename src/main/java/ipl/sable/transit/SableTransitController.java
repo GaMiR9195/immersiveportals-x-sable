@@ -43,8 +43,8 @@ public final class SableTransitController {
     /** Inflation amount when querying for nearby portals -- how close before we consider one. */
     private static final double PORTAL_QUERY_INFLATION = 4.0;
 
-    /** Lateral aperture keep-margin for EXISTING sessions (grazing-flap hysteresis). */
-    private static final double EXIT_APERTURE_MARGIN = 0.5;
+    /** Lateral finite-plane extension for entry and session retention; never normal depth. */
+    private static final double APERTURE_MARGIN = 0.5;
     /** Actor identity only changes at lifecycle seams, not on every physics tick. */
     private static final int ACTOR_RESYNC_INTERVAL = 100;
     private static long hostedTransitTick;
@@ -135,11 +135,11 @@ public final class SableTransitController {
             // detector never sees its own fast-crossing path.
             AABB airshipAabb = PortalCrossingDetector.sweptBounds(airship)
                 .inflate(PORTAL_QUERY_INFLATION);
-            List<Portal> nearby = portalQueryLevel.getEntitiesOfClass(
+            List<Portal> nearby = new ArrayList<>(portalQueryLevel.getEntitiesOfClass(
                 Portal.class,
                 airshipAabb,
                 Portal::isTeleportable
-            );
+            ));
 
             // Dimension-stack seams (VerticalConnectingPortal & friends) are GLOBAL portals —
             // held in GlobalPortalStorage, never returned by entity queries. Include any whose
@@ -158,6 +158,18 @@ public final class SableTransitController {
                     nearby.add(globalPortal);
                 }
             }
+
+            // A session can outlast the ordinary spatial query: a ship travelling through
+            // an aperture at an oblique angle may still straddle the portal plane after its
+            // whole AABB has moved laterally beyond the query inflation. Keep evaluating its
+            // owning portal until a source exit or completed destination rehome resolves it.
+            IplAtlasStraddleSession.forEachSessionFrom(airship, portalQueryLevel, (sessionPortal, mapping) -> {
+                if (sessionPortal.isRemoved()) return;
+                for (Portal candidate : nearby) {
+                    if (candidate.getUUID().equals(sessionPortal.getUUID())) return;
+                }
+                nearby.add(sessionPortal);
+            });
 
             // Collapse only true duplicate entrance faces, never all portals that share a
             // destination dimension. Opposite faces may occupy the exact same plane and
@@ -193,13 +205,17 @@ public final class SableTransitController {
                 // the constraint error is invariant across the flip (no yank).
                 Vec3 normal = portal.getNormal().scale(-1.0);
                 PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
-                    airship, portal, normal, haveSession ? EXIT_APERTURE_MARGIN : 0.0);
+                    airship, portal, normal, APERTURE_MARGIN);
 
+                // Entry belongs to the continuous A-to-B path, not only pose B. A ship
+                // travelling straight at an oblique angle can cross the finite doorway
+                // during this physics segment, then move past its lateral edge before
+                // the server observes pose B while its trailing volume still straddles
+                // the portal plane. Requiring endpoint overlap loses that real entry.
+                // Once admitted, preserve the session until the volume fully exits a
+                // plane side; clipping remains finite and aperture-bounded in natives.
                 boolean straddlingAperture = state.phase()
                     == PortalCrossingDetector.CrossingPhase.STRADDLING
-                    && state.currentIntersectsPortalAperture()
-                    // A live session is pinned to this face. A new one additionally
-                    // needs continuous source-to-destination sweep evidence.
                     && (haveSession || state.sweptIntersectsPortalAperture());
 
                 if (straddlingAperture) {
@@ -345,12 +361,8 @@ public final class SableTransitController {
             if (flippedThisTick.contains(uuid)) continue;
             try {
                 boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal);
-                if (flipped) {
-                    flippedThisTick.add(uuid);
-                    if (c.hadSession()) {
-                        StraddleKey key = new StraddleKey(uuid, c.portal.getUUID());
-                        IplAtlasStraddleSession.clear(key, "crossed");
-                    }
+                    if (flipped) {
+                        flippedThisTick.add(uuid);
                     // An immediate fast crossing may never have spent a whole tick in a
                     // straddle session. Its source-frame debug buffer is still invalid
                     // after the parent flip and must not linger behind the portal.
@@ -376,11 +388,7 @@ public final class SableTransitController {
                                 mateId, c.portal.getUUID());
                             continue;
                         }
-                        StraddleKey mateKey = new StraddleKey(mateId, c.portal.getUUID());
-                        IplAtlasStraddleSession.clear(mateKey, "rehomed-group");
                         PortalCrossingDetector.forgetTrail(mate);
-                        IplStraddleSessionSync.onSessionEnd(
-                            level.getServer(), mateKey, "rehomed-group");
                         IplGrabChain.onBodyTransit(level.getServer(), mateId, c.portal);
                         IplRopePortalSeam.onShipTransit(mate, c.portal);
                     }
