@@ -316,7 +316,7 @@ public final class IplStraddlePoseMap {
      * worst case (half block + player half-width, any plane orientation).
      */
     private static final double SEAM_SUPPORT_MARGIN =
-        Double.parseDouble(System.getProperty("ipl.sable.clip.seamSupportMargin", "0.9"));
+        Double.parseDouble(System.getProperty("ipl.sable.clip.seamSupportMargin", "0.0"));
 
     /**
      * Plot-local block keep-filter for entity-vs-ship collision while the ship straddles
@@ -341,6 +341,104 @@ public final class IplStraddlePoseMap {
                 SEAM_SUPPORT_MARGIN);
         }
         return getSourceHalfKeepFilter(sub, contextLevel, SEAM_SUPPORT_MARGIN);
+    }
+
+    /**
+     * A portal half-space already expressed in the sub-level's PLOT-LOCAL frame:
+     * the kept side is {@code n · (p - point) >= 0}. {@code n} is unit length.
+     */
+    public record LocalHalfSpace(double px, double py, double pz,
+                                 double nx, double ny, double nz) {
+        /** Signed distance of a plot-local point from the plane; positive = kept side. */
+        public double signedDistance(double x, double y, double z) {
+            return (x - px) * nx + (y - py) * ny + (z - pz) * nz;
+        }
+    }
+
+    /**
+     * The same cut(s) {@link #getBlockCollisionKeepFilter} applies, but handed back as
+     * geometry instead of a whole-block predicate, so callers can trim individual
+     * collision boxes at the portal plane instead of keeping or dropping entire blocks.
+     *
+     * <p>Null when no clipping applies. Multi-straddle returns every cut; a box must
+     * survive all of them.
+     */
+    @Nullable
+    public static java.util.List<LocalHalfSpace> getBlockCollisionKeepPlanes(
+        @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
+    ) {
+        if (sub == null || contextLevel == null || entityBounds == null) return null;
+        if (!IplDimAgnostic.isHosted(sub)) return null;
+        StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
+        if (frame != null) {
+            if (frame.portal() == null) return null;
+            return java.util.List.of(localHalfSpace(
+                frame.mapping().mapPose(sub.logicalPose()),
+                frame.mapping().mapPoint(frame.portal().getOriginPos()),
+                frame.mapping().mapVec(frame.portal().getNormal().scale(-1.0))));
+        }
+        if (IplDimAgnostic.getParentLevel(sub) != contextLevel) return null;
+        Pose3dc pose = sub.logicalPose();
+        java.util.List<LocalHalfSpace> parts = new java.util.ArrayList<>(2);
+        forEachStraddleFrom(sub, contextLevel, (portal, mapping) -> {
+            if (portal == null) return;
+            parts.add(localHalfSpace(pose, portal.getOriginPos(), portal.getNormal()));
+        });
+        return parts.isEmpty() ? null : parts;
+    }
+
+    private static LocalHalfSpace localHalfSpace(Pose3dc pose, Vec3 point, Vec3 keepNormal) {
+        org.joml.Vector3d lp = pose.transformPositionInverse(
+            new org.joml.Vector3d(point.x, point.y, point.z));
+        org.joml.Vector3d ln = pose.transformNormalInverse(
+            new org.joml.Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
+            new org.joml.Vector3d());
+        double length = Math.sqrt(ln.x * ln.x + ln.y * ln.y + ln.z * ln.z);
+        if (length > 1.0e-12) {
+            ln.x /= length;
+            ln.y /= length;
+            ln.z /= length;
+        }
+        return new LocalHalfSpace(lp.x, lp.y, lp.z, ln.x, ln.y, ln.z);
+    }
+
+    /**
+     * Cut one plot-local box with a {@link LocalHalfSpace}, keeping the side the normal
+     * points to; null when the box lies entirely behind the plane.
+     *
+     * <p>Axis-aligned planes cut exactly. Oblique planes cut conservatively: the
+     * behind-most corner is pushed onto the plane along the normal, which is the same
+     * approximation ImmersivePortals' own {@code CollisionHelper.clipBox} uses, and the
+     * same one {@link #clipBoxKeeping} already applies to whole-ship boxes. The result
+     * is a slightly generous box, never a missing one -- physically the safe direction
+     * for collision.
+     */
+    @Nullable
+    public static dev.ryanhcode.sable.companion.math.BoundingBox3d clipLocalBoxKeeping(
+        double minX, double minY, double minZ,
+        double maxX, double maxY, double maxZ,
+        LocalHalfSpace plane
+    ) {
+        double nx = plane.nx(), ny = plane.ny(), nz = plane.nz();
+        double px = nx > 0 ? minX : maxX;
+        double py = ny > 0 ? minY : maxY;
+        double pz = nz > 0 ? minZ : maxZ;
+        double sx = nx > 0 ? maxX : minX;
+        double sy = ny > 0 ? maxY : minY;
+        double sz = nz > 0 ? maxZ : minZ;
+        double dPushed = plane.signedDistance(px, py, pz);
+        if (dPushed >= 0.0) {
+            return new dev.ryanhcode.sable.companion.math.BoundingBox3d(
+                minX, minY, minZ, maxX, maxY, maxZ);
+        }
+        double dStatic = plane.signedDistance(sx, sy, sz);
+        if (dStatic <= 0.0) return null;
+        px -= dPushed * nx;
+        py -= dPushed * ny;
+        pz -= dPushed * nz;
+        return new dev.ryanhcode.sable.companion.math.BoundingBox3d(
+            Math.min(px, sx), Math.min(py, sy), Math.min(pz, sz),
+            Math.max(px, sx), Math.max(py, sy), Math.max(pz, sz));
     }
 
     /**
@@ -402,9 +500,31 @@ public final class IplStraddlePoseMap {
             new org.joml.Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
             new org.joml.Vector3d());
         double keepThreshold = -planeMargin;
+        // IPL fix (exact cut): test the block's real EXTENT against the half-space,
+        // not its centre.
+        //
+        // The old test was `centre . n >= threshold`: a block was kept or dropped as a
+        // WHOLE depending on which side its midpoint fell on. That quantises the cut to
+        // the sub-level's block lattice ("obrez po deleniyam mesha"). For an oblique
+        // portal (the 45-degree case) the physical boundary can therefore sit up to half
+        // a block on the wrong side of the mathematical plane, in BOTH directions:
+        // solid material surviving behind the portal (the chunk you can jump onto) and
+        // support vanishing in front of it. Because the error depends on where each
+        // block centre happens to fall, it is also asymmetric across the aperture --
+        // material on one side, nothing on the other.
+        //
+        // Keeping a block when ANY part of its unit cube is still in the kept half is
+        // the exact half-space test for that block's geometry: the support function of
+        // an axis-aligned unit cube along the (plot-local) plane normal is
+        // 0.5*(|nx|+|ny|+|nz|). Nothing with real material on the kept side is dropped,
+        // and nothing lying entirely behind the plane is kept, at ANY plane
+        // orientation -- the cut no longer follows the lattice.
+        double halfExtentAlongNormal =
+            0.5 * (Math.abs(ln.x) + Math.abs(ln.y) + Math.abs(ln.z));
         return pos -> (pos.getX() + 0.5 - lp.x) * ln.x
                     + (pos.getY() + 0.5 - lp.y) * ln.y
-                    + (pos.getZ() + 0.5 - lp.z) * ln.z >= keepThreshold;
+                    + (pos.getZ() + 0.5 - lp.z) * ln.z
+                    + halfExtentAlongNormal >= keepThreshold;
     }
 
     /**

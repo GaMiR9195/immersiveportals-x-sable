@@ -13,6 +13,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
+import org.lwjgl.opengl.GL32C;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 
 import java.util.ArrayList;
@@ -37,6 +38,42 @@ public final class IplEnteringVolumeRenderer {
     private static volatile long volumeExpiresAt;
     private static final StringBuilder INCOMING_SHAPE = new StringBuilder();
     private static final StringBuilder INCOMING_BLOCKS = new StringBuilder();
+    private static boolean clipDistance0WasEnabled;
+    private static boolean clipDistance1WasEnabled;
+
+    /**
+     * Suspends BOTH portal clip planes for the debug overlay.
+     *
+     * <p>The overlay is diagnostic geometry: it must show the swept volume the detector
+     * actually computed, not the part of it that survives the portal's render clipping.
+     * Inside a portal-through pass two clip planes are live at once -- ImmersivePortals'
+     * own front clipping on {@code gl_ClipDistance[0]} and our sub-level cut on
+     * {@code gl_ClipDistance[1]} -- and they keep opposite halves of (very nearly) the
+     * same plane. Anything drawn through them, including this overlay, survives only in
+     * the sliver where both agree, which is why the sweep visualisation appeared cut off
+     * at the portal even though the volume behind it was complete. Turning the planes off
+     * for this draw makes the overlay show the whole volume, which is the entire point of
+     * having it.
+     *
+     * <p>The previous enable state is captured and restored rather than blindly
+     * re-enabled: the overlay renders in passes where neither plane, one, or both may be
+     * active, and leaving a plane on that the pass never turned on would clip the world
+     * geometry drawn after us.
+     */
+    private static final RenderStateShard.TexturingStateShard NO_PORTAL_CLIP =
+        new RenderStateShard.TexturingStateShard(
+            "ipl_entering_volume_no_portal_clip",
+            () -> {
+                clipDistance0WasEnabled = GL32C.glIsEnabled(GL32C.GL_CLIP_DISTANCE0);
+                clipDistance1WasEnabled = GL32C.glIsEnabled(GL32C.GL_CLIP_DISTANCE1);
+                if (clipDistance0WasEnabled) GL32C.glDisable(GL32C.GL_CLIP_DISTANCE0);
+                if (clipDistance1WasEnabled) GL32C.glDisable(GL32C.GL_CLIP_DISTANCE1);
+            },
+            () -> {
+                if (clipDistance0WasEnabled) GL32C.glEnable(GL32C.GL_CLIP_DISTANCE0);
+                if (clipDistance1WasEnabled) GL32C.glEnable(GL32C.GL_CLIP_DISTANCE1);
+            });
+
     private static final RenderType FOG_RENDER_TYPE = RenderType.create(
         "ipl_entering_volume_swept_triangles", DefaultVertexFormat.POSITION_COLOR, VertexFormat.Mode.TRIANGLES,
         RenderType.TRANSIENT_BUFFER_SIZE, false, true, RenderType.CompositeState.builder()
@@ -45,6 +82,7 @@ public final class IplEnteringVolumeRenderer {
             .setDepthTestState(RenderStateShard.NO_DEPTH_TEST)
             .setWriteMaskState(RenderStateShard.COLOR_WRITE)
             .setCullState(RenderStateShard.NO_CULL)
+            .setTexturingState(NO_PORTAL_CLIP)
             .createCompositeState(false));
     private static final int VOXELS_PER_BLOCK = 6;
     private static final int MAX_SWEEP_SAMPLES = 3_240;
@@ -304,8 +342,16 @@ public final class IplEnteringVolumeRenderer {
             mode = Mode.valueOf(value);
             selectedShip = mode == Mode.OFF || ignoredShipId == null || ignoredShipId.isEmpty()
                 ? null : UUID.fromString(ignoredShipId);
-            shape = mode == Mode.OFF ? List.of() : decodeShape(encodedShape);
-            blocks = List.of();
+            // Turning the overlay ON no longer wipes the mesh: the server always follows
+            // this call with the chunked shapePart/blocksPart stream, and clearing here
+            // meant that any part which failed to land left the overlay showing a
+            // partially accumulated -- i.e. visibly truncated -- mesh with nothing to
+            // fall back on. Only OFF clears. The incoming buffers are still reset so a
+            // half-received stream from a previous session cannot prefix the new one.
+            if (mode == Mode.OFF) {
+                shape = List.of();
+                blocks = List.of();
+            }
             shapeShip = selectedShip;
             INCOMING_SHAPE.setLength(0);
             INCOMING_BLOCKS.setLength(0);

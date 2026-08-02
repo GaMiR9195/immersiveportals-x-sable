@@ -523,9 +523,36 @@ public final class SubLevelClipUniformPatcher {
         try {
             Vec3 normal = new Vec3(worldEquation[0], worldEquation[1], worldEquation[2]);
             Vec3 localNormal = sub.renderPose().transformNormalInverse(normal);
+            // IPL fix (micro rim behind the portal plane).
+            //
+            // MixinLevelRenderer installs IP's slot-0 inner clipping with
+            // `adjustment = -FrontClipping.ADJUSTMENT`, i.e. the plane is pushed 0.01
+            // blocks BACK along its own normal so IP's own destination TERRAIN does not
+            // z-fight with the portal quad. The kept half-space therefore starts 0.01
+            // blocks BEFORE the mathematical portal plane.
+            //
+            // Our slot-1 sub-level cut sits exactly ON the mathematical plane and keeps
+            // the complementary half. Both slots are active for a sub-level draw inside
+            // a portal-through pass, so the surviving region is the INTERSECTION:
+            //
+            //     n·p > w_exact          (slot 0, shifted back by 0.01)
+            //     n·p < w_exact + 0.01   (slot 1, exact)
+            //
+            // = a 0.01-block-thick slab of the ship sitting just past the portal plane.
+            // That slab is the "micro rim": it is drawn for the whole crossing and its
+            // width never changes, because it is literally ADJUSTMENT wide.
+            // (RenderDoc obodok.rdc: slot0 = {0.72907,-0.1988,0.65493,-0.84243},
+            //  slot1 = {-0.72907,0.1988,-0.65493,0.85243} -> |Δw| = 0.01 exactly.)
+            //
+            // Undoing the adjustment for THIS scoped sub-level draw only puts both cuts
+            // on the identical plane, so the intersection is empty and the rim is gone.
+            // IP's z-fighting guard is unaffected: slot-0 is restored to its original
+            // world equation by restorePortalClip() as soon as the bracket exits, so
+            // the parent world's terrain still renders with the 0.01 back-shift.
+            double exactW = worldEquation[3] - qouteall.imm_ptl.core.render.FrontClipping.ADJUSTMENT;
             uniform.set(
                 (float) localNormal.x, (float) localNormal.y, (float) localNormal.z,
-                (float) worldEquation[3]
+                (float) exactW
             );
             uniform.upload();
             return true;

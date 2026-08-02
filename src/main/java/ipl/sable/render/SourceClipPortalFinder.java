@@ -4,8 +4,6 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.render.FrontClipping;
-import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.q_misc_util.my_util.Plane;
 
 /**
@@ -46,15 +44,27 @@ public final class SourceClipPortalFinder {
         qouteall.q_misc_util.my_util.Plane projectionPlane =
             ipl.sable.client.IplStraddleRenderState.getPlaneFor(sub);
         if (projectionPlane != null) {
-            // IP keeps its destination terrain clip at -ADJUSTMENT to avoid z-fighting
-            // around portal planes. The mapped sub-level half previously kept its cut on
-            // the mathematical plane, leaving a moving-only empty hairline between CD0 and
-            // this CD1 split. Preserve IP's offset and move only the projection's kept
-            // half by the identical amount, making the two clips meet with no exposed gap.
-            Plane seamMatchedProjectionPlane = isUsingMatchingPortalClip(projectionPlane)
-                ? projectionPlane.move(-FrontClipping.ADJUSTMENT) : projectionPlane;
+            // IPL fix (rim): do NOT widen the projection's kept half.
+            //
+            // The source bracket keeps `n·(p-pos) >= 0` exactly on the mathematical
+            // portal plane, and the projection keeps the complementary half. Those two
+            // halves already tile the sub-level perfectly. The previous
+            // `move(-FrontClipping.ADJUSTMENT)` pushed the projection's cut 0.01 blocks
+            // PAST the plane, so a 1cm slab of the ship was inside BOTH kept halves and
+            // was therefore drawn twice -- once by the source draw and once by the
+            // mapped projection. That doubly-drawn slab is the sub-pixel "ободок"
+            // visible along the outer contour of anything poking through the portal
+            // (most obvious on a long thin 1x4 stick, whose silhouette is nearly all
+            // contour).
+            //
+            // FrontClipping.ADJUSTMENT (0.01) is IP's z-fighting guard for its own
+            // DESTINATION TERRAIN pass -- terrain and the sub-level are different
+            // geometry, so inheriting that offset here never prevented a gap between
+            // the sub-level's two halves; it only created an overlap in the sub-level
+            // itself. Cutting both halves on the identical plane is the exact,
+            // gap-free and overlap-free split.
             return new ClipDecision(
-                ipl.sable.client.IplStraddleRenderState.getPortalFor(sub), seamMatchedProjectionPlane);
+                ipl.sable.client.IplStraddleRenderState.getPortalFor(sub), projectionPlane);
         }
 
         if (ipl.sable.client.IplStraddleRenderCache.hasDecision(sub)) {
@@ -63,19 +73,6 @@ public final class SourceClipPortalFinder {
         ClipDecision decision = ipl$findAuthoritative(sub);
         ipl.sable.client.IplStraddleRenderCache.cacheDecision(sub, decision);
         return decision;
-    }
-
-    /**
-     * The overlap belongs only to IP's offset portal terrain pass. A same-dimension image
-     * drawn in the ordinary main pass has no slot-0 offset and must retain its exact
-     * half-open split, otherwise its source and mapped instances would z-fight.
-     */
-    private static boolean isUsingMatchingPortalClip(Plane projectionPlane) {
-        if (!PortalRendering.isRendering() || !FrontClipping.isClippingEnabled) return false;
-        Plane active = PortalRendering.getActiveClippingPlane();
-        return active != null
-            && active.normal().dot(projectionPlane.normal()) > 0.999999
-            && active.pos().distanceToSqr(projectionPlane.pos()) < 1.0e-8;
     }
 
     /**

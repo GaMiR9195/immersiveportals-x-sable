@@ -3,8 +3,11 @@ package ipl.sable.mixin;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
+import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
+import dev.ryanhcode.sable.mixinterface.voxel_shape_iteration.FastVoxelShapeIterable;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.entity_collision.SubLevelEntityCollision;
+import ipl.sable.transit.IplStraddleCollisionClip;
 import ipl.sable.transit.IplStraddlePoseMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
@@ -32,6 +35,19 @@ import java.util.function.Predicate;
  * the filtering iterator advances the underlying mutable BlockPos at the same point
  * vanilla's own {@code betweenClosed} iterator does (inside hasNext), so reuse semantics
  * are identical.
+ *
+ * <p><b>Sub-block precision.</b> The position filter alone can only work in whole
+ * blocks, so the physical boundary used to land on the sub-level's block lattice instead
+ * of on the portal plane: a ship that was only partly through the portal got cut along
+ * block divisions, leaving up to half a block of phantom material behind the plane (the
+ * "one block past the portal" you could stand on) or a matching hole in front of it. The
+ * filter is therefore deliberately generous — it keeps a block if ANY part of its cube
+ * is still on the kept side — and the second wrap below trims what survives, clipping
+ * each individual collision box against the same half-space via
+ * {@link IplStraddleCollisionClip}. Both loops that consume these boxes
+ * ({@code collide} and the step-up probe's {@code hasCollision}) go through
+ * {@code sable$allBoxes}, so the two stay consistent with each other and with the
+ * position filter.
  */
 @Pseudo
 @Mixin(value = SubLevelEntityCollision.class, remap = false)
@@ -53,8 +69,32 @@ public abstract class IplStraddleBlockClipMixin {
         Iterable<BlockPos> all = original.call(min, max);
         Predicate<BlockPos> keep = IplStraddlePoseMap.getBlockCollisionKeepFilter(
             subLevel, entity.level(), entity.getBoundingBox());
+        // Installed (or cleared) for EVERY sub-level in the intersection loop, not just
+        // straddling ones, so a cut can never leak into the next sub-level's boxes.
+        IplStraddleCollisionClip.setPlanes(
+            keep == null ? null : IplStraddlePoseMap.getBlockCollisionKeepPlanes(
+                subLevel, entity.level(), entity.getBoundingBox()));
         if (keep == null) return all;
         return () -> new FilteredIterator(all.iterator(), keep);
+    }
+
+    /**
+     * Trims each surviving block's collision boxes at the portal plane. Applies to the
+     * main SAT loop and to the step-up probe, both of which iterate boxes through this
+     * same interface call.
+     */
+    @WrapOperation(
+        method = {"collide", "hasCollision"},
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/mixinterface/voxel_shape_iteration/FastVoxelShapeIterable;sable$allBoxes()Ljava/util/Iterator;"
+        ),
+        require = 0
+    )
+    private static Iterator<BoundingBox3dc> ipl$clipBoxesAtPortalPlane(
+        FastVoxelShapeIterable shape, Operation<Iterator<BoundingBox3dc>> original
+    ) {
+        return IplStraddleCollisionClip.clip(original.call(shape));
     }
 
     private static final class FilteredIterator implements Iterator<BlockPos> {
@@ -84,6 +124,10 @@ public abstract class IplStraddleBlockClipMixin {
         public BlockPos next() {
             if (!hasNext()) throw new NoSuchElementException();
             hasNext = false;
+            // Every loop over the candidate blocks pulls them through here, so this is
+            // the one place that always knows which block the boxes fetched next belong
+            // to — no fragile capture of the loop variable required.
+            IplStraddleCollisionClip.noteBlock(next.getX(), next.getY(), next.getZ());
             return next;
         }
     }

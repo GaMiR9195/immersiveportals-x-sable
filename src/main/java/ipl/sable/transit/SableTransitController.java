@@ -56,9 +56,49 @@ public final class SableTransitController {
      * only bounds one tick's work; the remainder resumes on the following tick, so an
      * endless loop keeps cycling forever.
      */
-    private static final int MAX_CHAINED_CROSSINGS_PER_TICK = 16;
+    public static final int DEFAULT_MAX_TP_PER_TICK = 16;
+    /**
+     * Runtime-tunable (see {@code /iplsable_portal max_tp_per_tick}). Higher = a very fast
+     * body may complete more portal crossings inside a single tick (better behaviour at
+     * absurd speeds, more work per tick); lower = cheaper, but the remainder of a fast
+     * segment is deferred to the next tick.
+     */
+    private static volatile int maxTpPerTick = DEFAULT_MAX_TP_PER_TICK;
+
     /** Segments of forward lookahead used to arm a straddle seam before first contact. */
-    private static final double PREARM_LOOKAHEAD_SEGMENTS = 1.0;
+    public static final double DEFAULT_EARLY_OPEN_SEGMENTS = 1.0;
+    /**
+     * Runtime-tunable (see {@code /iplsable_portal early_open_segments}). How far AHEAD of
+     * the body's current motion the detector looks, measured in whole physics segments
+     * (1.0 = "one more segment of the same motion"), when deciding to open the portal seam
+     * BEFORE the body has actually touched the plane. Higher = the seam opens earlier, so
+     * very fast bodies never meet intact source-side terrain behind the portal; too high
+     * and a body that merely aims at a portal opens a seam it never enters. 0 disables
+     * predictive arming entirely.
+     */
+    private static volatile double earlyOpenSegments = DEFAULT_EARLY_OPEN_SEGMENTS;
+
+    public static int getMaxTpPerTick() {
+        return maxTpPerTick;
+    }
+
+    /** Clamped to [1, 512]; returns the value actually stored. */
+    public static int setMaxTpPerTick(int value) {
+        maxTpPerTick = Math.max(1, Math.min(512, value));
+        return maxTpPerTick;
+    }
+
+    public static double getEarlyOpenSegments() {
+        return earlyOpenSegments;
+    }
+
+    /** Clamped to [0, 16]; returns the value actually stored. */
+    public static double setEarlyOpenSegments(double value) {
+        if (Double.isNaN(value)) return earlyOpenSegments;
+        earlyOpenSegments = Math.max(0.0, Math.min(16.0, value));
+        return earlyOpenSegments;
+    }
+
     private static long hostedTransitTick;
 
     private SableTransitController() {}
@@ -235,10 +275,12 @@ public final class SableTransitController {
                 // segment early is physically neutral for a body still fully in front of
                 // the plane: the clip regions keep only the far half, so nothing is added
                 // on the near side until it actually arrives.
+                double lookahead = earlyOpenSegments;
                 boolean predictedEntry = !haveSession
+                    && lookahead > 0.0
                     && state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
                     && PortalCrossingDetector.willEnterAperture(
-                        airship, portal, normal, APERTURE_MARGIN, PREARM_LOOKAHEAD_SEGMENTS);
+                        airship, portal, normal, APERTURE_MARGIN, lookahead);
                 boolean straddlingAperture = (state.phase()
                     == PortalCrossingDetector.CrossingPhase.STRADDLING
                     && (haveSession || state.sweptIntersectsPortalAperture()))
@@ -428,7 +470,8 @@ public final class SableTransitController {
                     // a portal loop can legitimately be entered many times inside one tick,
                     // and every one of those crossings must be an entry, not a fall-through.
                     int chained = 0;
-                    while (chained < MAX_CHAINED_CROSSINGS_PER_TICK) {
+                    final int chainCap = maxTpPerTick;
+                    while (chained < chainCap) {
                         TransitCandidate next = ipl$findCompletedCrossing(c.airship);
                         if (next == null) break;
                         if (!SableRehomeOps.executeHostedTransit(c.airship, next.portal())) break;
@@ -454,10 +497,10 @@ public final class SableTransitController {
                             IplRopePortalSeam.onShipTransit(mate, next.portal());
                         }
                     }
-                    if (chained == MAX_CHAINED_CROSSINGS_PER_TICK) {
+                    if (chained == chainCap) {
                         LOG.warn("[IPL-TRANSIT] uuid={} reached the {} crossings/tick cap; the "
                             + "rest of this segment continues next tick",
-                            uuid, MAX_CHAINED_CROSSINGS_PER_TICK);
+                            uuid, chainCap);
                     }
                 }
             } catch (Throwable t) {
