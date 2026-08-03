@@ -87,6 +87,11 @@ public final class IplStraddleStaffPick {
             player, player.level(), eye, player.getViewVector(partialTick), range, List.of(), 0, 0.0
         );
         if (target == null) return null;
+        // Exactly ONE pick may be pending at a time. The map used to accumulate captures
+        // across aborted picks, and startDraggingSubLevel would happily consume a stale
+        // one -- binding a freshly grabbed build to a portal path it was never picked
+        // through.
+        PENDING_TARGETS.clear();
         PENDING_TARGETS.put(target.sub().getUniqueId(), target);
         GRAB_DISTANCE.put(target.sub().getUniqueId(), target.visibleDistance());
         return target;
@@ -114,6 +119,33 @@ public final class IplStraddleStaffPick {
             );
         double portalDistance = portalHit.map(hit -> hit.getSecond().hitPos().distanceTo(from))
             .orElse(Double.MAX_VALUE);
+
+        // PROJECTION PASS IN THE DESTINATION WORLD.
+        //
+        // `level.clip` above only finds geometry that physically lives in `level`. A
+        // hosted plot does not: it lives in the sub-level container dimension and appears
+        // in this world only as a portal-mapped IMAGE. On the player's own level that gap
+        // is covered by the ClientLevel clip override, but this recursion walks into
+        // `portal.getDestinationWorld()` and asks it for raw blocks, so a body straddling
+        // into the far side was simply not there to be hit. The ray fell through it and
+        // the pick resolved against whatever real world geometry stood behind -- which is
+        // exactly the "the point is not refracted into the portal, it flies off to real
+        // world coordinates" behaviour. Clip the same ray against every straddle
+        // projection into this world and let the nearest of the three candidates win.
+        ProjectionHit projected = null;
+        if (level instanceof ClientLevel projectionLevel) {
+            projected = clipProjections(projectionLevel, new ClipContext(
+                from, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+        }
+        if (projected != null && projected.sub() != null) {
+            double projectedDistance = Math.sqrt(projected.distSq());
+            if (projectedDistance <= blockDistance
+                && projectedDistance <= portalDistance + 0.0001) {
+                return new PortalTarget(
+                    projected.sub(), level, projected.hit(), path,
+                    projected.imagePortal(), traveled + projectedDistance);
+            }
+        }
 
         if (visible != null && blockDistance <= portalDistance + 0.0001) {
             // traveled through prior frames + the visible reach within this frame = the true
@@ -214,6 +246,25 @@ public final class IplStraddleStaffPick {
         IplGrabChainClient.seedLocal(sub.getUniqueId(), selected.portals(), selected.imagePortal());
     }
 
+    /**
+     * LOCK ("fixate") path. Simulated routes a lock through the same pick as a grab but
+     * never enters {@code startDraggingSubLevel}, so the portal chain was never seeded and
+     * the beam had nothing to fold through: it was drawn straight to the body's RAW world
+     * coordinates instead of through the portal. A lock is the same optical situation as a
+     * grab, so it publishes the same chain -- the only difference is that the pending
+     * capture is not consumed, because a following grab on the same body must still see it.
+     */
+    public static void beginLock(ClientSubLevel sub) {
+        PortalTarget selected = PENDING_TARGETS.get(sub.getUniqueId());
+        if (selected == null || selected.sub() != sub) {
+            DRAG_TARGETS.remove(sub.getUniqueId());
+            IplGrabChainClient.seedLocal(sub.getUniqueId(), List.of(), null);
+            return;
+        }
+        DRAG_TARGETS.put(sub.getUniqueId(), selected);
+        IplGrabChainClient.seedLocal(sub.getUniqueId(), selected.portals(), selected.imagePortal());
+    }
+
     public static void clearDragTargets() {
         PENDING_TARGETS.clear();
         DRAG_TARGETS.clear();
@@ -235,6 +286,43 @@ public final class IplStraddleStaffPick {
         PhysicsStaffClientHandler.ClientDragSession session = handler.getDragSession();
         if (session == null || !session.dragSubLevel().getUniqueId().equals(sub.getUniqueId())) return;
         session.setDistance(Math.clamp(distance, 2.0, PhysicsStaffItem.RANGE));
+    }
+
+    /**
+     * VISIBLE ray length from the eye to whatever this hit actually represents, or
+     * {@link Double#MAX_VALUE} when there is nothing comparable to measure.
+     *
+     * <p>Sub-level hits report PLOT coordinates, so their raw location cannot be measured
+     * against the eye directly. The same candidate resolution the through-portal pick uses
+     * maps them into the visible frame first, which is the only frame in which a local hit
+     * and a through-portal hit are comparable at all.
+     */
+    public static double visibleRayLength(Player player, @Nullable HitResult hit, float partialTick) {
+        if (hit == null || hit.getType() == HitResult.Type.MISS) return Double.MAX_VALUE;
+        if (!(player.level() instanceof ClientLevel level)) return Double.MAX_VALUE;
+        Vec3 eye = player.getEyePosition(partialTick);
+        if (hit instanceof BlockHitResult blockHit) {
+            ClientSubLevel sub = getHitSubLevel(level, blockHit);
+            if (sub != null) {
+                Vec3 end = eye.add(player.getViewVector(partialTick).scale(PhysicsStaffItem.RANGE));
+                VisibleHit visible = visibleHit(level, eye, end, sub, blockHit);
+                return visible == null ? Double.MAX_VALUE : visible.distance();
+            }
+        }
+        return eye.distanceTo(hit.getLocation());
+    }
+
+    /**
+     * Drop a speculative through-portal capture the pick did not end up choosing.
+     * {@link #pickThroughPortals(Player, double, float)} records its result eagerly (the
+     * recursion is the only place the traversed portal path exists), so whoever rejects
+     * that result owns the cleanup. Without it the rejected capture stays pending and the
+     * next drag session seeds a portal chain for a body that was grabbed locally.
+     */
+    public static void discardTarget(PortalTarget target) {
+        UUID id = target.sub().getUniqueId();
+        PENDING_TARGETS.remove(id);
+        GRAB_DISTANCE.remove(id);
     }
 
     /** True pick-ray length for this sub's last pick, or NaN (beam creation node density). */
@@ -299,6 +387,7 @@ public final class IplStraddleStaffPick {
             return;
         }
 
+        PENDING_TARGETS.clear();
         PENDING_TARGETS.put(sub.getUniqueId(), new PortalTarget(
             sub, level, blockHit, List.of(), visible.imagePortal(), visible.distance()
         ));
@@ -399,7 +488,10 @@ public final class IplStraddleStaffPick {
     ) {}
 
     /** A projection hit: plot-coordinate BlockHitResult + ray distance² (frame-comparable). */
-    public record ProjectionHit(BlockHitResult hit, double distSq) {}
+    public record ProjectionHit(
+        BlockHitResult hit, double distSq,
+        @Nullable ClientSubLevel sub, @Nullable Portal imagePortal
+    ) {}
 
     /**
      * Clip the context's ray against every straddle projection into {@code level}, using
@@ -422,6 +514,8 @@ public final class IplStraddleStaffPick {
             (ipl.sable.mixin.client.IplClipContextAccessor) ctx;
 
         BlockHitResult best = null;
+        ClientSubLevel bestSub = null;
+        Portal bestPortal = null;
         double bestDistSq = Double.MAX_VALUE;
 
         for (IplClientHostedLookup.StraddleProjection projection : projections) {
@@ -483,8 +577,11 @@ public final class IplStraddleStaffPick {
             if (distSq < bestDistSq) {
                 bestDistSq = distSq;
                 best = hit;
+                bestSub = projection.sub();
+                bestPortal = projection.portal();
             }
         }
-        return best != null ? new ProjectionHit(best, bestDistSq) : null;
+        return best != null
+            ? new ProjectionHit(best, bestDistSq, bestSub, bestPortal) : null;
     }
 }

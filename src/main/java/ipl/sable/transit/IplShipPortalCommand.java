@@ -16,7 +16,7 @@ import qouteall.imm_ptl.core.portal.Portal;
  * See {@link IplShipPortalAnchor}.
  *
  * <p>Plus the two runtime tuning knobs of the faster-than-tick crossing path
- * ({@code max_tp_per_tick}, {@code early_open_segments}) and the sweep-detector
+ * ({@code early_open_segments}) and the sweep-detector
  * debug overlay ({@code visualize_sweep_detector}). Both tuning values are live:
  * they take effect on the next tick, no restart, no reload.
  */
@@ -55,28 +55,7 @@ public final class IplShipPortalCommand {
                 false);
                 return 1;
             }))
-            // FASTER-THAN-TICK KNOB 1. How many complete portal crossings one body may
-            // finish inside a single tick. A body moving many blocks per physics segment
-            // can legitimately re-enter a looping portal several times in one tick; this
-            // caps that chain so one pathological loop cannot stall the server thread.
-            .then(Commands.literal("max_tp_per_tick")
-                .executes(context -> {
-                    context.getSource().sendSuccess(() -> Component.literal(
-                        "max_tp_per_tick = " + SableTransitController.getMaxTpPerTick()
-                            + " (default " + SableTransitController.DEFAULT_MAX_TP_PER_TICK
-                            + "): most portal crossings one body may complete in one tick"),
-                        false);
-                    return 1;
-                })
-                .then(Commands.argument("value", IntegerArgumentType.integer(1, 512))
-                    .executes(context -> {
-                        int applied = SableTransitController.setMaxTpPerTick(
-                            IntegerArgumentType.getInteger(context, "value"));
-                        context.getSource().sendSuccess(() -> Component.literal(
-                            "max_tp_per_tick = " + applied), true);
-                        return 1;
-                    })))
-            // FASTER-THAN-TICK KNOB 2 (was PREARM_LOOKAHEAD_SEGMENTS). How far ahead of
+            // PREDICTIVE SEAM OPENING (was PREARM_LOOKAHEAD_SEGMENTS). How far ahead of
             // the body's current motion the detector looks before opening the portal seam.
             .then(Commands.literal("early_open_segments")
                 .executes(context -> {
@@ -90,6 +69,16 @@ public final class IplShipPortalCommand {
                     return 1;
                 })
                 .then(Commands.argument("value", DoubleArgumentType.doubleArg(0.0, 16.0))
+                    .suggests((context, builder) -> {
+                        java.util.LinkedHashMap<String, String> opts = new java.util.LinkedHashMap<>();
+                        opts.put(String.valueOf(SableTransitController.DEFAULT_EARLY_OPEN_SEGMENTS),
+                            "default " + SableTransitController.DEFAULT_EARLY_OPEN_SEGMENTS);
+                        opts.putIfAbsent(String.valueOf(SableTransitController.getEarlyOpenSegments()),
+                            "current " + SableTransitController.getEarlyOpenSegments());
+                        opts.putIfAbsent("0.0", "off (no predictive seam opening)");
+                        opts.forEach((v, tip) -> builder.suggest(v, Component.literal(tip)));
+                        return builder.buildFuture();
+                    })
                     .executes(context -> {
                         double applied = SableTransitController.setEarlyOpenSegments(
                             DoubleArgumentType.getDouble(context, "value"));

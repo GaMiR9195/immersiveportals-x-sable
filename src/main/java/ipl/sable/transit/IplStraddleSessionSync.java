@@ -59,7 +59,7 @@ public final class IplStraddleSessionSync {
         if (portals.containsKey(portal.getUUID())) return;
         portals.put(portal.getUUID(), encodePortal(portal));
 
-        LOG.info("[IPL-STRADDLE-SYNC] start ship={} portal={}", shipId, portal.getUUID());
+        LOG.debug("[IPL-STRADDLE-SYNC] start ship={} portal={}", shipId, portal.getUUID());
         broadcast(server, shipId);
     }
 
@@ -84,7 +84,7 @@ public final class IplStraddleSessionSync {
         if (portals == null || portals.remove(key.portalUuid()) == null) return;
         if (portals.isEmpty()) ACTIVE.remove(key.subLevelUuid());
 
-        LOG.info("[IPL-STRADDLE-SYNC] end ship={} portal={} ({})",
+        LOG.debug("[IPL-STRADDLE-SYNC] end ship={} portal={} ({})",
             key.subLevelUuid(), key.portalUuid(), reason);
         broadcast(server, key.subLevelUuid());
     }

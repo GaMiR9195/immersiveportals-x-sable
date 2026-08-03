@@ -50,7 +50,25 @@ public abstract class IplStaffBeamMixin {
 
     /**
      * @author IPL-Sable
-     * @reason Render in actual IP pass frame, not stock main-world frame.
+     * @reason Render one CONTINUOUS polyline in the actual IP pass frame.
+     *
+     * <p><b>What was wrong.</b> The beam used to be drawn as a set of independent
+     * per-world segments. Each segment re-derived its own node walk from the global
+     * fraction range it happened to cover, and it explicitly SKIPPED every node whose
+     * fraction fell outside that range. The two nodes closest to an aperture were
+     * therefore always dropped, and the piece was closed with a straight chord to the
+     * aperture point. Two independent chords met at the portal with unrelated noise
+     * phase, which is the visible kink: the beam looked like several beams that happen
+     * to touch, and the join point visibly jumped as the fraction boundaries moved.
+     *
+     * <p><b>What it does now.</b> {@link IplStaffBeamRoutes#runs} samples the WHOLE route
+     * once in global arc length and emits a vertex at every sample and at every aperture,
+     * so a run arrives as a finished list of points that only has to be stroked. The
+     * closing vertex of one run and the opening vertex of the next are the same physical
+     * point on opposite portal faces and carry the SAME fraction, so the noise offset
+     * matches in magnitude and differs only by the portal rotation the geometry itself
+     * received. There is no chord, no skipped node and no phase reset: continuity is a
+     * property of the construction, not of a tolerance.
      */
     @Overwrite(remap = false)
     private void render(
@@ -58,42 +76,36 @@ public abstract class IplStaffBeamMixin {
         com.mojang.blaze3d.vertex.PoseStack stack,
         SuperRenderTypeBuffer buffer, Vec3 camera, float partialTick
     ) {
-        if (!IplStaffPortalBeamRenderer.isPhysicalBeamPass()
-            || IplStaffPortalBeamRenderer.getActiveSegment() == null) return;
+        if (!IplStaffPortalBeamRenderer.isPhysicalBeamPass()) return;
+        IplStaffBeamRoutes.Run run = IplStaffPortalBeamRenderer.getActiveRun();
+        if (run == null) return;
 
-        IplStaffBeamRoutes.Segment segment = IplStaffPortalBeamRenderer.getActiveSegment();
         // update() derives node count and noise radius from this.length; keep it fed with
         // the true physical beam length on the render path too.
-        this.length = segment.totalLength();
-        int nodeCount = this.nodes.size();
-        if (nodeCount < 2 || segment.totalLength() <= 1.0e-9) {
+        this.length = run.totalLength();
+
+        List<IplStaffBeamRoutes.Vertex> vertices = run.vertices();
+        if (this.nodes.size() < 2 || vertices.size() < 2 || run.totalLength() <= 1.0e-9) {
             this.line.set(source, target).render(stack, buffer, camera, partialTick);
             return;
         }
 
-        // Preserve Simulated's one noisy path through every portal. A segment starts/ends at
-        // an exact aperture point, but all its interior nodes retain their original global
-        // phase. Far-side noise vectors rotate through preceding portals with the path itself.
-        Vec3 last = source;
-        int firstNode = Math.max(1, (int) Math.ceil(segment.startFraction() * nodeCount));
-        int lastNode = Math.min(nodeCount - 1, (int) Math.floor(segment.endFraction() * nodeCount));
-        for (int node = firstNode; node <= lastNode; node++) {
-            double fraction = node / (double) nodeCount;
-            if (fraction <= segment.startFraction() || fraction >= segment.endFraction()) continue;
-            Vec3 point = ipl$pointAt(segment, fraction, partialTick);
-            this.line.set(last, point).render(stack, buffer, camera, partialTick);
-            last = point;
+        Vec3 previous = ipl$displace(vertices.get(0), partialTick);
+        for (int i = 1; i < vertices.size(); i++) {
+            Vec3 point = ipl$displace(vertices.get(i), partialTick);
+            this.line.set(previous, point).render(stack, buffer, camera, partialTick);
+            previous = point;
         }
-        this.line.set(last, target).render(stack, buffer, camera, partialTick);
     }
 
-    private Vec3 ipl$pointAt(IplStaffBeamRoutes.Segment segment, double fraction, float partialTick) {
-        double span = segment.endFraction() - segment.startFraction();
-        double local = span <= 1.0e-9 ? 0.0 : (fraction - segment.startFraction()) / span;
-        Vec3 base = segment.start().lerp(segment.end(), Math.clamp(local, 0.0, 1.0));
-        Vec3 noise = IplStaffBeamRoutes.rotate(
-            segment.noiseRotation(), ipl$noiseAt(fraction, partialTick));
-        return base.add(noise);
+    /**
+     * A vertex plus its noise offset. The offset is sampled by GLOBAL fraction, so the
+     * same physical point sampled from either side of a portal gets the same offset, and
+     * it is rotated by the folded portal chain so it lands in this run's frame.
+     */
+    private Vec3 ipl$displace(IplStaffBeamRoutes.Vertex vertex, float partialTick) {
+        return vertex.point().add(IplStaffBeamRoutes.rotate(
+            vertex.noiseRotation(), ipl$noiseAt(vertex.fraction(), partialTick)));
     }
 
     private Vec3 ipl$noiseAt(double fraction, float partialTick) {

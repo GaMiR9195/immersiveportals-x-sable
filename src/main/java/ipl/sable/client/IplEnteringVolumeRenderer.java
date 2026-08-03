@@ -40,6 +40,7 @@ public final class IplEnteringVolumeRenderer {
     private static final StringBuilder INCOMING_BLOCKS = new StringBuilder();
     private static boolean clipDistance0WasEnabled;
     private static boolean clipDistance1WasEnabled;
+    private static boolean clipDistance2WasEnabled;
 
     /**
      * Suspends BOTH portal clip planes for the debug overlay.
@@ -66,12 +67,15 @@ public final class IplEnteringVolumeRenderer {
             () -> {
                 clipDistance0WasEnabled = GL32C.glIsEnabled(GL32C.GL_CLIP_DISTANCE0);
                 clipDistance1WasEnabled = GL32C.glIsEnabled(GL32C.GL_CLIP_DISTANCE1);
+                clipDistance2WasEnabled = GL32C.glIsEnabled(GL32C.GL_CLIP_DISTANCE2);
                 if (clipDistance0WasEnabled) GL32C.glDisable(GL32C.GL_CLIP_DISTANCE0);
                 if (clipDistance1WasEnabled) GL32C.glDisable(GL32C.GL_CLIP_DISTANCE1);
+                if (clipDistance2WasEnabled) GL32C.glDisable(GL32C.GL_CLIP_DISTANCE2);
             },
             () -> {
                 if (clipDistance0WasEnabled) GL32C.glEnable(GL32C.GL_CLIP_DISTANCE0);
                 if (clipDistance1WasEnabled) GL32C.glEnable(GL32C.GL_CLIP_DISTANCE1);
+                if (clipDistance2WasEnabled) GL32C.glEnable(GL32C.GL_CLIP_DISTANCE2);
             });
 
     private static final RenderType FOG_RENDER_TYPE = RenderType.create(

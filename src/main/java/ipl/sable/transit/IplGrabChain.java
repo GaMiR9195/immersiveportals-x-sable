@@ -73,6 +73,14 @@ public final class IplGrabChain {
 
     private static final Map<UUID, Frame> FRAMES = new HashMap<>();
 
+    /**
+     * A grabbed body inside a portal loop appends one link per crossing, forever. The whole
+     * chain is broadcast to every client as ONE string, so an unbounded chain eventually
+     * exceeds the packet string limit and the connection dies with an EncoderException on
+     * clientbound/custom_payload instead of the drag merely degrading. Bound it.
+     */
+    private static final int MAX_CHAIN_LINKS = 32;
+
     private IplGrabChain() {}
 
     // ------------------------------------------------------------------
@@ -153,7 +161,7 @@ public final class IplGrabChain {
         for (Frame frame : FRAMES.values()) {
             if (!frame.subId.equals(subId)) continue;
 
-            frame.chain = IplGrabLink.append(frame.chain, link);
+            frame.chain = capChain(IplGrabLink.append(frame.chain, link), subId);
             frame.revision++;
 
             if (!identityRotation) {
@@ -175,7 +183,7 @@ public final class IplGrabChain {
                     subId.toString(), Long.toString(frame.revision), link.encode()
                 );
             }
-            LOG.info("[IPL-GRAB-CHAIN] body {} transited portal {} for player {}, depth={} rev={}",
+            LOG.debug("[IPL-GRAB-CHAIN] body {} transited portal {} for player {}, depth={} rev={}",
                 subId, portal.getUUID(), frame.playerId, frame.chain.size(), frame.revision);
             broadcast(server, frame.playerId);
         }
@@ -218,6 +226,19 @@ public final class IplGrabChain {
         }
 
         return IplGrabLink.fold(frame.chain, goal);
+    }
+
+    /**
+     * {@link #mapGoal} for a DIRECTION (a velocity): the chain's rotations only, with no
+     * translation. Used by the drag motor's velocity lead, which needs the goal's rate of
+     * change expressed in the body's parent frame rather than the player's.
+     */
+    public static Vec3 mapGoalDirection(ServerPlayer player, SubLevel sub, Vec3 direction) {
+        Frame frame = FRAMES.get(player.getUUID());
+        if (frame == null || !frame.subId.equals(sub.getUniqueId())) return direction;
+        if (frame.chain.isEmpty()) return direction;
+        if (!frame.chain.get(0).fromDim().equals(player.level().dimension())) return direction;
+        return IplGrabLink.foldDirection(frame.chain, direction);
     }
 
     /**
@@ -332,6 +353,15 @@ public final class IplGrabChain {
         Object session = ((IplStaffServerHandlerAccessorMixin) (Object) handler)
             .ipl$getDraggingSessions().get(playerId);
         return session instanceof IplStaffDragSessionControl control ? control : null;
+    }
+
+    /** Keep the newest links: they describe the frame the body is actually in right now. */
+    private static List<IplGrabLink> capChain(List<IplGrabLink> chain, UUID subId) {
+        if (chain.size() <= MAX_CHAIN_LINKS) return chain;
+        LOG.warn("[IPL-GRAB-CHAIN] body {} exceeded {} chain links; dropping the oldest",
+            subId, MAX_CHAIN_LINKS);
+        return List.copyOf(new ArrayList<>(
+            chain.subList(chain.size() - MAX_CHAIN_LINKS, chain.size())));
     }
 
     private static Quaterniond rotationOf(Portal portal) {

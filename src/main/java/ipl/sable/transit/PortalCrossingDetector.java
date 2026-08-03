@@ -28,6 +28,36 @@ public final class PortalCrossingDetector {
     /** Half-depth of portal entry/exit hysteresis; not part of face direction. */
     private static final double PORTAL_HYSTERESIS_DEPTH = 0.1;
     private static final Map<UUID, Trail> TRAILS = new HashMap<>();
+    /**
+     * EXIT HYSTERESIS. A transit that has just executed leaves the body sitting a hair
+     * past the portal plane in the destination frame. At absurd speeds the very next
+     * evaluation can read that pose as "already left the aperture" (tearing the seam down
+     * one tick after building it) or, worse, as a fresh crossing through the coincident
+     * BACK face -- the body bounces back and forth through the same doorway instead of
+     * flying out of it.
+     *
+     * <p>The fix is the user-described pair: at the moment of the crossing we snapshot the
+     * body's position, and until it has travelled this fraction of the portal's own width
+     * away from that snapshot the exit simply does not count. The seam is retained and no
+     * new crossing may be admitted, so the back face can never claim the body.
+     *
+     * <p>The band is deliberately tiny (1% of the portal's width): a body actually flying
+     * away clears it within the same physics segment, so legitimate fast chains through a
+     * portal loop are untouched.
+     */
+    private static final double EXIT_CLEARANCE_THICKNESS = 0.01;
+    /** Floor for degenerate/hairline portals, so the band is never numerically zero. */
+    private static final double MIN_EXIT_CLEARANCE = 1.0e-3;
+    /** A latch can never outlive this many hosting ticks, even if the body never moves. */
+    /**
+     * Hard ceiling on how long a latch may live. The band is 0.01 blocks thick, so any
+     * body that is still moving leaves it inside a single tick; the ceiling only exists
+     * so a body parked exactly on the plane cannot pin its doorway forever. The old
+     * value (200 ticks = 10 s) turned the latch into the dominant term and is exactly
+     * the length a portal loop used to survive before it stalled.
+     */
+    private static final long EXIT_LATCH_MAX_TICKS = 3L;
+    private static final Map<UUID, ExitLatch> EXIT_LATCHES = new HashMap<>();
     private static long trailTick;
 
     private PortalCrossingDetector() {}
@@ -73,7 +103,22 @@ public final class PortalCrossingDetector {
             // a record for every hosted ship every server tick.
             trail.older.set(trail.start);
             trail.hasOlder = true;
-            trail.start.set(airship.lastPose());
+            if (trail.rebasedThisTick) {
+                // HEART FIX. After a parent flip, airship.lastPose() is the pose the body
+                // held in the OLD chart. Joining it to the new logicalPose() produces a
+                // segment that jumps across the portal in raw coordinates -- a sweep of
+                // arbitrary length through geometry the body never touched. The detector
+                // then rejects every candidate along it (or mis-sweeps), which is exactly
+                // why a body at extreme speed completed roughly ONE crossing per tick and
+                // a tight portal loop took ~11 seconds to unwind no matter how high the
+                // per-tick crossing cap was set. The rebased end is already expressed in
+                // the new chart and IS the correct start of the next segment.
+                trail.start.set(trail.end);
+                trail.hasOlder = false;
+                trail.rebasedThisTick = false;
+            } else {
+                trail.start.set(airship.lastPose());
+            }
             trail.end.set(airship.logicalPose());
         }
         trail.lastSeenTick = trailTick;
@@ -82,11 +127,17 @@ public final class PortalCrossingDetector {
     /** Forget source-frame history after a parent flip; it cannot be joined to destination poses. */
     public static void forgetTrail(ServerSubLevel airship) {
         TRAILS.remove(airship.getUniqueId());
+        EXIT_LATCHES.remove(airship.getUniqueId());
     }
 
     /**
      * A completed source-side exit starts a fresh trail at its current pose. This discards
      * the just-unwound portal segment, so it cannot claim the coincident back face next tick.
+     *
+     * <p>The reset also counts as a re-base for the NEXT capture. Without that flag the
+     * following tick rebuilt the segment from {@code airship.lastPose()} -- the pose the
+     * body held before the exit, in the chart it was in before the exit -- which resurrects
+     * exactly the huge cross-world sweep this reset exists to destroy.
      */
     public static void resetTrail(ServerSubLevel airship) {
         Trail trail = TRAILS.get(airship.getUniqueId());
@@ -98,7 +149,42 @@ public final class PortalCrossingDetector {
         trail.start.set(airship.logicalPose());
         trail.end.set(airship.logicalPose());
         trail.hasOlder = false;
+        trail.rebasedThisTick = true;
         trail.lastSeenTick = trailTick;
+    }
+
+    /**
+     * ATOMIC EXIT SETTLEMENT. Not a tick job: the caller runs this the instant a crossing
+     * (or a whole sub-tick chain of crossings) has consumed the physics segment, and it
+     * answers one question -- has the body physically left the 0.01 slab of the portal it
+     * came out of?
+     *
+     * <p>If it has, the exit is COMPLETE right now: the latch is dropped and the trail is
+     * re-seeded at the pose the body actually holds, so the segment that led up to the exit
+     * stops existing at the same instant. The caller then closes the straddle session for
+     * the returned portal. That pairing is what makes the back face unreachable without any
+     * timing window at all:
+     * <ul>
+     *   <li>still inside the slab -> the session is still open and owns the doorway, so
+     *       nothing else may claim the body;</li>
+     *   <li>outside the slab -> the session is closed AND the trail no longer contains a
+     *       single point behind the plane, so even an instant reversal has no swept segment
+     *       that could be read as an entry through the opposite face.</li>
+     * </ul>
+     *
+     * @return the portal whose exit just completed, or null when the body is still inside
+     *         the slab (or was never latched)
+     */
+    @org.jetbrains.annotations.Nullable
+    public static UUID settleExit(ServerSubLevel airship) {
+        UUID id = airship.getUniqueId();
+        ExitLatch latch = EXIT_LATCHES.get(id);
+        if (latch == null) return null;
+        boolean expired = trailTick - latch.tick > EXIT_LATCH_MAX_TICKS;
+        if (!expired && latch.overlaps(currentBounds(airship))) return null;
+        EXIT_LATCHES.remove(id);
+        resetTrail(airship);
+        return latch.portalId;
     }
 
     /**
@@ -126,10 +212,25 @@ public final class PortalCrossingDetector {
             trail = new Trail(new Pose3d(entry), new Pose3d(entry), new Pose3d(entry));
             TRAILS.put(id, trail);
         }
-        trail.older.set(entry);
-        trail.hasOlder = false;
+        // DIRECTION HISTORY MUST SURVIVE THE SEAM. Dropping it (hasOlder = false) left the
+        // re-derived tail with a single post-seam segment and no evidence of where the body
+        // came FROM. A bi-faced portal then had no directed source->destination entry to
+        // prove face ownership, so every sub-tick chain link was refused and the body fell
+        // through the instant one tick had to contain two crossings. Carry the pose held
+        // just before the seam, mapped through the same isometry, so the tail is a genuine
+        // continuation of the pre-seam motion instead of a segment with no past.
+        double entryT = Double.isFinite(crossingTime) ? Math.clamp(crossingTime, 0.0, 1.0) : 0.0;
+        Pose3d prior = IplStraddlePoseMap.StraddleMapping.of(portal).mapPose(
+            interpolate(trail.start, trail.end, Math.max(0.0, entryT - 1.0e-3)));
+        trail.older.set(prior);
+        trail.hasOlder = true;
         trail.start.set(entry);
+        // Snapshot of the previous position + the 1%-of-width band it must clear before
+        // this exit counts. Without it a body at absurd speed can be re-admitted through
+        // the coincident back face on the very next evaluation.
+        armExitClearance(airship, portal);
         trail.end.set(airship.logicalPose());
+        trail.rebasedThisTick = true;
         trail.lastSeenTick = trailTick;
     }
 
@@ -172,8 +273,106 @@ public final class PortalCrossingDetector {
         return out;
     }
 
+    /**
+     * Snapshots the body's post-transit position and opens the exit-clearance band for the
+     * portal it just came through. Called for every executed transit (including every link
+     * of a sub-tick chain), so the latch always describes the most recent crossing.
+     */
+    public static void armExitClearance(ServerSubLevel airship, Portal portal) {
+        if (portal == null) return;
+        // CORRECTED SEMANTICS. This is an ABSOLUTE thickness (0.01 blocks), not a fraction
+        // of the portal's width: the plane is given a real 0.01-thick body instead of being
+        // a zero-thickness surface, and the band is symmetric -- 0.01 on the exit side and
+        // 0.01 on the opposite side. A body must clear the whole slab before its exit is
+        // counted, which is what makes fast back-and-forth re-entry impossible regardless
+        // of how wide the portal happens to be.
+        double clearance = Math.max(EXIT_CLEARANCE_THICKNESS, MIN_EXIT_CLEARANCE);
+        // Resetting the swept buffer is the other half of the guarantee: the stale sweep
+        // sample from BEFORE the crossing is what a re-entry would otherwise be tested
+        // against, so it is dropped together with the snapshot being armed here.
+        IplEnteringVolumeVisualization.clearBuffer(airship);
+        // The PLATE. ONLY the normal direction gets thickness: the zero-thickness quad
+        // becomes a slab of half-thickness `clearance` (0.01 on each face), while the
+        // rectangle keeps the portal's own width and height. Widening W/H as well made
+        // the plate spill outside the doorway, so a body falling PAST a portal (a loop of
+        // several portals) kept re-triggering a latch that belongs to a crossing it never
+        // made.
+        // THE PLATE BELONGS TO THE EXIT, NOT TO THE ENTRANCE. This used to be built from
+        // portal.getOriginPos() and the source-frame axes -- the rectangle the body flew
+        // INTO -- while the body itself is now standing at portal.getDestPos(). Two
+        // consequences, and together they are the whole bug:
+        //
+        //  1. The back-face guard never guarded anything. The body is nowhere near the
+        //     entrance rectangle after a transit, so the slab it was tested against was
+        //     empty space.
+        //  2. In a two-portal loop (floor portal A, ceiling portal B, A -> B) the plate sat
+        //     exactly on A -- which is precisely where the body arrives one fall later. The
+        //     NEXT, entirely legitimate crossing of A was therefore refused, every time.
+        //     While the body was slow enough to need less than one tick per lap that never
+        //     showed; the moment per-tick travel reached the distance between the portals
+        //     the crossing had to be resolved inside the same tick, the refusal killed the
+        //     chain, and the body fell straight through the floor portal. That is the fixed
+        //     ~200-tick lifetime of the loop, independent of tick rate: it is a SPEED
+        //     threshold (travel per tick >= portal spacing), which is exactly why running
+        //     the server at 5 TPS bought wall-clock seconds and not a single extra lap.
+        //
+        // The plate is therefore the DESTINATION rectangle, mapped through the portal's own
+        // isometry: the surface the body actually came out of, and the only surface a
+        // reversed re-entry can happen through.
+        IplStraddlePoseMap.StraddleMapping exitFrame =
+            IplStraddlePoseMap.StraddleMapping.of(portal);
+        Vec3 origin = exitFrame.mapPoint(portal.getOriginPos());
+        Vec3 normal = exitFrame.mapVec(portal.getNormal());
+        Vec3 axisW = exitFrame.mapVec(portal.getAxisW());
+        Vec3 axisH = exitFrame.mapVec(portal.getAxisH());
+        EXIT_LATCHES.put(airship.getUniqueId(), new ExitLatch(
+            portal.getUUID(),
+            origin.x, origin.y, origin.z,
+            normal.x, normal.y, normal.z,
+            axisW.x, axisW.y, axisW.z,
+            axisH.x, axisH.y, axisH.z,
+            portal.getWidth() * 0.5,
+            portal.getHeight() * 0.5,
+            clearance, trailTick));
+    }
+
+    /**
+     * True while the body still sits inside the exit-clearance band of its last crossing.
+     * The latch self-clears the moment the band is passed (or after a hard tick budget), so
+     * this is safe to call every tick and needs no explicit teardown.
+     *
+     * @param portal when non-null, only a latch belonging to THIS portal answers true;
+     *               pass null to ask "is this body still leaving anything at all?"
+     */
+    public static boolean withinExitClearance(ServerSubLevel airship, Portal portal) {
+        UUID id = airship.getUniqueId();
+        ExitLatch latch = EXIT_LATCHES.get(id);
+        if (latch == null) return false;
+        if (trailTick - latch.tick > EXIT_LATCH_MAX_TICKS) {
+            EXIT_LATCHES.remove(id);
+            return false;
+        }
+        // Test the POST-CROSSING pose only. Using sweptBounds() here was the bug: that
+        // box also contains trail.start / trail.older, i.e. the pose the body held BEFORE
+        // the crossing, which by construction lies on the other side of the plate. The
+        // union therefore always intersected the slab and the latch could only ever be
+        // released by the tick budget -- which is why the loop died after a fixed number
+        // of seconds instead of after the body physically left the doorway.
+        //
+        // This method is a PREDICATE. It must not mutate the trail: the segment tail is
+        // still needed by the other portals scanned in this same tick and by the sub-tick
+        // crossing chain. Trail re-seeding belongs to the caller that actually completes
+        // the exit.
+        if (!latch.overlaps(currentBounds(airship))) {
+            EXIT_LATCHES.remove(id);
+            return false;
+        }
+        return portal == null || latch.portalId.equals(portal.getUUID());
+    }
+
     public static void clearTrails() {
         TRAILS.clear();
+        EXIT_LATCHES.clear();
         trailTick = 0L;
     }
 
@@ -181,6 +380,62 @@ public final class PortalCrossingDetector {
     public static Pose3dc bufferedPose(ServerSubLevel airship) {
         Trail trail = TRAILS.get(airship.getUniqueId());
         return trail != null && trail.hasOlder ? trail.older : null;
+    }
+
+    /** World bounds of the body at fraction {@code t} of the retained segment. */
+    public static AABB boundsAt(ServerSubLevel airship, double t) {
+        Trail trail = trail(airship);
+        double clamped = Double.isFinite(t) ? Math.clamp(t, 0.0, 1.0) : 0.0;
+        Bounds bounds = new Bounds();
+        includePlotBounds(bounds, airship, interpolate(trail.start, trail.end, clamped));
+        return new AABB(bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ);
+    }
+
+    /** Length in blocks of the retained segment (translation only). */
+    public static double segmentLength(ServerSubLevel airship) {
+        Trail trail = trail(airship);
+        return trail.start.position().distance(trail.end.position());
+    }
+
+    /**
+     * GEOMETRIC RE-ENTRY GUARD. Asks whether the body would ENTER a new doorway from
+     * inside the 0.01 slab of the doorway it just came out of.
+     *
+     * <p>The identity-based guard ({@link #withinExitClearance}) only ever refused the
+     * portal that was just used and its coincident twin, and that is not what breaks a
+     * loop. A loop is built from a PAIR of portals: the instant the body lands at the
+     * exit of A it is standing in the aperture of B, whose own back face leads straight
+     * back to A. Both faces belong to portals the guard considered unrelated, so the
+     * sub-tick chain teleported the body A-B-A-B... at zero travelled distance until it
+     * ran out of the per-tick budget -- 16 useless parent flips per tick with the default
+     * cap (which is what degraded the loop and eventually dropped the body through), and
+     * 512 chunk rehomes per tick with the raised cap, which is simply a crash.
+     *
+     * <p>This test is geometric, so a genuine multi-portal loop is untouched: the entry
+     * point of a portal even 0.02 blocks away from the previous exit is outside the slab
+     * and is admitted immediately. Only an entry that happens INSIDE the slab -- i.e. at
+     * zero travelled distance from the exit -- is refused, and only until the body has
+     * physically left the slab, which at loop speeds takes a fraction of a tick.
+     *
+     * @param entryTime fraction of the retained segment at which the entry occurs
+     */
+    public static boolean entryWithinExitSlab(ServerSubLevel airship, double entryTime) {
+        UUID id = airship.getUniqueId();
+        ExitLatch latch = EXIT_LATCHES.get(id);
+        if (latch == null) return false;
+        if (trailTick - latch.tick > EXIT_LATCH_MAX_TICKS) {
+            EXIT_LATCHES.remove(id);
+            return false;
+        }
+        return latch.overlaps(boundsAt(airship, entryTime));
+    }
+
+    /** Broad phase of the CURRENT pose only, with no swept history. */
+    public static AABB currentBounds(ServerSubLevel airship) {
+        Trail trail = trail(airship);
+        Bounds bounds = new Bounds();
+        includePlotBounds(bounds, airship, trail.end);
+        return new AABB(bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ);
     }
 
     /** Broad phase covers both retained swept segments. */
@@ -399,11 +654,71 @@ public final class PortalCrossingDetector {
         return lower <= upper + EPSILON;
     }
 
+    /** Snapshot of the previous (crossing-time) position plus the band it must clear. */
+    private static final class ExitLatch {
+        final UUID portalId;
+        final double ox, oy, oz;
+        final double nx, ny, nz;
+        final double wx, wy, wz;
+        final double hx, hy, hz;
+        final double halfW, halfH, halfThickness;
+        final long tick;
+
+        ExitLatch(UUID portalId,
+                  double ox, double oy, double oz,
+                  double nx, double ny, double nz,
+                  double wx, double wy, double wz,
+                  double hx, double hy, double hz,
+                  double halfW, double halfH, double halfThickness, long tick) {
+            this.portalId = portalId;
+            this.ox = ox; this.oy = oy; this.oz = oz;
+            this.nx = nx; this.ny = ny; this.nz = nz;
+            this.wx = wx; this.wy = wy; this.wz = wz;
+            this.hx = hx; this.hy = hy; this.hz = hz;
+            this.halfW = halfW;
+            this.halfH = halfH;
+            this.halfThickness = halfThickness;
+            this.tick = tick;
+        }
+
+        /**
+         * Conservative separating-axis test of a world AABB against the plate. The plate
+         * is an oriented box: half-thickness along the portal normal, half-width and
+         * half-height along the portal's own axes, each already grown by the 0.01 margin.
+         * Testing the body's SWEPT bounds (not just its current pose) is deliberate --
+         * a body fast enough to pass the whole plate inside one segment must still be
+         * seen as having been inside it.
+         */
+        boolean overlaps(AABB box) {
+            double cx = (box.minX + box.maxX) * 0.5 - ox;
+            double cy = (box.minY + box.maxY) * 0.5 - oy;
+            double cz = (box.minZ + box.maxZ) * 0.5 - oz;
+            double ex = (box.maxX - box.minX) * 0.5;
+            double ey = (box.maxY - box.minY) * 0.5;
+            double ez = (box.maxZ - box.minZ) * 0.5;
+            double dN = cx * nx + cy * ny + cz * nz;
+            double sN = Math.abs(nx) * ex + Math.abs(ny) * ey + Math.abs(nz) * ez;
+            if (Math.abs(dN) > halfThickness + sN) return false;
+            double dW = cx * wx + cy * wy + cz * wz;
+            double sW = Math.abs(wx) * ex + Math.abs(wy) * ey + Math.abs(wz) * ez;
+            if (Math.abs(dW) > halfW + sW) return false;
+            double dH = cx * hx + cy * hy + cz * hz;
+            double sH = Math.abs(hx) * ex + Math.abs(hy) * ey + Math.abs(hz) * ez;
+            return Math.abs(dH) <= halfH + sH;
+        }
+    }
+
     private static final class Trail {
         final Pose3d older;
         final Pose3d start;
         final Pose3d end;
         boolean hasOlder;
+        /**
+         * Set by {@link #rebaseTrailThroughPortal}; consumed by the next capture. Marks
+         * that this trail's end is already in a post-flip chart, so the pre-flip
+         * {@code lastPose()} must NOT be used as the following segment's start.
+         */
+        boolean rebasedThisTick;
         long lastSeenTick;
 
         Trail(Pose3d older, Pose3d start, Pose3d end) {

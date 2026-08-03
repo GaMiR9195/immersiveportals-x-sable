@@ -197,6 +197,8 @@ public abstract class SableVanillaSubLevelBERMixin {
 
         SubLevelClipUniformPatcher.patchForSubLevel(sub, decision.plane());
         GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
+        // Second sub-level cut owns gl_ClipDistance[2] (see SableSourceClipMixin).
+        GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
 
         int progBefore = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
         try {
@@ -207,6 +209,7 @@ public abstract class SableVanillaSubLevelBERMixin {
             // Always disable CD1 on bracket exit (see SableSourceClipMixin
             // for the same fix + rationale).
             GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
+            GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
             SubLevelClipUniformPatcher.clearAndUpload();
         }
     }

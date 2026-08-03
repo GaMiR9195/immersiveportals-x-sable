@@ -122,6 +122,14 @@ public abstract class SableSourceClipMixin {
         // is 0x3001 in modern GL; some IDEs / compat shims expose it as
         // GL30.GL_CLIP_DISTANCE1 or GL11.GL_CLIP_PLANE1 (same enum value).
         GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
+        // The second cut now owns gl_ClipDistance[2] instead of being min()'d
+        // into slot 1. min() of two linear functions is only piecewise-linear,
+        // and the rasterizer interpolates each clip distance linearly across a
+        // primitive, so the concave crease between the two planes was replaced
+        // by a straight chord -- the small triangular bend the mesh showed
+        // right next to the portal plane. Two independent slots reproduce the
+        // exact intersection of both half-spaces.
+        GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
 
         this.ipl$installedClipThisCall = true;
         SourceClipDiag.onVanillaCall(true);
@@ -161,6 +169,7 @@ public abstract class SableSourceClipMixin {
         // IplGlUseProgramProbeMixin per-bind re-enable is gated on
         // inSubLevelBracket so it only re-enables while a bracket is live.
         GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
+        GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
         SubLevelClipUniformPatcher.clearAndUpload();
     }
 

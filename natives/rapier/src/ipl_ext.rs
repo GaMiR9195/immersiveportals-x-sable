@@ -177,13 +177,35 @@ pub struct IplClipRegion {
     pub half_w: Real,
     pub axis_h: Vec3,
     pub half_h: Real,
+    /// Tolerance BEFORE the plane. A contact whose point sits a hair on the near side of
+    /// the cut while its geometry is already past it used to survive, which is what a
+    /// player still "feels" when entering the doorway from the opposite side. The band is
+    /// tiny (sub-millimetre by default) and does not widen the cut anywhere else.
+    pub skin: Real,
+    /// Depth bound BEYOND the plane. Previously the region was an infinite half-space, so
+    /// it could reach arbitrarily far past the portal and neutralize contacts that had
+    /// nothing to do with this crossing -- the "microscopically affects other sub-levels"
+    /// symptom. Java sends the owning body's own diagonal, so the cutter is a closed box
+    /// around exactly the volume that can be straddling.
+    pub max_depth: Real,
+}
+
+/// Clip-region stride. The current payload is 16 doubles per region:
+/// `[px py pz  nx ny nz  wx wy wz halfW  hx hy hz halfH  skin maxDepth]`.
+/// The historical 14-double payload (no skin, unbounded depth) is still accepted so an
+/// older Java side cannot hard-fail against a newer native.
+#[inline]
+fn ipl_clip_stride(len: usize) -> usize {
+    if len != 0 && len % 16 == 0 { 16 } else { 14 }
 }
 
 impl IplClipRegion {
     #[inline]
     pub fn contains(&self, p: Vec3) -> bool {
         let rel = p - self.point;
-        rel.dot(self.normal) >= 0.0
+        let depth = rel.dot(self.normal);
+        depth >= -self.skin
+            && depth <= self.max_depth
             && rel.dot(self.axis_w).abs() <= self.half_w
             && rel.dot(self.axis_h).abs() <= self.half_h
     }
@@ -227,7 +249,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
     };
 
     info.clip_regions.clear();
-    for c in values.chunks_exact(14) {
+    for c in values.chunks_exact(ipl_clip_stride(values.len())) {
         info.clip_regions.push(IplClipRegion {
             point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
             normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
@@ -235,6 +257,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
             half_w: c[9] as Real,
             axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
             half_h: c[13] as Real,
+            skin: if c.len() > 14 { c[14] as Real } else { 1.0e-3 },
+            max_depth: if c.len() > 15 { c[15] as Real } else { Real::MAX },
         });
     }
     // No success log: straddle sessions re-push regions per tick — an unconditional
@@ -612,7 +636,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegio
         (packed_handle & 0xFFFF_FFFF) as u32,
     );
     let mut regions = Vec::with_capacity(values.len() / 14);
-    for c in values.chunks_exact(14) {
+    for c in values.chunks_exact(ipl_clip_stride(values.len())) {
         regions.push(IplClipRegion {
             point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
             normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
@@ -620,6 +644,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegio
             half_w: c[9] as Real,
             axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
             half_h: c[13] as Real,
+            skin: if c.len() > 14 { c[14] as Real } else { 1.0e-3 },
+            max_depth: if c.len() > 15 { c[15] as Real } else { Real::MAX },
         });
     }
     if regions.is_empty() {

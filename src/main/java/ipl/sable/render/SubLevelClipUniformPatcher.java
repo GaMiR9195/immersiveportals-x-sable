@@ -484,6 +484,9 @@ public final class SubLevelClipUniformPatcher {
         // bracket comes after bloom, slot-1 writes from the vertex shader are
         // silently ignored unless we explicitly re-enable.
         GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
+        // Slot 2 = second sub-level cut, which now writes its own clip
+        // distance rather than being min()'d into slot 1.
+        GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
 
         long now = System.nanoTime();
         if (now - lastReportNanos >= 5_000_000_000L) {

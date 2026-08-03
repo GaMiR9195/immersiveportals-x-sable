@@ -29,6 +29,7 @@
     "IplRapierBlockChangeReadFixMixin",
     "IplHostingLevelPlayerLookupMixin",
     "IplStraddleBlockClipMixin",
+    "IplVoxelShapeClipMixin",
     "IplStraddleCanFallMixin",
     "IplStraddleCollisionPoseMixin",
     "IplStraddleInBlockPoseMixin",

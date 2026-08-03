@@ -118,6 +118,10 @@ public final class IplProgramBindHook {
         // rasterizer-ignored even if uniform values are stale.
         if (locs[1] >= 0 && inSubLevelBracket) {
             GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
+            // Slot 2 = second sub-level cut (was folded into slot 1 via min(),
+            // which the rasterizer interpolated linearly and bent into a
+            // triangular wedge at the portal plane). Enable it with slot 1.
+            if (locs.length > 2 && locs[2] >= 0) GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
         }
 
         boolean entityStyle = IplProgramRegistry.isEntityStyleProgram(program);

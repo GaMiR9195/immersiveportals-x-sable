@@ -51,7 +51,7 @@ public final class IplStaffPortalBeamRenderer {
     /** Suppresses Simulated's main-world-only draw while this renderer owns the recursive pass. */
     private static final ThreadLocal<Boolean> PHYSICAL_BEAM_PASS = ThreadLocal.withInitial(() -> false);
 
-    private static final ThreadLocal<IplStaffBeamRoutes.Segment> ACTIVE_SEGMENT =
+    private static final ThreadLocal<IplStaffBeamRoutes.Run> ACTIVE_RUN =
         new ThreadLocal<>();
 
     /** Per-owner staff tip sampled on the main pass; reused verbatim by portal passes. */
@@ -102,9 +102,10 @@ public final class IplStaffPortalBeamRenderer {
             );
             if (route == null) continue;
 
-            for (IplStaffBeamRoutes.Segment segment : IplStaffBeamRoutes.segments(route)) {
-                if (!shouldDrawInThisPass(segment, activeLevel)) continue;
-                renderPhysicalBeam(beam, segment, poseStack, buffer, camera.getPosition(), partialTick);
+            // ONE continuous polyline, split into runs only where it changes world.
+            for (IplStaffBeamRoutes.Run run : IplStaffBeamRoutes.runs(route)) {
+                if (!shouldDrawInThisPass(run, activeLevel)) continue;
+                renderPhysicalBeam(beam, run, poseStack, buffer, camera.getPosition(), partialTick);
                 drew = true;
             }
         }
@@ -140,34 +141,36 @@ public final class IplStaffPortalBeamRenderer {
         return PhysicsStaffClientHandler.getStaffFocusPos(owner, mainHand, partialTick);
     }
 
-    /** Draw any physical segment in its world; IP clips it to the active portal aperture. */
+    /** Draw any physical run in its world; IP clips it to the active portal aperture. */
     private static boolean shouldDrawInThisPass(
-        IplStaffBeamRoutes.Segment segment, ClientLevel renderLevel
+        IplStaffBeamRoutes.Run run, ClientLevel renderLevel
     ) {
-        return segment.dim().equals(renderLevel.dimension());
+        return run.dim().equals(renderLevel.dimension());
     }
 
     public static boolean isPhysicalBeamPass() {
         return PHYSICAL_BEAM_PASS.get();
     }
 
-    public static IplStaffBeamRoutes.Segment getActiveSegment() {
-        return ACTIVE_SEGMENT.get();
+    public static IplStaffBeamRoutes.Run getActiveRun() {
+        return ACTIVE_RUN.get();
     }
 
     private static void renderPhysicalBeam(
-        PhysicsStaffClientHandler.PhysicsBeam beam, IplStaffBeamRoutes.Segment segment,
+        PhysicsStaffClientHandler.PhysicsBeam beam, IplStaffBeamRoutes.Run run,
         PoseStack poseStack, SuperRenderTypeBuffer buffer, Vec3 camera, float partialTick
     ) {
         boolean previous = PHYSICAL_BEAM_PASS.get();
         PHYSICAL_BEAM_PASS.set(true);
-        ACTIVE_SEGMENT.set(segment);
+        ACTIVE_RUN.set(run);
         try {
             ((IplPhysicsStaffBeamInvokerMixin) (Object) beam).ipl$render(
-                segment.start(), segment.end(), poseStack, buffer, camera, partialTick
+                run.vertices().get(0).point(),
+                run.vertices().get(run.vertices().size() - 1).point(),
+                poseStack, buffer, camera, partialTick
             );
         } finally {
-            ACTIVE_SEGMENT.remove();
+            ACTIVE_RUN.remove();
             PHYSICAL_BEAM_PASS.set(previous);
         }
     }

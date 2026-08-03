@@ -31,6 +31,7 @@ public final class SubLevelBlockEntityRenderScope {
         if (decision == null) {
             disableStalePortalClipOutsidePortalPass();
             GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
+            GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
             render.run();
             return;
         }
@@ -41,6 +42,9 @@ public final class SubLevelBlockEntityRenderScope {
         // enabled and cull native destination BEs after the parent handoff.
         disableStalePortalClipOutsidePortalPass();
         GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
+        // Second sub-level cut lives on its own clip distance (see
+        // SableSourceClipMixin for why min() into one slot bent the cut).
+        GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
         ACTIVE.get().addLast(sub);
         try {
             render.run();
@@ -51,6 +55,7 @@ public final class SubLevelBlockEntityRenderScope {
             ACTIVE.get().removeLastOccurrence(sub);
             if (ACTIVE.get().isEmpty()) ACTIVE.remove();
             GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
+            GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
             SubLevelClipUniformPatcher.clearAndUpload();
         }
     }

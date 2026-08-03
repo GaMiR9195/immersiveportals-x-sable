@@ -84,7 +84,18 @@ public abstract class IplStraddleBlockClipMixin {
      * same interface call.
      */
     @WrapOperation(
-        method = {"collide", "hasCollision"},
+        // WIDENED: the cut must apply to EVERY box query Sable makes against a sub-level,
+        // not just the movement solver. `getSubLevelEntityCollisionShape` feeds suffocation
+        // and in-block darkness, and `tryStepUp` feeds the pose solver -- those two are why
+        // the player still went dark and got forced into a crouch/prone pose behind the
+        // portal plane while the movement collision itself was already correctly cut.
+        // WIDENED TO EVERYTHING. A per-method whitelist kept missing call sites (step-up,
+        // suffocation/darkness shape, fall probes), and each miss showed up as the player
+        // being crushed, darkened or forced prone by geometry that is supposed to be cut
+        // away behind the portal plane. There is no call site in this class where an
+        // UNCLIPPED sub-level box is the correct answer while a cut is installed, so the
+        // wrapper now applies to all of them.
+        method = "*",
         at = @At(
             value = "INVOKE",
             target = "Ldev/ryanhcode/sable/mixinterface/voxel_shape_iteration/FastVoxelShapeIterable;sable$allBoxes()Ljava/util/Iterator;"

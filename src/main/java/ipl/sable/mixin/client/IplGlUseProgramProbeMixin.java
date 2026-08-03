@@ -198,6 +198,13 @@ public class IplGlUseProgramProbeMixin {
         // in the uniform.
         if (locs[1] >= 0 && inSubLevelBracket) {
             GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
+            // Slot 2 carries the SECOND sub-level cut. It used to be folded
+            // into slot 1 via min() in the vertex shader, which the rasterizer
+            // then interpolated linearly -- turning the concave crease between
+            // the two planes into a straight chord and producing the small
+            // triangular bend right at the portal plane. Each cut now owns its
+            // own clip distance, so slot 2 must be enabled alongside slot 1.
+            if (locs.length > 2 && locs[2] >= 0) GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
         }
 
         // Pick the equation form that matches the GLSL injection for this

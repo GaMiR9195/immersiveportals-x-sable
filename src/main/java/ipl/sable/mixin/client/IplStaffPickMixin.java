@@ -38,13 +38,44 @@ public abstract class IplStaffPickMixin {
         HitResult projection = IplStraddleStaffPick.pickStraddleProjections(player, range, tickDelta);
         IplStraddleStaffPick.PortalTarget through =
             IplStraddleStaffPick.pickThroughPortals(player, range, tickDelta);
-        if (through != null) return through.hit();
+        // NEAREST-WINS. A through-portal target must never beat a candidate the player can
+        // already see in their own world. The old code returned `through` unconditionally,
+        // which is why a build standing next to (or on top of) the player got bound to the
+        // portal and held through it, and why grabbing a body co-located with the player
+        // snapped the grab onto the portal. The comparison is between VISIBLE ray lengths,
+        // the only frame in which a local hit and a through-portal hit are comparable.
+        double localVisible = IplStraddleStaffPick.visibleRayLength(player, local, tickDelta);
+        double projectionVisible = IplStraddleStaffPick.visibleRayLength(player, projection, tickDelta);
+        double nearestHere = Math.min(localVisible, projectionVisible);
+        if (through != null && through.visibleDistance() <= nearestHere + 1.0e-4) {
+            return through.hit();
+        }
+        // Rejected: pickThroughPortals records its result eagerly, so the speculative
+        // capture has to be dropped here. Leaving it pending is what let
+        // startDraggingSubLevel seed a portal chain for a body grabbed locally.
+        if (through != null) IplStraddleStaffPick.discardTarget(through);
         if (projection != null) {
             IplStraddleStaffPick.rememberLocalProjection(player, projection);
             return projection;
         }
         IplStraddleStaffPick.rememberLocalProjection(player, local);
         return local;
+    }
+
+    /**
+     * A LOCK is a pick too. Simulated only seeds portal state on the drag path, so a lock
+     * placed through a portal published no chain and its beam was drawn straight to the
+     * body's raw world position. Seeding the same chain here makes "fixate through a
+     * portal" behave optically identically to "grab through a portal".
+     */
+    @Inject(method = "lockSubLevel", at = @At("HEAD"), require = 0)
+    private void ipl$captureLockPath(
+        SubLevel sub, net.minecraft.world.phys.Vec3 hitLocation,
+        LocalPlayer player, InteractionHand hand, CallbackInfo ci
+    ) {
+        if (sub instanceof ClientSubLevel clientSub) {
+            IplStraddleStaffPick.beginLock(clientSub);
+        }
     }
 
     @Inject(method = "startDraggingSubLevel", at = @At("HEAD"), require = 0)

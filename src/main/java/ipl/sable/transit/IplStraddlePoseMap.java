@@ -335,7 +335,7 @@ public final class IplStraddlePoseMap {
         if (frame != null) {
             if (frame.portal() == null) return null;
             return buildKeepFilter(
-                frame.mapping().mapPose(sub.logicalPose()),
+                frame.mapping().mapPose(leadPose(sub)),
                 frame.mapping().mapPoint(frame.portal().getOriginPos()),
                 frame.mapping().mapVec(frame.portal().getNormal().scale(-1.0)),
                 SEAM_SUPPORT_MARGIN);
@@ -373,18 +373,70 @@ public final class IplStraddlePoseMap {
         if (frame != null) {
             if (frame.portal() == null) return null;
             return java.util.List.of(localHalfSpace(
-                frame.mapping().mapPose(sub.logicalPose()),
+                frame.mapping().mapPose(leadPose(sub)),
                 frame.mapping().mapPoint(frame.portal().getOriginPos()),
                 frame.mapping().mapVec(frame.portal().getNormal().scale(-1.0))));
         }
         if (IplDimAgnostic.getParentLevel(sub) != contextLevel) return null;
-        Pose3dc pose = sub.logicalPose();
+        Pose3dc pose = leadPose(sub);
         java.util.List<LocalHalfSpace> parts = new java.util.ArrayList<>(2);
         forEachStraddleFrom(sub, contextLevel, (portal, mapping) -> {
             if (portal == null) return;
             parts.add(localHalfSpace(pose, portal.getOriginPos(), portal.getNormal()));
         });
         return parts.isEmpty() ? null : parts;
+    }
+
+    /**
+     * How far ahead of the tick-start pose the cut is evaluated, in ticks. Half a tick is
+     * the midpoint of the interval the cut is used across, so it is the value that
+     * minimises the worst-case error in BOTH directions.
+     */
+    private static final double CUT_LEAD_TICKS = 0.5;
+
+    /** Hard cap on the lead, in blocks, so a teleport can never fling the cut plane. */
+    private static final double CUT_LEAD_CAP = 4.0;
+
+    /**
+     * DYNAMIC CUT CADENCE.
+     *
+     * <p>The cut planes are rebuilt on every collision query, so their frequency was never
+     * the problem -- their PHASE was. Every plane was derived from {@code logicalPose()},
+     * the pose at the START of the tick, while the boxes it trims are consumed throughout
+     * the movement resolution of that same tick. For a slow body the difference is far
+     * below the block granularity the old whole-block filter worked at, which is what the
+     * original comment on {@code buildKeepFilter} relied on. That assumption died twice
+     * over: the cut is now sub-block exact, and the bodies being cut can move very fast.
+     * At speed the plane sits a whole tick of travel behind the geometry, and the entity
+     * feels it as material that is still solid one tick after the portal should have
+     * removed it, or support that disappears one tick before it should.
+     *
+     * <p>Advancing the pose by the body's own last-tick displacement puts the plane where
+     * it will be while it is actually being used, so the cut tracks the body instead of
+     * trailing it. The lead is the sub-level's motion only: the plane belongs to the
+     * portal, which does not move with the body, and expressing it in plot-local
+     * coordinates through a newer pose is precisely the correction needed.
+     */
+    private static Pose3dc leadPose(SubLevel sub) {
+        Pose3dc now = sub.logicalPose();
+        Pose3dc previous = sub.lastPose();
+        if (previous == null) return now;
+
+        double dx = now.position().x() - previous.position().x();
+        double dy = now.position().y() - previous.position().y();
+        double dz = now.position().z() - previous.position().z();
+        double length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (length < 1.0e-9) return now;
+
+        double scale = CUT_LEAD_TICKS;
+        if (length * scale > CUT_LEAD_CAP) scale = CUT_LEAD_CAP / length;
+
+        Pose3d out = new Pose3d(now);
+        out.position().set(
+            now.position().x() + dx * scale,
+            now.position().y() + dy * scale,
+            now.position().z() + dz * scale);
+        return out;
     }
 
     private static LocalHalfSpace localHalfSpace(Pose3dc pose, Vec3 point, Vec3 keepNormal) {
@@ -468,7 +520,7 @@ public final class IplStraddlePoseMap {
 
         // Source side keeps +portal normal (crossing direction is -normal, the same
         // convention as isInMappedHalf and the transit controller's parity rule).
-        Pose3dc pose = sub.logicalPose();
+        Pose3dc pose = leadPose(sub);
         java.util.List<java.util.function.Predicate<BlockPos>> parts = new java.util.ArrayList<>(2);
         forEachStraddleFrom(sub, contextLevel, (portal, mapping) -> {
             if (portal == null) return;

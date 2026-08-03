@@ -157,11 +157,13 @@ public final class IplAtlasStraddleSession {
         //    doorway, so only the through-part is physically present destination-side.
         {
             Vec3 origin = portal.getOriginPos();
+            double depthLimit = clipDepthLimit(hosted);
             session.lastOrigin = origin;
             session.realClipRegion = clipRegion(
                 origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
                 portal.getWidth() * 0.5 + APERTURE_MARGIN,
-                portal.getHeight() * 0.5 + APERTURE_MARGIN);
+                portal.getHeight() * 0.5 + APERTURE_MARGIN,
+                depthLimit);
             applyRealClipRegions(hosted, session.parentScene, session.realId);
 
             double[] imageRegion = clipRegion(
@@ -170,7 +172,8 @@ public final class IplAtlasStraddleSession {
                 mapping.mapVec(portal.getAxisW()),
                 mapping.mapVec(portal.getAxisH()),
                 portal.getWidth() * 0.5 + APERTURE_MARGIN,
-                portal.getHeight() * 0.5 + APERTURE_MARGIN);
+                portal.getHeight() * 0.5 + APERTURE_MARGIN,
+                depthLimit);
             ipl.sable.natives.IplRapierNatives.setImageClipRegions(
                 session.destScene, session.realId, session.imageHandle, imageRegion);
         }
@@ -209,6 +212,7 @@ public final class IplAtlasStraddleSession {
         s.mapping = fresh;
         s.sourceToDest = sourceToDest;
         s.lastOrigin = origin;
+        double depthLimit = clipDepthLimit(s.sub);
 
         if (isoMoved) {
             ipl.sable.natives.IplRapierNatives.setImagePrefix(
@@ -220,7 +224,8 @@ public final class IplAtlasStraddleSession {
         s.realClipRegion = clipRegion(
             origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
             portal.getWidth() * 0.5 + APERTURE_MARGIN,
-            portal.getHeight() * 0.5 + APERTURE_MARGIN);
+            portal.getHeight() * 0.5 + APERTURE_MARGIN,
+            depthLimit);
         applyRealClipRegions(s.sub, s.parentScene, s.realId);
         double[] imageRegion = clipRegion(
             fresh.mapPoint(origin),
@@ -228,19 +233,46 @@ public final class IplAtlasStraddleSession {
             fresh.mapVec(portal.getAxisW()),
             fresh.mapVec(portal.getAxisH()),
             portal.getWidth() * 0.5 + APERTURE_MARGIN,
-            portal.getHeight() * 0.5 + APERTURE_MARGIN);
+            portal.getHeight() * 0.5 + APERTURE_MARGIN,
+            depthLimit);
         ipl.sable.natives.IplRapierNatives.setImageClipRegions(
             s.destScene, s.realId, s.imageHandle, imageRegion);
     }
 
+    /**
+     * Tolerance on the NEAR side of the cut. A solver contact whose point lands a hair
+     * before the plane while the geometry it belongs to is already past it used to
+     * survive the cut -- that residue is what is still "felt" when walking into the
+     * doorway from the opposite side.
+     */
+    private static final double CLIP_SKIN = 1.0e-3;
+
+    /**
+     * How far past the plane the cutter reaches: the owning body's own diagonal plus the
+     * aperture margin. The native region used to be an UNBOUNDED half-space, so it could
+     * neutralize contacts arbitrarily far beyond the portal -- the source of the
+     * "microscopically affects other sub-levels" symptom. Bounding it turns the cutter
+     * into a closed box around exactly the volume that can be straddling: still Rapier's
+     * own contact pass, just scoped to this crossing instead of to all of space.
+     */
+    private static double clipDepthLimit(ServerSubLevel ship) {
+        var box = ship.getPlot().getBoundingBox();
+        double dx = box.maxX() - box.minX() + 1.0;
+        double dy = box.maxY() - box.minY() + 1.0;
+        double dz = box.maxZ() - box.minZ() + 1.0;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz) + APERTURE_MARGIN;
+    }
+
     private static double[] clipRegion(
-        Vec3 point, Vec3 normal, Vec3 axisW, Vec3 axisH, double halfW, double halfH
+        Vec3 point, Vec3 normal, Vec3 axisW, Vec3 axisH, double halfW, double halfH,
+        double maxDepth
     ) {
         return new double[]{
             point.x, point.y, point.z,
             normal.x, normal.y, normal.z,
             axisW.x, axisW.y, axisW.z, halfW,
-            axisH.x, axisH.y, axisH.z, halfH
+            axisH.x, axisH.y, axisH.z, halfH,
+            CLIP_SKIN, maxDepth
         };
     }
 
@@ -253,9 +285,9 @@ public final class IplAtlasStraddleSession {
         for (Session s : SESSIONS.values()) {
             if (s.sub == ship && s.realClipRegion != null) regions.add(s.realClipRegion);
         }
-        double[] flat = new double[regions.size() * 14];
+        double[] flat = new double[regions.size() * 16];
         for (int i = 0; i < regions.size(); i++) {
-            System.arraycopy(regions.get(i), 0, flat, i * 14, 14);
+            System.arraycopy(regions.get(i), 0, flat, i * 16, 16);
         }
         ipl.sable.natives.IplRapierNatives.setClipRegions(parentScene, realId, flat);
         for (double[] r : regions) {

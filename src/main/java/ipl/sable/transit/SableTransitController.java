@@ -47,24 +47,6 @@ public final class SableTransitController {
     private static final double APERTURE_MARGIN = 0.5;
     /** Actor identity only changes at lifecycle seams, not on every physics tick. */
     private static final int ACTOR_RESYNC_INTERVAL = 100;
-    /**
-     * One physics segment can contain SEVERAL complete crossings: a top/bottom portal
-     * loop re-enters the same doorway repeatedly while a body falls through it. Each
-     * executed transit re-bases the trail at its exact crossing time, so the remainder of
-     * the same segment is consumed here instead of being discarded until the next tick
-     * (which is what made a fast body fall THROUGH the portal into the terrain). The cap
-     * only bounds one tick's work; the remainder resumes on the following tick, so an
-     * endless loop keeps cycling forever.
-     */
-    public static final int DEFAULT_MAX_TP_PER_TICK = 16;
-    /**
-     * Runtime-tunable (see {@code /iplsable_portal max_tp_per_tick}). Higher = a very fast
-     * body may complete more portal crossings inside a single tick (better behaviour at
-     * absurd speeds, more work per tick); lower = cheaper, but the remainder of a fast
-     * segment is deferred to the next tick.
-     */
-    private static volatile int maxTpPerTick = DEFAULT_MAX_TP_PER_TICK;
-
     /** Segments of forward lookahead used to arm a straddle seam before first contact. */
     public static final double DEFAULT_EARLY_OPEN_SEGMENTS = 1.0;
     /**
@@ -77,16 +59,6 @@ public final class SableTransitController {
      * predictive arming entirely.
      */
     private static volatile double earlyOpenSegments = DEFAULT_EARLY_OPEN_SEGMENTS;
-
-    public static int getMaxTpPerTick() {
-        return maxTpPerTick;
-    }
-
-    /** Clamped to [1, 512]; returns the value actually stored. */
-    public static int setMaxTpPerTick(int value) {
-        maxTpPerTick = Math.max(1, Math.min(512, value));
-        return maxTpPerTick;
-    }
 
     public static double getEarlyOpenSegments() {
         return earlyOpenSegments;
@@ -105,6 +77,7 @@ public final class SableTransitController {
 
     /** Clear hosted transit state when the server stops. */
     public static void onServerStopping(MinecraftServer server) {
+        SableRehomeOps.clearPendingHandoffs();
         // Post-drain diagnostic (this runs at stopServer RETURN): any chunk still
         // loaded in the hosting dim here survived the shutdown drain — the slow-
         // shutdown / unload-flap investigation reads this line.
@@ -357,6 +330,19 @@ public final class SableTransitController {
                     // image/clip seam alive through the handoff, then retire it only after
                     // the mapped body and client timeline have switched frames.
                     if (haveSession) seenHostedKeys.add(key);
+                    // BACK-FACE RE-ENTRY GUARD. A body still inside the exit band of the
+                    // portal it just came out of may not immediately re-enter THAT portal
+                    // (or its coincident back face). It is deliberately scoped per portal:
+                    // asking "is this body leaving anything at all?" blocked entry into
+                    // every OTHER portal too, which is exactly what killed a loop built
+                    // from several different portals.
+                    if (!haveSession
+                        && (PortalCrossingDetector.entryWithinExitSlab(airship, state.entryTime())
+                            || PortalCrossingDetector.withinExitClearance(airship, portal)
+                            || (twin != null
+                                && PortalCrossingDetector.withinExitClearance(airship, twin)))) {
+                        continue;
+                    }
                     if (candidates == null) candidates = new ArrayList<>(1);
                     candidates.add(new TransitCandidate(
                         airship, portal, haveSession, ipl$rigidGroupMates(airship),
@@ -374,6 +360,18 @@ public final class SableTransitController {
                     String reason = state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
                         ? "backed-out" : "left-aperture";
                     if (haveSession) {
+                        // EXIT HYSTERESIS (faster-than-tick). Right after a crossing the
+                        // body sits a hair past the plane in the destination frame, and
+                        // that pose reads as "left the aperture" -- so the seam is torn
+                        // down one tick after it was built, and the coincident BACK face
+                        // becomes free to claim the body again. Until the body has cleared
+                        // 1% of the portal's width away from the crossing-time snapshot,
+                        // the exit does not count: keep the seam and re-tick the session.
+                        if (PortalCrossingDetector.withinExitClearance(airship, portal)) {
+                            seenHostedKeys.add(key);
+                            IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
+                            continue;
+                        }
                         IplAtlasStraddleSession.clear(key, reason);
                         // The source-frame debug buffer is replaced in the same tick as
                         // a complete exit, rather than waiting for next tick's capture.
@@ -418,6 +416,7 @@ public final class SableTransitController {
         if (candidates == null) {
             if (IplDimAgnostic.isHostingLevel(level)) {
                 IplEnteringVolumeVisualization.flush(level.getServer());
+                SableRehomeOps.flushParentHandoffs(level.getServer());
             }
             level.getProfiler().pop();
             return;
@@ -464,43 +463,15 @@ public final class SableTransitController {
                         IplRopePortalSeam.onShipTransit(mate, c.portal);
                     }
 
-                    // SUB-TICK CHAIN. The trail was re-based into the destination frame at
-                    // the exact crossing time, so the REMAINDER of this same physics segment
-                    // is still unconsumed. Re-derive against the new parent and keep going:
-                    // a portal loop can legitimately be entered many times inside one tick,
-                    // and every one of those crossings must be an entry, not a fall-through.
-                    int chained = 0;
-                    final int chainCap = maxTpPerTick;
-                    while (chained < chainCap) {
-                        TransitCandidate next = ipl$findCompletedCrossing(c.airship);
-                        if (next == null) break;
-                        if (!SableRehomeOps.executeHostedTransit(c.airship, next.portal())) break;
-                        chained++;
-                        IplEnteringVolumeVisualization.clearBuffer(c.airship);
-                        PortalCrossingDetector.rebaseTrailThroughPortal(
-                            c.airship, next.portal(), next.entryTime());
-                        IplGrabChain.onBodyTransit(level.getServer(), uuid, next.portal());
-                        IplRopePortalSeam.onShipTransit(c.airship, next.portal());
-                        for (ServerSubLevel mate : next.mates()) {
-                            if (mate.isRemoved()) continue;
-                            UUID mateId = mate.getUniqueId();
-                            flippedThisTick.add(mateId);
-                            if (!SableRehomeOps.executeHostedTransit(mate, next.portal())) {
-                                LOG.warn("[IPL-TRANSIT] rigid mate {} declined chained transit "
-                                    + "through {} - will re-derive next tick",
-                                    mateId, next.portal().getUUID());
-                                continue;
-                            }
-                            PortalCrossingDetector.rebaseTrailThroughPortal(
-                                mate, next.portal(), next.entryTime());
-                            IplGrabChain.onBodyTransit(level.getServer(), mateId, next.portal());
-                            IplRopePortalSeam.onShipTransit(mate, next.portal());
-                        }
-                    }
-                    if (chained == chainCap) {
-                        LOG.warn("[IPL-TRANSIT] uuid={} reached the {} crossings/tick cap; the "
-                            + "rest of this segment continues next tick",
-                            uuid, chainCap);
+                    // EXIT SETTLEMENT. The crossing is executed, so the exit is decided
+                    // in the same pass: if the body already sits further out than the
+                    // 0.01 clearance slab, close its session and replace its trail with a
+                    // fresh one starting at the pose it holds now. Nothing is left behind
+                    // that could be swept back through the coincident face, and no stale
+                    // half-world segment is handed to the next tick.
+                    ipl$settleExit(level, c.airship);
+                    for (ServerSubLevel mate : c.mates()) {
+                        if (!mate.isRemoved()) ipl$settleExit(level, mate);
                     }
                 }
             } catch (Throwable t) {
@@ -510,6 +481,7 @@ public final class SableTransitController {
         }
         if (IplDimAgnostic.isHostingLevel(level)) {
             IplEnteringVolumeVisualization.flush(level.getServer());
+            SableRehomeOps.flushParentHandoffs(level.getServer());
         }
         level.getProfiler().pop();
     }
@@ -585,6 +557,28 @@ public final class SableTransitController {
         return null;
     }
 
+    /**
+     * Completes an exit the moment the body has physically left the exit slab: drop the
+     * latch, re-seed the trail at the current pose (both done by
+     * {@link PortalCrossingDetector#settleExit}) and retire the straddle session of the
+     * portal that was just left, locally and on every client.
+     *
+     * <p>Both halves must happen together. A closed session with a stale trail can be
+     * re-admitted through the back face; a live session with a re-seeded trail keeps a
+     * doorway owned by a body that is no longer in it.
+     */
+    private static void ipl$settleExit(ServerLevel level, ServerSubLevel body) {
+        UUID exited = PortalCrossingDetector.settleExit(body);
+        if (exited == null) return;
+        StraddleKey key = new StraddleKey(body.getUniqueId(), exited);
+        if (IplAtlasStraddleSession.hasSessionKey(key)) {
+            IplAtlasStraddleSession.clear(key, "exit-cleared");
+        }
+        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "exit-cleared");
+        // The source-frame debug buffer belongs to the segment that just stopped existing.
+        IplEnteringVolumeVisualization.replaceBuffer(body);
+    }
+
     private static boolean ipl$hasAnySession(UUID shipId, Portal face) {
         StraddleKey key = new StraddleKey(shipId, face.getUUID());
         return IplAtlasStraddleSession.hasSessionKey(key);
@@ -643,57 +637,6 @@ public final class SableTransitController {
             }
         }
         return true;
-    }
-
-    /**
-     * Re-derives a completed crossing for a body that has ALREADY transited inside this tick.
-     * The re-based trail starts at the previous seam and ends at the body's current pose, so
-     * this is the unconsumed tail of the same physics segment evaluated in the new parent
-     * frame. Every gate of the main scan is repeated (canonical face, anchor ship, coincident
-     * twin ownership, directed swept entry); only the declarative session bookkeeping is
-     * skipped, because a tail crossing by definition never had a session of its own.
-     */
-    private static TransitCandidate ipl$findCompletedCrossing(ServerSubLevel airship) {
-        if (airship.isRemoved()) return null;
-        ServerLevel parent = IplDimAgnostic.getServerParentLevel(airship);
-        if (parent == null) return null;
-
-        AABB bounds = PortalCrossingDetector.sweptBounds(airship).inflate(PORTAL_QUERY_INFLATION);
-        List<Portal> nearby = new ArrayList<>(
-            parent.getEntitiesOfClass(Portal.class, bounds, Portal::isTeleportable));
-        Vec3 center = bounds.getCenter();
-        double reach = 0.5 * Math.sqrt(
-            bounds.getXsize() * bounds.getXsize()
-                + bounds.getYsize() * bounds.getYsize()
-                + bounds.getZsize() * bounds.getZsize());
-        for (Portal globalPortal :
-            qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage
-                .getGlobalPortals(parent)) {
-            if (globalPortal.isTeleportable()
-                && globalPortal.getDistanceToNearestPointInPortal(center) <= reach) {
-                nearby.add(globalPortal);
-            }
-        }
-        if (nearby.isEmpty()) return null;
-        nearby.sort(Comparator.comparing(portal -> portal.getUUID().toString()));
-
-        for (Portal portal : nearby) {
-            if (!ipl$isCanonicalEntranceFace(portal, nearby)) continue;
-            if (IplShipPortalAnchor.isAnchorShip(portal, airship.getUniqueId())) continue;
-            Vec3 normal = portal.getNormal().scale(-1.0);
-            PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
-                airship, portal, normal, APERTURE_MARGIN);
-            if (state.phase() != PortalCrossingDetector.CrossingPhase.CROSSED) continue;
-            if (!state.startedBeforePortalPlane()) continue;
-            if (!state.sweptIntersectsPortalAperture()) continue;
-            if (!ipl$continuesThroughOwnedFace(state, false)) continue;
-            Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
-            if (twin != null && ipl$hasAnySession(airship.getUniqueId(), twin)) continue;
-            if (!ipl$ownsCoincidentFace(portal, twin, state, false, false)) continue;
-            return new TransitCandidate(airship, portal, false,
-                ipl$rigidGroupMates(airship), state.entryTime());
-        }
-        return null;
     }
 
     private record TransitCandidate(

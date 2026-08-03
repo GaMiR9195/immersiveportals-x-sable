@@ -47,9 +47,26 @@ import java.util.WeakHashMap;
 public final class IplStaffBeamRoutes {
 
     /** Ticks a stale-but-active beam keeps its last resolved geometry. */
-    private static final int RETENTION_TICKS = 15;
+    private static final int RETENTION_TICKS = 3;
 
-    private record Kept(Route route, long gameTime) {}
+    /**
+     * Owner -> set of session portals whose IMAGE representation the beam is currently
+     * targeting. Purely a hysteresis memory; it never decides anything on its own.
+     */
+    private static final Map<UUID, java.util.Set<UUID>> IMAGE_LATCH = new HashMap<>();
+
+    /**
+     * Dead band, in blocks, around a session plane inside which the native/image choice is
+     * NOT re-decided. The claim that "native and image coincide at the plane, so toggling
+     * is visually continuous" is only true in exact arithmetic. In practice the anchor is
+     * a physics-driven point evaluated at a render partial-tick, so it jitters across the
+     * plane several times while the body is passing through, and every crossing swapped
+     * the beam endpoint between two representations that are a portal-transform apart --
+     * the visible "endpoint teleports a couple of times per transit".
+     */
+    private static final double IMAGE_HYSTERESIS = 0.05;
+
+    private record Kept(Route route, long gameTime, List<IplGrabLink> chain, UUID subId) {}
 
     private static final Map<UUID, Kept> LAST = new HashMap<>();
 
@@ -100,14 +117,39 @@ public final class IplStaffBeamRoutes {
         long now = staffLevel.getGameTime();
         Route built = build(owner, staffLevel, staffStart, sub, localAnchor, partialTick);
         if (built != null) {
-            LAST.put(owner, new Kept(built, now));
+            LAST.put(owner, new Kept(built, now,
+                IplGrabChainClient.chainFor(owner, sub.getUniqueId()), sub.getUniqueId()));
             return built;
         }
         Kept kept = LAST.get(owner);
         if (kept == null) return null;
+        // SMARTER RETENTION. The bridge exists for ONE reason: a chain snapshot in flight
+        // during a hop makes the route briefly unresolvable. It must never paper over a
+        // route that stopped resolving because the grab genuinely changed or ended --
+        // that is what left the beam visibly glued to the portal after the body was
+        // pulled out. So the bridge is only honoured while the owner's grab chain for
+        // THIS body is byte-identical to the one the kept geometry was built from; the
+        // moment the chain changes shape (a link added, dropped, or the body released)
+        // the kept route is stale by construction and is dropped immediately.
+        if (!sub.getUniqueId().equals(kept.subId())
+            || !IplGrabChainClient.chainFor(owner, sub.getUniqueId()).equals(kept.chain())) {
+            LAST.remove(owner);
+            LENGTHS.remove(owner);
+            // The image/plane latch is per (owner, portal) memory of a route that no
+            // longer exists. Keeping it across a chain change is what made a new grab
+            // start out in the previous grab's image frame -- the construction that
+            // stays visually split until the world is rejoined.
+            IMAGE_LATCH.remove(owner);
+            return null;
+        }
         if (now - kept.gameTime() > RETENTION_TICKS
             || kept.route().staffLevel() != staffLevel) {
             LAST.remove(owner);
+            // The published length belongs to the route that just died. Leaving it behind
+            // let the beam keep a stale node density (and therefore keep drawing at the
+            // old portal distance) until the owner was forgotten entirely.
+            LENGTHS.remove(owner);
+            IMAGE_LATCH.remove(owner);
             return null;
         }
         // Staff tip stays live during the bridge; target/links hold the last good shape.
@@ -119,11 +161,42 @@ public final class IplStaffBeamRoutes {
         LAST.remove(owner);
         LENGTHS.remove(owner);
         BEAM_OWNERS.entrySet().removeIf(entry -> entry.getValue().equals(owner));
+        IMAGE_LATCH.remove(owner);
     }
 
     public static void clearAll() {
         LAST.clear();
         LENGTHS.clear();
+        // Owners were previously left behind here, so a beam object that outlived its
+        // grab could still resolve a length (and therefore keep drawing) after the
+        // session was torn down.
+        BEAM_OWNERS.clear();
+        IMAGE_LATCH.clear();
+    }
+
+    /**
+     * {@link #isPastPlane} with hysteresis and memory.
+     *
+     * <p>Switching INTO the image representation requires the anchor to be clearly past
+     * the plane; switching back out requires it to be clearly in front. Between the two
+     * thresholds the previous answer is repeated, so a jittering anchor cannot make the
+     * endpoint oscillate. The band is deliberately far smaller than any visible distance
+     * (0.05 blocks), so the choice still flips essentially at the plane -- it just cannot
+     * flip more than once per pass.
+     */
+    private static boolean isPastPlaneSticky(UUID owner, Portal portal, Vec3 point) {
+        double signed = point.subtract(portal.getOriginPos()).dot(portal.getNormal());
+        java.util.Set<UUID> latched =
+            IMAGE_LATCH.computeIfAbsent(owner, key -> new java.util.HashSet<>());
+        UUID id = portal.getUUID();
+        boolean previously = latched.contains(id);
+        boolean now = previously ? signed < IMAGE_HYSTERESIS : signed < -IMAGE_HYSTERESIS;
+        if (now) {
+            latched.add(id);
+        } else {
+            latched.remove(id);
+        }
+        return now;
     }
 
     @Nullable
@@ -148,7 +221,7 @@ public final class IplStaffBeamRoutes {
         // (session-start order), not a per-frame race.
         for (Portal session : IplStraddleSessionStore.resolveAllPortals(sub)) {
             if (session.isRemoved()) continue;
-            if (!isPastPlane(session, nativeAnchor)) continue;
+            if (!isPastPlaneSticky(owner, session, nativeAnchor)) continue;
             IplGrabLink sessionLink = IplGrabLink.forward(session);
             links = IplGrabLink.append(links, sessionLink);
             target = sessionLink.transform(nativeAnchor);
@@ -179,10 +252,48 @@ public final class IplStaffBeamRoutes {
     @Nullable
     public static Vec3 staffAimPoint(Player player, ClientSubLevel sub, Vec3 localAnchor, float partialTick) {
         Vec3 staffStart = IplStaffPortalBeamRenderer.staffFocus(player, partialTick);
-        Route route = resolve(player.getUUID(), player.level(), staffStart, sub, localAnchor, partialTick);
+        Route route = peek(player.getUUID(), player.level(), staffStart, sub, localAnchor, partialTick);
         if (route == null) return null;
-        List<Segment> segments = segments(route);
-        return segments.isEmpty() ? null : segments.get(0).end();
+        return firstEndpoint(route);
+    }
+
+    /**
+     * The first point the beam heads for: the entrance aperture, or the joint itself for
+     * a direct grab. Computed WITHOUT cutting the whole route, because the aim query runs
+     * on the item-render path: going through {@link #segments} there republished the
+     * owner's route length from a second, differently-parameterised route every frame,
+     * and the beam's node count (derived from that length) flapped between the two
+     * values. That flapping is the visible jitter of both the beam and the held staff.
+     */
+    private static Vec3 firstEndpoint(Route route) {
+        List<IplGrabLink> links = route.links();
+        if (links.isEmpty()) return route.target();
+        return clampToAperture(links.get(0), route.staffStart(), endpointInFrame(route, 0));
+    }
+
+    /**
+     * Read-only route resolution for query callers (aim, input axis). It never touches
+     * the retention cache: those callers run at render time with their own staff origin
+     * and partial tick, so letting them write {@link #LAST} made the retained geometry
+     * depend on who asked last.
+     */
+    @Nullable
+    private static Route peek(
+        UUID owner, Level staffLevel, Vec3 staffStart,
+        ClientSubLevel sub, Vec3 localAnchor, float partialTick
+    ) {
+        Route built = build(owner, staffLevel, staffStart, sub, localAnchor, partialTick);
+        if (built != null) return built;
+        Kept kept = LAST.get(owner);
+        if (kept == null
+            || !sub.getUniqueId().equals(kept.subId())
+            || kept.route().staffLevel() != staffLevel
+            || staffLevel.getGameTime() - kept.gameTime() > RETENTION_TICKS
+            || !IplGrabChainClient.chainFor(owner, sub.getUniqueId()).equals(kept.chain())) {
+            return null;
+        }
+        return new Route(staffLevel, staffStart, kept.route().target(),
+            kept.route().links(), kept.route().imageRotation(), owner);
     }
 
     /**
@@ -192,7 +303,7 @@ public final class IplStaffBeamRoutes {
      */
     @Nullable
     public static Quaterniond axisRotation(Player player, ClientSubLevel sub, Vec3 localAnchor) {
-        Route route = resolve(
+        Route route = peek(
             player.getUUID(), player.level(), player.getEyePosition(), sub, localAnchor, 1.0f);
         if (route == null) return null;
         Quaterniond folded = new Quaterniond();
@@ -259,6 +370,111 @@ public final class IplStaffBeamRoutes {
             }
         }
         return segments;
+    }
+
+    // ------------------------------------------------------------------
+    // Continuous polyline (the seamless beam).
+    // ------------------------------------------------------------------
+
+    /** Simulated's own node spacing, reused so density matches a plain local beam. */
+    private static final double POLYLINE_SPACING = 1.5;
+    private static final int MIN_POLYLINE_POINTS = 8;
+
+    /**
+     * One vertex of the SINGLE continuous beam polyline.
+     *
+     * <p>{@code point} is in the world this vertex physically lives in; {@code fraction}
+     * is its position along the WHOLE route (0 at the staff tip, 1 at the grabbed anchor);
+     * {@code noiseRotation} is the folded rotation of every portal crossed before it, so a
+     * noise offset sampled at {@code fraction} lands in the correct frame.
+     */
+    public record Vertex(Vec3 point, double fraction, Quaterniond noiseRotation) {}
+
+    /** A maximal stretch of the polyline living in ONE world; drawn in that world's pass. */
+    public record Run(ResourceKey<Level> dim, List<Vertex> vertices, double totalLength) {}
+
+    /**
+     * The beam as ONE continuous polyline, split into per-world runs only at the exact
+     * moment it changes world.
+     *
+     * <p><b>Why this replaces {@link #segments}.</b> Segments were independent line pieces:
+     * each one restarted its own node walk, skipped every node whose global fraction fell
+     * outside its span, and was drawn by a separate render call. Two consequences were
+     * visible at every portal -- a straight chord across the aperture where the interior
+     * nodes were dropped, and a kink where the two pieces met with unrelated noise phase.
+     * The beam read as several beams that happened to touch.
+     *
+     * <p><b>What makes it seamless.</b> Sampling is done once, in global arc length, for
+     * the entire route; a vertex is emitted at every sample AND at every aperture. The
+     * closing vertex of run {@code i} is the aperture point {@code a}, and the opening
+     * vertex of run {@code i+1} is {@code link.transform(a)} -- the same physical point
+     * seen from the other side of the portal, carrying the SAME {@code fraction}. The noise
+     * offset is therefore identical in magnitude on both sides and merely rotated by the
+     * portal, exactly as the geometry is. The polyline is continuous by construction, not
+     * by tolerance, so it looks like one line held in one world.
+     */
+    public static List<Run> runs(Route route) {
+        List<IplGrabLink> links = route.links();
+        int count = links.size();
+        Vec3[] starts = new Vec3[count + 1];
+        Vec3[] ends = new Vec3[count + 1];
+        double[] lengths = new double[count + 1];
+
+        Vec3 cursor = route.staffStart();
+        for (int i = 0; i < count; i++) {
+            IplGrabLink link = links.get(i);
+            Vec3 aperture = clampToAperture(link, cursor, endpointInFrame(route, i));
+            starts[i] = cursor;
+            ends[i] = aperture;
+            lengths[i] = cursor.distanceTo(aperture);
+            cursor = link.transform(aperture);
+        }
+        starts[count] = cursor;
+        ends[count] = route.target();
+        lengths[count] = cursor.distanceTo(route.target());
+
+        double total = 0.0;
+        for (double length : lengths) total += length;
+        if (total <= 1.0e-9) return List.of();
+        LENGTHS.put(route.owner(), total);
+
+        int nodeCount = Math.max(
+            MIN_POLYLINE_POINTS, (int) Math.ceil(total / POLYLINE_SPACING));
+
+        List<Run> out = new ArrayList<>(count + 1);
+        ResourceKey<Level> dim = route.staffLevel().dimension();
+        Quaterniond noiseRotation = new Quaterniond();
+        double before = 0.0;
+        for (int i = 0; i <= count; i++) {
+            double startFraction = before / total;
+            double endFraction = (before + lengths[i]) / total;
+            double span = endFraction - startFraction;
+
+            List<Vertex> vertices = new ArrayList<>();
+            vertices.add(new Vertex(starts[i], startFraction, new Quaterniond(noiseRotation)));
+            if (span > 1.0e-12) {
+                int first = (int) Math.floor(startFraction * nodeCount) + 1;
+                int last = (int) Math.ceil(endFraction * nodeCount) - 1;
+                for (int node = first; node <= last; node++) {
+                    double fraction = node / (double) nodeCount;
+                    if (fraction <= startFraction || fraction >= endFraction) continue;
+                    double local = (fraction - startFraction) / span;
+                    vertices.add(new Vertex(
+                        starts[i].lerp(ends[i], local), fraction,
+                        new Quaterniond(noiseRotation)));
+                }
+            }
+            vertices.add(new Vertex(ends[i], endFraction, new Quaterniond(noiseRotation)));
+            out.add(new Run(dim, List.copyOf(vertices), total));
+
+            before += lengths[i];
+            if (i < count) {
+                IplGrabLink link = links.get(i);
+                dim = link.toDim();
+                noiseRotation = new Quaterniond(link.rotation()).mul(noiseRotation);
+            }
+        }
+        return out;
     }
 
     /** Route target expressed in the frame BEFORE link {@code frame} (unfold the suffix). */

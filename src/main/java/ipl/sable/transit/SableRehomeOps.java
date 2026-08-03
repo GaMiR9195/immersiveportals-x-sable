@@ -494,10 +494,58 @@ public final class SableRehomeOps {
         // The old tracked set only contains source-side viewers. A cross-dimension exit can
         // reveal the fully crossed body to destination portal viewers before the tracking tick
         // adds them, so hand off to both sets now instead of leaving a one-way invisible ship.
-        sendParentHandoff(server, hosted, newParent, portal);
+        queueParentHandoff(hosted, newParent, portal);
 
         LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
         return true;
+    }
+
+    /**
+     * HANDOFF COALESCING.
+     *
+     * <p>A handoff describes ONE fact: which chart a body's client object now lives in.
+     * Only the last one in a tick is true. Emitting it straight from the flip fanned out a
+     * custom-payload RPC to every tracking player, every dragging player and every ImmPtl
+     * chunk viewer of the destination chunk, once per flip. A body in a portal loop, or a
+     * rigid assembly whose members all flip through the same portal, turns that into a
+     * burst of near-identical payloads inside a single tick: every packet but the last one
+     * describes a chart the body has already left, and the burst itself is what shows up on
+     * the client as a custom-payload error.
+     *
+     * <p>So the flip records its intent and the tick flushes the LAST intent per body.
+     * One packet per body per tick, carrying the chart the body actually ended the tick in.
+     */
+    private record PendingHandoff(ServerSubLevel body, ServerLevel destination, Portal portal) {}
+
+    private static final java.util.Map<UUID, PendingHandoff> PENDING_HANDOFFS =
+        new java.util.LinkedHashMap<>();
+
+    private static void queueParentHandoff(
+        ServerSubLevel body, ServerLevel destination, Portal portal
+    ) {
+        PENDING_HANDOFFS.put(body.getUniqueId(), new PendingHandoff(body, destination, portal));
+    }
+
+    /** Emits one handoff per body that flipped this tick. Called from the tail-of-tick sweep. */
+    public static void flushParentHandoffs(MinecraftServer server) {
+        if (server == null || PENDING_HANDOFFS.isEmpty()) return;
+        List<PendingHandoff> batch = new ArrayList<>(PENDING_HANDOFFS.values());
+        PENDING_HANDOFFS.clear();
+        for (PendingHandoff pending : batch) {
+            ServerSubLevel body = pending.body();
+            if (body == null || body.isRemoved()) continue;
+            try {
+                sendParentHandoff(server, body, pending.destination(), pending.portal());
+            } catch (Throwable t) {
+                LOG.warn("[IPL-FLIP] failed to emit parent handoff for uuid={}",
+                    body.getUniqueId(), t);
+            }
+        }
+    }
+
+    /** Drops queued handoffs; server shutdown has no client left to inform. */
+    public static void clearPendingHandoffs() {
+        PENDING_HANDOFFS.clear();
     }
 
     private static void sendParentHandoff(

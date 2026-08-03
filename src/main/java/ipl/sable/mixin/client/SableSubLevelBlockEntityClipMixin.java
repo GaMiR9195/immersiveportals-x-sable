@@ -147,6 +147,10 @@ public abstract class SableSubLevelBlockEntityClipMixin {
         // when restoring on cleanup, since IP may want it on for subsequent
         // entity / vanilla terrain draws in the same pass.
         GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
+        // Second sub-level cut now has its own clip distance instead of being
+        // min()'d into slot 1 (linear interpolation of min() straightened the
+        // crease and bent the cut near the portal plane).
+        GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
 
         try {
             body.run();
@@ -156,6 +160,7 @@ public abstract class SableSubLevelBlockEntityClipMixin {
             // conditional confused IP's slot-0 enable for our slot-1 and let
             // stale sub-level equations leak into portal-through draws.
             GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
+            GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
             SubLevelClipUniformPatcher.clearAndUpload();
         }
     }

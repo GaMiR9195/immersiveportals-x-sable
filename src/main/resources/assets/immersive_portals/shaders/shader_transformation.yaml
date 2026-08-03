@@ -30,16 +30,23 @@ configs:
           void ( )*main( )*\(( )*( )*\)( )*(
           )*\{
         replacement: |-
-          out float gl_ClipDistance[2];
+          out float gl_ClipDistance[3];
           uniform vec4 iportal_ClippingEquation;
           uniform vec4 ipl_subLevelClipEquation[2];
           void main() {
               vec3 _ipl_worldPos = Position.xyz + ChunkOffset;
               gl_ClipDistance[0] = dot(_ipl_worldPos, iportal_ClippingEquation.xyz) +
                   iportal_ClippingEquation.w;
-              gl_ClipDistance[1] = min(
-                  dot(_ipl_worldPos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
-                  dot(_ipl_worldPos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
+              // Two INDEPENDENT hardware clip planes. Folding both cuts into one
+              // gl_ClipDistance with min() was wrong: the rasterizer interpolates
+              // each clip distance LINEARLY across a primitive, and min() of two
+              // linear functions is only piecewise-linear. Sampling it at the three
+              // vertices and interpolating replaces the true concave crease with a
+              // straight chord, so the cut visibly bends into a small triangular
+              // wedge exactly where the two planes are close together -- i.e. right
+              // at the portal plane. Separate slots are clipped exactly.
+              gl_ClipDistance[1] = dot(_ipl_worldPos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
+              gl_ClipDistance[2] = dot(_ipl_worldPos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
     debugOutput: false
   - comment: |-
       For iris+sodium shaderpack-style terrain. Slot-1 added so cog block
@@ -73,9 +80,9 @@ configs:
           {
               vec3 _ipl_eye = (iris_ModelViewMatrix * getVertexPosition()).xyz;
               gl_ClipDistance[0] = dot(_ipl_eye, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
-              gl_ClipDistance[1] = min(
-                  dot(_ipl_eye, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
-                  dot(_ipl_eye, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
+              // Independent slots -- see the vanilla-terrain entry for why min() bends the cut.
+              gl_ClipDistance[1] = dot(_ipl_eye, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
+              gl_ClipDistance[2] = dot(_ipl_eye, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
           }
           }
     debugOutput: false
@@ -122,9 +129,16 @@ configs:
           void main() {
               vec3 _ipl_worldPos = (gbufferModelViewInverse * iris_ModelViewMat * vec4(iris_Position + iris_ChunkOffset, 1.0)).xyz;
               gl_ClipDistance[0] = dot(_ipl_worldPos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
-              gl_ClipDistance[1] = min(
-                  dot(_ipl_worldPos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
-                  dot(_ipl_worldPos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
+              // Two INDEPENDENT hardware clip planes. Folding both cuts into one
+              // gl_ClipDistance with min() was wrong: the rasterizer interpolates
+              // each clip distance LINEARLY across a primitive, and min() of two
+              // linear functions is only piecewise-linear. Sampling it at the three
+              // vertices and interpolating replaces the true concave crease with a
+              // straight chord, so the cut visibly bends into a small triangular
+              // wedge exactly where the two planes are close together -- i.e. right
+              // at the portal plane. Separate slots are clipped exactly.
+              gl_ClipDistance[1] = dot(_ipl_worldPos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
+              gl_ClipDistance[2] = dot(_ipl_worldPos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
     debugOutput: false
   - comment: |-
       Iris-rewritten vanilla rendertype_entity shaders. When Iris is loaded
@@ -190,9 +204,9 @@ configs:
               // matches what SubLevelClipUniformPatcher publishes via
               // currentSubLevelEqWorld.
               vec3 _ipl_worldRel = (gbufferModelViewInverse * vec4(_ipl_eyePos, 1.0)).xyz;
-              gl_ClipDistance[1] = min(
-                  dot(_ipl_worldRel, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
-                  dot(_ipl_worldRel, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
+              // Independent slots -- see the vanilla-terrain entry for why min() bends the cut.
+              gl_ClipDistance[1] = dot(_ipl_worldRel, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
+              gl_ClipDistance[2] = dot(_ipl_worldRel, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
     debugOutput: false
   - comment: |-
       Veil-managed Simulated / Aeronautics block-entity shaders. These are
@@ -248,9 +262,9 @@ configs:
           void main() {
               vec3 _ipl_eyePos = (ModelViewMat * vec4(Position.xyz, 1.0)).xyz;
               gl_ClipDistance[0] = dot(_ipl_eyePos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
-              gl_ClipDistance[1] = min(
-                  dot(_ipl_eyePos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w,
-                  dot(_ipl_eyePos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w);
+              // Independent slots -- see the vanilla-terrain entry for why min() bends the cut.
+              gl_ClipDistance[1] = dot(_ipl_eyePos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
+              gl_ClipDistance[2] = dot(_ipl_eyePos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
     debugOutput: false
   - comment: For sodium
     type: vs
