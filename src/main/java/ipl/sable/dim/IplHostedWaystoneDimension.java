@@ -34,6 +34,11 @@ public final class IplHostedWaystoneDimension {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-waystone-dim");
 
+    /** Resolved on the DECLARING types (delegate base class + Waystone interface), so
+     *  they are invocable on every implementation — a first-seen-class cache broke the
+     *  moment a second delegate type came through ("not an instance of declaring
+     *  class"). */
+    private static volatile Class<?> DELEGATE_CLASS;
     private static volatile Method GET_DELEGATE;
     private static volatile Method GET_POS;
     private static volatile boolean REFLECTION_BROKEN;
@@ -52,17 +57,23 @@ public final class IplHostedWaystoneDimension {
             ServerLevel hosting = SableSubLevelDimension.getSableSubLevelsOrNull(server);
             if (hosting == null) return original;
 
-            if (GET_DELEGATE == null) {
-                GET_DELEGATE = delegateWaystone.getClass().getMethod("getDelegate");
-                GET_DELEGATE.setAccessible(true);
-            }
-            Object delegate = GET_DELEGATE.invoke(delegateWaystone);
-            if (delegate == null) return original;
             if (GET_POS == null) {
-                GET_POS = delegate.getClass().getMethod("getPos");
-                GET_POS.setAccessible(true);
+                ClassLoader loader = delegateWaystone.getClass().getClassLoader();
+                DELEGATE_CLASS = loader.loadClass("net.blay09.mods.waystones.api.WaystoneDelegate");
+                GET_DELEGATE = DELEGATE_CLASS.getMethod("getDelegate");
+                GET_POS = loader.loadClass("net.blay09.mods.waystones.api.Waystone")
+                    .getMethod("getPos");
             }
-            BlockPos plotPos = (BlockPos) GET_POS.invoke(delegate);
+
+            // Unwrap to the INNERMOST waystone: wrappers override getPos with the
+            // visible position; the plot position lives on the raw waystone.
+            Object inner = delegateWaystone;
+            while (DELEGATE_CLASS.isInstance(inner)) {
+                Object next = GET_DELEGATE.invoke(inner);
+                if (next == null || next == inner) break;
+                inner = next;
+            }
+            BlockPos plotPos = (BlockPos) GET_POS.invoke(inner);
             if (plotPos == null) return original;
 
             SubLevelContainer container = SubLevelContainer.getContainer((Level) hosting);
