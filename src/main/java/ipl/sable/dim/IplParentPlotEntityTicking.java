@@ -74,8 +74,18 @@ public final class IplParentPlotEntityTicking {
         // there — the hosting-container lookup doesn't resolve — and acting on that false
         // "left the plot" verdict released the membership, flipped the plot chunk
         // INACCESSIBLE, and let vanilla unload the entity mid-use. Bookkeeping that
-        // mutates server entity-manager state runs on the server thread only.
-        if (entityLevel instanceof ServerLevel sl && !sl.getServer().isSameThread()) {
+        // mutates server entity-manager state runs on the server thread only. The check
+        // anchors on the MEMBERSHIP's captured level: entity.level() proved unreliable as
+        // a thread discriminator in the wild (releases kept slipping through a guard keyed
+        // on it), while the membership level is by construction the parent ServerLevel.
+        Membership held = MEMBERSHIPS.get(entity);
+        if (held != null
+            && Thread.currentThread() != held.level.getServer().getRunningThread()) {
+            logOffThreadTouch(entity, x, z);
+            return;
+        }
+        if (entityLevel instanceof ServerLevel sl
+            && Thread.currentThread() != sl.getServer().getRunningThread()) {
             logOffThreadTouch(entity, x, z);
             return;
         }
@@ -130,15 +140,20 @@ public final class IplParentPlotEntityTicking {
         for (int i = 2; i < Math.min(frames.length, 9); i++) {
             stack.append("\n    at ").append(frames[i]);
         }
-        LOG.info("[IPL-PLOT-TICKING] off-thread setPosRaw on server entity={} id={} "
-            + "to ({}, {}) on thread={} — skipped{}",
+        Level level = entity.level();
+        LOG.info("[IPL-PLOT-TICKING] off-thread setPosRaw on entity={} id={} "
+            + "to ({}, {}) on thread={} levelClass={} clientSide={} sameThread={} — skipped{}",
             entity.getType().getDescriptionId(), entity.getId(),
             String.format("%.1f", x), String.format("%.1f", z),
-            Thread.currentThread().getName(), stack);
+            Thread.currentThread().getName(), level.getClass().getSimpleName(),
+            level.isClientSide,
+            level instanceof ServerLevel sl && sl.getServer().isSameThread(), stack);
     }
 
     public static void remove(Entity entity) {
-        if (entity.level() instanceof ServerLevel sl && !sl.getServer().isSameThread()) {
+        Membership held = MEMBERSHIPS.get(entity);
+        if (held != null
+            && Thread.currentThread() != held.level.getServer().getRunningThread()) {
             return; // real server removals arrive on the server thread
         }
         Membership previous = MEMBERSHIPS.remove(entity);
