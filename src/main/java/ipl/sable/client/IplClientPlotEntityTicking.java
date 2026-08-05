@@ -8,8 +8,6 @@ import ipl.sable.mixin.client.IplClientEntityStorageAccessor;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -34,8 +32,6 @@ import java.util.WeakHashMap;
 public final class IplClientPlotEntityTicking {
 
     private record Membership(ClientLevel level, ChunkPos chunk) {}
-
-    private static final Logger LOG = LoggerFactory.getLogger("ipl-plot-entity-ticking");
 
     private static final Map<Entity, Membership> MEMBERSHIPS =
         Collections.synchronizedMap(new WeakHashMap<>());
@@ -70,8 +66,6 @@ public final class IplClientPlotEntityTicking {
         }
 
         MEMBERSHIPS.put(entity, next);
-        LOG.info("[IPL-CLIENT-PLOT-TICKING] retain chunk={} by entity={} id={}",
-            next.chunk, entity.getType().getDescriptionId(), entity.getId());
         retain(next);
     }
 

@@ -86,12 +86,10 @@ public final class IplParentPlotEntityTicking {
         Membership held = MEMBERSHIPS.get(entity);
         if (held != null
             && Thread.currentThread() != held.level.getServer().getRunningThread()) {
-            logOffThreadTouch(entity, x, z);
             return;
         }
         if (entityLevel instanceof ServerLevel sl
             && Thread.currentThread() != sl.getServer().getRunningThread()) {
-            logOffThreadTouch(entity, x, z);
             return;
         }
         Membership next = null;
@@ -112,47 +110,14 @@ public final class IplParentPlotEntityTicking {
 
         Membership previous = MEMBERSHIPS.get(entity);
         if (next != null && next.equals(previous)) return;
-        if (previous != null) {
-            LOG.info("[IPL-PLOT-TICKING] release chunk={} by entity={} id={} moved to ({}, {})"
-                + " next={}", previous.chunk, entity.getType().getDescriptionId(),
-                entity.getId(), String.format("%.1f", x), String.format("%.1f", z),
-                next == null ? "none" : next.chunk);
-            release(previous);
-        }
+        if (previous != null) release(previous);
         if (next == null) {
             MEMBERSHIPS.remove(entity);
             return;
         }
 
         MEMBERSHIPS.put(entity, next);
-        LOG.info("[IPL-PLOT-TICKING] retain chunk={} by entity={} id={}",
-            next.chunk, entity.getType().getDescriptionId(), entity.getId());
         retain(next);
-    }
-
-    private static long lastOffThreadLogMs;
-
-    /** DIAGNOSTIC: name the render-side caller that repositions server entities, for the
-     * record — the thread guard makes it harmless either way. */
-    private static void logOffThreadTouch(Entity entity, double x, double z) {
-        long now = System.currentTimeMillis();
-        synchronized (IplParentPlotEntityTicking.class) {
-            if (now - lastOffThreadLogMs < 2000) return;
-            lastOffThreadLogMs = now;
-        }
-        StringBuilder stack = new StringBuilder();
-        StackTraceElement[] frames = new Throwable().getStackTrace();
-        for (int i = 2; i < Math.min(frames.length, 9); i++) {
-            stack.append("\n    at ").append(frames[i]);
-        }
-        Level level = entity.level();
-        LOG.info("[IPL-PLOT-TICKING] off-thread setPosRaw on entity={} id={} "
-            + "to ({}, {}) on thread={} levelClass={} clientSide={} sameThread={} — skipped{}",
-            entity.getType().getDescriptionId(), entity.getId(),
-            String.format("%.1f", x), String.format("%.1f", z),
-            Thread.currentThread().getName(), level.getClass().getSimpleName(),
-            level.isClientSide,
-            level instanceof ServerLevel sl && sl.getServer().isSameThread(), stack);
     }
 
     public static void remove(Entity entity) {
@@ -163,11 +128,7 @@ public final class IplParentPlotEntityTicking {
             return; // real server removals arrive on the server thread
         }
         Membership previous = MEMBERSHIPS.remove(entity);
-        if (previous != null) {
-            LOG.info("[IPL-PLOT-TICKING] release chunk={} by removed entity={} id={}",
-                previous.chunk, entity.getType().getDescriptionId(), entity.getId());
-            release(previous);
-        }
+        if (previous != null) release(previous);
     }
 
     private static synchronized void retain(Membership membership) {

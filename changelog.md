@@ -22,6 +22,31 @@ Atlas hardening since the 0.5.0 merge (PR #15):
 - Connected ships got stuck on the wrong logical side of a portal: the per-member
   transit gate deadlocked once the first member crossed (gate removed).
 - A roped partner no longer teleports through together with the crossing ship.
+- Modded packet handlers resolve hosted-ship positions correctly: deferred
+  world-frames wrap payload dispatch, arming on first hosted-plot resolution
+  (fixes Simulated assembly interactions and Photomancy blueprint capture).
+- Disassembly desync: block-restore notifications on a hosted ship routed to the
+  hosting level (no chunk holder) and vanished; the client never saw the ship
+  turn back into blocks.
+- Teleports targeting the hosting dimension (e.g. Waystones placed on ships)
+  redirect to the ship's parent dimension; Waystones' own distance check resolves
+  ship-frame waystone positions through the delegate dimension.
+- Entities parked at plot coordinates in a parent level (Simulated's ship-attached
+  plungers) were garbage-collected by vanilla's entity-chunk unload within
+  seconds, orphaning their physics joints. Three layers: plot-ticking memberships
+  ignore the id-aliased client copy (vanilla Entity.equals compares by id, so
+  singleplayer client lerps corrupted server state), plot-parked entities are
+  exempt from chunk store/unload (player semantics), and entity-chunk visibility
+  downgrades on live plot chunks re-assert ENTITY_TICKING.
+- Client copies of plot-parked entities never ticked (no real parent client chunk
+  at plot coordinates), freezing attach animations and orientation — the plunger's
+  rope spline rendered permanently mid-connect. The client now mirrors the server's
+  plot-chunk entity-ticking bridge.
+- Plunger rope visuals: paired plungers no longer draw their rope to the world
+  origin when the partner's client entity is transiently missing (Simulated zeroes
+  its synced target client-side every tick; the synced value is restored), and
+  client-side kicks through a not-yet-synced sub-level pose are skipped instead of
+  teleporting the entity to ~(0,0,0).
 
 ### Changed
 
