@@ -10,6 +10,9 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -26,11 +29,43 @@ public final class IplParentPlotEntityTicking {
 
     private record Membership(ServerLevel level, ChunkPos chunk) {}
 
+    private static final Logger LOG = LoggerFactory.getLogger("ipl-plot-entity-ticking");
+
     private static final Map<Entity, Membership> MEMBERSHIPS =
         Collections.synchronizedMap(new WeakHashMap<>());
     private static final Map<Membership, Integer> ACTIVE_COUNTS = new HashMap<>();
 
     private IplParentPlotEntityTicking() {}
+
+    /** Whether this entity currently holds a plot-chunk ticking membership — i.e. it is a
+     * parent-level entity deliberately parked at hosted plot coordinates. */
+    public static boolean isPlotEntity(Entity entity) {
+        return MEMBERSHIPS.containsKey(entity);
+    }
+
+    /**
+     * An external caller just downgraded entity-chunk visibility for {@code chunk} on
+     * {@code manager}. If we still hold active memberships there (live plot entities),
+     * restore ENTITY_TICKING — otherwise the entities silently stop ticking and tracking
+     * (the client sees them disappear) even when the unload guard keeps them alive.
+     */
+    public static synchronized boolean reassertIfActive(Object manager, ChunkPos chunk) {
+        for (Membership membership : ACTIVE_COUNTS.keySet()) {
+            if (!membership.chunk.equals(chunk)) continue;
+            if (((IplServerEntityManagerAccessor) membership.level).ipl$entityManager()
+                != manager) {
+                continue;
+            }
+            if (membership.level.getServer().isStopped()) return false;
+            LOG.warn("[IPL-PLOT-TICKING] re-asserting ENTITY_TICKING on chunk={} after "
+                + "external downgrade ({} active plot entities)",
+                chunk, ACTIVE_COUNTS.get(membership));
+            ((IplServerEntityManagerAccessor) membership.level).ipl$entityManager()
+                .updateChunkStatus(chunk, FullChunkStatus.ENTITY_TICKING);
+            return true;
+        }
+        return false;
+    }
 
     public static void update(Entity entity, double x, double z) {
         Level entityLevel = entity.level();
@@ -52,19 +87,31 @@ public final class IplParentPlotEntityTicking {
 
         Membership previous = MEMBERSHIPS.get(entity);
         if (next != null && next.equals(previous)) return;
-        if (previous != null) release(previous);
+        if (previous != null) {
+            LOG.info("[IPL-PLOT-TICKING] release chunk={} by entity={} id={} moved to ({}, {})"
+                + " next={}", previous.chunk, entity.getType().getDescriptionId(),
+                entity.getId(), String.format("%.1f", x), String.format("%.1f", z),
+                next == null ? "none" : next.chunk);
+            release(previous);
+        }
         if (next == null) {
             MEMBERSHIPS.remove(entity);
             return;
         }
 
         MEMBERSHIPS.put(entity, next);
+        LOG.info("[IPL-PLOT-TICKING] retain chunk={} by entity={} id={}",
+            next.chunk, entity.getType().getDescriptionId(), entity.getId());
         retain(next);
     }
 
     public static void remove(Entity entity) {
         Membership previous = MEMBERSHIPS.remove(entity);
-        if (previous != null) release(previous);
+        if (previous != null) {
+            LOG.info("[IPL-PLOT-TICKING] release chunk={} by removed entity={} id={}",
+                previous.chunk, entity.getType().getDescriptionId(), entity.getId());
+            release(previous);
+        }
     }
 
     private static synchronized void retain(Membership membership) {
