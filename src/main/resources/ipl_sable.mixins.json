@@ -32,6 +32,8 @@
     "IplPlungerClientTargetFixMixin",
     "IplEntityContainingProbeMixin",
     "IplPlungerHitProbeMixin",
+    "IplPlungerRemovalProbeMixin",
+    "IplPlungerUntrackProbeMixin",
     "IplParentPlotChunkCacheMixin",
     "IplServerEntityManagerAccessor",
     "IplParentPlotEntityTickingMixin",
