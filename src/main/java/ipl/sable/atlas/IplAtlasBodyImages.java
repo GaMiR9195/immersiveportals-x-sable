@@ -65,7 +65,7 @@ public final class IplAtlasBodyImages {
 
         if (current != null && (current.chart != parent || current.scene != parentScene
             || current.bodyId != bodyId)) {
-            IplRapierNatives.removeImageCollider(current.scene, current.bodyId, current.handle);
+            ipl$removeNative(current);
             IMAGES.remove(id);
             current = null;
         }
@@ -91,7 +91,7 @@ public final class IplAtlasBodyImages {
         while (it.hasNext()) {
             Image image = it.next().getValue();
             if (!image.sub.isRemoved()) continue;
-            IplRapierNatives.removeImageCollider(image.scene, image.bodyId, image.handle);
+            ipl$removeNative(image);
             it.remove();
         }
     }
@@ -99,8 +99,21 @@ public final class IplAtlasBodyImages {
     public static void remove(UUID id) {
         Image image = IMAGES.remove(id);
         if (image != null && IplRapierNatives.isAvailable()) {
-            IplRapierNatives.removeImageCollider(image.scene, image.bodyId, image.handle);
+            ipl$removeNative(image);
         }
+    }
+
+    /**
+     * Remove the native collider ONLY while the image's chart still resolves to the
+     * SAME live scene it was created in. Server-stop closes levels overworld-first,
+     * and container.close removes hosted ships AFTER their parent scenes died — the
+     * stored raw handle then points at freed native memory, and dereferencing it hung
+     * the server thread inside {@code removeImageCollider} forever (the 28s watchdog
+     * stall at shutdown). A dead scene took its colliders with it; skipping is correct.
+     */
+    private static void ipl$removeNative(Image image) {
+        if (IplSceneOwnership.liveSceneHandle(image.chart) != image.scene) return;
+        IplRapierNatives.removeImageCollider(image.scene, image.bodyId, image.handle);
     }
 
     public static void clearAll() {

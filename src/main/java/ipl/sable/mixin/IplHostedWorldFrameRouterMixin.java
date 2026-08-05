@@ -303,6 +303,27 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
         }
     }
 
+    /**
+     * CLIENT block sync for routed world-frame writes. Sable's {@code moveBlocks}
+     * (assembly/disassembly) bypasses {@code Level.setBlock}: it writes through the
+     * accelerator's {@code chunk.setBlockState} — which the accelerator override lands
+     * in the PARENT chunk, so the server state is right — and then notifies clients
+     * manually via {@code level.sendBlockUpdated} on the BE's OWN level. Hosted, that
+     * is this dimension, whose chunk map has no holder at world coordinates: the
+     * update packet silently vanished and clients kept seeing air where the server
+     * had restored the ship's blocks. The notification must follow the write.
+     */
+    @Inject(method = "sendBlockUpdated", at = @At("HEAD"), cancellable = true)
+    private void ipl$routeSendBlockUpdated(
+        BlockPos pos, BlockState oldState, BlockState newState, int flags, CallbackInfo ci
+    ) {
+        ServerLevel target = ipl$worldFrameTarget(pos);
+        if (target != null) {
+            target.sendBlockUpdated(pos, oldState, newState, flags);
+            ci.cancel();
+        }
+    }
+
     @Inject(method = "destroyBlockProgress", at = @At("HEAD"), cancellable = true)
     private void ipl$routeDestroyBlockProgress(int breakerId, BlockPos pos, int progress, CallbackInfo ci) {
         ServerLevel target = ipl$worldFrameTarget(pos);
