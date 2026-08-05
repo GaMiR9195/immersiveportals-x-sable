@@ -29,6 +29,7 @@
     "IplWaystoneDelegateDimensionMixin",
     "IplEntityKickProbeMixin",
     "IplEntityContainingProbeMixin",
+    "IplPlungerHitProbeMixin",
     "IplParentPlotChunkCacheMixin",
     "IplServerEntityManagerAccessor",
     "IplParentPlotEntityTickingMixin",
