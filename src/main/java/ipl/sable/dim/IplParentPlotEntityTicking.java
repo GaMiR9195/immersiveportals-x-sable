@@ -69,6 +69,11 @@ public final class IplParentPlotEntityTicking {
 
     public static void update(Entity entity, double x, double z) {
         Level entityLevel = entity.level();
+        // Vanilla Entity.equals/hashCode compare by entity id, so in singleplayer the
+        // CLIENT copy aliases the server entity's map entry — Sable's client move-packet
+        // lerp was "releasing" server memberships through that alias. Client entities have
+        // no business here at all.
+        if (entityLevel.isClientSide) return;
         // Off-thread setPosRaw on server entities happens in singleplayer (render-side code
         // reaching into the integrated server). Membership evaluation fails contextually
         // there — the hosting-container lookup doesn't resolve — and acting on that false
@@ -151,6 +156,7 @@ public final class IplParentPlotEntityTicking {
     }
 
     public static void remove(Entity entity) {
+        if (entity.level().isClientSide) return; // id-aliased client copy, see update()
         Membership held = MEMBERSHIPS.get(entity);
         if (held != null
             && Thread.currentThread() != held.level.getServer().getRunningThread()) {

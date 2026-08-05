@@ -33,6 +33,7 @@
     "IplEntityContainingProbeMixin",
     "IplPlungerHitProbeMixin",
     "IplPlungerRemovalProbeMixin",
+    "IplPlungerResetProbeMixin",
     "IplPlungerUntrackProbeMixin",
     "IplPlotChunkStatusProbeMixin",
     "IplPlotEntityUnloadGuardMixin",
