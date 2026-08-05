@@ -1,7 +1,7 @@
 package ipl.sable.mixin;
 
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
-import dev.ryanhcode.sable.companion.SubLevelAccess;
+import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.world.entity.Entity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,9 +33,9 @@ public abstract class IplEntityContainingProbeMixin {
     private static long ipl$lastServerLogMs = 0;
 
     @ModifyReturnValue(
-        method = "getContaining(Lnet/minecraft/world/entity/Entity;)Ldev/ryanhcode/sable/companion/SubLevelAccess;",
+        method = "getContaining(Lnet/minecraft/world/entity/Entity;)Ldev/ryanhcode/sable/sublevel/SubLevel;",
         at = @At("RETURN"), remap = false, require = 0)
-    private SubLevelAccess ipl$probePlungerContaining(SubLevelAccess original, Entity entity) {
+    private SubLevel ipl$probePlungerContaining(SubLevel original, Entity entity) {
         if (!entity.getType().getDescriptionId().contains("plunger")) return original;
         boolean client = entity.level().isClientSide;
         long now = System.currentTimeMillis();
