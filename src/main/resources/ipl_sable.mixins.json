@@ -89,6 +89,8 @@
     "client.SableAltContainerTickMixin",
     "client.IplHostedClientWorldFrameRouterMixin",
     "client.IplParentPlotClientChunkCacheMixin",
+    "client.IplClientEntityStorageAccessor",
+    "client.IplClientParentPlotEntityTickingMixin",
     "client.IplHostedFlywheelVisualRerouteMixin",
     "client.IplSectionOcclusionGuardMixin",
     "client.SableSourceClipMixin",
