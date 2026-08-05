@@ -26,6 +26,7 @@
     "IplModdedPayloadFrameMixin",
     "IplHostingTeleportGuardMixin",
     "IplHostingEntityTeleportGuardMixin",
+    "IplWaystoneDelegateDimensionMixin",
     "IplParentPlotChunkCacheMixin",
     "IplServerEntityManagerAccessor",
     "IplParentPlotEntityTickingMixin",
