@@ -247,7 +247,6 @@ public class O_O {
         }
         return ModList.get().getModFileById(modid).getMods().stream().findFirst().get().getDisplayName();
     }
-    
     // most quilt installations use quilted fabric api
     public static boolean isQuilt() {
         return false;

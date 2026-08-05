@@ -1,17 +1,3 @@
-# v0.5.0
-1) Better Sodium compatibility (same dimension + recursion stuff).
-2) Fixed clipping-through-walls: it used to stop at portal size. Now it doesn’t. Ever.
-3) HUGE amount of rendering bug fixes.
-4) Full rewrite of how we store sub-levels in another dimension.
-5) Portals on sub-levels.
-6) A small 0.01 z-fighting offset was compensated (0.01 pixel visual gap).
-7) Breaking sub-level into 2 pieces works again.
-8) Multi-part global blocks (e.g., swivel bearings, wheels, springs) are working again (WIP).
-9) One-block sub-levels are visible again.
-10) New “Physics Staff” mixin, works with recursion (still kinda WIP).
-11) New, portals now have colliders.
-12) New, connected sub-levels (with blocks like bearing, springs, ropes) work through portals.
-
 # Immersive Portals × Sable Compatibility Fork
 Version: NeoForge 1.21.1; Targets: Sable 2.0.3+ · Create Aeronautics 1.3.0+ · Create 6.0.10
 
