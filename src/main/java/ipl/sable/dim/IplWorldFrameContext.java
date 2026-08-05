@@ -89,4 +89,59 @@ public final class IplWorldFrameContext {
         if (subLevel == null || subLevel.isRemoved()) return null;
         return IplDimAgnostic.getServerParentLevel(subLevel);
     }
+
+    // ------------------------------------------------------------------
+    // Deferred frames — the universal packet bridge.
+    // ------------------------------------------------------------------
+
+    /**
+     * A modded packet handler cannot name its sub-level at ingress, so it cannot be
+     * armed like the BE/physics/interaction seams. But every such handler that touches a
+     * ship resolves PLOT coordinates early (the payload carries the block's plot-space
+     * pos — that is how it finds its block entity), and every plot resolution funnels
+     * through {@code SubLevelContainer.getPlot} — which the plot bridge intercepts.
+     *
+     * <p>So: the payload dispatch seam opens a DEFERRED frame (owner unknown), and the
+     * first hosted-plot resolution inside it ({@link #notifyPlotResolved}, called from
+     * the plot bridge) arms the parent context for the remainder of the handler. One
+     * injection at NeoForge's payload context covers every addon's packets — no per-mod
+     * mixins (the Simulated assembler being the canonical case).
+     */
+    private static final ThreadLocal<Boolean> DEFERRED = new ThreadLocal<>();
+
+    /** Saved state for restoring at frame end (frames may nest via enqueueWork). */
+    public record DeferredFrame(boolean prevDeferred, @Nullable ServerLevel prevParent) {}
+
+    public static boolean deferredActive() {
+        return Boolean.TRUE.equals(DEFERRED.get());
+    }
+
+    public static DeferredFrame beginDeferredFrame() {
+        DeferredFrame frame = new DeferredFrame(deferredActive(), CURRENT.get());
+        DEFERRED.set(Boolean.TRUE);
+        return frame;
+    }
+
+    public static void endDeferredFrame(DeferredFrame frame) {
+        DEFERRED.set(frame.prevDeferred());
+        CURRENT.set(frame.prevParent());
+    }
+
+    /**
+     * A plot resolved to a hosted sub-level while a deferred frame is open and unarmed:
+     * arm the frame with that ship's parent. First hosted hit wins; later resolutions
+     * (rare multi-ship handlers) keep the first owner, matching the BE-tick seam's
+     * one-owner scoping.
+     */
+    public static void notifyPlotResolved(@Nullable LevelPlot plot) {
+        if (plot == null || !deferredActive() || CURRENT.get() != null) return;
+        SubLevel subLevel = plot.getSubLevel();
+        if (subLevel == null || subLevel.isRemoved() || !IplDimAgnostic.isHosted(subLevel)) {
+            return;
+        }
+        ServerLevel parent = IplDimAgnostic.getServerParentLevel(subLevel);
+        if (parent != null) {
+            CURRENT.set(parent);
+        }
+    }
 }

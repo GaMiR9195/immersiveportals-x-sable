@@ -47,8 +47,11 @@ public abstract class IplPlotBridgeMixin {
         require = 1
     )
     private LevelPlot ipl$bridgePlotByChunkXZ(LevelPlot original, int chunkX, int chunkZ) {
-        if (original != null) return original;
-        return ipl$hostingPlot(chunkX, chunkZ);
+        LevelPlot resolved = original != null ? original : ipl$hostingPlot(chunkX, chunkZ);
+        // Universal packet bridge: the first hosted-plot resolution inside a modded
+        // packet handler names the handler's ship and arms its world-frame context.
+        ipl.sable.dim.IplWorldFrameContext.notifyPlotResolved(resolved);
+        return resolved;
     }
 
     @ModifyReturnValue(
@@ -57,8 +60,9 @@ public abstract class IplPlotBridgeMixin {
         require = 1
     )
     private LevelPlot ipl$bridgePlotByChunkPos(LevelPlot original, ChunkPos pos) {
-        if (original != null) return original;
-        return ipl$hostingPlot(pos.x, pos.z);
+        LevelPlot resolved = original != null ? original : ipl$hostingPlot(pos.x, pos.z);
+        ipl.sable.dim.IplWorldFrameContext.notifyPlotResolved(resolved);
+        return resolved;
     }
 
     @Unique

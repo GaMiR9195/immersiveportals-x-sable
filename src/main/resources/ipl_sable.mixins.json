@@ -23,6 +23,7 @@
     "IplSubLevelSelectorBridgeMixin",
     "IplLevelAcceleratorOverrideMixin",
     "IplPlotBridgeMixin",
+    "IplModdedPayloadFrameMixin",
     "IplParentPlotChunkCacheMixin",
     "IplServerEntityManagerAccessor",
     "IplParentPlotEntityTickingMixin",
