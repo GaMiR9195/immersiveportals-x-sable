@@ -116,6 +116,13 @@ public final class IplWorldFrameContext {
         return Boolean.TRUE.equals(DEFERRED.get());
     }
 
+    /** Any world frame open on this thread — armed (owner known) or deferred (packet
+     *  handler, owner pending). Gates frame-scoped bridges like the hosted-ship
+     *  enumeration in the plot bridge. */
+    public static boolean frameActive() {
+        return CURRENT.get() != null || deferredActive();
+    }
+
     public static DeferredFrame beginDeferredFrame() {
         DeferredFrame frame = new DeferredFrame(deferredActive(), CURRENT.get());
         DEFERRED.set(Boolean.TRUE);

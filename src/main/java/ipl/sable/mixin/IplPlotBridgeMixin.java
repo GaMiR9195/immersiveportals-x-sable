@@ -104,6 +104,39 @@ public abstract class IplPlotBridgeMixin {
     }
 
     /**
+     * FRAME-SCOPED enumeration: inside an armed or deferred world frame (addon packet
+     * handlers via the universal packet bridge, hosted BE ticks, interactions),
+     * {@code getAllSubLevels()} on a parent-level container includes hosted ships whose
+     * parent is that level — so addon enumerations (Photomancy's camera capture and
+     * sub-level list, and anything else that lists "the ships in this world") see the
+     * dim-agnostic truth. Deliberately NOT blanket: Sable's own tick/holding/physics
+     * machinery runs OUTSIDE frames and keeps stock semantics — a blanket bridge here
+     * would re-open the parent-holding-serializes-hosted-ships disease.
+     */
+    @ModifyReturnValue(method = "getAllSubLevels()Ljava/util/List;", at = @At("RETURN"), require = 0)
+    private java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> ipl$frameScopedHostedEnumeration(
+        java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> original
+    ) {
+        if (!ipl.sable.dim.IplWorldFrameContext.frameActive()) return original;
+        Level self = this.getLevel();
+        if (!(self instanceof net.minecraft.server.level.ServerLevel)
+            || IplDimAgnostic.isHostingLevel(self)) {
+            return original;
+        }
+        SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(self);
+        if (hosting == null || hosting == (Object) this) return original;
+
+        java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> out = null;
+        for (dev.ryanhcode.sable.sublevel.SubLevel sub : hosting.getAllSubLevels()) {
+            if (sub.isRemoved() || IplDimAgnostic.getParentLevel(sub) != self) continue;
+            if (original.contains(sub)) continue;
+            if (out == null) out = new java.util.ArrayList<>(original);
+            out.add(sub);
+        }
+        return out != null ? out : original;
+    }
+
+    /**
      * By-UUID lookups are bridged too: tools resolve their target from the level they're
      * used in (e.g. Simulated's physics staff does {@code getContainer(player.level())
      * .getSubLevel(uuid)} and silently no-ops on null). Gated to hosted sub-levels whose
