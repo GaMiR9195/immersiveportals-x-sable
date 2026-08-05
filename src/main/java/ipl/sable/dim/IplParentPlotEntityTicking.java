@@ -69,6 +69,16 @@ public final class IplParentPlotEntityTicking {
 
     public static void update(Entity entity, double x, double z) {
         Level entityLevel = entity.level();
+        // Off-thread setPosRaw on server entities happens in singleplayer (render-side code
+        // reaching into the integrated server). Membership evaluation fails contextually
+        // there — the hosting-container lookup doesn't resolve — and acting on that false
+        // "left the plot" verdict released the membership, flipped the plot chunk
+        // INACCESSIBLE, and let vanilla unload the entity mid-use. Bookkeeping that
+        // mutates server entity-manager state runs on the server thread only.
+        if (entityLevel instanceof ServerLevel sl && !sl.getServer().isSameThread()) {
+            logOffThreadTouch(entity, x, z);
+            return;
+        }
         Membership next = null;
         if (entityLevel instanceof ServerLevel level && !IplDimAgnostic.isHostingLevel(level)
             && !entity.isRemoved()) {
@@ -105,7 +115,32 @@ public final class IplParentPlotEntityTicking {
         retain(next);
     }
 
+    private static long lastOffThreadLogMs;
+
+    /** DIAGNOSTIC: name the render-side caller that repositions server entities, for the
+     * record — the thread guard makes it harmless either way. */
+    private static void logOffThreadTouch(Entity entity, double x, double z) {
+        long now = System.currentTimeMillis();
+        synchronized (IplParentPlotEntityTicking.class) {
+            if (now - lastOffThreadLogMs < 2000) return;
+            lastOffThreadLogMs = now;
+        }
+        StringBuilder stack = new StringBuilder();
+        StackTraceElement[] frames = new Throwable().getStackTrace();
+        for (int i = 2; i < Math.min(frames.length, 9); i++) {
+            stack.append("\n    at ").append(frames[i]);
+        }
+        LOG.info("[IPL-PLOT-TICKING] off-thread setPosRaw on server entity={} id={} "
+            + "to ({}, {}) on thread={} — skipped{}",
+            entity.getType().getDescriptionId(), entity.getId(),
+            String.format("%.1f", x), String.format("%.1f", z),
+            Thread.currentThread().getName(), stack);
+    }
+
     public static void remove(Entity entity) {
+        if (entity.level() instanceof ServerLevel sl && !sl.getServer().isSameThread()) {
+            return; // real server removals arrive on the server thread
+        }
         Membership previous = MEMBERSHIPS.remove(entity);
         if (previous != null) {
             LOG.info("[IPL-PLOT-TICKING] release chunk={} by removed entity={} id={}",
