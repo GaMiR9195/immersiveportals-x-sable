@@ -24,6 +24,8 @@
     "IplLevelAcceleratorOverrideMixin",
     "IplPlotBridgeMixin",
     "IplModdedPayloadFrameMixin",
+    "IplHostingTeleportGuardMixin",
+    "IplHostingEntityTeleportGuardMixin",
     "IplParentPlotChunkCacheMixin",
     "IplServerEntityManagerAccessor",
     "IplParentPlotEntityTickingMixin",
