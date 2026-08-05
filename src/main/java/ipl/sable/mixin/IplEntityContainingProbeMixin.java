@@ -26,11 +26,11 @@ public abstract class IplEntityContainingProbeMixin {
     @Unique
     private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-containing-probe");
 
+    /** Rate-limit per (entity, side) — a per-side limit lets the lowest-id plunger
+     * monopolize the budget and hide every other plunger from the log entirely. */
     @Unique
-    private static long ipl$lastClientLogMs = 0;
-
-    @Unique
-    private static long ipl$lastServerLogMs = 0;
+    private static final java.util.Map<Long, Long> IPL$LAST_LOG_MS =
+        new java.util.concurrent.ConcurrentHashMap<>();
 
     @ModifyReturnValue(
         method = "getContaining(Lnet/minecraft/world/entity/Entity;)Ldev/ryanhcode/sable/sublevel/SubLevel;",
@@ -39,13 +39,10 @@ public abstract class IplEntityContainingProbeMixin {
         if (!entity.getType().getDescriptionId().contains("plunger")) return original;
         boolean client = entity.level().isClientSide;
         long now = System.currentTimeMillis();
-        if (client) {
-            if (now - ipl$lastClientLogMs < 500) return original;
-            ipl$lastClientLogMs = now;
-        } else {
-            if (now - ipl$lastServerLogMs < 500) return original;
-            ipl$lastServerLogMs = now;
-        }
+        long key = ((long) entity.getId() << 1) | (client ? 1 : 0);
+        Long last = IPL$LAST_LOG_MS.get(key);
+        if (last != null && now - last < 500) return original;
+        IPL$LAST_LOG_MS.put(key, now);
         if (original == null) {
             IPL$LOG.info("[IPL-CONTAINING] side={} plunger id={} at=({}, {}, {}) -> NULL",
                 client ? "CLIENT" : "SERVER", entity.getId(),

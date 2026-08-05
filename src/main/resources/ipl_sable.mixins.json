@@ -28,6 +28,8 @@
     "IplHostingEntityTeleportGuardMixin",
     "IplWaystoneDelegateDimensionMixin",
     "IplEntityKickProbeMixin",
+    "IplClientKickPoseGuardMixin",
+    "IplPlungerClientTargetFixMixin",
     "IplEntityContainingProbeMixin",
     "IplPlungerHitProbeMixin",
     "IplParentPlotChunkCacheMixin",
