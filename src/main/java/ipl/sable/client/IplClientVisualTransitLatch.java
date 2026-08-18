@@ -155,6 +155,31 @@ final class IplClientVisualTransitLatch {
     }
 
     /**
+     * Drops the pending PREDICTION but keeps the crossing PROOF.
+     *
+     * <p>For the handoff path. Once the server confirms the crossing, the prediction has
+     * served its purpose and must go -- but {@link #FORWARD_SWEEPS} is the evidence that
+     * this client watched the body sweep forward through the aperture, and
+     * {@link #hasForwardApertureSweep} consults it FIRST precisely so the visual frame
+     * switch does not have to be re-derived afterwards.
+     *
+     * <p>Re-deriving it after a handoff is not merely wasteful, it is impossible: every pose
+     * available by then is destination-side, while both fallbacks
+     * ({@link #hasBufferedForwardSweep} and the lastPose test) require a start pose wholly
+     * on the source side. Wiping the proof here therefore made the switch fail and the body
+     * disappear rather than fly out of the doorway.
+     *
+     * <p>The render-pose samples are dropped as well: they were taken in the source frame
+     * and joining them to destination-frame samples would fabricate a sweep across the whole
+     * world on the next frame.
+     */
+    static void clearPredictionKeepingProof(UUID shipId) {
+        remove(shipId);
+        LAST_RENDER_POSES.remove(shipId);
+        LAST_SAMPLE_FRAMES.remove(shipId);
+    }
+
+    /**
      * The visual parent must not switch merely because a server handoff arrived. Require this
      * client's delayed OBB to cross the same finite aperture from source to destination.
      * If it returns wholly source-side first, discard the proof and keep the source frame.

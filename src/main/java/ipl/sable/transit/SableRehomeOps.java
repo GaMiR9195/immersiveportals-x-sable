@@ -442,7 +442,9 @@ public final class SableRehomeOps {
         Pose3d sourcePose = new Pose3d(hosted.logicalPose());
         Pose3d mappedPose = SableTransitOps.computeMappedPose(sourcePose, portal);
 
-        LOG.info("[IPL-FLIP] firing uuid={} {} -> {} destPos=({},{},{})",
+        // Per-flip diagnostics are DEBUG. A working loop rehomes every tick for every
+        // body, so at INFO these two lines alone drown the console.
+        LOG.debug("[IPL-FLIP] firing uuid={} {} -> {} destPos=({},{},{})",
             uuid, oldParent.dimension().location(), newParent.dimension().location(),
             mappedPose.position().x(), mappedPose.position().y(), mappedPose.position().z());
 
@@ -467,6 +469,23 @@ public final class SableRehomeOps {
         // seeds a missing trail from lastPose, which would otherwise still be source-space
         // and could create a fictitious segment through a chained or self-recursive portal.
         hosted.updateLastPose();
+        // ...and THEN pull that previous endpoint back onto the doorway.
+        //
+        // updateLastPose() collapses lastPose onto logicalPose, so for this one tick the
+        // body reports ZERO motion at the exact moment it travelled furthest. Everything
+        // that reads movement as lastPose -> logicalPose therefore sees a body that did not
+        // move yet changed frame -- the definition of a teleport, and the reason the exit
+        // reads as a jump instead of a fly-out.
+        //
+        // The body did not appear far from the portal, it LEFT the portal fast. Point A on
+        // the exit rectangle is that departure point, so it is the correct previous
+        // endpoint: the resulting motion vector is precisely "portal plane -> final rehome
+        // position". It is still a destination-frame pose, so the guarantee above -- no
+        // source-space pose survives into the next tick -- is preserved exactly.
+        Pose3d exitPlanePose =
+            PortalCrossingDetector.projectOntoExitPlane(hosted, portal, mappedPose);
+        ((ipl.sable.mixin.IplSubLevelPreviousPoseAccessor) hosted)
+            .ipl$getPreviousPose().set(exitPlanePose);
         pipeline.resetVelocity(hosted);
         pipeline.addLinearAndAngularVelocity(hosted,
             new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
@@ -496,7 +515,7 @@ public final class SableRehomeOps {
         // adds them, so hand off to both sets now instead of leaving a one-way invisible ship.
         queueParentHandoff(hosted, newParent, portal);
 
-        LOG.info("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
+        LOG.debug("[IPL-FLIP] complete uuid={} riders={}", uuid, riders);
         return true;
     }
 

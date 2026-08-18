@@ -329,7 +329,7 @@ public abstract class SableCrossDimTrackingMixin {
                 if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
                     // Diagnostic for the dim-agnostic bring-up: how many plot chunks does the
                     // server actually bundle into this full sync?
-                    org.slf4j.LoggerFactory.getLogger("ipl-hosted-gather").info(
+                    org.slf4j.LoggerFactory.getLogger("ipl-hosted-gather").debug(
                         "[IPL-HOSTED-SYNC] full sync of {} to {}: {} loaded plot chunk(s) server-side",
                         serverSubLevel.getUniqueId(), viewer.getGameProfile().getName(),
                         serverSubLevel.getPlot().getLoadedChunks().size());

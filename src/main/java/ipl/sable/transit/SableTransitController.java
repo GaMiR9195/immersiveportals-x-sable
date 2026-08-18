@@ -153,11 +153,22 @@ public final class SableTransitController {
             if (portalQueryLevel == null) continue;
             IplEnteringVolumeVisualization.captureTick(airship, portalQueryLevel);
             PortalCrossingDetector.captureTrail(airship);
+            // EXITS ARE SETTLED EVERY TICK, NOT ONLY ON THE TICK OF A FLIP.
+            //
+            // ipl$settleExit used to be reachable only from the candidate-execution loop,
+            // and PortalCrossingDetector.settleExit() answers null while the body still
+            // overlaps the plate -- which, on the tick of the flip, it always does. There
+            // was no second call anywhere, so an exit that was not already complete at that
+            // exact instant was never settled at all: the trail kept its stale seed and the
+            // straddle session of the doorway the body had left stayed open until an
+            // unrelated reap happened to notice it. Asking once per tick costs a map lookup
+            // and makes the exit a state of the body rather than an event of one tick.
+            ipl$settleExit(level, airship);
 
             // Convert Sable's BoundingBox3d to MC AABB for the portal query.
-            // Staff's PD motor can cross a complete portal in one tick. Query the swept OBB,
-            // not only the final pose, or the source aperture is already out of range and the
-            // detector never sees its own fast-crossing path.
+            // Staff's PD motor can carry a body clean through a portal inside ONE physics
+            // segment. Query the swept OBB, not only the final pose, or the source aperture
+            // is already out of range and the detector never sees its own crossing path.
             AABB airshipAabb = PortalCrossingDetector.sweptBounds(airship)
                 .inflate(PORTAL_QUERY_INFLATION);
             List<Portal> nearby = new ArrayList<>(portalQueryLevel.getEntitiesOfClass(
@@ -303,9 +314,28 @@ public final class SableTransitController {
                     continue;
                 }
 
+                // A SEGMENT THAT BEGINS AT A DOORWAY ALREADY STARTED SOURCE-SIDE.
+                //
+                // startedBeforePortalPlane() asks whether trail.start sits behind THIS
+                // portal's plane. After a rehome the trail is deliberately re-seeded at the
+                // exit anchor, which sits 0.01 PAST the rectangle the body just left -- and
+                // in a loop that rectangle IS, geometrically, the rectangle of the next
+                // doorway. So the test answered "no" about a body that had just flown out of
+                // the paired portal: the candidate was never built, the loop produced no
+                // rehome at all, and the straddle session of the previous doorway stayed
+                // open forever. That is the whole "session never closes" symptom.
+                //
+                // For an exit-seeded segment the proof of a real forward crossing is already
+                // complete without it: sweptIntersectsPortalAperture() is a finite swept
+                // intersection of THIS aperture, and sweptEntryDirection() is signed
+                // source->destination. Demanding a pose behind the plane on top of that only
+                // re-asks where the segment happened to be cut, so it is dropped exactly
+                // there and kept everywhere else.
+                boolean startedSourceSide = state.startedBeforePortalPlane()
+                    || PortalCrossingDetector.hasBufferedExit(airship);
                 boolean completedOwnedCrossing = haveSession
                     ? ipl$continuesThroughOwnedFace(state, true)
-                    : state.startedBeforePortalPlane()
+                    : startedSourceSide
                         && state.sweptIntersectsPortalAperture()
                         && ipl$continuesThroughOwnedFace(state, false);
                 if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
@@ -367,7 +397,18 @@ public final class SableTransitController {
                         // becomes free to claim the body again. Until the body has cleared
                         // 1% of the portal's width away from the crossing-time snapshot,
                         // the exit does not count: keep the seam and re-tick the session.
-                        if (PortalCrossingDetector.withinExitClearance(airship, portal)) {
+                        // THE 0.01 IS A CONTACT QUESTION, AND IT IS THE ONLY ONE ASKED HERE.
+                        //
+                        // withinExitClearance() answers "is this plate this portal's
+                        // rectangle?" and stays true for the entire life of the latch, so the
+                        // session could not close while the latch existed: the body was long
+                        // out of the band and still owned the doorway.
+                        // touchesPortalVirtually() is that same plate identity AND the
+                        // geometric overlap -- i.e. exactly "does this body still touch the
+                        // portal, counting the 0.01 virtual thickening of its plane". The
+                        // moment it is false the exit is real, so the session retires here
+                        // instead of waiting for a tick budget to run out.
+                        if (PortalCrossingDetector.touchesPortalVirtually(airship, portal)) {
                             seenHostedKeys.add(key);
                             IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
                             continue;
@@ -376,6 +417,19 @@ public final class SableTransitController {
                         // The source-frame debug buffer is replaced in the same tick as
                         // a complete exit, rather than waiting for next tick's capture.
                         IplEnteringVolumeVisualization.replaceBuffer(airship);
+                        // A BUFFERED EXIT IS NOT AN UNWOUND SEGMENT, AND THIS TICK IS NOT
+                        // OVER. Retiring the session of the doorway the body just came out
+                        // of says nothing about the doorway it is flying into. Resetting
+                        // here -- and abandoning the scan -- deleted that exit history and
+                        // skipped every remaining portal, so the tick produced no rehome:
+                        // the body needed TWO ticks per doorway and a loop broke at half the
+                        // speed it used to survive. With a live buffer the segment already
+                        // starts at the exit aperture and is exactly what the next portal
+                        // must be tested against, so keep scanning. Detection, flip and
+                        // rehome all stay inside this same tick, every tick.
+                        if (PortalCrossingDetector.hasBufferedExit(airship)) {
+                            continue;
+                        }
                         PortalCrossingDetector.resetTrail(airship);
                         // Do not evaluate the opposite coincident face using the unwound
                         // segment. Fresh trail starts next tick from this real source pose.
@@ -422,6 +476,14 @@ public final class SableTransitController {
             return;
         }
 
+        // ONE FLIP PER BODY PER TICK, EVERY TICK. A tick cannot contain a chain of
+        // crossings: detection reads the segment the physics engine already produced, so a
+        // body cannot be teleported and then re-detected inside the same tick. What it CAN
+        // do -- and what this loop does -- is complete the whole cycle every tick: detect on
+        // the swept segment, flip the parent, buffer the exit pose, settle the session. The
+        // buffered exit pose is what makes consecutive ticks continuous, so a doorway chain
+        // is walked one portal per tick with no gap and nothing skipped, however fast the
+        // body moves between them.
         java.util.Set<UUID> flippedThisTick = new java.util.HashSet<>();
         for (TransitCandidate c : candidates) {
             UUID uuid = c.airship.getUniqueId();
@@ -463,12 +525,20 @@ public final class SableTransitController {
                         IplRopePortalSeam.onShipTransit(mate, c.portal);
                     }
 
-                    // EXIT SETTLEMENT. The crossing is executed, so the exit is decided
-                    // in the same pass: if the body already sits further out than the
-                    // 0.01 clearance slab, close its session and replace its trail with a
-                    // fresh one starting at the pose it holds now. Nothing is left behind
-                    // that could be swept back through the coincident face, and no stale
-                    // half-world segment is handed to the next tick.
+                    // EXIT SETTLEMENT, fused with the flip. The crossing is executed, so
+                    // the exit is decided in the same pass: if the body already sits
+                    // further out than the 0.01 clearance slab, close its session and
+                    // re-seed its trail as {buffered exit pose -> pose it holds now}.
+                    //
+                    // The re-seed is the whole point of the fusion. Collapsing the trail
+                    // onto the current pose (the old behaviour) discarded the fact that
+                    // the body came out of an aperture this tick -- and a body that left
+                    // fast is by then far beyond the exit frame, possibly past the NEXT
+                    // portal, with no history left to prove it flew through it. Keeping
+                    // the exit pose as point A means the very next evaluation sweeps that
+                    // portal's aperture normally and opens the transition on its own.
+                    // Nothing is left behind that could be swept back through the
+                    // coincident face, and no stale half-world segment survives.
                     ipl$settleExit(level, c.airship);
                     for (ServerSubLevel mate : c.mates()) {
                         if (!mate.isRemoved()) ipl$settleExit(level, mate);
@@ -559,13 +629,17 @@ public final class SableTransitController {
 
     /**
      * Completes an exit the moment the body has physically left the exit slab: drop the
-     * latch, re-seed the trail at the current pose (both done by
+     * latch, re-seed the trail as {@code buffered exit pose -> current pose} (both done by
      * {@link PortalCrossingDetector#settleExit}) and retire the straddle session of the
      * portal that was just left, locally and on every client.
      *
      * <p>Both halves must happen together. A closed session with a stale trail can be
      * re-admitted through the back face; a live session with a re-seeded trail keeps a
      * doorway owned by a body that is no longer in it.
+     *
+     * <p>The re-seed keeps the exit aperture as the segment's point A instead of collapsing
+     * the trail onto the body's current pose, so an overshooting body still presents a
+     * continuous path from the doorway it used to wherever it ended up.
      */
     private static void ipl$settleExit(ServerLevel level, ServerSubLevel body) {
         UUID exited = PortalCrossingDetector.settleExit(body);

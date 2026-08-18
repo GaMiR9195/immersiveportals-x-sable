@@ -124,7 +124,7 @@ public final class IplGrabChainClient {
             mine.subId(), mine.revision(),
             IplGrabLink.prepend(mine.chain(), IplGrabLink.inverse(portal))
         );
-        LOG.info("[IPL-GRAB-CHAIN-C] local player crossed {} depth={}",
+        LOG.debug("[IPL-GRAB-CHAIN-C] local player crossed {} depth={}",
             portal.getUUID(), local.chain().size());
     }
 
@@ -202,7 +202,7 @@ public final class IplGrabChainClient {
                 McRemoteProcedureCallClient.tellServerToInvoke(
                     "ipl.sable.transit.IplGrabChain.RemoteCallables.ackRebase", revision
                 );
-                LOG.info("[IPL-GRAB-CHAIN-C] rebase sub={} rev={} depth={}",
+                LOG.debug("[IPL-GRAB-CHAIN-C] rebase sub={} rev={} depth={}",
                     subId, rev, local == null ? -1 : local.chain().size());
             } catch (RuntimeException e) {
                 LOG.error("[IPL-GRAB-CHAIN-C] bad rebase for {}", subUuid, e);

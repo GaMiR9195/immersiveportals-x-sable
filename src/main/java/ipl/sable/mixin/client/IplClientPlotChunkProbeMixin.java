@@ -31,7 +31,7 @@ public abstract class IplClientPlotChunkProbeMixin {
         int x = packet.getX();
         int z = packet.getZ();
         if (Math.abs(x) > 100_000 || Math.abs(z) > 100_000) {
-            org.slf4j.LoggerFactory.getLogger("ipl-hosted-gather").info(
+            org.slf4j.LoggerFactory.getLogger("ipl-hosted-gather").debug(
                 "[IPL-CHUNK-PROBE] plot-range chunk packet ({}, {}) handled under level={}",
                 x, z, this.level == null ? "null" : this.level.dimension().location());
         }

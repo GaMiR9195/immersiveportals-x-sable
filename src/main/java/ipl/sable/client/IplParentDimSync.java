@@ -3,13 +3,11 @@ package ipl.sable.client;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
-import dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.dim.SableSubLevelDimension;
 import ipl.sable.duck.IplSubLevelDuck;
 import ipl.sable.mixin.client.IplClientSubLevelRenderPoseAccessor;
-import ipl.sable.mixin.client.IplSnapshotInterpolatorAccessor;
 import ipl.sable.mixin.client.IplSubLevelLastPoseAccessor;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.registries.Registries;
@@ -41,6 +39,13 @@ import java.util.UUID;
 public final class IplParentDimSync {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-parent-sync");
+
+    /**
+     * How far past the exit rectangle the visual departure pose is placed. Kept equal to
+     * {@code PortalCrossingDetector.EXIT_ANCHOR_OFFSET} so the client's visual exit point
+     * and the server's armed exit anchor are the SAME point, not two points 0.01 apart.
+     */
+    private static final double EXIT_PLANE_CLEARANCE = 0.01;
 
     /** RPC delivery can precede the redirected full-sync that creates the client sub-level. */
     private static final Map<UUID, java.util.ArrayDeque<PendingHandoff>> PENDING_HANDOFFS = new HashMap<>();
@@ -160,7 +165,7 @@ public final class IplParentDimSync {
                     entry.getKey().toString(), entry.getValue().parentDimId());
                 if (subLevel != null) {
                     RemoteCallables.setParentInternal(subLevel, entry.getValue().parentDimId());
-                    LOG.info("[IPL-PARENT-SYNC] deferred parent stamp applied: {} parent={}",
+                    LOG.debug("[IPL-PARENT-SYNC] deferred parent stamp applied: {} parent={}",
                         entry.getKey(), entry.getValue().parentDimId());
                     iterator.remove();
                 }
@@ -206,7 +211,7 @@ public final class IplParentDimSync {
                 setParentInternal(subLevel, parentDimId);
                 PENDING_PARENT_STAMPS.remove(subLevelId);
 
-                LOG.info("[IPL-PARENT-SYNC] sub-level {} parent={} (client)",
+                LOG.debug("[IPL-PARENT-SYNC] sub-level {} parent={} (client)",
                     subLevelUuid, parentDimId);
             } catch (Throwable t) {
                 LOG.error("[IPL-PARENT-SYNC] failed to apply parent stamp for {}", subLevelUuid, t);
@@ -304,30 +309,104 @@ public final class IplParentDimSync {
         ) {
             SubLevel subLevel = findHostedSubLevel(subLevelId.toString(), parentDimId);
             if (!(subLevel instanceof ClientSubLevel clientSubLevel)) return;
-            IplClientVisualTransitLatch.clear(subLevelId);
+            // The crossing PROOF must outlive the handoff. clear() also drops
+            // FORWARD_SWEEPS, and hasForwardApertureSweep() consults exactly that first;
+            // without it the visual frame switch has to be re-proven from poses that are
+            // already destination-side, which is impossible by construction. The crossing
+            // really happened, so the proof stays and only the stale prediction goes.
+            IplClientVisualTransitLatch.clearPredictionKeepingProof(subLevelId);
 
-            // Map both endpoints used by ClientSubLevel.renderPose(). Mapping only its
-            // current interpolated sample then collapsing lastPose/logicalPose to it makes
-            // native destination rendering stop for one client tick at portal exit.
-            Pose3d mappedLastPose = mapping.mapPose(new Pose3d(clientSubLevel.lastPose()));
+            // Where the rehome actually put the body, in destination space. This is the END
+            // of the visual exit segment.
             Pose3d mappedLogicalPose = mapping.mapPose(new Pose3d(clientSubLevel.logicalPose()));
+            // The pre-crossing endpoint, mapped. On its own this is NOT a usable start for
+            // the exit segment: before the crossing the body was still short of the
+            // entrance, so its image sits BEHIND the exit rectangle. In a vertical loop
+            // (top portal -> bottom portal) "behind the bottom portal" is ABOVE the
+            // ceiling, which is exactly the reported symptom -- the interpolation was
+            // teleported along with the sub-level and surfaced above the loop.
+            Pose3d mappedLastPose = mapping.mapPose(new Pose3d(clientSubLevel.lastPose()));
+            // ...so clamp it forward onto the doorway. This is the START of the visual exit
+            // segment: the pose whose trailing face rests on the exit rectangle, 0.01 past
+            // it -- the same clearance the server uses when it arms the exit anchor.
+            Pose3d exitPose = mapping.projectOntoExitPlane(clientSubLevel, mappedLastPose);
 
-            SubLevelSnapshotInterpolator interpolator = clientSubLevel.getInterpolator();
-            // Do not clear the delayed snapshot timeline. The first post-flip movement
-            // packet would then replace the visual pose with a newer server pose, causing
-            // a second jump. Mapping every buffered snapshot keeps interpolation continuous
-            // until destination-space packets naturally extend the same timeline.
+            // Leaving the timeline untouched is what produced the flicker along the whole
+            // transition, and the two earlier attempts failed for opposite reasons: mapping
+            // the whole buffer put the visual history one loop-height off, collapsing it
+            // onto the doorway removed all motion and made the body vanish. The mechanism
+            // behind that vanishing is worth keeping written down:
+            //
+            // IplClientVisualTransitLatch refuses to switch the visual frame unless this
+            // client can prove the body swept forward through the finite aperture. That
+            // proof is either FORWARD_SWEEPS (recorded during the approach) or, failing
+            // that, re-derived from the interpolator buffer and lastPose by
+            // hasBufferedForwardSweep()/crossesAperture(), both of which demand a starting
+            // pose wholly on the SOURCE side: from.maxPlane() < -EPSILON.
+            //
+            // Collapsing every snapshot onto the doorway pose and the newest onto the
+            // rehome pose puts the entire buffer AT OR PAST the plane, and pinning lastPose
+            // to the doorway does the same to the fallback endpoint. Every pair then fails
+            // crossesAperture(), hasForwardApertureSweep() returns false, and the render
+            // tail is dropped: the body disappears instead of flying out, and what the
+            // player sees is the plain server-driven fall with no exit at all.
+            //
+            // The interpolator is also authoritative every tick -- tick(backTick) recomputes
+            // runningSnapshot from the buffer through getSampleAt() -- so pinning that field
+            // survived exactly one tick anyway. Poses written here cannot outlive the next
+            // snapshot; only the wire can carry this.
+            //
+            // The server owns the same answer: executeHostedTransit() sets the body's
+            // previous pose to projectOntoExitPlane(), so its own lastPose -> logicalPose
+            // motion IS "portal plane -> rehome point". The client does not need that on the
+            // wire, because projectOntoExitPlane() above derives the identical endpoint from
+            // the portal transform it was already sent.
+            // renderPose(pt) lerps lastPose -> logicalPose. Pinning lastPose to the doorway
+            // is what makes the exit VISIBLE within the flip tick itself: at high speed the
+            // rehome distance is large, and this is the segment the player watches the body
+            // travel. It mirrors the server's own correction, which overwrites the same
+            // endpoint with projectOntoExitPlane() after updateLastPose() collapses it.
+            // THE EXIT SEGMENT IS SEEDED INTO THE TIMELINE, NOT PAINTED OVER IT.
+            //
+            // getSampleAt() lerps before.pose -> after.pose. At the flip the buffer still
+            // holds ~6 ticks of SOURCE-frame poses while every new snapshot already arrives
+            // in the DESTINATION frame, and backTick runs behind, so for several ticks the
+            // render pose was lerped ACROSS the frame boundary: the body was drawn
+            // travelling the ENTIRE distance between the paired portals, again and again.
+            // That is the flicker over the whole portal transition.
+            //
+            // History older than the crossing belongs to a chart that no longer exists, so
+            // it is dropped -- not mapped, not collapsed. What replaces it is exactly the
+            // two endpoints of the exit: the doorway pose at the last tick this client
+            // really received, and the rehome pose one tick later. getSampleAt() then has
+            // nothing left to interpolate except doorway -> rehome point, which is the
+            // motion the player is supposed to see.
+            //
+            // Sable itself sanctions this: splitFrom() rewrites past snapshots into a new
+            // frame through madeUpPastPose and re-sorts the buffer. The past has to be made
+            // CORRECT, not erased.
+            //
+            // The disappearance this once caused is now structurally impossible: the
+            // crossing proof is FORWARD_SWEEPS, kept by clearPredictionKeepingProof() above,
+            // so hasForwardApertureSweep() never has to re-derive a source-side start out of
+            // a buffer that is legitimately destination-side.
+            dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator interpolator =
+                clientSubLevel.getInterpolator();
+            int exitTick;
             synchronized (interpolator.buffer) {
-                for (int i = 0; i < interpolator.buffer.size(); i++) {
-                    SubLevelSnapshotInterpolator.Snapshot snapshot = interpolator.buffer.get(i);
-                    interpolator.buffer.set(i, new SubLevelSnapshotInterpolator.Snapshot(
-                        snapshot.gameTick(), mapping.mapPose(new Pose3d(snapshot.pose()))
-                    ));
-                }
+                exitTick = interpolator.buffer.isEmpty()
+                    ? Integer.MIN_VALUE
+                    : interpolator.buffer.getLast().gameTick();
+                interpolator.buffer.clear();
             }
-            ((IplSnapshotInterpolatorAccessor) interpolator).ipl$getRunningSnapshot()
-                .set(mappedLogicalPose);
-            ((IplSubLevelLastPoseAccessor) clientSubLevel).ipl$getLastPose().set(mappedLastPose);
+            if (exitTick != Integer.MIN_VALUE) {
+                // receiveSnapshot() stores the pose BY REFERENCE and clears the stopped
+                // flag. Fresh copies, or the buffer would alias the poses written below and
+                // the next endpoint write would silently rewrite history.
+                interpolator.receiveSnapshot(exitTick, new Pose3d(exitPose));
+                interpolator.receiveSnapshot(exitTick + 1, new Pose3d(mappedLogicalPose));
+            }
+            ((IplSubLevelLastPoseAccessor) clientSubLevel).ipl$getLastPose().set(exitPose);
             clientSubLevel.logicalPose().set(mappedLogicalPose);
             clientSubLevel.forceUpdateBounds();
 
@@ -350,7 +429,7 @@ public final class IplParentDimSync {
             // exactly where its destination projection left it.
             ((IplClientSubLevelRenderPoseAccessor) clientSubLevel)
                 .ipl$setLastRenderPosePartialTick(-1.0f);
-            LOG.info("[IPL-PARENT-SYNC] handoff applied for {} -> parent {} pose=({},{},{})",
+            LOG.debug("[IPL-PARENT-SYNC] handoff applied for {} -> parent {} pose=({},{},{})",
                 subLevelId, parentDimId,
                 String.format("%.1f", mappedLogicalPose.position().x()),
                 String.format("%.1f", mappedLogicalPose.position().y()),
@@ -421,6 +500,50 @@ public final class IplParentDimSync {
                 );
                 sourcePose.orientation().set(inverseRotation.mul(destinationPose.orientation()));
                 return sourcePose;
+            }
+
+            /**
+             * {@code destinationPose} pushed forward along the portal's content direction
+             * until the body's trailing extent rests on the exit rectangle (plus the same
+             * 0.01 clearance {@code PortalCrossingDetector.EXIT_ANCHOR_OFFSET} uses), and
+             * left untouched when it is already clear of it.
+             *
+             * <p>This is the client mirror of the server's
+             * {@code PortalCrossingDetector.projectOntoExitPlane}: one pose, one frame, one
+             * mapping. It deliberately measures the eight mapped plot corners rather than
+             * {@code Pose3d.position()}, because that position is the image of plot-local
+             * {@code (0,0,0)} -- a plot CORNER, not the body -- and pinning it to the plane
+             * would shift the whole volume by metres.
+             */
+            Pose3d projectOntoExitPlane(ClientSubLevel sub, Pose3d destinationPose) {
+                Pose3d pose = new Pose3d(destinationPose);
+                var bounds = sub.getPlot().getBoundingBox();
+                if (bounds == null) return pose;
+
+                // sourceNormal points at the SOURCE side of the entrance, so its image is
+                // the direction back into the doorway; negating it gives "out of the exit".
+                Vector3d out = new Vector3d(-sourceNormal.x, -sourceNormal.y, -sourceNormal.z);
+                rotation.transform(out);
+                double length = out.length();
+                if (!(length > 1.0e-9)) return pose;
+                out.div(length);
+
+                double minDepth = Double.POSITIVE_INFINITY;
+                for (int x = 0; x < 2; x++) for (int y = 0; y < 2; y++) for (int z = 0; z < 2; z++) {
+                    Vec3 corner = pose.transformPosition(new Vec3(
+                        x == 0 ? bounds.minX() : bounds.maxX() + 1.0,
+                        y == 0 ? bounds.minY() : bounds.maxY() + 1.0,
+                        z == 0 ? bounds.minZ() : bounds.maxZ() + 1.0));
+                    double depth = (corner.x - destination.x) * out.x
+                        + (corner.y - destination.y) * out.y
+                        + (corner.z - destination.z) * out.z;
+                    if (depth < minDepth) minDepth = depth;
+                }
+                if (!Double.isFinite(minDepth) || minDepth >= EXIT_PLANE_CLEARANCE) return pose;
+
+                double push = EXIT_PLANE_CLEARANCE - minDepth;
+                pose.position().add(out.x * push, out.y * push, out.z * push);
+                return pose;
             }
 
             boolean hasFullyClearedSourcePlane(ClientSubLevel sub) {

@@ -1,4 +1,4 @@
-﻿{
+{
   "required": true,
   "minVersion": "0.8",
   "package": "ipl.sable.mixin",
@@ -14,6 +14,7 @@
     "IplServerHeartbeatMixin",
     "IplServerStopCleanupMixin",
     "IplSubLevelFieldSplitMixin",
+    "IplSubLevelPreviousPoseAccessor",
     "IplHostingLevelTickRedirectMixin",
     "IplPlotChunkSendStampMixin",
     "IplHostedTicketManagerMixin",
@@ -88,6 +89,7 @@
     "client.IplHostedFlywheelVisualRerouteMixin",
     "client.IplSectionOcclusionGuardMixin",
     "client.SableSourceClipMixin",
+    "client.IplHostedSingleBlockChunkRenderMixin",
     "client.IplShaderInstanceClipMixin",
     "client.SableSubLevelBlockEntityClipMixin",
     "client.SableVanillaSubLevelBERMixin",
