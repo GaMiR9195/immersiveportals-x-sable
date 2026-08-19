@@ -28,16 +28,16 @@ import java.util.WeakHashMap;
  *
  * <p>The beam is the visible expression of the SAME frame algebra the server uses for the
  * PD goal: the owner's grab chain ({@link IplGrabChainClient}), plus one refinement for a
- * straddling body — when the grabbed anchor is past a live straddle-session plane, its
- * visible representation is the portal IMAGE, so the route gains that session link and
- * targets the image. Both facts are event-sourced (chain) or server-synced (session
- * store); nothing is chosen by comparing distances, latching first-seen portals, or
- * testing which side the player "probably" works from. The old implementation's
- * SESSION_PIN latch, per-frame length comparisons, and transit-frame plumbing are gone.
+ * straddling body - when the grabbed anchor's visible representation is the portal IMAGE,
+ * the route gains that session link and targets the image. Both facts are event-sourced
+ * (chain) or server-synced (session store); nothing is chosen by comparing distances,
+ * latching first-seen portals, or testing which side the player "probably" works from.
+ * The old implementation's SESSION_PIN latch, per-frame length comparisons, and
+ * transit-frame plumbing are gone.
  *
  * <p>Route transitions are continuous by construction: a chain link appears exactly when
  * a teleport/transit event maps the endpoint through that same portal, and the image
- * refinement toggles exactly at the session plane, where native and image coincide.
+ * refinement toggles exactly at the aperture, where native and image coincide.
  *
  * <p>Kept from the previous implementation because they are exact, not heuristic:
  * aperture clamping (a beam may bend at a portal edge but never vanish), segment
@@ -56,15 +56,21 @@ public final class IplStaffBeamRoutes {
     private static final Map<UUID, java.util.Set<UUID>> IMAGE_LATCH = new HashMap<>();
 
     /**
-     * Dead band, in blocks, around a session plane inside which the native/image choice is
-     * NOT re-decided. The claim that "native and image coincide at the plane, so toggling
-     * is visually continuous" is only true in exact arithmetic. In practice the anchor is
-     * a physics-driven point evaluated at a render partial-tick, so it jitters across the
-     * plane several times while the body is passing through, and every crossing swapped
-     * the beam endpoint between two representations that are a portal-transform apart --
-     * the visible "endpoint teleports a couple of times per transit".
+     * Dead band, in blocks, around the decision boundary inside which the native/image
+     * choice is NOT re-decided. The claim that "native and image coincide at the plane, so
+     * toggling is visually continuous" is only true in exact arithmetic. In practice the
+     * anchor is a physics-driven point evaluated at a render partial-tick, so it jitters
+     * across the boundary several times while the body is passing through, and every
+     * crossing swapped the beam endpoint between two representations that are a portal
+     * transform apart -- the visible "endpoint teleports a couple of times per transit".
      */
     private static final double IMAGE_HYSTERESIS = 0.05;
+
+    /**
+     * Lateral slack of a doorway, identical to the server detector's admission, the Atlas
+     * clip seam and the client session mirror. Only the two IN-PLANE axes use it.
+     */
+    private static final double APERTURE_MARGIN = 0.5;
 
     private record Kept(Route route, long gameTime, List<IplGrabLink> chain, UUID subId) {}
 
@@ -84,7 +90,7 @@ public final class IplStaffBeamRoutes {
      * @param links         frame hops from the staff world to the target's frame
      * @param target        beam endpoint, expressed in the FINAL frame (after all links)
      * @param imageRotation rotation of the straddle-session image refinement when the
-     *                      target is an image, identity otherwise — combined with the
+     *                      target is an image, identity otherwise - combined with the
      *                      chain fold it defines the mouse-rotation axis frame
      */
     public record Route(
@@ -135,10 +141,10 @@ public final class IplStaffBeamRoutes {
             || !IplGrabChainClient.chainFor(owner, sub.getUniqueId()).equals(kept.chain())) {
             LAST.remove(owner);
             LENGTHS.remove(owner);
-            // The image/plane latch is per (owner, portal) memory of a route that no
-            // longer exists. Keeping it across a chain change is what made a new grab
-            // start out in the previous grab's image frame -- the construction that
-            // stays visually split until the world is rejoined.
+            // The image latch is per (owner, portal) memory of a route that no longer
+            // exists. Keeping it across a chain change is what made a new grab start out
+            // in the previous grab's image frame -- the construction that stays visually
+            // split until the world is rejoined.
             IMAGE_LATCH.remove(owner);
             return null;
         }
@@ -175,22 +181,46 @@ public final class IplStaffBeamRoutes {
     }
 
     /**
-     * {@link #isPastPlane} with hysteresis and memory.
+     * Does the grabbed anchor's visible representation lie THROUGH this doorway? Sticky,
+     * with memory.
      *
-     * <p>Switching INTO the image representation requires the anchor to be clearly past
-     * the plane; switching back out requires it to be clearly in front. Between the two
-     * thresholds the previous answer is repeated, so a jittering anchor cannot make the
-     * endpoint oscillate. The band is deliberately far smaller than any visible distance
-     * (0.05 blocks), so the choice still flips essentially at the plane -- it just cannot
-     * flip more than once per pass.
+     * <p>THE DOORWAY IS A RECTANGLE, NOT A PLANE.
+     *
+     * <p>This used to ask only {@link #isPastPlane}: is the anchor on the far side of the
+     * session portal's infinite plane. A plane divides the entire world, so for a body that
+     * legitimately holds a session -- poked into a doorway, or resting in one -- every point
+     * beyond that plane answered yes, including points metres to the side of the frame and
+     * points far past it after the body drifted. The route then gained the session link and
+     * the endpoint jumped to a representation one portal transform away, which is exactly
+     * the beam pointing where the grabbed geometry is not. Nothing downstream can repair
+     * that: the wrong refinement is applied consistently, so it stays wrong for the whole
+     * grab.
+     *
+     * <p>A point is represented by the image only if it is behind the plane AND inside the
+     * finite aperture, laterally grown by the same {@link #APERTURE_MARGIN} the detector,
+     * the Atlas clip seam and the session mirror use. Both tests carry the existing
+     * {@link #IMAGE_HYSTERESIS} dead band -- entering the image representation requires
+     * being clearly past the plane and clearly inside the rectangle, leaving it requires
+     * being clearly in front or clearly outside -- so a jittering anchor still cannot flip
+     * the endpoint more than once per pass, on either axis of the decision.
      */
-    private static boolean isPastPlaneSticky(UUID owner, Portal portal, Vec3 point) {
-        double signed = point.subtract(portal.getOriginPos()).dot(portal.getNormal());
+    private static boolean targetsImageSticky(UUID owner, Portal portal, Vec3 point) {
+        Vec3 local = point.subtract(portal.getOriginPos());
+        double signed = local.dot(portal.getNormal());
+        double width = Math.abs(local.dot(portal.getAxisW()));
+        double height = Math.abs(local.dot(portal.getAxisH()));
+        double halfW = portal.getWidth() * 0.5 + APERTURE_MARGIN;
+        double halfH = portal.getHeight() * 0.5 + APERTURE_MARGIN;
+
         java.util.Set<UUID> latched =
             IMAGE_LATCH.computeIfAbsent(owner, key -> new java.util.HashSet<>());
         UUID id = portal.getUUID();
         boolean previously = latched.contains(id);
-        boolean now = previously ? signed < IMAGE_HYSTERESIS : signed < -IMAGE_HYSTERESIS;
+        boolean pastPlane = previously ? signed < IMAGE_HYSTERESIS : signed < -IMAGE_HYSTERESIS;
+        boolean insideAperture = previously
+            ? width <= halfW + IMAGE_HYSTERESIS && height <= halfH + IMAGE_HYSTERESIS
+            : width <= halfW - IMAGE_HYSTERESIS && height <= halfH - IMAGE_HYSTERESIS;
+        boolean now = pastPlane && insideAperture;
         if (now) {
             latched.add(id);
         } else {
@@ -214,14 +244,14 @@ public final class IplStaffBeamRoutes {
         boolean targetsImage = false;
 
         // Straddle refinement: while the body straddles a session portal and the grabbed
-        // anchor is past that portal's plane (crossing direction), the anchor's visible
-        // representation is the portal image — the beam must thread the aperture and end
-        // on visible geometry. At the plane both representations coincide, so toggling
-        // this refinement is visually continuous. Session order is server history
-        // (session-start order), not a per-frame race.
+        // anchor is inside that doorway and past its plane (crossing direction), the
+        // anchor's visible representation is the portal image - the beam must thread the
+        // aperture and end on visible geometry. At the aperture both representations
+        // coincide, so toggling this refinement is visually continuous. Session order is
+        // server history (session-start order), not a per-frame race.
         for (Portal session : IplStraddleSessionStore.resolveAllPortals(sub)) {
             if (session.isRemoved()) continue;
-            if (!isPastPlaneSticky(owner, session, nativeAnchor)) continue;
+            if (!targetsImageSticky(owner, session, nativeAnchor)) continue;
             IplGrabLink sessionLink = IplGrabLink.forward(session);
             links = IplGrabLink.append(links, sessionLink);
             target = sessionLink.transform(nativeAnchor);
@@ -232,7 +262,7 @@ public final class IplStaffBeamRoutes {
 
         // Frame-continuity validation: the route must start in the staff world and each
         // link must continue where the previous one ended. A mismatch is a transient
-        // desync (snapshot in flight during a hop) — return null and let retention
+        // desync (snapshot in flight during a hop) - return null and let retention
         // bridge it rather than drawing a wrong-frame beam.
         ResourceKey<Level> at = staffLevel.dimension();
         for (IplGrabLink link : links) {
@@ -245,7 +275,7 @@ public final class IplStaffBeamRoutes {
     }
 
     /**
-     * Where the local player's staff should AIM: the first endpoint the beam heads toward —
+     * Where the local player's staff should AIM: the first endpoint the beam heads toward -
      * the entrance aperture when the beam goes through a portal, or the joint itself for a
      * direct grab. Returns null to fall back to stock aiming.
      */
@@ -298,7 +328,7 @@ public final class IplStaffBeamRoutes {
 
     /**
      * The frame conversion for the mouse-rotation axis of this grab: the composed route
-     * rotation (chain fold, then the image refinement inverse — see the derivation in
+     * rotation (chain fold, then the image refinement inverse - see the derivation in
      * {@code IplStraddleStaffPick.unmapStaffInputAxis}). Null when no route resolves.
      */
     @Nullable
@@ -491,7 +521,7 @@ public final class IplStaffBeamRoutes {
      * Aperture point of the {@code from -> to} line on this link's doorway. Uses the LIVE
      * portal entity's exact quad raytrace when it is present and still where the snapshot
      * says (a moved portal invalidates the snapshot's doorway, not the frame mapping);
-     * otherwise intersects the snapshot plane and clamps into the snapshot rectangle —
+     * otherwise intersects the snapshot plane and clamps into the snapshot rectangle -
      * a beam can bend at the portal edge but can never vanish.
      */
     public static Vec3 clampToAperture(IplGrabLink link, Vec3 from, Vec3 to) {

@@ -47,16 +47,41 @@ public final class IplStraddleSessionStore {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-straddle-session-store");
 
+    /**
+     * Lateral slack of a doorway, matching the server's detector admission and the Atlas
+     * clip seam (both use 0.5). Only the two IN-PLANE axes are ever grown by it; the
+     * plane's own direction is never given thickness here.
+     */
+    private static final double APERTURE_MARGIN = 0.5;
+
     private record SessionPortal(UUID portalId, String portalNbtB64) {}
 
     /** Ship → active session portals (session-start order; empty never stored). */
     private static final ConcurrentMap<UUID, List<SessionPortal>> SESSIONS = new ConcurrentHashMap<>();
 
     /**
-     * Sessions the server has retired but the delayed render pose has not finished leaving.
-     * Atlas physics removes its image at the authoritative exit tick; rendering must keep the
-     * complementary clipped instances until the client catches up or a parent handoff remaps
-     * the pose atomically.
+     * Sessions that ended as COMPLETED crossings and whose delayed render pose has not
+     * finished leaving the doorway. Atlas physics removes its image at the authoritative
+     * exit tick; rendering must keep the complementary clipped instances until the client
+     * catches up or a parent handoff remaps the pose atomically.
+     *
+     * <p><b>A TAIL IS EARNED, NEVER INFERRED.</b> This map used to be filled by
+     * {@link RemoteCallables#snapshot}: any portal that disappeared from a ship's active
+     * list was retired. But a disappearance carries no information about WHY the session
+     * ended, and the two cases are opposites. A body that finished crossing still has
+     * geometry to draw on both sides for a few frames. A body that was pushed into a
+     * doorway and pulled back out has none — and it is usually left resting IN or beside
+     * that doorway, which is precisely the configuration
+     * {@link #stillRenderingThroughHalf} answers "yes" to. So the inferred tail for an
+     * aborted crossing never expired, and everything downstream of this mirror kept
+     * resolving a frame through a portal the body never went through: the source clip and
+     * projection ({@code SourceClipPortalFinder}), the staff pick's candidate resolution
+     * ({@code IplStraddleStaffPick.visibleHit}, which prefers the IMAGE candidate whenever
+     * a projection exists), and hence the grab chain seeded from that pick — which folds
+     * the beam through the portal's inverse for the entire duration of the grab.
+     *
+     * <p>Retirement now arrives explicitly, from {@link RemoteCallables#retire}, which the
+     * server sends only for session ends that mean the body finished passing through.
      */
     private static final ConcurrentMap<UUID, List<SessionPortal>> RETIRED = new ConcurrentHashMap<>();
 
@@ -218,14 +243,47 @@ public final class IplStraddleSessionStore {
     }
 
     /**
-     * Drops a render-only exit tail once {@code renderPose} is wholly on the session's
-     * native/source side. The portal normal points toward that side, so any negative corner
-     * is still an image-side fragment which needs the old source clip and projection.
+     * Drops a render-only exit tail once {@code renderPose} no longer occupies the session's
+     * doorway.
+     *
+     * <p>THE TAIL IS BOUNDED BY THE APERTURE, NOT BY THE PLANE.
+     *
+     * <p>This used to ask a single question against the INFINITE plane: "is any corner of the
+     * delayed render pose on the portal's own side of it?". A portal plane divides the whole
+     * world, so that answer stays true for a body that is nowhere near the doorway — a
+     * construction that left a floor portal and then fell two hundred blocks is still,
+     * trivially, "below" it. The retired session therefore never retired: it kept a clip
+     * plane and a straddle projection alive for the rest of the body's life.
+     *
+     * <p>Everything that resolves a frame from this mirror then disagreed with the body's
+     * real state. {@code IplStraddleStaffPick.visibleHit} prefers the straddle-IMAGE
+     * candidate whenever a projection exists, and {@code IplStaffBeamRoutes} folds the beam
+     * through that same portal — so the Creative Physics Staff beam kept pointing through a
+     * doorway the body had left long ago.
+     *
+     * <p>A tail is only meaningful while the delayed pose still occupies the doorway, so the
+     * test is the conjunction of BOTH properties of an image-side fragment: it is behind the
+     * plane, AND it is inside the finite rectangle (laterally grown by the same
+     * {@link #APERTURE_MARGIN} the server's clip seam and the detector use). Both are
+     * measured on the same eight corners, so nothing else about the tail changes.
+     *
+     * <p>Note that this bound is an EXPIRY, not an admission test: it can only shorten a
+     * tail's life. Whether a tail may exist at all is decided by the server, which knows
+     * whether the crossing completed — see {@link #RETIRED}.
      */
     private static boolean stillRenderingThroughHalf(ClientSubLevel sub, Portal portal) {
         BoundingBox3ic bounds = sub.getPlot().getBoundingBox();
         net.minecraft.world.phys.Vec3 origin = portal.getOriginPos();
         net.minecraft.world.phys.Vec3 normal = portal.getNormal();
+        net.minecraft.world.phys.Vec3 axisW = portal.getAxisW();
+        net.minecraft.world.phys.Vec3 axisH = portal.getAxisH();
+        double halfW = portal.getWidth() * 0.5 + APERTURE_MARGIN;
+        double halfH = portal.getHeight() * 0.5 + APERTURE_MARGIN;
+        boolean behindPlane = false;
+        double minW = Double.POSITIVE_INFINITY;
+        double maxW = Double.NEGATIVE_INFINITY;
+        double minH = Double.POSITIVE_INFINITY;
+        double maxH = Double.NEGATIVE_INFINITY;
         for (int x = 0; x < 2; x++) {
             double px = x == 0 ? bounds.minX() : bounds.maxX() + 1.0;
             for (int y = 0; y < 2; y++) {
@@ -234,11 +292,23 @@ public final class IplStraddleSessionStore {
                     double pz = z == 0 ? bounds.minZ() : bounds.maxZ() + 1.0;
                     net.minecraft.world.phys.Vec3 world = sub.renderPose().transformPosition(
                         new net.minecraft.world.phys.Vec3(px, py, pz));
-                    if (world.subtract(origin).dot(normal) < 0.0) return true;
+                    net.minecraft.world.phys.Vec3 local = world.subtract(origin);
+                    if (local.dot(normal) < 0.0) behindPlane = true;
+                    double w = local.dot(axisW);
+                    double h = local.dot(axisH);
+                    minW = Math.min(minW, w);
+                    maxW = Math.max(maxW, w);
+                    minH = Math.min(minH, h);
+                    maxH = Math.max(maxH, h);
                 }
             }
         }
-        return false;
+        if (!behindPlane) return false;
+        // The corner extents are a conservative box around the rendered body expressed in
+        // the portal's own in-plane frame. Overlapping the rectangle on BOTH in-plane axes
+        // is what makes a behind-plane fragment part of THIS doorway rather than part of
+        // the world behind it.
+        return maxW >= -halfW && minW <= halfW && maxH >= -halfH && minH <= halfH;
     }
 
     /** Active sessions plus only the retired sessions still present in the delayed pose. */
@@ -352,11 +422,15 @@ public final class IplStraddleSessionStore {
         /**
          * Full per-ship snapshot: ';'-joined {@code portalUuid:base64Nbt} entries,
          * empty = no sessions.
+         *
+         * <p>A snapshot describes only WHICH sessions exist. It deliberately does not
+         * create render tails any more: a portal missing from this list may be missing
+         * because the body crossed, or because it backed out, and those two cases are
+         * indistinguishable here. {@link #retire} carries that distinction.
          */
         public static void snapshot(String shipUuid, String portalPayload) {
             try {
                 UUID shipId = UUID.fromString(shipUuid);
-                List<SessionPortal> previous = SESSIONS.get(shipId);
                 List<SessionPortal> parsed = List.of();
                 if (portalPayload == null || portalPayload.isEmpty()) {
                     SESSIONS.remove(shipId);
@@ -380,21 +454,8 @@ public final class IplStraddleSessionStore {
                     }
                 }
 
-                // Keep an ended split only until the delayed render pose clears its plane.
-                // It covers both native eye-space and the portal render pass without keeping
-                // a retired Atlas image collider alive on the server.
-                if (previous != null) {
-                    List<SessionPortal> retired = new ArrayList<>(previous.size());
-                    List<SessionPortal> alreadyRetired = RETIRED.get(shipId);
-                    if (alreadyRetired != null) retired.addAll(alreadyRetired);
-                    for (SessionPortal old : previous) {
-                        if (!containsPortal(parsed, old.portalId())
-                            && !containsPortal(retired, old.portalId())) {
-                            retired.add(old);
-                        }
-                    }
-                    if (!retired.isEmpty()) RETIRED.put(shipId, List.copyOf(retired));
-                }
+                // A session that became active again owns its own split; any tail for the
+                // same portal is superseded by it.
                 List<SessionPortal> oldRetired = RETIRED.get(shipId);
                 if (oldRetired != null && !parsed.isEmpty()) {
                     List<SessionPortal> remaining = new ArrayList<>(oldRetired.size());
@@ -413,6 +474,39 @@ public final class IplStraddleSessionStore {
                 IplStraddleRenderCache.invalidateActivePasses();
             } catch (Throwable t) {
                 LOG.error("[IPL-STRADDLE-SYNC] bad snapshot for {}", shipUuid, t);
+            }
+        }
+
+        /**
+         * A session ended as a COMPLETED crossing: keep it as a render-only tail until the
+         * delayed pose has finished leaving the doorway.
+         *
+         * <p>Sent by the server immediately BEFORE the snapshot that drops the portal from
+         * the active list, on the same ordered channel, so the tail is in place before its
+         * session disappears. Ends that did not complete a crossing never send this, and
+         * therefore leave no tail at all — the projection, the clip and the beam's frame
+         * stop referencing the doorway on the same tick the server released it.
+         */
+        public static void retire(
+            String shipUuid, String portalUuid, String portalNbtB64, String reason
+        ) {
+            try {
+                UUID shipId = UUID.fromString(shipUuid);
+                UUID portalId = UUID.fromString(portalUuid);
+                List<SessionPortal> existing = RETIRED.get(shipId);
+                if (existing != null && containsPortal(existing, portalId)) return;
+
+                List<SessionPortal> next =
+                    new ArrayList<>(existing == null ? 1 : existing.size() + 1);
+                if (existing != null) next.addAll(existing);
+                next.add(new SessionPortal(portalId, portalNbtB64 == null ? "" : portalNbtB64));
+                RETIRED.put(shipId, List.copyOf(next));
+
+                LOG.debug("[IPL-STRADDLE-SYNC] retire ship={} portal={} ({})",
+                    shipId, portalId, reason);
+                IplStraddleRenderCache.invalidateActivePasses();
+            } catch (Throwable t) {
+                LOG.error("[IPL-STRADDLE-SYNC] bad retire for {}", shipUuid, t);
             }
         }
     }

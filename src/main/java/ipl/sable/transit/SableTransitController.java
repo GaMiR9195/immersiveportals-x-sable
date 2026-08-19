@@ -217,6 +217,13 @@ public final class SableTransitController {
             // earlier trail never met the plane. A body fully beyond B transits immediately
             // if its trail crossed the aperture; there is no endpoint fallback detector.
             boolean candidateAddedForAirship = false;
+            /**
+             * Set when the scan stops early and leaves portals of THIS body unexamined.
+             * The reap below removes any session whose pair was not derivable this tick,
+             * and "not examined" is not "not derivable": see the retention block after
+             * the loop.
+             */
+            boolean scanAbandoned = false;
             for (Portal portal : nearby) {
                 if (!ipl$isCanonicalEntranceFace(portal, nearby)) continue;
 
@@ -314,25 +321,32 @@ public final class SableTransitController {
                     continue;
                 }
 
-                // A SEGMENT THAT BEGINS AT A DOORWAY ALREADY STARTED SOURCE-SIDE.
+                // ENTRY EVIDENCE IS PER PORTAL, AND THE ANCHOR ALREADY PROVIDES IT.
                 //
-                // startedBeforePortalPlane() asks whether trail.start sits behind THIS
-                // portal's plane. After a rehome the trail is deliberately re-seeded at the
-                // exit anchor, which sits 0.01 PAST the rectangle the body just left -- and
-                // in a loop that rectangle IS, geometrically, the rectangle of the next
-                // doorway. So the test answered "no" about a body that had just flown out of
-                // the paired portal: the candidate was never built, the loop produced no
-                // rehome at all, and the straddle session of the previous doorway stayed
-                // open forever. That is the whole "session never closes" symptom.
+                // startedBeforePortalPlane() asks whether the segment's oldest pose sits
+                // behind THIS portal's plane, which is exactly the question a rehome needs
+                // answered. This used to be OR'd with hasBufferedExit(airship) -- a fact
+                // about the BODY ("this segment begins at some doorway"), applied to every
+                // candidate portal in the scan. For a whole tick after any flip, every
+                // portal near the body therefore counted as entered from its source side,
+                // so a body merely flying PAST a doorway -- falling alongside the floor
+                // portal of a loop -- could be rehomed through a crossing it never made.
+                // That is an A<->B ping-pong at zero travelled distance, and it drops the
+                // construction out of the bottom of the loop.
                 //
-                // For an exit-seeded segment the proof of a real forward crossing is already
-                // complete without it: sweptIntersectsPortalAperture() is a finite swept
-                // intersection of THIS aperture, and sweptEntryDirection() is signed
-                // source->destination. Demanding a pose behind the plane on top of that only
-                // re-asks where the segment happened to be cut, so it is dropped exactly
-                // there and kept everywhere else.
-                boolean startedSourceSide = state.startedBeforePortalPlane()
-                    || PortalCrossingDetector.hasBufferedExit(airship);
+                // The disjunct is not needed by a real loop either. captureTrail() seeds
+                // trail.start from the exit anchor, so for the NEXT doorway that start is
+                // genuinely behind its plane and the geometric test answers true on its own
+                // -- that is what the anchor exists for. The only case the disjunct could
+                // add is the COINCIDENT one, where the rectangle being "entered" IS the
+                // rectangle the body just left, and that crossing is precisely the one that
+                // must never be admitted (see PortalCrossingDetector.entryWithinExitSlab).
+                //
+                // A session that genuinely fails to close is handled where it belongs: by
+                // the per-tick ipl$settleExit above and by the geometric release in
+                // PortalCrossingDetector.settleExit, neither of which needs to invent an
+                // entry through an unrelated face.
+                boolean startedSourceSide = state.startedBeforePortalPlane();
                 boolean completedOwnedCrossing = haveSession
                     ? ipl$continuesThroughOwnedFace(state, true)
                     : startedSourceSide
@@ -414,6 +428,13 @@ public final class SableTransitController {
                             continue;
                         }
                         IplAtlasStraddleSession.clear(key, reason);
+                        // RETRACT THE CLIENT MIRROR HERE, WITH THE REAL REASON. This branch
+                        // used to clear only the physical session and let the reap below
+                        // notice the orphaned sync key later in the same tick. That worked
+                        // by accident of ordering, reported the end as "reaped", and stops
+                        // working now that the reap deliberately retains keys the scan never
+                        // examined -- including everything after an abandoned scan.
+                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, reason);
                         // The source-frame debug buffer is replaced in the same tick as
                         // a complete exit, rather than waiting for next tick's capture.
                         IplEnteringVolumeVisualization.replaceBuffer(airship);
@@ -433,13 +454,39 @@ public final class SableTransitController {
                         PortalCrossingDetector.resetTrail(airship);
                         // Do not evaluate the opposite coincident face using the unwound
                         // segment. Fresh trail starts next tick from this real source pose.
+                        scanAbandoned = true;
                         break;
                     }
                     // Unconditional + idempotent: a synced session whose spawn kept
                     // failing has no local session key but must still be retracted.
                     IplStraddleSessionSync.onSessionEnd(level.getServer(), key, reason);
                 }
-                if (candidateAddedForAirship) break;
+                if (candidateAddedForAirship) {
+                    scanAbandoned = true;
+                    break;
+                }
+            }
+
+            // "NOT EXAMINED" IS NOT "NOT DERIVABLE".
+            //
+            // The reap below destroys every session whose (ship, portal) pair was not
+            // derived during this tick's scan. Both breaks above abandon the remaining
+            // portals of this body, so any OTHER live session of the same ship was absent
+            // from seenHostedKeys purely because nothing looked at it -- and it was reaped:
+            // image collider and clip regions torn down and rebuilt on alternating ticks,
+            // with the client re-announced each time. That is the session flapping on a
+            // slow pass through a multi-face doorway, and it is why the staff frame (hence
+            // the beam) changed under the player's hands mid-pass.
+            //
+            // An abandoned scan proved nothing about the pairs it never reached, so their
+            // still-live keys are retained. A pair that really has become underivable is
+            // reaped on the next tick that scans it to the end, which is the same
+            // declarative contract the reap always had -- one tick later at worst.
+            if (scanAbandoned) {
+                for (StraddleKey unexamined
+                    : IplAtlasStraddleSession.sessionKeysFor(airship.getUniqueId())) {
+                    seenHostedKeys.add(unexamined);
+                }
             }
 
             if (candidateAddedForAirship) {
@@ -484,6 +531,15 @@ public final class SableTransitController {
         // buffered exit pose is what makes consecutive ticks continuous, so a doorway chain
         // is walked one portal per tick with no gap and nothing skipped, however fast the
         // body moves between them.
+        //
+        // THE CAP IS ALSO THE CEILING ON SPEED. One portal per tick means a loop whose
+        // portals are N blocks apart is walked at N blocks per tick and no faster: past
+        // that, the segment spans several doorways, one crossing is executed, and the rest
+        // of the segment is travelled in the chart it should already have left -- the body
+        // passes straight through. Lifting it means re-scanning the same body after a flip
+        // while the rebased remainder [crossingTime, 1] still meets portals, which is
+        // possible (the remainder is already expressed in the destination frame) but
+        // multiplies parent handoffs within a tick and needs its own testing.
         java.util.Set<UUID> flippedThisTick = new java.util.HashSet<>();
         for (TransitCandidate c : candidates) {
             UUID uuid = c.airship.getUniqueId();

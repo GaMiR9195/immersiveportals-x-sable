@@ -3,11 +3,13 @@ package ipl.sable.client;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.dim.SableSubLevelDimension;
 import ipl.sable.duck.IplSubLevelDuck;
 import ipl.sable.mixin.client.IplClientSubLevelRenderPoseAccessor;
+import ipl.sable.mixin.client.IplSnapshotInterpolatorAccessor;
 import ipl.sable.mixin.client.IplSubLevelLastPoseAccessor;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.registries.Registries;
@@ -35,17 +37,25 @@ import java.util.UUID;
  * the redirected start-tracking packet; its duck {@code parentLevel} defaults to the hosting
  * level. This call points it at the actual parent {@code ClientLevel} so the renderer and
  * client-side collision know which dimension the airship appears in.
+ *
+ * <p>It also owns the client half of a portal crossing. See
+ * {@code docs/portal-aware-interpolation.md} for the model; the short version is that there
+ * is exactly ONE canonical frame at any instant -- the frame the client is currently drawing
+ * in -- and a portal crossing is a change of chart, not a change of motion:
+ *
+ * <ul>
+ *   <li>While a handoff is queued, destination-frame snapshots are mapped BACK into the
+ *       current client frame ({@link #mapPendingDestinationSnapshotBack}), so the body keeps
+ *       flying straight through the doorway and overshoots it exactly as the server did.</li>
+ *   <li>When the handoff commits, the retained history is mapped FORWARD through the same
+ *       isometry. A portal isometry commutes with lerp/slerp, so the sampled curve is
+ *       identical -- only re-expressed. No ticks are added, none are dropped, and the
+ *       interpolation window stays Sable's original 6 ticks.</li>
+ * </ul>
  */
 public final class IplParentDimSync {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-parent-sync");
-
-    /**
-     * How far past the exit rectangle the visual departure pose is placed. Kept equal to
-     * {@code PortalCrossingDetector.EXIT_ANCHOR_OFFSET} so the client's visual exit point
-     * and the server's armed exit anchor are the SAME point, not two points 0.01 apart.
-     */
-    private static final double EXIT_PLANE_CLEARANCE = 0.01;
 
     /** RPC delivery can precede the redirected full-sync that creates the client sub-level. */
     private static final Map<UUID, java.util.ArrayDeque<PendingHandoff>> PENDING_HANDOFFS = new HashMap<>();
@@ -53,14 +63,39 @@ public final class IplParentDimSync {
     /** Parent stamps that arrived before their client sub-level was created (retried per tick). */
     private static final Map<UUID, PendingParentStamp> PENDING_PARENT_STAMPS = new HashMap<>();
 
+    /**
+     * A queued handoff is applied unconditionally after this long, even without a client-side
+     * exit proof. The server has already rehomed the body, so staying in the source frame
+     * forever is strictly worse than a single mapped frame switch. 1000 ms is ~20 ticks --
+     * well past Sable's 6-tick interpolation window -- so this never races a healthy crossing
+     * and only fires when the aperture proof is genuinely never going to arrive (portal entity
+     * out of client render range, sweep recorded on a different portal, etc.).
+     */
+    private static final long HANDOFF_FORCE_MS = 1_000L;
+
+    /**
+     * Pre-allocation handoffs are consumed by the parent stamp that follows them. If that
+     * stamp never arrives, the entry has to expire or it leaks for the whole session and keeps
+     * mapping every later snapshot back through a portal nobody crossed. Same horizon
+     * {@code PENDING_PARENT_STAMPS} already used.
+     */
+    private static final long ALLOCATION_WAIT_TIMEOUT_MS = 30_000L;
+
     private record PendingParentStamp(String parentDimId, long queuedAtMs) {}
 
     private IplParentDimSync() {}
 
     private record PendingHandoff(
         String parentDimId, String portalTransform, String portalNbtB64,
-        boolean awaitingClientAllocation
+        boolean awaitingClientAllocation, long queuedAtMs
     ) {}
+
+    private static PendingHandoff pendingHandoff(
+        String parentDimId, String portalTransform, String portalNbtB64, boolean awaitingClientAllocation
+    ) {
+        return new PendingHandoff(parentDimId, portalTransform, portalNbtB64,
+            awaitingClientAllocation, System.currentTimeMillis());
+    }
 
     private static long ipl$lastDiagMs = 0;
 
@@ -76,8 +111,10 @@ public final class IplParentDimSync {
 
         SubLevelContainer container = IplClientHostedLookup.getHostingContainerOrNull();
         if (container == null) return;
+        boolean sawHosted = false;
         for (SubLevel sub : container.getAllSubLevels()) {
             if (!(sub instanceof ClientSubLevel clientSub) || sub.isRemoved()) continue;
+            sawHosted = true;
             Level parent = ipl.sable.dim.IplDimAgnostic.getParentLevel(sub);
             var pos = clientSub.renderPose().position();
             LOG.info("[IPL-CLIENT-DIAG] ship={} parent={} pose=({},{},{}) portal={}",
@@ -87,34 +124,60 @@ public final class IplParentDimSync {
                 String.format("%.1f", pos.z()),
                 IplStraddleSessionStore.debugPortalKind(clientSub));
         }
+        // A hosted body exists, so Sable's isSingleBlock() has certainly been asked about it
+        // by now. If our routing injector never fired, the method was renamed and one-block
+        // bodies are silently back on the eye-space path. Say so once instead of leaving a
+        // camera-dependent triangular cut to be rediscovered by eye.
+        IplHostedRenderRouting.verifyRoutingHook(sawHosted);
     }
 
     /** Retries handoffs that arrived before their client sub-level was created. */
     public static void applyPendingHandoffs() {
         if (!PENDING_HANDOFFS.isEmpty()) {
+            long now = System.currentTimeMillis();
             Iterator<Map.Entry<UUID, java.util.ArrayDeque<PendingHandoff>>> iterator =
                 PENDING_HANDOFFS.entrySet().iterator();
             while (iterator.hasNext()) {
                 Map.Entry<UUID, java.util.ArrayDeque<PendingHandoff>> entry = iterator.next();
                 java.util.ArrayDeque<PendingHandoff> pending = entry.getValue();
                 try {
+                    if (pending.isEmpty()) {
+                        iterator.remove();
+                        continue;
+                    }
                     // A fresh destination full-sync already carries destination-frame poses.
                     // Wait for its parent stamp to consume this queue instead of mapping those
                     // initial poses through the portal a second time.
-                    if (pending.peekFirst().awaitingClientAllocation()) continue;
+                    if (pending.peekFirst().awaitingClientAllocation()) {
+                        if (now - pending.peekFirst().queuedAtMs() > ALLOCATION_WAIT_TIMEOUT_MS) {
+                            IplStraddleSessionStore.clearAllVisualState(entry.getKey());
+                            iterator.remove();
+                            LOG.debug("[IPL-PARENT-SYNC] expired pre-allocation handoff queue for {}",
+                                entry.getKey());
+                        }
+                        continue;
+                    }
                     // A client can receive several ordered parent flips before the redirected
                     // full-sync creates its hosted sub-level. Apply every transform in order:
                     // keeping only the latest transform maps an original-frame pose through a
                     // later portal and breaks portal chains/self-recursive portals.
                     while (!pending.isEmpty()) {
                         PendingHandoff next = pending.peekFirst();
+                        int queuedBefore = pending.size();
+                        boolean force = now - next.queuedAtMs() > HANDOFF_FORCE_MS;
                         RemoteCallables.beginHandoffVisual(entry.getKey(), next);
-                        if (!RemoteCallables.applyHandoffWhenVisuallyClear(
-                            entry.getKey(), next.parentDimId(), next.portalTransform(), next.portalNbtB64()
-                        )) {
+                        if (!RemoteCallables.applyHandoffWhenVisuallyClear(entry.getKey(), next, force)) {
                             break;
                         }
-                        pending.removeFirst();
+                        // applyHandoff() dequeues the head itself, under the interpolator's
+                        // monitor, so the map-back chain and the mapped history can never
+                        // disagree for even one snapshot. Guard against a future refactor
+                        // reporting success without consuming the head and spinning here.
+                        if (pending.size() == queuedBefore) {
+                            LOG.error("[IPL-PARENT-SYNC] handoff for {} reported applied but stayed queued",
+                                entry.getKey());
+                            pending.removeFirst();
+                        }
                     }
                     if (pending.isEmpty()) iterator.remove();
                 } catch (Throwable t) {
@@ -130,9 +193,14 @@ public final class IplParentDimSync {
     }
 
     /**
-     * While visual handoff waits for delayed source geometry to exit, incoming server snapshots
-     * are already in the destination frame. Express them back in the current client frame so
-     * Sable never interpolates a source pose directly toward a destination coordinate.
+     * While a visual handoff waits for delayed source geometry to exit, incoming server
+     * snapshots are already in the destination frame. Express them back in the current client
+     * frame so Sable never interpolates a source pose directly toward a destination coordinate.
+     *
+     * <p>This is what makes the overshoot look right rather than merely tolerable: the mapped
+     * image of the destination trajectory is the exact continuation of the source trajectory
+     * through the doorway, so the body keeps its velocity, crosses the portal plane at the
+     * same sub-tick instant the server did, and the clip does the rest.
      */
     public static Pose3dc mapPendingDestinationSnapshotBack(UUID subLevelId, Pose3dc snapshot) {
         java.util.ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.get(subLevelId);
@@ -147,6 +215,21 @@ public final class IplParentDimSync {
         return mapped;
     }
 
+    /**
+     * Leaves the map-back chain for {@code subLevelId}. Called from inside
+     * {@code applyHandoff}, while the interpolator buffer monitor is held, so a snapshot
+     * arriving off-thread is either fully mapped back (still queued) or not mapped at all
+     * (already committed) -- never one frame out of step with the buffer it lands in.
+     *
+     * <p>Only the deque is touched; the map entry itself is reaped by
+     * {@link #applyPendingHandoffs()} through its iterator, so this can be called during that
+     * iteration without a {@code ConcurrentModificationException}.
+     */
+    private static void dropQueuedHead(UUID subLevelId) {
+        java.util.ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.get(subLevelId);
+        if (pending != null) pending.pollFirst();
+    }
+
     /** Retries parent stamps that raced their StartTracking allocation. */
     private static void applyPendingParentStamps() {
         if (PENDING_PARENT_STAMPS.isEmpty()) return;
@@ -156,7 +239,7 @@ public final class IplParentDimSync {
         while (iterator.hasNext()) {
             Map.Entry<UUID, PendingParentStamp> entry = iterator.next();
             try {
-                if (now - entry.getValue().queuedAtMs() > 30_000) {
+                if (now - entry.getValue().queuedAtMs() > ALLOCATION_WAIT_TIMEOUT_MS) {
                     IplStraddleSessionStore.clearAllVisualState(entry.getKey());
                     iterator.remove(); // ship never materialized client-side — stop retrying
                     continue;
@@ -220,10 +303,10 @@ public final class IplParentDimSync {
 
         /**
          * Atomically switches an already-tracked ship from its source frame to its
-         * destination frame. Unlike a normal parent stamp, this also resets Sable's
-         * interpolation timeline into destination space. The server pose is deliberately not
-         * used as the baseline: it is ahead of Sable's interpolation delay and would produce
-         * a visible forward jump on every smooth crossing.
+         * destination frame. Unlike a normal parent stamp, this also re-expresses Sable's
+         * interpolation timeline in destination space. The server pose is deliberately not
+         * used as a baseline: it is ahead of Sable's interpolation delay and would produce a
+         * visible forward jump on every smooth crossing.
          */
         public static void handoff(
             String subLevelUuid, String parentDimId, String portalTransform, String portalNbtB64
@@ -234,8 +317,8 @@ public final class IplParentDimSync {
                 // The body pose is still in the first portal's source frame until the FIFO
                 // is drained, so every portal transform must compose in wire order.
                 java.util.ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.get(subLevelId);
-                if (pending != null) {
-                    pending.addLast(new PendingHandoff(parentDimId, portalTransform, portalNbtB64, false));
+                if (pending != null && !pending.isEmpty()) {
+                    pending.addLast(pendingHandoff(parentDimId, portalTransform, portalNbtB64, false));
                     return;
                 }
                 SubLevel subLevel = findHostedSubLevel(subLevelUuid, parentDimId);
@@ -243,14 +326,12 @@ public final class IplParentDimSync {
                     // No source-frame client object exists. Its eventual full sync is already
                     // destination-frame, so never create a source-side visual tail for it.
                     PENDING_HANDOFFS.computeIfAbsent(subLevelId, ignored -> new java.util.ArrayDeque<>())
-                        .addLast(new PendingHandoff(parentDimId, portalTransform, portalNbtB64, true));
+                        .addLast(pendingHandoff(parentDimId, portalTransform, portalNbtB64, true));
                     return;
                 }
-                if (!applyHandoffWhenVisuallyClear(
-                    subLevelId, parentDimId, portalTransform, portalNbtB64
-                )) {
-                    PendingHandoff handoff = new PendingHandoff(
-                        parentDimId, portalTransform, portalNbtB64, false);
+                PendingHandoff handoff = pendingHandoff(
+                    parentDimId, portalTransform, portalNbtB64, false);
+                if (!applyHandoffWhenVisuallyClear(subLevelId, handoff, false)) {
                     PENDING_HANDOFFS.computeIfAbsent(subLevelId, ignored -> new java.util.ArrayDeque<>())
                         .addLast(handoff);
                     beginHandoffVisual(subLevelId, handoff);
@@ -262,24 +343,44 @@ public final class IplParentDimSync {
 
         /**
          * Keep a server-completed handoff queued until Sable's delayed render volume has
-         * fully cleared the source plane. Mapping it earlier turns the still-visible source
+         * fully cleared the source plane. Committing earlier turns the still-visible source
          * half into a destination pose, producing the end-edge cut and a small rehome jerk.
+         *
+         * @param force apply without a client-side exit proof (see {@code HANDOFF_FORCE_MS}).
+         *              A queued handoff must not be able to stall forever: the server has
+         *              already moved the body, and the source frame is the one that is wrong.
          */
         private static boolean applyHandoffWhenVisuallyClear(
-            UUID subLevelId, String parentDimId, String portalTransform, String portalNbtB64
+            UUID subLevelId, PendingHandoff handoff, boolean force
         ) {
+            String parentDimId = handoff.parentDimId();
             SubLevel subLevel = findHostedSubLevel(subLevelId.toString(), parentDimId);
-            if (!(subLevel instanceof ClientSubLevel clientSubLevel)) return false;
-            PortalMapping mapping = PortalMapping.decode(portalTransform);
-            if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(clientSubLevel)
-                instanceof ClientLevel sourceLevel)) return false;
-            qouteall.imm_ptl.core.portal.Portal portal = IplStraddleSessionStore.resolveHandoffPortal(
-                mapping.portalId(), portalNbtB64, sourceLevel);
-            if (portal == null
-                || !IplClientVisualTransitLatch.hasForwardApertureSweep(clientSubLevel, portal)) {
-                return false;
+            if (!(subLevel instanceof ClientSubLevel clientSubLevel)) {
+                if (!force) return false;
+                // The body disappeared client-side while its handoff was queued, so no proof
+                // can ever be produced. Drop the entry instead of mapping every future
+                // snapshot back through a portal that is no longer relevant to anything.
+                dropQueuedHead(subLevelId);
+                IplStraddleSessionStore.clearAllVisualState(subLevelId);
+                LOG.warn("[IPL-PARENT-SYNC] dropped queued handoff for vanished client sub-level {}",
+                    subLevelId);
+                return true;
             }
-            if (!mapping.hasFullyClearedSourcePlane(clientSubLevel)) return false;
+            PortalMapping mapping = PortalMapping.decode(handoff.portalTransform());
+            if (force) {
+                LOG.warn("[IPL-PARENT-SYNC] forcing handoff for {} after {} ms with no exit proof",
+                    subLevelId, HANDOFF_FORCE_MS);
+            } else {
+                if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(clientSubLevel)
+                    instanceof ClientLevel sourceLevel)) return false;
+                qouteall.imm_ptl.core.portal.Portal portal = IplStraddleSessionStore.resolveHandoffPortal(
+                    mapping.portalId(), handoff.portalNbtB64(), sourceLevel);
+                if (portal == null
+                    || !IplClientVisualTransitLatch.hasForwardApertureSweep(clientSubLevel, portal)) {
+                    return false;
+                }
+                if (!mapping.hasFullyClearedSourcePlane(clientSubLevel)) return false;
+            }
             applyHandoff(subLevelId, parentDimId, mapping);
             IplStraddleSessionStore.clearHandoffVisual(subLevelId);
             IplStraddleSessionStore.releaseHandoffPortal();
@@ -304,6 +405,47 @@ public final class IplParentDimSync {
             return true;
         }
 
+        /**
+         * Commits the frame switch: the whole client-side timeline is re-expressed in
+         * destination space, ownership flips, and cached render state is dropped.
+         *
+         * <p><b>Why re-expressing beats reseeding.</b> A portal handoff is a change of chart,
+         * not a change of motion. The portal mapping {@code P} is an isometry composed with a
+         * uniform scale, so it commutes with the interpolation Sable performs:
+         * {@code P(lerp(a, b, u)) == lerp(P(a), P(b), u)} for positions and
+         * {@code P(slerp(qa, qb, u)) == slerp(P(qa), P(qb), u)} for orientations, because
+         * {@code P} acts on the left. Mapping every retained snapshot therefore yields the
+         * SAME sampled curve, merely written in the destination chart. Nothing about the
+         * timing changes: no snapshot is added or removed, {@code gameTick} values are
+         * untouched, and {@code tick(backTick)} keeps its original
+         * {@code bufferStartTime = backTick - 6} window. "6 ticks in the original" stays
+         * exactly 6 ticks here.
+         *
+         * <p>The previous implementation cleared the buffer and reseeded two synthetic
+         * endpoints (doorway pose, rehome pose). That was the source of the remaining
+         * artefacts, and it was unfixable in place:
+         *
+         * <ul>
+         *   <li>{@code getSampleAt} needs a snapshot at or before {@code backTick}. After a
+         *       clear, the oldest snapshot is the crossing tick itself, which is ~6 ticks in
+         *       the future relative to the delayed render clock, so {@code before} stayed
+         *       null for the whole window and the body sat FROZEN on the doorway before
+         *       jerking to the rehome point.</li>
+         *   <li>Dead reckoning needs {@code beforeBefore}; a two-entry buffer cannot provide
+         *       it, so a single dropped packet right after a crossing produced a visible
+         *       stall exactly where motion is most conspicuous.</li>
+         *   <li>The synthetic "doorway" endpoint had to be recomputed client-side
+         *       ({@code projectOntoExitPlane}), duplicating a decision the server already
+         *       makes in {@code PortalCrossingDetector.projectOntoExitPlane}. Two independent
+         *       implementations of the same clamp is one too many; the client copy is gone.</li>
+         * </ul>
+         *
+         * <p>Because incoming snapshots were already being mapped BACK into the source frame
+         * while the handoff was queued, the retained history and the newest snapshots are in
+         * one single frame at this point. Mapping that single frame forward is therefore
+         * total and unambiguous -- there is no mixed-frame buffer to reason about, and no
+         * seam tick to invent.
+         */
         private static void applyHandoff(
             UUID subLevelId, String parentDimId, PortalMapping mapping
         ) {
@@ -316,98 +458,14 @@ public final class IplParentDimSync {
             // really happened, so the proof stays and only the stale prediction goes.
             IplClientVisualTransitLatch.clearPredictionKeepingProof(subLevelId);
 
-            // Where the rehome actually put the body, in destination space. This is the END
-            // of the visual exit segment.
-            Pose3d mappedLogicalPose = mapping.mapPose(new Pose3d(clientSubLevel.logicalPose()));
-            // The pre-crossing endpoint, mapped. On its own this is NOT a usable start for
-            // the exit segment: before the crossing the body was still short of the
-            // entrance, so its image sits BEHIND the exit rectangle. In a vertical loop
-            // (top portal -> bottom portal) "behind the bottom portal" is ABOVE the
-            // ceiling, which is exactly the reported symptom -- the interpolation was
-            // teleported along with the sub-level and surfaced above the loop.
-            Pose3d mappedLastPose = mapping.mapPose(new Pose3d(clientSubLevel.lastPose()));
-            // ...so clamp it forward onto the doorway. This is the START of the visual exit
-            // segment: the pose whose trailing face rests on the exit rectangle, 0.01 past
-            // it -- the same clearance the server uses when it arms the exit anchor.
-            Pose3d exitPose = mapping.projectOntoExitPlane(clientSubLevel, mappedLastPose);
-
-            // Leaving the timeline untouched is what produced the flicker along the whole
-            // transition, and the two earlier attempts failed for opposite reasons: mapping
-            // the whole buffer put the visual history one loop-height off, collapsing it
-            // onto the doorway removed all motion and made the body vanish. The mechanism
-            // behind that vanishing is worth keeping written down:
-            //
-            // IplClientVisualTransitLatch refuses to switch the visual frame unless this
-            // client can prove the body swept forward through the finite aperture. That
-            // proof is either FORWARD_SWEEPS (recorded during the approach) or, failing
-            // that, re-derived from the interpolator buffer and lastPose by
-            // hasBufferedForwardSweep()/crossesAperture(), both of which demand a starting
-            // pose wholly on the SOURCE side: from.maxPlane() < -EPSILON.
-            //
-            // Collapsing every snapshot onto the doorway pose and the newest onto the
-            // rehome pose puts the entire buffer AT OR PAST the plane, and pinning lastPose
-            // to the doorway does the same to the fallback endpoint. Every pair then fails
-            // crossesAperture(), hasForwardApertureSweep() returns false, and the render
-            // tail is dropped: the body disappears instead of flying out, and what the
-            // player sees is the plain server-driven fall with no exit at all.
-            //
-            // The interpolator is also authoritative every tick -- tick(backTick) recomputes
-            // runningSnapshot from the buffer through getSampleAt() -- so pinning that field
-            // survived exactly one tick anyway. Poses written here cannot outlive the next
-            // snapshot; only the wire can carry this.
-            //
-            // The server owns the same answer: executeHostedTransit() sets the body's
-            // previous pose to projectOntoExitPlane(), so its own lastPose -> logicalPose
-            // motion IS "portal plane -> rehome point". The client does not need that on the
-            // wire, because projectOntoExitPlane() above derives the identical endpoint from
-            // the portal transform it was already sent.
-            // renderPose(pt) lerps lastPose -> logicalPose. Pinning lastPose to the doorway
-            // is what makes the exit VISIBLE within the flip tick itself: at high speed the
-            // rehome distance is large, and this is the segment the player watches the body
-            // travel. It mirrors the server's own correction, which overwrites the same
-            // endpoint with projectOntoExitPlane() after updateLastPose() collapses it.
-            // THE EXIT SEGMENT IS SEEDED INTO THE TIMELINE, NOT PAINTED OVER IT.
-            //
-            // getSampleAt() lerps before.pose -> after.pose. At the flip the buffer still
-            // holds ~6 ticks of SOURCE-frame poses while every new snapshot already arrives
-            // in the DESTINATION frame, and backTick runs behind, so for several ticks the
-            // render pose was lerped ACROSS the frame boundary: the body was drawn
-            // travelling the ENTIRE distance between the paired portals, again and again.
-            // That is the flicker over the whole portal transition.
-            //
-            // History older than the crossing belongs to a chart that no longer exists, so
-            // it is dropped -- not mapped, not collapsed. What replaces it is exactly the
-            // two endpoints of the exit: the doorway pose at the last tick this client
-            // really received, and the rehome pose one tick later. getSampleAt() then has
-            // nothing left to interpolate except doorway -> rehome point, which is the
-            // motion the player is supposed to see.
-            //
-            // Sable itself sanctions this: splitFrom() rewrites past snapshots into a new
-            // frame through madeUpPastPose and re-sorts the buffer. The past has to be made
-            // CORRECT, not erased.
-            //
-            // The disappearance this once caused is now structurally impossible: the
-            // crossing proof is FORWARD_SWEEPS, kept by clearPredictionKeepingProof() above,
-            // so hasForwardApertureSweep() never has to re-derive a source-side start out of
-            // a buffer that is legitimately destination-side.
-            dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator interpolator =
-                clientSubLevel.getInterpolator();
-            int exitTick;
+            SubLevelSnapshotInterpolator interpolator = clientSubLevel.getInterpolator();
+            // One monitor for both halves of the switch. receiveSnapshot() synchronizes on
+            // the buffer, and the incoming map-back does too, so leaving the map-back chain
+            // and rebasing the history are atomic with respect to packet arrival.
             synchronized (interpolator.buffer) {
-                exitTick = interpolator.buffer.isEmpty()
-                    ? Integer.MIN_VALUE
-                    : interpolator.buffer.getLast().gameTick();
-                interpolator.buffer.clear();
+                dropQueuedHead(subLevelId);
+                rebaseIntoDestinationFrame(clientSubLevel, interpolator, mapping);
             }
-            if (exitTick != Integer.MIN_VALUE) {
-                // receiveSnapshot() stores the pose BY REFERENCE and clears the stopped
-                // flag. Fresh copies, or the buffer would alias the poses written below and
-                // the next endpoint write would silently rewrite history.
-                interpolator.receiveSnapshot(exitTick, new Pose3d(exitPose));
-                interpolator.receiveSnapshot(exitTick + 1, new Pose3d(mappedLogicalPose));
-            }
-            ((IplSubLevelLastPoseAccessor) clientSubLevel).ipl$getLastPose().set(exitPose);
-            clientSubLevel.logicalPose().set(mappedLogicalPose);
             clientSubLevel.forceUpdateBounds();
 
             // Do not expose the new parent until every client pose is in destination
@@ -424,16 +482,66 @@ public final class IplParentDimSync {
             // "crossed" session-end snapshot precedes this handoff on the ordered channel,
             // so there is no client-side latch left to clear here.
             IplStraddleRenderCache.invalidateActivePasses();
-            // Rebuild Sable's cached render pose from the separately mapped endpoints.
-            // Portal isometry commutes with the interpolation, so exit motion continues
-            // exactly where its destination projection left it.
+            // Sable caches renderPose() per partial tick; force the next frame to rebuild it
+            // from the rebased timeline instead of reusing the source-frame result.
             ((IplClientSubLevelRenderPoseAccessor) clientSubLevel)
                 .ipl$setLastRenderPosePartialTick(-1.0f);
+            var pos = clientSubLevel.logicalPose().position();
             LOG.debug("[IPL-PARENT-SYNC] handoff applied for {} -> parent {} pose=({},{},{})",
                 subLevelId, parentDimId,
-                String.format("%.1f", mappedLogicalPose.position().x()),
-                String.format("%.1f", mappedLogicalPose.position().y()),
-                String.format("%.1f", mappedLogicalPose.position().z()));
+                String.format("%.1f", pos.x()),
+                String.format("%.1f", pos.y()),
+                String.format("%.1f", pos.z()));
+        }
+
+        /**
+         * Re-expresses every client-side pose of {@code clientSubLevel} in the destination
+         * frame: the retained snapshot history, the interpolator's running sample, and the
+         * {@code lastPose}/{@code logicalPose} pair {@code renderPose(partialTick)} lerps
+         * between.
+         *
+         * <p>Sable's {@code receiveSnapshot} stores poses BY REFERENCE, so a snapshot pose is
+         * mutated in place when it is a mutable {@code Pose3d} and only replaced when it is
+         * not. The identity set is not an optimization: the same instance can legitimately be
+         * reachable twice (a buffered pose that is also the running sample), and mapping one
+         * object twice would put it a full portal offset away.
+         *
+         * <p>Must be called with the interpolator buffer monitor held.
+         */
+        private static void rebaseIntoDestinationFrame(
+            ClientSubLevel clientSubLevel,
+            SubLevelSnapshotInterpolator interpolator,
+            PortalMapping mapping
+        ) {
+            java.util.Set<Pose3d> alreadyMapped =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+            for (int i = 0; i < interpolator.buffer.size(); i++) {
+                SubLevelSnapshotInterpolator.Snapshot snapshot = interpolator.buffer.get(i);
+                Pose3dc pose = snapshot.pose();
+                if (pose == null) continue;
+                if (pose instanceof Pose3d mutable) {
+                    remapInPlace(mutable, mapping, alreadyMapped);
+                } else {
+                    interpolator.buffer.set(i, new SubLevelSnapshotInterpolator.Snapshot(
+                        snapshot.gameTick(), mapping.mapPose(new Pose3d(pose))));
+                }
+            }
+
+            // Cast through Object: the accessor interface is mixed into Sable's class at
+            // runtime, so the compiler must not be asked to relate the two types.
+            remapInPlace(((IplSnapshotInterpolatorAccessor) (Object) interpolator).ipl$getRunningSnapshot(),
+                mapping, alreadyMapped);
+            remapInPlace(((IplSubLevelLastPoseAccessor) clientSubLevel).ipl$getLastPose(),
+                mapping, alreadyMapped);
+            remapInPlace(clientSubLevel.logicalPose(), mapping, alreadyMapped);
+        }
+
+        private static void remapInPlace(
+            Pose3d pose, PortalMapping mapping, java.util.Set<Pose3d> alreadyMapped
+        ) {
+            if (pose == null || !alreadyMapped.add(pose)) return;
+            pose.set(mapping.mapPose(new Pose3d(pose)));
         }
 
         /**
@@ -500,50 +608,6 @@ public final class IplParentDimSync {
                 );
                 sourcePose.orientation().set(inverseRotation.mul(destinationPose.orientation()));
                 return sourcePose;
-            }
-
-            /**
-             * {@code destinationPose} pushed forward along the portal's content direction
-             * until the body's trailing extent rests on the exit rectangle (plus the same
-             * 0.01 clearance {@code PortalCrossingDetector.EXIT_ANCHOR_OFFSET} uses), and
-             * left untouched when it is already clear of it.
-             *
-             * <p>This is the client mirror of the server's
-             * {@code PortalCrossingDetector.projectOntoExitPlane}: one pose, one frame, one
-             * mapping. It deliberately measures the eight mapped plot corners rather than
-             * {@code Pose3d.position()}, because that position is the image of plot-local
-             * {@code (0,0,0)} -- a plot CORNER, not the body -- and pinning it to the plane
-             * would shift the whole volume by metres.
-             */
-            Pose3d projectOntoExitPlane(ClientSubLevel sub, Pose3d destinationPose) {
-                Pose3d pose = new Pose3d(destinationPose);
-                var bounds = sub.getPlot().getBoundingBox();
-                if (bounds == null) return pose;
-
-                // sourceNormal points at the SOURCE side of the entrance, so its image is
-                // the direction back into the doorway; negating it gives "out of the exit".
-                Vector3d out = new Vector3d(-sourceNormal.x, -sourceNormal.y, -sourceNormal.z);
-                rotation.transform(out);
-                double length = out.length();
-                if (!(length > 1.0e-9)) return pose;
-                out.div(length);
-
-                double minDepth = Double.POSITIVE_INFINITY;
-                for (int x = 0; x < 2; x++) for (int y = 0; y < 2; y++) for (int z = 0; z < 2; z++) {
-                    Vec3 corner = pose.transformPosition(new Vec3(
-                        x == 0 ? bounds.minX() : bounds.maxX() + 1.0,
-                        y == 0 ? bounds.minY() : bounds.maxY() + 1.0,
-                        z == 0 ? bounds.minZ() : bounds.maxZ() + 1.0));
-                    double depth = (corner.x - destination.x) * out.x
-                        + (corner.y - destination.y) * out.y
-                        + (corner.z - destination.z) * out.z;
-                    if (depth < minDepth) minDepth = depth;
-                }
-                if (!Double.isFinite(minDepth) || minDepth >= EXIT_PLANE_CLEARANCE) return pose;
-
-                double push = EXIT_PLANE_CLEARANCE - minDepth;
-                pose.position().add(out.x * push, out.y * push, out.z * push);
-                return pose;
             }
 
             boolean hasFullyClearedSourcePlane(ClientSubLevel sub) {

@@ -32,6 +32,22 @@ import java.util.UUID;
  * late-joining client just gets one on track start. Payload is a few dozen bytes and
  * changes a handful of times per crossing, so it is broadcast to all players rather
  * than tracking-scoped — a client that doesn't know the ship ignores it.
+ *
+ * <p><b>Why the end REASON is also on the wire.</b> A snapshot answers "which sessions
+ * exist now", and that is genuinely all the client needs for parity. But the client also
+ * keeps a short RENDER TAIL for a session that ended, because Sable's render stream runs
+ * six ticks behind physics: the split must stay drawn until the delayed pose has finished
+ * leaving the doorway. Whether a tail is legitimate depends entirely on WHY the session
+ * ended — a body that finished crossing has geometry still to be drawn on both sides,
+ * whereas a body that backed out has nothing left to draw through that doorway at all.
+ * Those two cases produce IDENTICAL snapshots (the portal is simply gone), so a client
+ * that infers retirement from a disappearance necessarily invents tails for aborted
+ * crossings. Since the body typically comes to rest exactly IN the doorway it was poked
+ * into, such an invented tail never expires, and every consumer of the client mirror —
+ * the source clip, the straddle projection, the staff pick's candidate resolution, the
+ * beam's frame fold — keeps resolving through a portal the body never crossed. The
+ * reason is therefore sent explicitly, ahead of the snapshot on the same ordered
+ * channel, and only for the ends that earn a tail.
  */
 public final class IplStraddleSessionSync {
 
@@ -48,6 +64,21 @@ public final class IplStraddleSessionSync {
      * upgrades to the live entity whenever it is present.
      */
     private static final Map<UUID, java.util.LinkedHashMap<UUID, String>> ACTIVE = new HashMap<>();
+
+    /**
+     * The session-end reasons that mean THE BODY FINISHED PASSING THROUGH, and therefore
+     * earn a client-side render tail.
+     *
+     * <p>{@code "exit-cleared"} is the geometric completion proof: the controller releases
+     * the session only once the body no longer overlaps the exit plate, i.e. it is out the
+     * far side. Every other reason describes a session that stopped being derivable while
+     * the body was still on the source side or elsewhere entirely — {@code "backed-out"}
+     * and {@code "left-aperture"} are explicit source-side aborts, {@code "reaped"} means
+     * the pair could not be re-derived at all, and {@code "dual-parity-heal"} is
+     * bookkeeping that removes a duplicate face. None of those leave any geometry that
+     * should still be drawn through that doorway, so none of them may create a tail.
+     */
+    private static final java.util.Set<String> TAIL_REASONS = java.util.Set.of("exit-cleared");
 
     private IplStraddleSessionSync() {}
 
@@ -78,14 +109,28 @@ public final class IplStraddleSessionSync {
         }
     }
 
-    /** A latched session ended (backed out, left aperture, crossed, or reaped). */
+    /**
+     * A latched session ended (backed out, left aperture, crossed, or reaped).
+     *
+     * <p>When the reason is one that earns a render tail (see {@link #TAIL_REASONS}), the
+     * retirement is announced FIRST and the new snapshot second. Both go through
+     * {@code McRemoteProcedureCall} on the player's ordered channel, so the client always
+     * has the retirement in hand by the time the snapshot drops the portal from the active
+     * set — the tail is installed and then survives, instead of racing the snapshot that
+     * would otherwise be its only evidence.
+     */
     public static void onSessionEnd(MinecraftServer server, StraddleKey key, String reason) {
         java.util.LinkedHashMap<UUID, String> portals = ACTIVE.get(key.subLevelUuid());
-        if (portals == null || portals.remove(key.portalUuid()) == null) return;
+        if (portals == null) return;
+        String encodedPortal = portals.remove(key.portalUuid());
+        if (encodedPortal == null) return;
         if (portals.isEmpty()) ACTIVE.remove(key.subLevelUuid());
 
         LOG.debug("[IPL-STRADDLE-SYNC] end ship={} portal={} ({})",
             key.subLevelUuid(), key.portalUuid(), reason);
+        if (TAIL_REASONS.contains(reason)) {
+            broadcastRetire(server, key, encodedPortal, reason);
+        }
         broadcast(server, key.subLevelUuid());
     }
 
@@ -127,6 +172,25 @@ public final class IplStraddleSessionSync {
             "ipl.sable.client.IplStraddleSessionStore.RemoteCallables.snapshot",
             shipId.toString(), encodedPortals
         );
+    }
+
+    /**
+     * Announce that this session ended as a COMPLETED crossing, carrying the portal's own
+     * geometry so the client can hold the tail even where the portal entity is not synced
+     * (the same reason snapshots carry it).
+     */
+    private static void broadcastRetire(
+        MinecraftServer server, StraddleKey key, String encodedPortal, String reason
+    ) {
+        if (server == null) return;
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                player,
+                "ipl.sable.client.IplStraddleSessionStore.RemoteCallables.retire",
+                key.subLevelUuid().toString(), key.portalUuid().toString(),
+                encodedPortal, reason
+            );
+        }
     }
 
     private static String encode(UUID shipId) {

@@ -204,6 +204,37 @@ public final class PortalCrossingDetector {
     }
 
     /**
+     * ONE CROSSING HAS TWO RECTANGLES, AND THIS PLATE BELONGS TO BOTH OF THEM.
+     *
+     * <p>{@link #armExitClearance} files a latch under the UUID of the portal the body flew
+     * INTO, while the plate it builds is the rectangle the body came OUT of -- a different
+     * entity, at a different place, with a different id. Each of the two identity tests
+     * alone therefore answers "not mine" about one of the two portals of the very crossing
+     * the plate describes:
+     *
+     * <ul>
+     *   <li>the geometric test ({@link #plateIsRectangleOf}) recognises the exit rectangle
+     *       and its coincident back face, which is what a reversed re-entry comes through;
+     *   <li>the UUID test recognises the ENTRANCE face, which is the face the straddle
+     *       session is keyed on and therefore the face every session-scoped caller asks
+     *       about.
+     * </ul>
+     *
+     * <p>Asking only the geometric question is why {@link #touchesPortalVirtually} could
+     * never be true for the doorway it exists to describe: its caller holds the entrance
+     * face. Overlap against the plate is still required by every caller, so accepting both
+     * forms widens nothing geometrically -- it only stops the predicate from disowning half
+     * of its own crossing.
+     */
+    private static boolean latchCoversPortal(
+        ExitLatch latch, @org.jetbrains.annotations.Nullable Portal portal
+    ) {
+        if (portal == null) return false;
+        if (latch.portalId != null && latch.portalId.equals(portal.getUUID())) return true;
+        return plateIsRectangleOf(latch, portal);
+    }
+
+    /**
      * THE VIRTUAL EXTENSION, AS A QUESTION ABOUT CONTACT -- NOT AS GEOMETRY.
      *
      * <p>While a body is leaving a doorway it counts as TOUCHING that doorway, even once it
@@ -217,13 +248,19 @@ public final class PortalCrossingDetector {
      * with the session and renders/handles it as if it had already left. That disagreement is
      * the Creative Physics Staff artefact on a body that has practically exited, and it is
      * why the band cannot be private to the detector.
+     *
+     * <p>Identity is {@link #latchCoversPortal}, not the plate rectangle alone. The only
+     * caller that asks this question holds the ENTRANCE face -- the face the straddle session
+     * is keyed on -- and the plate is built on the EXIT rectangle, so the rectangle test
+     * alone answered false for every ordinary portal pair and the virtual band existed in
+     * the documentation only.
      */
     public static boolean touchesPortalVirtually(
         ServerSubLevel airship, @org.jetbrains.annotations.Nullable Portal portal
     ) {
         if (airship == null || portal == null) return false;
         ExitLatch latch = liveExitLatch(airship);
-        if (latch == null || !plateIsRectangleOf(latch, portal)) return false;
+        if (latch == null || !latchCoversPortal(latch, portal)) return false;
         return latch.overlaps(currentBounds(airship));
     }
 
@@ -361,6 +398,13 @@ public final class PortalCrossingDetector {
      *       that could be read as an entry through the opposite face.</li>
      * </ul>
      *
+     * <p>RELEASE HERE IS PURELY GEOMETRIC. This used to also treat a latch older than
+     * {@link #EXIT_LATCH_MAX_TICKS} as a completed exit, which could never happen: expiry
+     * runs once per tick in {@link #beginTrailTick}, before anything calls this, so such a
+     * latch has already been removed and the lookup above answers null. The flag only hid
+     * the fact that a body parked inside the slab has its exit settled by the transit
+     * controller's own reap rather than by a clock in here.
+     *
      * @return the portal whose exit just completed, or null when the body is still inside
      *         the slab (or was never latched)
      */
@@ -369,8 +413,7 @@ public final class PortalCrossingDetector {
         UUID id = airship.getUniqueId();
         ExitLatch latch = EXIT_LATCHES.get(id);
         if (latch == null) return null;
-        boolean expired = trailTick - latch.tick > EXIT_LATCH_MAX_TICKS;
-        if (!expired && latch.overlaps(currentBounds(airship))) return null;
+        if (latch.overlaps(currentBounds(airship))) return null;
         EXIT_LATCHES.remove(id);
         // The session is finished, the HISTORY is not. Collapsing the trail onto the current
         // pose (the old behaviour) deleted the only evidence that the body came out of an
@@ -440,7 +483,33 @@ public final class PortalCrossingDetector {
         UUID id = airship.getUniqueId();
         Trail trail = TRAILS.get(id);
         Pose3d entry;
-        if (trail == null || !Double.isFinite(crossingTime)) {
+        // A CROSSING TIME OF ZERO IS NOT A CROSSING TIME, AND USING IT COMPOUNDED ONCE PER LAP.
+        //
+        // evaluate() reports 0.0 when only the HISTORIC sweep found the hit: the crossing
+        // happened at or before this segment began, which is the only honest value in this
+        // parameterisation but is not a point ON this crossing. Handing it to interpolate()
+        // maps the segment's START -- and after a previous exit that start IS the previous
+        // exit anchor (see captureTrail). Every lap's anchor was then the image of the
+        // previous lap's anchor under the portal isometry, so a closed loop composed its two
+        // maps once per lap and the point crept by the loop's closure defect every time.
+        //
+        // That is the observed "drip": the overlay's point A climbs away from the doorway lap
+        // after lap, in ever smaller visible steps as the body speeds up, until it creeps
+        // outside the finite aperture -- at which instant the sweep no longer intersects that
+        // doorway, no crossing is detected, and the body falls straight through the portal it
+        // was looping through. Nothing else in this class accumulates across laps, which is
+        // why the failure had a wall-clock signature rather than a speed one.
+        //
+        // The body's own post-flip pose is always a point of THIS crossing and comes from the
+        // physics rather than from the previous anchor, so it cannot compose. It is the
+        // fallback whenever the reported time is unusable; projectOntoExitPlane() still slides
+        // it onto the exit rectangle exactly as it does for a real mid-segment crossing, and a
+        // genuine finite time inside (0, 1] is used unchanged.
+        double crossingFraction = Double.isFinite(crossingTime)
+            ? Math.clamp(crossingTime, 0.0, 1.0) : Double.NaN;
+        if (trail == null || !Double.isFinite(crossingFraction) || crossingFraction <= EPSILON) {
+            // Already expressed in the destination frame: the flip has executed by the time
+            // this runs, so this pose needs no mapping.
             entry = new Pose3d(airship.logicalPose());
         } else {
             // ONE POSE, ONE FRAME, ONE MAPPING. The anchor is derived from THIS pose and
@@ -448,7 +517,7 @@ public final class PortalCrossingDetector {
             // be rebuilt with a different transform is how the buffer ended up in a frame
             // of its own, disagreeing with the very segment it was meant to start.
             entry = IplStraddlePoseMap.StraddleMapping.of(portal).mapPose(
-                interpolate(trail.start, trail.end, Math.clamp(crossingTime, 0.0, 1.0)));
+                interpolate(trail.start, trail.end, crossingFraction));
         }
         if (trail == null) {
             trail = new Trail(new Pose3d(entry), new Pose3d(entry), new Pose3d(entry));
@@ -760,6 +829,11 @@ public final class PortalCrossingDetector {
         // So the scoping is kept, but expressed against the plate's own GEOMETRY: true for
         // the portal whose rectangle IS this plate and for its coincident twin, false for
         // every other portal in the scan.
+        //
+        // This is deliberately the rectangle test alone, NOT latchCoversPortal(): the
+        // entrance face belongs to the crossing but is not a surface a reversed re-entry can
+        // come through, and admitting it here would re-refuse the body's next doorway in a
+        // loop whose next entrance happens to be the face just used.
         return plateIsRectangleOf(latch, portal);
     }
 
@@ -791,6 +865,12 @@ public final class PortalCrossingDetector {
      * whose trail is genuinely stale. The first one owns a valid destination-frame segment
      * and must keep being evaluated against every remaining portal in the same tick; only
      * the second one may have its trail thrown away.
+     *
+     * <p>THIS IS A FACT ABOUT THE BODY, NOT ABOUT A PORTAL. It says the segment begins at
+     * some doorway; it cannot say that the segment began behind the plane of the portal
+     * currently being evaluated. Using it as entry evidence for a candidate face lets a body
+     * that merely flew PAST a doorway be rehomed through it, so the transit controller asks
+     * it only about trail lifecycle and takes source-side entry from the geometry.
      */
     public static boolean hasBufferedExit(ServerSubLevel airship) {
         UUID id = airship.getUniqueId();
@@ -978,7 +1058,10 @@ public final class PortalCrossingDetector {
             // segment -- in a tight vertical loop, visibly around the middle of the loop,
             // which is exactly where the rehome anchor was being planted. Such a hit
             // happened at or before this segment began, so 0 is its only correct
-            // expression in this parameterisation.
+            // expression in this parameterisation. Consumers must therefore treat 0 as
+            // "not a point of this crossing" rather than as the segment start: see
+            // rebaseTrailThroughPortal, where doing the latter made every lap's exit
+            // anchor the image of the previous lap's anchor.
             Double.isFinite(recent.towardTime()) ? recent.towardTime()
                 : (Double.isFinite(sweep.towardTime()) ? 0.0 : Double.NaN));
         IplEnteringVolumeVisualization.record(airship, portal, result);

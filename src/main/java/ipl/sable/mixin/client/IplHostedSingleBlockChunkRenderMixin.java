@@ -2,6 +2,7 @@ package ipl.sable.mixin.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.VanillaSubLevelRenderDispatcher;
+import ipl.sable.client.IplHostedRenderRouting;
 import ipl.sable.dim.IplDimAgnostic;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
@@ -49,6 +50,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * never installed for that path either, so the source/destination split it is supposed
  * to make was simply missing.
  *
+ * <h2>This is NOT a 0.5.1 regression</h2>
+ *
+ * <p>Worth recording, because it was assumed to be one: {@code SableSourceClipMixin}
+ * already existed in 0.5.0 and already clipped {@code renderChunkedSubLevel} only, so the
+ * eye-space mismatch was present the whole time. What 0.5.1 changed is that a crossing body
+ * now keeps drawing its destination half mid-transit, which is what made the pre-existing,
+ * camera-dependent cut actually visible. Reverting the interpolation work would hide the
+ * symptom, not fix the cause -- so this mixin stays, and it is required, not optional.
+ *
  * <h2>The fix</h2>
  *
  * <p>Rather than duplicating the whole clip bracket into a second, batched,
@@ -73,7 +83,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * {@code singleBlockLayers} being non-empty. Hosted bodies no longer depend on it.
  *
  * <p>{@code @Pseudo} because Sable is a runtime dependency, {@code remap = false}
- * because Sable's names are not in the Mojang mappings.
+ * because Sable's names are not in the Mojang mappings. Since {@code require = 0} makes a
+ * missed target silent, and a missed target here means the eye-space cut returns with no
+ * error, the handler reports that it ran to {@link IplHostedRenderRouting}, which warns once
+ * from the client heartbeat if a hosted body exists and the hook never fired.
+ * {@code -Dipl.sable.forceChunkedForHosted=false} restores Sable's own routing.
  */
 @Pseudo
 @Mixin(value = VanillaSubLevelRenderDispatcher.class, remap = false)
@@ -89,7 +103,8 @@ public abstract class IplHostedSingleBlockChunkRenderMixin {
     private static void ipl$forceChunkedRenderingForHosted(
         ClientSubLevel subLevel, CallbackInfoReturnable<Boolean> cir
     ) {
-        if (subLevel == null) return;
+        IplHostedRenderRouting.markRoutingHookFired();
+        if (subLevel == null || !IplHostedRenderRouting.forceChunkedForHosted()) return;
         try {
             if (IplDimAgnostic.isHosted(subLevel)) {
                 cir.setReturnValue(false);
