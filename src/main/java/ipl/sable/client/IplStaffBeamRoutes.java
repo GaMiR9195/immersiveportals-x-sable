@@ -66,6 +66,12 @@ public final class IplStaffBeamRoutes {
      */
     private static final double IMAGE_HYSTERESIS = 0.05;
 
+    /**
+     * Lateral slack of a doorway, identical to the server detector's admission, the Atlas
+     * clip seam and the client session mirror. Only the two IN-PLANE axes use it.
+     */
+    private static final double APERTURE_MARGIN = 0.5;
+
     private record Kept(Route route, long gameTime, List<IplGrabLink> chain, UUID subId) {}
 
     private static final Map<UUID, Kept> LAST = new HashMap<>();
@@ -175,22 +181,46 @@ public final class IplStaffBeamRoutes {
     }
 
     /**
-     * {@link #isPastPlane} with hysteresis and memory.
+     * Does the grabbed anchor's visible representation lie THROUGH this doorway? Sticky,
+     * with memory.
      *
-     * <p>Switching INTO the image representation requires the anchor to be clearly past
-     * the plane; switching back out requires it to be clearly in front. Between the two
-     * thresholds the previous answer is repeated, so a jittering anchor cannot make the
-     * endpoint oscillate. The band is deliberately far smaller than any visible distance
-     * (0.05 blocks), so the choice still flips essentially at the plane -- it just cannot
-     * flip more than once per pass.
+     * <p>THE DOORWAY IS A RECTANGLE, NOT A PLANE.
+     *
+     * <p>This used to ask only {@link #isPastPlane}: is the anchor on the far side of the
+     * session portal's infinite plane. A plane divides the entire world, so for a body that
+     * legitimately holds a session — poked into a doorway, or resting in one — every point
+     * beyond that plane answered yes, including points metres to the side of the frame and
+     * points far past it after the body drifted. The route then gained the session link and
+     * the endpoint jumped to a representation one portal transform away, which is exactly
+     * the beam pointing somewhere the grabbed geometry is not. Nothing about that is fixed
+     * by the frame algebra downstream: the wrong refinement is applied consistently, so it
+     * stays wrong for the whole grab.
+     *
+     * <p>A point is represented by the image only if it is behind the plane AND inside the
+     * finite aperture, laterally grown by the same {@link #APERTURE_MARGIN} the detector,
+     * the Atlas clip seam and the session mirror use. Both tests carry the existing
+     * {@link #IMAGE_HYSTERESIS} dead band -- entering the image representation requires
+     * being clearly past the plane and clearly inside the rectangle, leaving it requires
+     * being clearly in front or clearly outside -- so a jittering anchor still cannot flip
+     * the endpoint more than once per pass, on either axis of the decision.
      */
-    private static boolean isPastPlaneSticky(UUID owner, Portal portal, Vec3 point) {
-        double signed = point.subtract(portal.getOriginPos()).dot(portal.getNormal());
+    private static boolean targetsImageSticky(UUID owner, Portal portal, Vec3 point) {
+        Vec3 local = point.subtract(portal.getOriginPos());
+        double signed = local.dot(portal.getNormal());
+        double width = Math.abs(local.dot(portal.getAxisW()));
+        double height = Math.abs(local.dot(portal.getAxisH()));
+        double halfW = portal.getWidth() * 0.5 + APERTURE_MARGIN;
+        double halfH = portal.getHeight() * 0.5 + APERTURE_MARGIN;
+
         java.util.Set<UUID> latched =
             IMAGE_LATCH.computeIfAbsent(owner, key -> new java.util.HashSet<>());
         UUID id = portal.getUUID();
         boolean previously = latched.contains(id);
-        boolean now = previously ? signed < IMAGE_HYSTERESIS : signed < -IMAGE_HYSTERESIS;
+        boolean pastPlane = previously ? signed < IMAGE_HYSTERESIS : signed < -IMAGE_HYSTERESIS;
+        boolean insideAperture = previously
+            ? width <= halfW + IMAGE_HYSTERESIS && height <= halfH + IMAGE_HYSTERESIS
+            : width <= halfW - IMAGE_HYSTERESIS && height <= halfH - IMAGE_HYSTERESIS;
+        boolean now = pastPlane && insideAperture;
         if (now) {
             latched.add(id);
         } else {
@@ -214,14 +244,14 @@ public final class IplStaffBeamRoutes {
         boolean targetsImage = false;
 
         // Straddle refinement: while the body straddles a session portal and the grabbed
-        // anchor is past that portal's plane (crossing direction), the anchor's visible
-        // representation is the portal image — the beam must thread the aperture and end
-        // on visible geometry. At the plane both representations coincide, so toggling
-        // this refinement is visually continuous. Session order is server history
-        // (session-start order), not a per-frame race.
+        // anchor is inside that doorway and past its plane (crossing direction), the
+        // anchor's visible representation is the portal image — the beam must thread the
+        // aperture and end on visible geometry. At the aperture both representations
+        // coincide, so toggling this refinement is visually continuous. Session order is
+        // server history (session-start order), not a per-frame race.
         for (Portal session : IplStraddleSessionStore.resolveAllPortals(sub)) {
             if (session.isRemoved()) continue;
-            if (!isPastPlaneSticky(owner, session, nativeAnchor)) continue;
+            if (!targetsImageSticky(owner, session, nativeAnchor)) continue;
             IplGrabLink sessionLink = IplGrabLink.forward(session);
             links = IplGrabLink.append(links, sessionLink);
             target = sessionLink.transform(nativeAnchor);
@@ -457,120 +487,3 @@ public final class IplStaffBeamRoutes {
                 int last = (int) Math.ceil(endFraction * nodeCount) - 1;
                 for (int node = first; node <= last; node++) {
                     double fraction = node / (double) nodeCount;
-                    if (fraction <= startFraction || fraction >= endFraction) continue;
-                    double local = (fraction - startFraction) / span;
-                    vertices.add(new Vertex(
-                        starts[i].lerp(ends[i], local), fraction,
-                        new Quaterniond(noiseRotation)));
-                }
-            }
-            vertices.add(new Vertex(ends[i], endFraction, new Quaterniond(noiseRotation)));
-            out.add(new Run(dim, List.copyOf(vertices), total));
-
-            before += lengths[i];
-            if (i < count) {
-                IplGrabLink link = links.get(i);
-                dim = link.toDim();
-                noiseRotation = new Quaterniond(link.rotation()).mul(noiseRotation);
-            }
-        }
-        return out;
-    }
-
-    /** Route target expressed in the frame BEFORE link {@code frame} (unfold the suffix). */
-    private static Vec3 endpointInFrame(Route route, int frame) {
-        Vec3 endpoint = route.target();
-        List<IplGrabLink> links = route.links();
-        for (int i = links.size() - 1; i >= frame; i--) {
-            endpoint = links.get(i).inverseTransform(endpoint);
-        }
-        return endpoint;
-    }
-
-    /**
-     * Aperture point of the {@code from -> to} line on this link's doorway. Uses the LIVE
-     * portal entity's exact quad raytrace when it is present and still where the snapshot
-     * says (a moved portal invalidates the snapshot's doorway, not the frame mapping);
-     * otherwise intersects the snapshot plane and clamps into the snapshot rectangle —
-     * a beam can bend at the portal edge but can never vanish.
-     */
-    public static Vec3 clampToAperture(IplGrabLink link, Vec3 from, Vec3 to) {
-        Portal live = findLivePortal(link);
-        if (live != null) {
-            Vec3 exact = live.rayTrace(from, to);
-            if (exact != null) return exact;
-        }
-
-        Vec3 origin = link.origin();
-        Vec3 normal = link.normal();
-        Vec3 direction = to.subtract(from);
-        double denom = direction.dot(normal);
-        Vec3 planePoint;
-        if (Math.abs(denom) < 1.0e-9) {
-            planePoint = from.subtract(normal.scale(from.subtract(origin).dot(normal)));
-        } else {
-            double t = Math.clamp(origin.subtract(from).dot(normal) / denom, 0.0, 1.0);
-            planePoint = from.add(direction.scale(t));
-        }
-        Vec3 rel = planePoint.subtract(origin);
-        double w = Math.clamp(rel.dot(link.axisW()), -link.width() * 0.5, link.width() * 0.5);
-        double h = Math.clamp(rel.dot(link.axisH()), -link.height() * 0.5, link.height() * 0.5);
-        return origin.add(link.axisW().scale(w)).add(link.axisH().scale(h));
-    }
-
-    /** Live portal for a link: matched by UUID AND verified against the snapshot origin. */
-    @Nullable
-    private static Portal findLivePortal(IplGrabLink link) {
-        for (ClientLevel level : ClientWorldLoader.getClientWorlds()) {
-            if (!level.dimension().equals(link.fromDim())) continue;
-            for (Entity entity : level.entitiesForRendering()) {
-                if (entity instanceof Portal portal && !portal.isRemoved()
-                    && portal.getUUID().equals(link.portalId())
-                    && portal.getOriginPos().distanceToSqr(link.origin()) < 0.25) {
-                    return portal;
-                }
-            }
-            for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
-                if (!portal.isRemoved() && portal.getUUID().equals(link.portalId())
-                    && portal.getOriginPos().distanceToSqr(link.origin()) < 0.25) {
-                    return portal;
-                }
-            }
-        }
-        return null;
-    }
-
-    /** True when {@code point} is past the portal plane in the crossing direction (-normal). */
-    public static boolean isPastPlane(Portal portal, Vec3 point) {
-        return point.subtract(portal.getOriginPos()).dot(portal.getNormal()) < -1.0e-4;
-    }
-
-    // ------------------------------------------------------------------
-    // PhysicsBeam length feed (true node density, issue: wrong segment count).
-    // ------------------------------------------------------------------
-
-    /** Bind a beam object to its owner so the per-tick update can find its route length. */
-    public static void registerBeamOwner(Object beam, UUID owner) {
-        BEAM_OWNERS.put(beam, owner);
-    }
-
-    /** The latest true route length for this beam object, or NaN when unknown. */
-    public static double knownLengthFor(Object beam) {
-        UUID owner = BEAM_OWNERS.get(beam);
-        if (owner == null) return Double.NaN;
-        Double length = LENGTHS.get(owner);
-        return length == null ? Double.NaN : length;
-    }
-
-    /** The latest true route length for this owner, or NaN when unknown. */
-    public static double knownLength(UUID owner) {
-        Double length = LENGTHS.get(owner);
-        return length == null ? Double.NaN : length;
-    }
-
-    /** Rotate a vector by a quaternion (helper for noise mapping in the render mixin). */
-    public static Vec3 rotate(Quaterniond rotation, Vec3 v) {
-        Vector3d out = rotation.transform(new Vector3d(v.x, v.y, v.z));
-        return new Vec3(out.x, out.y, out.z);
-    }
-}

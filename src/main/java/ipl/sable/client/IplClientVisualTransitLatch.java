@@ -11,8 +11,10 @@ import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -27,8 +29,26 @@ final class IplClientVisualTransitLatch {
     /** Server confirmation normally arrives before the delayed render reaches the plane. */
     private static final long CONFIRMATION_GRACE_TICKS = 6;
     private static final Map<UUID, Prediction> PREDICTIONS = new HashMap<>();
-    /** Exact client-side A→B proof, retained until the handoff commits or the body backs out. */
-    private static final Map<UUID, UUID> FORWARD_SWEEPS = new HashMap<>();
+
+    /**
+     * Exact client-side A→B proofs, PER PORTAL, retained until the matching handoff commits
+     * or the body backs wholly out of that portal.
+     *
+     * <p>This was one slot per ship, written with {@code putIfAbsent} — a shape that can
+     * only ever hold the FIRST portal a body sweeps through, despite the FIFO guarantee its
+     * own comment promised for "recursive/rapid crossings". A body carried quickly along a
+     * chain of doorways crosses the second one while the first proof still occupies the
+     * slot, so the handoff for the second portal finds a proof for the wrong portal and
+     * falls through to re-deriving the sweep. That re-derivation cannot succeed: by then
+     * every pose in hand is destination-side, and both fallbacks require a start pose wholly
+     * on the source side. The visual frame therefore never switched for the second and later
+     * crossings, leaving the render, the pick's candidate resolution and the beam's fold
+     * resolving through a doorway the body had already left.
+     *
+     * <p>Keyed by portal UUID there is nothing to collide: each crossing records, consumes
+     * and drops its own evidence, in order.
+     */
+    private static final Map<UUID, LinkedHashSet<UUID>> FORWARD_SWEEPS = new HashMap<>();
     /** Last submitted pose per ship. Interpolation changes every render frame, not only per tick. */
     private static final Map<UUID, Pose3d> LAST_RENDER_POSES = new HashMap<>();
     /** Render frame the pose above was sampled in; one sample per frame, not per pass. */
@@ -77,7 +97,7 @@ final class IplClientVisualTransitLatch {
             if (portal == null || tick > prediction.expiresAtTick()
                 || !stillEligible(sub, portal)) {
                 remove(shipId);
-                FORWARD_SWEEPS.remove(shipId, prediction.portalId());
+                dropProof(shipId, prediction.portalId());
             } else {
                 return appendIfMissing(resolved, portal);
             }
@@ -89,7 +109,7 @@ final class IplClientVisualTransitLatch {
         // Preserve the exact finite-AABB crossing proof even when the handoff RPC arrives
         // after this frame. The pending handoff consumes it by portal UUID, never by a
         // nearest-portal guess, so recursive/rapid crossings remain FIFO-safe.
-        FORWARD_SWEEPS.putIfAbsent(shipId, candidate.getUUID());
+        recordProof(shipId, candidate.getUUID());
         PREDICTIONS.put(shipId, new Prediction(
             candidate.getUUID(), tick + CONFIRMATION_GRACE_TICKS));
         // A prediction can start while an enclosing portal render has already cached its
@@ -155,7 +175,7 @@ final class IplClientVisualTransitLatch {
     }
 
     /**
-     * Drops the pending PREDICTION but keeps the crossing PROOF.
+     * Drops the pending PREDICTION but keeps the crossing PROOFS.
      *
      * <p>For the handoff path. Once the server confirms the crossing, the prediction has
      * served its purpose and must go -- but {@link #FORWARD_SWEEPS} is the evidence that
@@ -182,15 +202,16 @@ final class IplClientVisualTransitLatch {
     /**
      * The visual parent must not switch merely because a server handoff arrived. Require this
      * client's delayed OBB to cross the same finite aperture from source to destination.
-     * If it returns wholly source-side first, discard the proof and keep the source frame.
+     * If it returns wholly source-side first, discard that portal's proof and keep the
+     * source frame. Proofs for OTHER portals of the same body are untouched: on a rapid pass
+     * along a chain of doorways they each belong to a different crossing.
      */
     static boolean hasForwardApertureSweep(ClientSubLevel sub, Portal portal) {
         UUID shipId = sub.getUniqueId();
         Projection now = project(sub, sub.renderPose(), portal);
-        UUID recorded = FORWARD_SWEEPS.get(shipId);
-        if (recorded != null && recorded.equals(portal.getUUID())) {
+        if (hasProof(shipId, portal.getUUID())) {
             if (now.maxPlane() < -EPSILON) {
-                FORWARD_SWEEPS.remove(shipId);
+                dropProof(shipId, portal.getUUID());
                 IplStraddleSessionStore.clearHandoffVisual(shipId);
                 IplStraddleRenderCache.invalidateActivePasses();
                 return false;
@@ -201,9 +222,28 @@ final class IplClientVisualTransitLatch {
             && !crossesAperture(project(sub, sub.lastPose(), portal), now, portal)) {
             return false;
         }
-        FORWARD_SWEEPS.put(shipId, portal.getUUID());
+        recordProof(shipId, portal.getUUID());
         IplStraddleRenderCache.invalidateActivePasses();
         return true;
+    }
+
+    /** Does this client hold a forward-sweep proof for exactly this (ship, portal) pair? */
+    private static boolean hasProof(UUID shipId, UUID portalId) {
+        Set<UUID> proofs = FORWARD_SWEEPS.get(shipId);
+        return proofs != null && proofs.contains(portalId);
+    }
+
+    /** Record the proof for one crossing, in observation order, without disturbing others. */
+    private static void recordProof(UUID shipId, UUID portalId) {
+        FORWARD_SWEEPS.computeIfAbsent(shipId, key -> new LinkedHashSet<>()).add(portalId);
+    }
+
+    /** Retract the proof for ONE crossing (body backed out, or its prediction died). */
+    private static void dropProof(UUID shipId, UUID portalId) {
+        Set<UUID> proofs = FORWARD_SWEEPS.get(shipId);
+        if (proofs == null) return;
+        proofs.remove(portalId);
+        if (proofs.isEmpty()) FORWARD_SWEEPS.remove(shipId);
     }
 
     /**
