@@ -47,6 +47,13 @@ public final class IplStraddleSessionStore {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-straddle-session-store");
 
+    /**
+     * Lateral slack of a doorway, matching the server's detector admission and the Atlas
+     * clip seam (both use 0.5). Only the two IN-PLANE axes are ever grown by it; the
+     * plane's own direction is never given thickness here.
+     */
+    private static final double APERTURE_MARGIN = 0.5;
+
     private record SessionPortal(UUID portalId, String portalNbtB64) {}
 
     /** Ship → active session portals (session-start order; empty never stored). */
@@ -218,14 +225,43 @@ public final class IplStraddleSessionStore {
     }
 
     /**
-     * Drops a render-only exit tail once {@code renderPose} is wholly on the session's
-     * native/source side. The portal normal points toward that side, so any negative corner
-     * is still an image-side fragment which needs the old source clip and projection.
+     * Drops a render-only exit tail once {@code renderPose} no longer occupies the session's
+     * doorway.
+     *
+     * <p>THE TAIL IS BOUNDED BY THE APERTURE, NOT BY THE PLANE.
+     *
+     * <p>This used to ask a single question against the INFINITE plane: "is any corner of the
+     * delayed render pose on the portal's own side of it?". A portal plane divides the whole
+     * world, so that answer stays true for a body that is nowhere near the doorway — a
+     * construction that left a floor portal and then fell two hundred blocks is still,
+     * trivially, "below" it. The retired session therefore never retired: it kept a clip
+     * plane and a straddle projection alive for the rest of the body's life.
+     *
+     * <p>Everything that resolves a frame from this mirror then disagreed with the body's
+     * real state. {@code IplStraddleStaffPick.visibleHit} prefers the straddle-IMAGE
+     * candidate whenever a projection exists, and {@code IplStaffBeamRoutes} folds the beam
+     * through that same portal — so the Creative Physics Staff beam kept pointing through a
+     * doorway the body had left long ago.
+     *
+     * <p>A tail is only meaningful while the delayed pose still occupies the doorway, so the
+     * test is the conjunction of BOTH properties of an image-side fragment: it is behind the
+     * plane, AND it is inside the finite rectangle (laterally grown by the same
+     * {@link #APERTURE_MARGIN} the server's clip seam and the detector use). Both are
+     * measured on the same eight corners, so nothing else about the tail changes.
      */
     private static boolean stillRenderingThroughHalf(ClientSubLevel sub, Portal portal) {
         BoundingBox3ic bounds = sub.getPlot().getBoundingBox();
         net.minecraft.world.phys.Vec3 origin = portal.getOriginPos();
         net.minecraft.world.phys.Vec3 normal = portal.getNormal();
+        net.minecraft.world.phys.Vec3 axisW = portal.getAxisW();
+        net.minecraft.world.phys.Vec3 axisH = portal.getAxisH();
+        double halfW = portal.getWidth() * 0.5 + APERTURE_MARGIN;
+        double halfH = portal.getHeight() * 0.5 + APERTURE_MARGIN;
+        boolean behindPlane = false;
+        double minW = Double.POSITIVE_INFINITY;
+        double maxW = Double.NEGATIVE_INFINITY;
+        double minH = Double.POSITIVE_INFINITY;
+        double maxH = Double.NEGATIVE_INFINITY;
         for (int x = 0; x < 2; x++) {
             double px = x == 0 ? bounds.minX() : bounds.maxX() + 1.0;
             for (int y = 0; y < 2; y++) {
@@ -234,11 +270,23 @@ public final class IplStraddleSessionStore {
                     double pz = z == 0 ? bounds.minZ() : bounds.maxZ() + 1.0;
                     net.minecraft.world.phys.Vec3 world = sub.renderPose().transformPosition(
                         new net.minecraft.world.phys.Vec3(px, py, pz));
-                    if (world.subtract(origin).dot(normal) < 0.0) return true;
+                    net.minecraft.world.phys.Vec3 local = world.subtract(origin);
+                    if (local.dot(normal) < 0.0) behindPlane = true;
+                    double w = local.dot(axisW);
+                    double h = local.dot(axisH);
+                    minW = Math.min(minW, w);
+                    maxW = Math.max(maxW, w);
+                    minH = Math.min(minH, h);
+                    maxH = Math.max(maxH, h);
                 }
             }
         }
-        return false;
+        if (!behindPlane) return false;
+        // The corner extents are a conservative box around the rendered body expressed in
+        // the portal's own in-plane frame. Overlapping the rectangle on BOTH in-plane axes
+        // is what makes a behind-plane fragment part of THIS doorway rather than part of
+        // the world behind it.
+        return maxW >= -halfW && minW <= halfW && maxH >= -halfH && minH <= halfH;
     }
 
     /** Active sessions plus only the retired sessions still present in the delayed pose. */
