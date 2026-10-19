@@ -1,0 +1,1 @@
+package org.lwjgl.opengl;public class GL20{public static int queries=0;public static boolean missing;public static int glGetUniformLocation(int p,String n){queries++;return missing?-1:n.equals("iportal_ClippingEquation")?10:n.endsWith("[1]")?12:11;}}

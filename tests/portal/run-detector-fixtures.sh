@@ -11,6 +11,7 @@ if [[ -n "${JAVA_HOME:-}" ]]; then JAVAC="$JAVA_HOME/bin/javac"; JAVA="$JAVA_HOM
 mapfile -t fixtures < <(find tests/portal/fixtures -name '*.java')
 "$JAVAC" --release 21 -cp "$JOML_JAR" -d "$out" "${fixtures[@]}" \
   src/main/java/ipl/sable/transit/PortalSweepMath.java \
+  src/main/java/ipl/sable/transit/PortalSectionMath.java \
   src/main/java/ipl/sable/transit/PortalCrossingDetector.java \
   tests/portal/PortalCrossingDetectorFixtureTest.java
 "$JAVA" -cp "$out:$JOML_JAR" ipl.sable.transit.PortalCrossingDetectorFixtureTest

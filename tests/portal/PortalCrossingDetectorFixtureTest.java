@@ -130,7 +130,98 @@ public class PortalCrossingDetectorFixtureTest {
         body.current.position().set(10,0,2);
         PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
         check(!PortalCrossingDetector.completesThroughAperture(body,door),"sideways withdrawal cannot finish through infinite plane");
-        System.out.println("0.5.2 finite-exit cases: passed");
+        // Release bounds ANY section protrusion, not the last overlap of the whole object.
+        PortalCrossingDetector.clearTrails();body=new ServerSubLevel();
+        body.current.position().set(.55,0,0); // far edge is 0.05 beyond a width=2 door
+        PortalCrossingDetector.seedPhysicsStart(body);
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        state=PortalCrossingDetector.evaluate(body,door,FORWARD,0);
+        check(state.currentIntersectsPortalAperture(),"section still overlaps the true opening");
+        check(!state.sweptTowardDestination(),"retention skin cannot admit stationary body");
+        check(PortalCrossingDetector.retainsAdmittedSession(body,door),"5cm solver correction retains admitted seam");
+        check(!PortalCrossingDetector.willEnterAperture(body,door,FORWARD,0,1),"stationary prediction fast path");
+        for(int i=0;i<20;i++) {
+            PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+            check(PortalCrossingDetector.retainsAdmittedSession(body,door),"retention has no tick timeout "+i);
+        }
+        body.current.position().x=.74;
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        check(PortalCrossingDetector.retainsAdmittedSession(body,door),"24cm protrusion retained");
+        body.current.position().x=.76;
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"26cm protrusion releases while most of cube still overlaps");
+        check(PortalCrossingDetector.evaluate(body,door,FORWARD,0).currentIntersectsPortalAperture(),
+            "release must override current aperture overlap, not OR with it");
+        body.current.position().set(-.76,0,0);
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"left side release symmetric");
+        body.current.position().set(0,.76,0);
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"top edge release symmetric");
+        body.current.position().set(0,0,-.7);
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"normal withdrawal releases seam");
+
+        // Tolerant trailing exit is explicit and session-owned, never the default.
+        PortalCrossingDetector.clearTrails();body=new ServerSubLevel();
+        body.current.position().set(.55,0,-.2);PortalCrossingDetector.seedPhysicsStart(body);
+        body.current.position().z=2;
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        check(!PortalCrossingDetector.completesThroughAperture(body,door),"strict exit rejects off-aperture path");
+        check(PortalCrossingDetector.completesThroughAperture(body,door,PortalCrossingDetector.SESSION_RELEASE_MARGIN),
+            "admitted exit tolerates bounded solver displacement");
+        body.current.position().set(2,0,-.2);PortalCrossingDetector.resetTrail(body);
+        body.current.position().z=2;
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        check(!PortalCrossingDetector.completesThroughAperture(body,door,PortalCrossingDetector.SESSION_RELEASE_MARGIN),
+            "retention margin is not an infinite completion plane");
+
+        // A fast exact entry can be admitted and finish inside one server tick:
+        // no prior session is required, but there MUST be an actual strict sweep hit.
+        PortalCrossingDetector.clearTrails();body=new ServerSubLevel();
+        body.current.position().set(0,0,-2);PortalCrossingDetector.seedPhysicsStart(body);
+        body.current.position().set(.65,0,.65);
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        state=PortalCrossingDetector.evaluate(body,door,FORWARD,0);
+        check(state.provesPhysicalEntry(),"same-tick entry has strict finite proof");
+        check(!PortalCrossingDetector.completesThroughAperture(body,door),"slightly displaced trailing exit misses exact rectangle");
+        check(PortalCrossingDetector.completesThroughAperture(body,door,PortalCrossingDetector.SESSION_RELEASE_MARGIN),
+            "same-tick proven admission can use release skin");
+
+        // Empty space between occupied blocks cannot retain an admitted seam either.
+        body=new ServerSubLevel();body.blocks.clear();
+        body.blocks.add(new net.minecraft.core.BlockPos(-10,0,0));
+        body.blocks.add(new net.minecraft.core.BlockPos(10,0,0));
+        PortalCrossingDetector.seedPhysicsStart(body);
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"sparse AABB gap is not retained geometry");
+
+        // A state cache must be reused within a segment, not across edits/frames.
+        PortalCrossingDetector.clearTrails();body=new ServerSubLevel();
+        body.current.position().set(0,0,-2);PortalCrossingDetector.seedPhysicsStart(body);
+        body.current.position().z=2;
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        var first=PortalCrossingDetector.evaluate(body,door,FORWARD,0);
+        check(first==PortalCrossingDetector.evaluate(body,door,FORWARD,0),"same segment uses cached state");
+        double oldWidth=door.width;door.width=.25;
+        var resized=PortalCrossingDetector.evaluate(body,door,FORWARD,0);
+        check(first!=resized,"aperture resize invalidates cache key");
+        door.width=oldWidth;door.origin=new Vec3(20,0,0);
+        check(!PortalCrossingDetector.evaluate(body,door,FORWARD,0).sweptIntersectsPortalAperture(),"portal movement invalidates cache");
+        door.origin=Vec3.ZERO;
+        body.blocks.clear();body.blocks.add(new net.minecraft.core.BlockPos(20,0,0));
+        IplPortalVolumeCache.invalidate(body);
+        check(!PortalCrossingDetector.evaluate(body,door,FORWARD,0).sweptIntersectsPortalAperture(),"block revision invalidates cache");
+        body=new ServerSubLevel();PortalCrossingDetector.seedPhysicsStart(body);
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        first=PortalCrossingDetector.evaluate(body,door,FORWARD,0);
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        check(first!=PortalCrossingDetector.evaluate(body,door,FORWARD,0),"new captured segment invalidates cache");
+        body.current.position().set(0,0,.55);PortalCrossingDetector.resetTrail(body);
+        state=PortalCrossingDetector.evaluate(body,door,FORWARD,0);
+        check(state.currentIntersectsPortalAperture(),"normal hysteresis contact remains");
+        check(!state.sweptIntersectsPortalAperture(),"stationary sweep still has zero thickness");
+        System.out.println("0.5.2 finite-exit, section-release, cache cases: passed");
         System.out.println("PASS: "+assertions+" detector fixture assertions");
     }
     private static void near(double a,double b,String s){check(Math.abs(a-b)<1e-7,s+": "+a+" / "+b);}

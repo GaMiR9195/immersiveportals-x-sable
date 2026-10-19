@@ -4,14 +4,12 @@ import com.mojang.blaze3d.shaders.Uniform;
 import com.mojang.blaze3d.systems.RenderSystem;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
-import ipl.sable.duck.IplSubLevelClipShader;
 import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
-import org.lwjgl.opengl.GL41;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.CHelper;
@@ -45,6 +43,7 @@ import qouteall.q_misc_util.my_util.Plane;
  */
 public final class SubLevelClipUniformPatcher {
 
+    private static final boolean DIAGNOSTICS = Boolean.getBoolean("ipl.portalDiagnostics");
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-clip-patch");
     private static volatile long lastReportNanos = 0L;
 
@@ -61,23 +60,6 @@ public final class SubLevelClipUniformPatcher {
         LOG.info("[IPL-CLIP-PATCH] static init: FORCE_CLIP_ALL={}", FORCE_CLIP_ALL);
     }
 
-    // Per-reason last-log-time. With multiple distinct shader names alternating
-    // every frame (shadow_terrain_cutout, shadow_translucent, empty-name, etc.)
-    // a naive "suppress consecutive same reason" approach would fire on every
-    // call. Use a map so each distinct reason logs at most once per 5s.
-    private static final java.util.concurrent.ConcurrentHashMap<String, Long> earlyReturnLastLogNanos =
-        new java.util.concurrent.ConcurrentHashMap<>();
-
-    private static void logEarlyReturn(String reason) {
-        long now = System.nanoTime();
-        Long last = earlyReturnLastLogNanos.get(reason);
-        if (last != null && now - last < 5_000_000_000L) {
-            return;
-        }
-        earlyReturnLastLogNanos.put(reason, now);
-        LOG.warn("[IPL-CLIP-PATCH] early return: {}", reason);
-    }
-
     /**
      * Currently-active sub-level equation in <b>camera-relative world space</b>.
      * Used by chunk shaders (iris+sodium {@code terrain_*}) which compute
@@ -88,78 +70,10 @@ public final class SubLevelClipUniformPatcher {
     private static volatile float[] currentSubLevelEqWorld = null;
 
     /**
-     * Persistent "last seen" world-space equation, never cleared by
-     * {@link #clearAndUpload}. Set whenever {@link #patchForSubLevel}
-     * fires. Used by hooks that run OUTSIDE the sub-level bracket --
-     * notably {@code IplFlywheelEmbeddedClipMixin.setupDraw} on Flywheel's
-     * {@code EmbeddedEnvironment}, which runs at a separate frame stage
-     * after all Sable brackets have exited (the cog draws happen here
-     * because Flywheel batches per-sub-level BE visualizations and
-     * dispatches them outside Sable's chunk-render brackets).
-     *
-     * <p>Caveat: for multi-sub-level scenes, this only holds the LAST
-     * sub-level's equation -- not per-sub-level. Adequate for the airship
-     * test case; needs a sceneId-indexed map for full correctness.
-     */
-    private static volatile float[] latestSubLevelEqWorld = null;
-
-    /** Persistent counterpart of {@link #currentSubLevelEqEye}. */
-    private static volatile float[] latestSubLevelEqEye = null;
-
-    /**
-     * Timestamp (System.nanoTime) of the most recent {@link #patchForSubLevel}
-     * call. Latest equations are considered "fresh" if set within
-     * {@link #LATEST_STALE_THRESHOLD_NANOS}; older = treated as null by
-     * {@link #getLatestSubLevelEqWorld} / {@code Eye} / {@code Local}.
-     *
-     * <p>Without this, latest values persist forever after a sub-level
-     * disengages from a portal -- and the Flywheel embedded clip mixin
-     * keeps writing them + enabling CD1 every frame. Result: "clipping
-     * enabled before contact" -- the system stays active long after the
-     * airship has left the portal. Fresh-frame check fixes this without
-     * needing a per-frame hook.
-     *
-     * <p>50ms ≈ 3 frames at 60fps; long enough that mid-frame Flywheel
-     * draws see the latest from the bracket that fired earlier in the
-     * same frame, short enough to expire within a few frames after the
-     * sub-level disengages.
-     */
-    private static volatile long latestSetNanos = 0L;
-    private static final long LATEST_STALE_THRESHOLD_NANOS = 50_000_000L; // 50ms
-
-    /**
-     * Sub-level-local equation. For programs whose vertex shader chain
-     * produces a position in the SUB-LEVEL's local coordinate frame
-     * (not world / not camera-relative).
-     *
-     * <p>Empirical finding (user-confirmed by airship Y-rotation test):
-     * for Create cog block-entity rendering, the chain
-     * {@code gbufferModelViewInverse * iris_ModelViewMat * iris_Position}
-     * produces a SUB-LEVEL-LOCAL position rather than world position --
-     * apparently Sable's sub-level transform is NOT in iris_ModelViewMat
-     * for the BE path even though it IS for the chunked-section path.
-     * Dotting a world-space equation against sub-level-local position
-     * gives clipping that rotates with the airship (works when airship
-     * rotation aligns sub-level axes with world axes; wrong otherwise).
-     *
-     * <p>Math: world plane (n_w, c_w) with c_w = -n_w·p_w. Substitute
-     * P_w = R_sub·P_local + t_sub:
-     *   dot(R_sub·P_local + t_sub, n_w) - n_w·p_w
-     *   = dot(P_local, R_sub^T·n_w) + n_w·(t_sub - p_w)
-     * Local form: n_local = R_sub^T·n_w, c_local = -n_w·(p_w - t_sub).
-     * Pose3dc gives this directly via transformNormalInverse +
-     * transformPositionInverse.
-     */
-    private static volatile float[] currentSubLevelEqLocal = null;
-
-    /**
      * Equation for vanilla Sable chunk vertices. Their {@code Position + ChunkOffset}
      * is plot-local after camera translation, unlike Iris/Sodium terrain world positions.
      */
     private static volatile float[] currentSubLevelEqVanillaInput = null;
-
-    /** Persistent counterpart of {@link #currentSubLevelEqLocal}. */
-    private static volatile float[] latestSubLevelEqLocal = null;
 
     /**
      * Currently-active sub-level equation in <b>eye space</b> (rotated by the
@@ -205,31 +119,6 @@ public final class SubLevelClipUniformPatcher {
         return currentSubLevelEqEye;
     }
 
-    /**
-     * World-space equation from the most recent {@link #patchForSubLevel},
-     * persistent across bracket exit BUT returns null if no patch fired
-     * within {@link #LATEST_STALE_THRESHOLD_NANOS}. Used by hooks that
-     * run outside the Sable bracket scope (Flywheel EmbeddedEnvironment
-     * setupDraw) which can fire even when no bracket is active for the
-     * sub-level being drawn -- the freshness check prevents stale-value
-     * application after the airship disengages.
-     */
-    public static float[] getLatestSubLevelEqWorld() {
-        if (ipl$latestIsStale()) return null;
-        return latestSubLevelEqWorld;
-    }
-
-    /** Eye-space counterpart of {@link #getLatestSubLevelEqWorld()}. */
-    public static float[] getLatestSubLevelEqEye() {
-        if (ipl$latestIsStale()) return null;
-        return latestSubLevelEqEye;
-    }
-
-    /** Sub-level-local equation, current bracket. */
-    public static float[] getCurrentSubLevelEqLocal() {
-        return currentSubLevelEqLocal;
-    }
-
     public static float[] getCurrentSubLevelEqVanillaInput() {
         return currentSubLevelEqVanillaInput;
     }
@@ -237,7 +126,7 @@ public final class SubLevelClipUniformPatcher {
     /**
      * Second cut plane (multi-straddle), same spaces as the primaries; null means
      * "no second cut" and uploaders write the neutral {@code (0,0,0,1)}. The shader
-     * takes {@code min} of both plane distances into {@code gl_ClipDistance[1]}.
+     * writes the two distances into independent slots 1 and 2.
      */
     private static volatile float[] currentSubLevelEqWorld2 = null;
     private static volatile float[] currentSubLevelEqEye2 = null;
@@ -255,16 +144,6 @@ public final class SubLevelClipUniformPatcher {
         return currentSubLevelEqVanillaInput2;
     }
 
-    /** Sub-level-local equation, persistent across bracket exit (with freshness check). */
-    public static float[] getLatestSubLevelEqLocal() {
-        if (ipl$latestIsStale()) return null;
-        return latestSubLevelEqLocal;
-    }
-
-    private static boolean ipl$latestIsStale() {
-        return System.nanoTime() - latestSetNanos > LATEST_STALE_THRESHOLD_NANOS;
-    }
-
     private SubLevelClipUniformPatcher() {}
 
     /**
@@ -279,32 +158,14 @@ public final class SubLevelClipUniformPatcher {
 
     /**
      * Two-plane variant (multi-straddle): {@code plane2} is the SECOND cut, or null
-     * for single-cut behavior. Both flow into the same {@code gl_ClipDistance[1]}
-     * via the shader-side {@code min}.
+     * for single-cut behavior. Each uses its own {@code gl_ClipDistance} slot (1 and 2).
      */
     public static void patchForSubLevel(
         ClientSubLevel sub, Plane plane, @org.jetbrains.annotations.Nullable Plane plane2
     ) {
         ShaderInstance shader = RenderSystem.getShader();
-        if (shader == null) {
-            logEarlyReturn("RenderSystem.getShader() null");
-            return;
-        }
-        Uniform uniform = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform();
-        if (uniform == null) {
-            // Silent skip for shaders we haven't transformed: shadow shaders, empty
-            // name (Veil/Sodium internal blits), particle, vanilla rendertype_*.
-            // They fire every frame; logging would spam.
-            String name = shader.getName();
-            if (!name.isEmpty()
-                && !name.startsWith("shadow_")
-                && !name.equals("particle")
-                && !name.startsWith("rendertype_")) {
-                logEarlyReturn("shader '" + name + "' has no ipl_subLevelClipEquation uniform");
-            }
-            return;
-        }
-
+        // A BE scope may start with no matching terrain shader. Publish the cut anyway;
+        // the actual program is updated now or when it subsequently binds.
         // Build the camera-relative world-space clip equation used by Iris/Sodium.
         // Vanilla Sable terrain receives an inverse-rotated normal below because its
         // Position + ChunkOffset remains plot-local until the model-view transform.
@@ -360,43 +221,10 @@ public final class SubLevelClipUniformPatcher {
         currentSubLevelEqWorld2 = eqWorld2;
         currentSubLevelEqVanillaInput2 = eqVanillaInput2;
 
-        float[] currentEq = IplProgramRegistry.isVanillaSubLevelInputShader(shader.getName())
-            && eqVanillaInput != null ? eqVanillaInput : new float[]{nx, ny, nz, cw};
-        boolean vanillaInputShader = IplProgramRegistry.isVanillaSubLevelInputShader(shader.getName());
-        float[] currentEq2 = plane2 == null ? null
-            : (vanillaInputShader && eqVanillaInput2 != null ? eqVanillaInput2 : eqWorld2);
-        // IPL fix (P3): only touch the tracked shader's uniform when its program is
-        // ACTUALLY bound. RenderSystem.getShader() is CPU-side tracking — post/blit
-        // passes leave glUseProgram(0) while it's still set, and upload() then raises
-        // GL_INVALID_OPERATION "No active program" every frame, poisoning GL state
-        // (storms observed right before several native crashes). The registry spray
-        // below reaches registered programs bind-free.
-        int boundProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
-        if (boundProgram == shader.getId()) {
-            uniform.set(currentEq[0], currentEq[1], currentEq[2], currentEq[3]);
-            uniform.upload();
-            Uniform uniform2 = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform2();
-            if (uniform2 != null) {
-                if (currentEq2 != null) {
-                    uniform2.set(currentEq2[0], currentEq2[1], currentEq2[2], currentEq2[3]);
-                } else {
-                    uniform2.set(0f, 0f, 0f, 1f);
-                }
-                uniform2.upload();
-            }
-        } else {
-            logEarlyReturn(
-                "shader '" + shader.getName() + "' tracked but not bound — registry spray only");
-        }
-
         // Publish world-space equation for chunk shaders (iris+sodium
         // terrain_*) that dot against a world-space position chain.
         float[] eqWorld = new float[]{nx, ny, nz, cw};
         currentSubLevelEqWorld = eqWorld;
-        latestSubLevelEqWorld = eqWorld;
-        // Mark freshness so getLatestSubLevelEq* don't return stale values
-        // after the sub-level disengages from any portal.
-        latestSetNanos = System.nanoTime();
 
         // Compute and publish the eye-space variant for entity-style
         // shaders (Iris-rewritten block_entity_diffuse / moving_block,
@@ -408,7 +236,6 @@ public final class SubLevelClipUniformPatcher {
         // matrix; camera.rotation() alone is wrong in portal eye-space.
         float[] eqEye = transformEquationForModelView(eqWorld, RenderSystem.getModelViewMatrix());
         currentSubLevelEqEye = eqEye;
-        latestSubLevelEqEye = eqEye;
         if (eqWorld2 != null) {
             currentSubLevelEqEye2 = transformEquationForModelView(
                 eqWorld2, RenderSystem.getModelViewMatrix());
@@ -416,68 +243,10 @@ public final class SubLevelClipUniformPatcher {
             currentSubLevelEqEye2 = null;
         }
 
-        // Retain the local form for shader paths that explicitly recover plot
-        // coordinates. Vanilla entity/text shaders do not use it: their emitted
-        // vertices already include Sable's BE pose transform and are clipped in
-        // eye space with eqEye below.
-        float[] eqLocal = null;
-        if (sub != null) {
-            try {
-                Pose3dc renderPose = sub.renderPose();
-                Vec3 nLocal = renderPose.transformNormalInverse(n);
-                Vec3 pLocal = renderPose.transformPositionInverse(p);
-                double cLocal = -(nLocal.x * pLocal.x
-                                + nLocal.y * pLocal.y
-                                + nLocal.z * pLocal.z);
-                eqLocal = new float[]{
-                    (float) nLocal.x, (float) nLocal.y, (float) nLocal.z,
-                    (float) cLocal
-                };
-            } catch (Exception e) {
-                // Pose unavailable / inverse failed -- leave local null,
-                // entity-style programs fall back to world.
-            }
-        }
-        currentSubLevelEqLocal = eqLocal;
-        latestSubLevelEqLocal = eqLocal;
-
-        // Spray BOTH variants to every program known to carry the uniform,
-        // picking the right space per program via the entity-style registry.
-        // Handles the case (RenderDoc-confirmed in cog_leak5.rdc EID 2294)
-        // where a program was bound BEFORE this bracket started and won't
-        // re-trigger _glUseProgram during the bracket -- without this loop
-        // its slot-1 stays at (0,0,0,1) and the cog leaks.
-        // glProgramUniform4f writes to a specified program regardless of
-        // bind state (GL 4.1+).
-        final float[] eqW = currentSubLevelEqWorld;
-        final float[] eqV = currentSubLevelEqVanillaInput;
-        final float[] eqW2 = currentSubLevelEqWorld2;
-        final float[] eqV2 = currentSubLevelEqVanillaInput2;
-        final float[] eqE2 = currentSubLevelEqEye2;
-        IplSubLevelUniformRegistry.forEach((programId, locs) -> {
-            // Entity-style programs evaluate their transformed BE vertices in
-            // eye space. Chunks use world/input space.
-            float[] eq;
-            float[] eq2;
-            if (IplProgramRegistry.usesVanillaSubLevelInputSpace(programId) && eqV != null) {
-                eq = eqV;
-                eq2 = eqV2;
-            } else if (IplProgramRegistry.isEntityStyleProgram(programId)) {
-                eq = currentSubLevelEqEye;
-                eq2 = eqE2;
-            } else {
-                eq = eqW;
-                eq2 = eqW2;
-            }
-            GL41.glProgramUniform4f(programId, locs[0], eq[0], eq[1], eq[2], eq[3]);
-            if (locs[1] >= 0) {
-                if (eq2 != null) {
-                    GL41.glProgramUniform4f(programId, locs[1], eq2[0], eq2[1], eq2[2], eq2[3]);
-                } else {
-                    GL41.glProgramUniform4f(programId, locs[1], 0f, 0f, 0f, 1f);
-                }
-            }
-        });
+        if (shader != null) IplProgramBindHook.prepareShader(shader);
+        // Raw Flywheel/Iris binds can bypass RenderSystem's tracked shader. Query once
+        // per actual scope, and write only that GL program (DSA, safe even for program 0).
+        IplProgramBindHook.uploadSubLevel(GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM));
 
         // Defensive re-enable: Veil bloom (RenderDoc EID ~2453 in cog_leak3)
         // disables GL_CLIP_DISTANCE1 mid-frame and doesn't restore it. If our
@@ -489,7 +258,7 @@ public final class SubLevelClipUniformPatcher {
         GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
 
         long now = System.nanoTime();
-        if (now - lastReportNanos >= 5_000_000_000L) {
+        if (DIAGNOSTICS && shader != null && now - lastReportNanos >= 5_000_000_000L) {
             lastReportNanos = now;
             LOG.info("[IPL-CLIP-PATCH] shader={} forceAll={} subLevel={} wrote=({},{},{},{})",
                 shader.getName(),
@@ -593,30 +362,8 @@ public final class SubLevelClipUniformPatcher {
         currentSubLevelEqEye2 = null;
         currentSubLevelEqVanillaInput2 = null;
 
-        // NOTE: We intentionally do NOT spray (0,0,0,1) to all registered
-        // programs here. Doing so was the root cause of the cog-leak bug
-        // (cog_leak3/5.rdc EID 2294: slot-1 was at default because clearAndUpload
-        // had just reset every program after the chunk bracket exited).
-        // The bracket's GL_CLIP_DISTANCE1 disable in finally is what makes
-        // stale slot-1 values inert for subsequent draws -- so leaving
-        // them at the last sprayed equation is safe.
-        //
-        // For the currently-bound shader, the existing set/upload still
-        // restores its slot-1 to identity, in case some downstream code
-        // re-enables CLIP_DISTANCE1 without going through patchForSubLevel.
-
         ShaderInstance shader = RenderSystem.getShader();
-        if (shader == null) return;
-        Uniform uniform = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform();
-        if (uniform == null) return;
-        // Same bound-program guard as patchForSubLevel (IPL fix P3).
-        if (GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM) != shader.getId()) return;
-        uniform.set(0f, 0f, 0f, 1f);
-        uniform.upload();
-        Uniform uniform2 = ((IplSubLevelClipShader) shader).ipl$getSubLevelClipUniform2();
-        if (uniform2 != null) {
-            uniform2.set(0f, 0f, 0f, 1f);
-            uniform2.upload();
-        }
+        if (shader != null) IplProgramBindHook.prepareShader(shader);
+        IplProgramBindHook.uploadSubLevel(GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM));
     }
 }

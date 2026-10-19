@@ -21,6 +21,9 @@ public final class PortalCrossingDetector {
 
     private static final double EPSILON = 1.0e-8;
     private static final double PORTAL_HYSTERESIS_DEPTH = 0.1;
+    /** Maximum side protrusion of the occupied SECTION at the portal, release only.
+     * Quarter-block tolerance never widens fresh admission or native clipping. */
+    public static final double SESSION_RELEASE_MARGIN = 0.65;
     private static final Map<UUID, Trail> TRAILS = new HashMap<>();
     private static final Map<UUID, ExitAnchor> EXIT_ANCHORS = new HashMap<>();
     private static final double EXIT_CLEARANCE_THICKNESS = 0.01;
@@ -45,6 +48,11 @@ public final class PortalCrossingDetector {
     ) {
         public boolean sweptTowardDestination() {
             return sweptEntryDirection == SweepDirection.TOWARD_DESTINATION;
+        }
+
+        /** A strict finite sweep may admit and complete within the SAME tick. */
+        public boolean provesPhysicalEntry() {
+            return startedBeforePortalPlane && sweptIntersectsPortalAperture && sweptTowardDestination();
         }
     }
 
@@ -147,6 +155,7 @@ public final class PortalCrossingDetector {
             }
             trail.end.set(airship.logicalPose());
         }
+        trail.evaluations.clear();
         trail.lastSeenTick = trailTick;
     }
 
@@ -176,6 +185,7 @@ public final class PortalCrossingDetector {
         trail.end.set(airship.logicalPose());
 
         trail.rebasedThisTick = true;
+        trail.evaluations.clear();
         trail.lastSeenTick = trailTick;
     }
 
@@ -209,6 +219,7 @@ public final class PortalCrossingDetector {
 
         trail.rebasedThisTick = true;
         trail.seededFromExit = true;
+        trail.evaluations.clear();
         trail.lastSeenTick = trailTick;
     }
 
@@ -243,6 +254,7 @@ public final class PortalCrossingDetector {
         armExitClearance(airship, portal);
         trail.end.set(airship.logicalPose());
         trail.rebasedThisTick = true;
+        trail.evaluations.clear();
         trail.lastSeenTick = trailTick;
     }
 
@@ -254,6 +266,8 @@ public final class PortalCrossingDetector {
         List<BlockPos> blocks = IplPortalVolumeCache.blocks(airship);
         if (blocks.isEmpty()) return false;
         Trail trail = trail(airship);
+        if (sameBasis(trail.start, trail.end) && trail.start.position().equals(trail.end.position()))
+            return false; // No relative body motion can have a directed predictive entry.
         Pose3d ahead = interpolate(trail.start, trail.end, 1.0 + lookaheadSegments);
         SweepResult predicted = sweepSegment(portal, blocks,
             trail.end, ahead, sourceToDestNormal, apertureMargin);
@@ -384,6 +398,10 @@ public final class PortalCrossingDetector {
      * Already-completed leading joint members are recorded by the session owner.
      */
     public static boolean completesThroughAperture(ServerSubLevel body, Portal portal) {
+        return completesThroughAperture(body, portal, 0.0);
+    }
+
+    public static boolean completesThroughAperture(ServerSubLevel body, Portal portal, double releaseMargin) {
         Trail trail = trail(body);
         List<BlockPos> blocks = IplPortalVolumeCache.blocks(body);
         if (blocks.isEmpty()) return false;
@@ -393,8 +411,32 @@ public final class PortalCrossingDetector {
         if (sample(blocks, new Frame(trail.end), origin, normal).minDistance < 0.0)
             return false;
         double t = completionTime(body, portal, 0.0);
-        return overlapsAperture(portal, blocks,
-            new Frame(interpolate(trail.start, trail.end, t)), normal, 0.0, 1.0e-7);
+        Frame crossing = new Frame(interpolate(trail.start, trail.end, t));
+        return sectionFits(portal, blocks, crossing, releaseMargin, 1.0e-7);
+    }
+
+    /** Release when ANY occupied section protrudes too far sideways, even if the
+     * rest of the object still overlaps the opening. Distant non-crossing geometry
+     * is irrelevant; a sparse plot's empty AABB gap cannot retain the seam either. */
+    public static boolean retainsAdmittedSession(ServerSubLevel body, Portal portal) {
+        return sectionFits(portal, IplPortalVolumeCache.blocks(body),
+            new Frame(trail(body).end), SESSION_RELEASE_MARGIN, PORTAL_HYSTERESIS_DEPTH);
+    }
+
+    private static boolean sectionFits(Portal portal, List<BlockPos> blocks, Frame frame,
+                                      double margin, double depth) {
+        double[][] basis = frame.halfBasis();
+        double[] origin = vector(portal.getOriginPos()), w = vector(portal.getAxisW());
+        double[] h = vector(portal.getAxisH()), n = vector(portal.getNormal());
+        double halfW = portal.getWidth()*.5+margin, halfH = portal.getHeight()*.5+margin;
+        boolean touched = false;
+        for (BlockPos block : blocks) {
+            double[] center = {frame.centerX(block),frame.centerY(block),frame.centerZ(block)};
+            int section = PortalSectionMath.classify(center,basis,origin,w,h,n,halfW,halfH,depth);
+            if (section == PortalSectionMath.OUTSIDE) return false;
+            if (section == PortalSectionMath.INSIDE) touched = true;
+        }
+        return touched;
     }
 
     public static double completionTime(ServerSubLevel body, Portal portal) {
@@ -406,6 +448,15 @@ public final class PortalCrossingDetector {
         List<BlockPos> blocks = IplPortalVolumeCache.blocks(body);
         if (blocks.isEmpty()) return 1.0;
         Vec3 normal = portal.getNormal().scale(-1.0), origin = portal.getOriginPos();
+        // With a fixed affine basis every occupied vertex has the same displacement.
+        // The trailing support is linear: two samples replace 40 full block scans.
+        if (sameBasis(trail.start, trail.end)) {
+            double a = sample(blocks, new Frame(trail.start), origin, normal).minDistance;
+            double b = sample(blocks, new Frame(trail.end), origin, normal).minDistance;
+            if (b < depth) return 1.0;
+            if (a >= depth) return 0.0;
+            return Math.clamp((depth - a) / (b - a), 0.0, 1.0);
+        }
         int steps = Math.max(1, (int) Math.ceil(rotationAngle(trail.start, trail.end) / MAX_ROTATION_STEP));
         double lastBelow = -1.0;
         for (int i = 0; i <= steps; i++) {
@@ -468,6 +519,11 @@ public final class PortalCrossingDetector {
         return new AABB(bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ);
     }
 
+    private static boolean sameBasis(Pose3dc a, Pose3dc b) {
+        return a.orientation().equals(b.orientation())
+            && a.rotationPoint().equals(b.rotationPoint()) && a.scale().equals(b.scale());
+    }
+
     private static double rotationAngle(Pose3dc a, Pose3dc b) {
         return 2.0 * Math.acos(Math.clamp(Math.abs(a.orientation().dot(b.orientation())), 0.0, 1.0));
     }
@@ -501,13 +557,26 @@ public final class PortalCrossingDetector {
         }
 
         Trail trail = trail(airship);
+        EvaluationKey key = new EvaluationKey(portal.getUUID(), portal.getOriginPos(),
+            portal.getAxisW(), portal.getAxisH(), sourceToDestNormal,
+            portal.getWidth(), portal.getHeight(), apertureMargin, IplPortalVolumeCache.revision(airship));
+        CrossingState cached = trail.evaluations.get(key);
+        if (cached != null) return cached;
         Frame start = new Frame(trail.start);
         Frame end = new Frame(trail.end);
 
         Sample current = sample(blocks, end, portal.getOriginPos(), sourceToDestNormal);
         Sample oldest = sample(blocks, start, portal.getOriginPos(), sourceToDestNormal);
-        SweepResult recent = sweepSegment(
-            portal, blocks, trail.start, trail.end, sourceToDestNormal, apertureMargin);
+        boolean staticPose = sameBasis(trail.start, trail.end)
+            && trail.start.position().equals(trail.end.position());
+        boolean currentContact = current.minDistance <= PORTAL_HYSTERESIS_DEPTH + EPSILON
+            && current.maxDistance >= -PORTAL_HYSTERESIS_DEPTH - EPSILON
+            && overlapsAperture(portal, blocks, end, sourceToDestNormal, apertureMargin);
+        SweepResult recent = staticPose ? new SweepResult(currentContact
+            && current.minDistance <= EPSILON && current.maxDistance >= -EPSILON
+            && overlapsAperture(portal, blocks, end, sourceToDestNormal, apertureMargin, 0.0),
+            Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY) : sweepSegment(
+                portal, blocks, trail.start, trail.end, sourceToDestNormal, apertureMargin);
         SweepResult sweep = recent;
 
         CrossingState result = new CrossingState(
@@ -515,11 +584,12 @@ public final class PortalCrossingDetector {
 
             oldest.minDistance < -EPSILON,
             sweep.intersects,
-            overlapsAperture(portal, blocks, end, sourceToDestNormal, apertureMargin),
+            currentContact,
             sweep.direction(),
-            motionDirection(blocks, start, end, sourceToDestNormal),
+            staticPose ? SweepDirection.NONE : motionDirection(blocks, start, end, sourceToDestNormal),
 
             Double.isFinite(recent.towardTime()) ? recent.towardTime() : Double.NaN);
+        trail.evaluations.put(key, result);
         IplEnteringVolumeVisualization.record(airship, portal, result);
         return result;
     }
@@ -583,11 +653,17 @@ public final class PortalCrossingDetector {
         double[] origin = vector(portal.getOriginPos());
         double[] w = vector(portal.getAxisW()), h = vector(portal.getAxisH()), n = vector(normal);
         Frame initial = new Frame(fromPose), terminal = new Frame(toPose);
+        double initialS = initial.obbSupport(n[0], n[1], n[2]);
+        double finalS = terminal.obbSupport(n[0], n[1], n[2]);
+        double pivotChange = fromPose.rotationPoint().distance(toPose.rotationPoint());
+        double scaleChange = fromPose.scale().distance(toPose.scale());
+        double maxScale = Math.max(fromPose.scale().length(), toPose.scale().length());
         Frame from = initial;
         for (int step = 0; step < steps; step++) {
             Pose3d nextPose = interpolate(fromPose, toPose, (step + 1.0) / steps);
             Frame to = new Frame(nextPose);
             double[][] ba = from.halfBasis(), bb = to.halfBasis();
+            double sa = PortalSweepMath.support(ba, n), sb = PortalSweepMath.support(bb, n);
             for (BlockPos block : blocks) {
                 double[] a = {from.centerX(block), from.centerY(block), from.centerZ(block)};
                 double[] b = {to.centerX(block), to.centerY(block), to.centerZ(block)};
@@ -595,10 +671,7 @@ public final class PortalCrossingDetector {
                 double curvature = angle > EPSILON
                     ? blockRadius(block, fromPose, toPose) * (1.0 - Math.cos(angle / steps * 0.5)) : 0.0;
 
-                double pivotChange = fromPose.rotationPoint().distance(toPose.rotationPoint());
-                double scaleChange = fromPose.scale().distance(toPose.scale());
                 if (pivotChange > EPSILON || scaleChange > EPSILON) {
-                    double maxScale = Math.max(fromPose.scale().length(), toPose.scale().length());
                     double localRadius = Math.max(
                         fromPose.rotationPoint().distance(block.getX()+.5, block.getY()+.5, block.getZ()+.5),
                         toPose.rotationPoint().distance(block.getX()+.5, block.getY()+.5, block.getZ()+.5)) + 1.0;
@@ -612,14 +685,11 @@ public final class PortalCrossingDetector {
                 intersects = true;
                 double da = (a[0]-origin[0])*n[0] + (a[1]-origin[1])*n[1] + (a[2]-origin[2])*n[2];
                 double db = (b[0]-origin[0])*n[0] + (b[1]-origin[1])*n[1] + (b[2]-origin[2])*n[2];
-                double sa = PortalSweepMath.support(ba, n), sb = PortalSweepMath.support(bb, n);
                 double time = (step + hit.enter()) / steps;
                 double initialD = (initial.centerX(block)-origin[0])*n[0]
                     + (initial.centerY(block)-origin[1])*n[1] + (initial.centerZ(block)-origin[2])*n[2];
                 double finalD = (terminal.centerX(block)-origin[0])*n[0]
                     + (terminal.centerY(block)-origin[1])*n[1] + (terminal.centerZ(block)-origin[2])*n[2];
-                double initialS = initial.obbSupport(n[0], n[1], n[2]);
-                double finalS = terminal.obbSupport(n[0], n[1], n[2]);
                 if ((da + sa < -EPSILON && db + sb >= -EPSILON)
                     || (initialD + initialS < -EPSILON && finalD + finalS >= -EPSILON))
                     toward = Math.min(toward, time);
@@ -716,7 +786,11 @@ public final class PortalCrossingDetector {
 
     }
 
+    private record EvaluationKey(UUID portal, Vec3 origin, Vec3 axisW, Vec3 axisH,
+        Vec3 normal, double width, double height, double margin, long blockRevision) {}
+
     private static final class Trail {
+        final Map<EvaluationKey, CrossingState> evaluations = new HashMap<>();
         final Pose3d start;
         final Pose3d end;
         boolean rebasedThisTick;

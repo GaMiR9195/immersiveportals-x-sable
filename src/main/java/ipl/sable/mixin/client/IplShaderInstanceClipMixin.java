@@ -159,6 +159,16 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
         }
     }
 
+    @Unique private boolean ipl$hadActiveCut;
+
+    @Inject(method = "apply", at = @At("HEAD"))
+    private void ipl$prepareCurrentClipUniforms(CallbackInfo ci) {
+        boolean active = ipl.sable.render.SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld() != null;
+        if (active || this.ipl$hadActiveCut)
+            ipl.sable.render.IplProgramBindHook.prepareShader((ShaderInstance) (Object) this);
+        this.ipl$hadActiveCut = active;
+    }
+
     @Nullable
     @Override
     public Uniform ipl$getSubLevelClipUniform() {

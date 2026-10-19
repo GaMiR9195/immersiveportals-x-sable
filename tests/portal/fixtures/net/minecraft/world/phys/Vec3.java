@@ -8,4 +8,6 @@ public class Vec3 {
  public double dot(Vec3 o){return x*o.x+y*o.y+z*o.z;}
  public double length(){return Math.sqrt(dot(this));}
  public double distanceToSqr(Vec3 o){Vec3 d=subtract(o);return d.dot(d);}
+ @Override public boolean equals(Object o){return o instanceof Vec3 v && Double.compare(x,v.x)==0 && Double.compare(y,v.y)==0 && Double.compare(z,v.z)==0;}
+ @Override public int hashCode(){return java.util.Objects.hash(x,y,z);}
 }

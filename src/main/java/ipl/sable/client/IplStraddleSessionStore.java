@@ -219,6 +219,14 @@ public final class IplStraddleSessionStore {
     }
 
     private static List<Portal> resolveRenderPortals(ClientSubLevel sub, ClientLevel level) {
+        List<Portal> cached = IplStraddleRenderCache.renderPortals(sub);
+        if (cached != null) return cached;
+        List<Portal> resolved = resolveRenderPortalsUncached(sub, level);
+        IplStraddleRenderCache.cacheRenderPortals(sub, resolved);
+        return resolved;
+    }
+
+    private static List<Portal> resolveRenderPortalsUncached(ClientSubLevel sub, ClientLevel level) {
         List<SessionPortal> portals = portalsForRender(sub, level);
         List<SessionPortal> active = SESSIONS.get(sub.getUniqueId());
         List<Portal> out = new ArrayList<>(portals.size() + 1);
@@ -232,7 +240,7 @@ public final class IplStraddleSessionStore {
             // delayed render stream. Do not expose the split until this geometry reaches
             // the aperture; prediction below supplies the pre-RPC fast path.
             boolean isActive = active != null && containsPortal(active, sessionPortal.portalId());
-            if (isActive && !IplClientVisualTransitLatch.isVisible(sub, resolved, sessionPortal.completed())) continue;
+            if (isActive && !IplClientVisualTransitLatch.isAuthoritativeVisible(sub, resolved, sessionPortal.completed())) continue;
             if (isActive) visibleActive.add(resolved);
             out.add(resolved);
         }
@@ -240,7 +248,7 @@ public final class IplStraddleSessionStore {
         if (handoffPortal != null && !containsPortal(portals, handoffPortal.portalId())) {
             Portal live = findPortal(level, handoffPortal.portalId());
             Portal resolvedHandoff = live != null ? live : surrogate(handoffPortal, level);
-            if (resolvedHandoff != null && IplClientVisualTransitLatch.isVisible(sub, resolvedHandoff, true)) {
+            if (resolvedHandoff != null && IplClientVisualTransitLatch.isAuthoritativeVisible(sub, resolvedHandoff, true)) {
                 out.add(resolvedHandoff);
             }
         }
@@ -268,7 +276,7 @@ public final class IplStraddleSessionStore {
         var clock = container.getInterpolation();
         if (clock.lastInterpolationTick >= endTick || clock.isStopped()
             && clock.getTickPointer() >= endTick + 1.5 - clock.getInterpolationDelay() - 1.0e-8) return false;
-        return IplClientVisualTransitLatch.isVisible(sub, portal, completed);
+        return IplClientVisualTransitLatch.isAuthoritativeVisible(sub, portal, completed);
     }
 
     /** Active sessions plus only the retired sessions still present in the delayed pose. */
@@ -340,16 +348,9 @@ public final class IplStraddleSessionStore {
 
     @Nullable
     private static Portal findPortal(ClientLevel level, UUID portalId) {
-        // ClientLevel's UUID entity index is protected; iteration is what the old
-        // candidate collector did every frame anyway, and portals are few.
-        for (Entity entity : level.entitiesForRendering()) {
-            if (entity instanceof Portal portal && !portal.isRemoved()
-                && portal.getUUID().equals(portalId)) {
-                return portal;
-            }
-        }
-        // Dimension-stack seams are global portals: never in the entity list.
-        for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
+        // One entity scan per level/render tree, shared with prediction. Do not use
+        // an invoker into Minecraft's protected entity index merely for this lookup.
+        for (Portal portal : IplClientVisualTransitLatch.portals(level)) {
             if (portal.getUUID().equals(portalId) && !portal.isRemoved()) return portal;
         }
         return null;

@@ -68,7 +68,7 @@ public class IplFlywheelEmbeddedClipMixin {
         int progId = program.handle();
         if (progId <= 0) return;
 
-        // Register so our normal spray path covers this program going forward.
+        // Update only this Flywheel-owned program, using the same scoped bind path.
         IplProgramBindHook.onBind(progId);
 
         // Flywheel draws after Sable's scoped bracket. Reusing the last projection

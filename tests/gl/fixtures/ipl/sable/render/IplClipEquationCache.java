@@ -1,0 +1,1 @@
+package ipl.sable.render;public class IplClipEquationCache{public static void refreshFromActive(){}public static double[] getEyeEq(){return new double[]{31,0,0,1};}public static double[] getWorldEq(){return new double[]{32,0,0,1};}}

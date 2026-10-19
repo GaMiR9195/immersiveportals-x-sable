@@ -27,11 +27,14 @@ final class PortalSweepMath {
             for (double[] edge : basis) {
                 if (!clip(interval, a, b, basisA, basisB, origin, w, h, edge,
                     halfW, halfH, n, thickness, curvature)) return null;
-                for (double[] portalAxis : new double[][]{w, h, n}) {
-                    double[] axis = cross(edge, portalAxis);
-                    if (!clip(interval, a, b, basisA, basisB, origin, w, h, axis,
+                // Cross-product SAT axes are scalars, not twelve short-lived arrays
+                // per block test. Keep exactly the same axes and interval equations.
+                if (!clipCross(interval, a, b, basisA, basisB, origin, w, h, edge, w,
+                        halfW, halfH, n, thickness, curvature)
+                    || !clipCross(interval, a, b, basisA, basisB, origin, w, h, edge, h,
+                        halfW, halfH, n, thickness, curvature)
+                    || !clipCross(interval, a, b, basisA, basisB, origin, w, h, edge, n,
                         halfW, halfH, n, thickness, curvature)) return null;
-                }
             }
         }
         return new Hit(interval[0], interval[1]);
@@ -42,15 +45,36 @@ final class PortalSweepMath {
                                 double[] origin, double[] w, double[] h, double[] axis,
                                 double halfW, double halfH, double[] n,
                                 double thickness, double curvature) {
-        double length = Math.sqrt(dot(axis, axis));
+        return clipAxis(interval, a, b, basisA, basisB, origin, w, h,
+            axis[0], axis[1], axis[2], halfW, halfH, n, thickness, curvature);
+    }
+
+    private static boolean clipCross(double[] interval, double[] a, double[] b,
+                                     double[][] basisA, double[][] basisB,
+                                     double[] origin, double[] w, double[] h,
+                                     double[] edge, double[] other, double halfW, double halfH,
+                                     double[] n, double thickness, double curvature) {
+        return clipAxis(interval, a, b, basisA, basisB, origin, w, h,
+            edge[1] * other[2] - edge[2] * other[1],
+            edge[2] * other[0] - edge[0] * other[2],
+            edge[0] * other[1] - edge[1] * other[0],
+            halfW, halfH, n, thickness, curvature);
+    }
+
+    private static boolean clipAxis(double[] interval, double[] a, double[] b,
+                                    double[][] basisA, double[][] basisB,
+                                    double[] origin, double[] w, double[] h,
+                                    double x, double y, double z, double halfW, double halfH,
+                                    double[] n, double thickness, double curvature) {
+        double length = Math.sqrt(x*x + y*y + z*z);
         if (length < EPS) return true;
-        double d0 = (a[0] - origin[0]) * axis[0] + (a[1] - origin[1]) * axis[1]
-            + (a[2] - origin[2]) * axis[2];
-        double delta = (b[0] - a[0]) * axis[0] + (b[1] - a[1]) * axis[1]
-            + (b[2] - a[2]) * axis[2];
-        double portal = halfW * Math.abs(dot(w, axis)) + halfH * Math.abs(dot(h, axis))
-            + thickness * Math.abs(dot(n, axis));
-        double r0 = support(basisA, axis), r1 = support(basisB, axis);
+        double d0 = (a[0] - origin[0]) * x + (a[1] - origin[1]) * y
+            + (a[2] - origin[2]) * z;
+        double delta = (b[0] - a[0]) * x + (b[1] - a[1]) * y
+            + (b[2] - a[2]) * z;
+        double portal = halfW * Math.abs(dot(w, x, y, z)) + halfH * Math.abs(dot(h, x, y, z))
+            + thickness * Math.abs(dot(n, x, y, z));
+        double r0 = support(basisA, x, y, z), r1 = support(basisB, x, y, z);
         double radius = portal + r0 + (curvature + EPS) * length;
         double dr = r1 - r0;
         return upperBound(interval, d0 - radius, delta - dr)
@@ -75,8 +99,12 @@ final class PortalSweepMath {
         return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     }
 
-    private static double[] cross(double[] a, double[] b) {
-        return new double[]{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0]};
+    private static double dot(double[] a, double x, double y, double z) {
+        return a[0]*x + a[1]*y + a[2]*z;
+    }
+
+    private static double support(double[][] basis, double x, double y, double z) {
+        return Math.abs(dot(basis[0], x, y, z)) + Math.abs(dot(basis[1], x, y, z))
+            + Math.abs(dot(basis[2], x, y, z));
     }
 }

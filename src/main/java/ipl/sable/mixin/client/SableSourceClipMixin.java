@@ -53,6 +53,9 @@ public abstract class SableSourceClipMixin {
     @Shadow(remap = false)
     public abstract ClientSubLevel getSubLevel();
 
+    @Shadow @org.spongepowered.asm.mixin.Final
+    private it.unimi.dsi.fastutil.objects.ObjectList<net.minecraft.client.renderer.chunk.SectionRenderDispatcher.RenderSection> allRenderSections;
+
     /**
      * Was FrontClipping's clip state enabled when we entered? If yes, IP is using it
      * for something (the entity render path enables clipping briefly even outside
@@ -69,6 +72,7 @@ public abstract class SableSourceClipMixin {
     @Inject(
         method = "renderChunkedSubLevel",
         at = @At("HEAD"),
+        cancellable = true,
         remap = false,
         require = 0
     )
@@ -80,6 +84,23 @@ public abstract class SableSourceClipMixin {
         this.ipl$installedClipThisCall = false;
         this.ipl$portalClipEquationThisCall = null;
 
+        // Empty cutout/translucent/etc. layers must not install clipping or run shader
+        // work at all. A two-block plot usually has geometry in only ONE of these layers.
+        boolean populated = false;
+        for (var section : this.allRenderSections) {
+            if (!section.getCompiled().isEmpty(type)) { populated = true; break; }
+        }
+        if (!populated || !ipl.sable.render.IplSubLevelRenderVisibility.visible(getSubLevel(),getSubLevel().renderPose())) {
+            ci.cancel();
+            return;
+        }
+
+        // The projection-driver branch supplies its own single plane; the source
+        // branch may carry SEVERAL (multi-straddle) — the shader min()s two cuts.
+        qouteall.q_misc_util.my_util.Plane primaryPlane;
+        qouteall.q_misc_util.my_util.Plane secondaryPlane = null;
+        SourceClipPortalFinder.ClipDecision decision =
+            SourceClipPortalFinder.findStraddlingPortalPlane(getSubLevel());
         // Sable's vanilla chunk vertices are plot-local until its model-view
         // matrix rotates them. IP's slot-0 equation is camera-relative world
         // space, so using it unchanged produces a rotated portal cut whenever
@@ -95,12 +116,20 @@ public abstract class SableSourceClipMixin {
             }
         }
 
-        // The projection-driver branch supplies its own single plane; the source
-        // branch may carry SEVERAL (multi-straddle) — the shader min()s two cuts.
-        qouteall.q_misc_util.my_util.Plane primaryPlane;
-        qouteall.q_misc_util.my_util.Plane secondaryPlane = null;
-        SourceClipPortalFinder.ClipDecision decision =
-            SourceClipPortalFinder.findStraddlingPortalPlane(getSubLevel());
+        if (decision != null && this.ipl$portalClipEquationThisCall != null
+            && !qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface.invoker.isRenderingShadowMap()) {
+            var n = decision.plane().normal();
+            var delta = decision.plane().pos().subtract(qouteall.imm_ptl.core.CHelper.getCurrentCameraPos());
+            double[] split = {n.x,n.y,n.z,-n.dot(delta)};
+            double[] cut = this.ipl$portalClipEquationThisCall.clone();
+            cut[3] -= FrontClipping.ADJUSTMENT;
+            if (ipl.sable.render.IplRenderCullMath.emptyIntersection(cut,split)) {
+                SubLevelClipUniformPatcher.restorePortalClip(shader,this.ipl$portalClipEquationThisCall);
+                this.ipl$portalClipEquationThisCall = null;
+                ci.cancel();
+                return;
+            }
+        }
         if (decision == null) {
             SourceClipDiag.onVanillaCall(false);
             return;

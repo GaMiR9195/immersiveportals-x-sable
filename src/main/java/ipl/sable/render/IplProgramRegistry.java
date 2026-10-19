@@ -56,6 +56,11 @@ public final class IplProgramRegistry {
             programId, VANILLA_SUBLEVEL_INPUT_SHADERS.contains(shaderName));
     }
 
+    public static void unregister(int programId) {
+        ENTITY_STYLE_BY_PROGRAM.remove(programId);
+        VANILLA_SUBLEVEL_INPUT_BY_PROGRAM.remove(programId);
+    }
+
     /**
      * Returns true if the program's shader is one whose GLSL injection works
      * in eye space (vanilla entity / particle / portal_area). Returns false

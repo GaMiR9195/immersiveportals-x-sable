@@ -193,12 +193,15 @@ public final class SableTransitController {
                     airship, portal, normal, APERTURE_MARGIN);
 
                 // A predictive session becomes authoritative only after the real sweep hits.
-                boolean physicalEntry = state.startedBeforePortalPlane()
-                    && state.sweptIntersectsPortalAperture()
-                    && state.sweptEntryDirection() == PortalCrossingDetector.SweepDirection.TOWARD_DESTINATION;
+                boolean physicalEntry = state.provesPhysicalEntry();
                 if (haveSession && physicalEntry) IplAtlasStraddleSession.markAdmitted(key);
-                boolean finiteCompletion = PortalCrossingDetector.completesThroughAperture(airship, portal);
-                if (haveSession && PortalCrossingDetector.hasSourceGeometry(airship, portal)) {
+                boolean admitted = physicalEntry || haveSession && IplAtlasStraddleSession.isAdmitted(key);
+                boolean finiteCompletion = state.phase() != PortalCrossingDetector.CrossingPhase.APPROACHING
+                    && (haveSession || state.sweptIntersectsPortalAperture())
+                    && PortalCrossingDetector.completesThroughAperture(airship, portal,
+                        admitted ? PortalCrossingDetector.SESSION_RELEASE_MARGIN : 0.0);
+                boolean hasSource = haveSession && PortalCrossingDetector.hasSourceGeometry(airship, portal);
+                if (hasSource) {
                     IplAtlasStraddleSession.revokeCompletion(key);
                 }
                 if (haveSession && finiteCompletion) IplAtlasStraddleSession.markCompleted(key);
@@ -210,7 +213,10 @@ public final class SableTransitController {
                         airship, portal, normal, APERTURE_MARGIN, lookahead);
                 boolean straddlingAperture = (state.phase()
                     == PortalCrossingDetector.CrossingPhase.STRADDLING
-                    && state.currentIntersectsPortalAperture())
+                    && ((admitted
+                            ? PortalCrossingDetector.retainsAdmittedSession(airship, portal)
+                            : state.currentIntersectsPortalAperture())
+                        || haveSession && !hasSource && IplAtlasStraddleSession.isCompleted(key)))
                     || predictedEntry;
 
                 if (straddlingAperture) {
@@ -431,11 +437,14 @@ public final class SableTransitController {
         for (ServerSubLevel member : mates) {
             if (member.isRemoved() || !IplDimAgnostic.isHosted(member)
                 || IplDimAgnostic.getServerParentLevel(member) != parent
-                || IplShipPortalAnchor.isAnchorShip(portal, member.getUniqueId())
-                || PortalCrossingDetector.evaluate(member, portal, normal, APERTURE_MARGIN).phase()
-                    != PortalCrossingDetector.CrossingPhase.CROSSED
-                || (!IplAtlasStraddleSession.isCompleted(new StraddleKey(member.getUniqueId(), portal.getUUID()))
-                    && !PortalCrossingDetector.completesThroughAperture(member, portal))) return false;
+                || IplShipPortalAnchor.isAnchorShip(portal, member.getUniqueId())) return false;
+            var state = PortalCrossingDetector.evaluate(member, portal, normal, APERTURE_MARGIN);
+            if (state.phase() != PortalCrossingDetector.CrossingPhase.CROSSED) return false;
+            StraddleKey key = new StraddleKey(member.getUniqueId(), portal.getUUID());
+            boolean admitted = state.provesPhysicalEntry() || IplAtlasStraddleSession.isAdmitted(key);
+            if (!IplAtlasStraddleSession.isCompleted(key)
+                && !PortalCrossingDetector.completesThroughAperture(member, portal,
+                    admitted ? PortalCrossingDetector.SESSION_RELEASE_MARGIN : 0.0)) return false;
         }
         return PortalCrossingDetector.evaluate(body, portal, normal, APERTURE_MARGIN).phase()
             == PortalCrossingDetector.CrossingPhase.CROSSED;

@@ -1,0 +1,4 @@
+PASS: 5523 geometry assertions (seed=0x51AB1E)
+0.5.2/0.5.3 finite-exit, release, cache cases: passed
+PASS: 92 detector fixture assertions
+PASS: 18 render-cache assertions

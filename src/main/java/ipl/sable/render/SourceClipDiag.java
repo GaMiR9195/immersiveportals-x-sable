@@ -12,6 +12,8 @@ import org.slf4j.LoggerFactory;
  */
 public final class SourceClipDiag {
 
+    private static final boolean DIAGNOSTICS = Boolean.getBoolean("ipl.portalDiagnostics");
+
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-clip");
 
     public static volatile long vanillaCalls = 0;
@@ -24,12 +26,14 @@ public final class SourceClipDiag {
     private SourceClipDiag() {}
 
     public static void onVanillaCall(boolean installed) {
+        if (!DIAGNOSTICS) return;
         vanillaCalls++;
         if (installed) vanillaInstalls++;
         maybeReport();
     }
 
     public static void onSodiumCall(boolean installed) {
+        if (!DIAGNOSTICS) return;
         sodiumCalls++;
         if (installed) sodiumInstalls++;
         maybeReport();

@@ -64,6 +64,9 @@ public abstract class IplShaderUniformProbeMixin {
         at = @At("RETURN")
     )
     private void ipl$probeActiveUniforms(CallbackInfo ci) {
+        int linkedProgram = ((Shader) (Object) this).getId();
+        ipl.sable.render.IplProgramBindHook.forgetProgram(linkedProgram);
+        IplProgramRegistry.register(linkedProgram, name);
         // Only probe shaders we expect to carry iportal_ClippingEquation.
         if (!ShaderCodeTransformation.shouldAddUniform(name)) {
             return;
@@ -72,18 +75,7 @@ public abstract class IplShaderUniformProbeMixin {
         Shader self = (Shader) (Object) this;
         int programId = self.getId();
 
-        // ALWAYS register the programId -> entity-style mapping (outside the
-        // per-name dedup below) because Veil recompiles vanilla shaders with
-        // fresh program ids, calling updateLocations on the new program. The
-        // mapping needs to track the *current* programId for each shader name
-        // so the _glUseProgram hook writes the correct-space equation. Stale
-        // entries (old programIds) are harmless -- they'll never be bound
-        // again, and IS_ENTITY_STYLE matching is the same regardless.
-        if (programId != 0) {
-            IplProgramRegistry.register(programId, name);
-        }
-
-        if (IPL$PROBED.putIfAbsent(name, Boolean.TRUE) != null) {
+        if (!Boolean.getBoolean("ipl.portalDiagnostics") || IPL$PROBED.putIfAbsent(name, Boolean.TRUE) != null) {
             return;
         }
 

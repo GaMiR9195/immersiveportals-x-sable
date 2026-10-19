@@ -1,0 +1,8 @@
+JDK 21 javac --release 21 -proc:none -implicit:none
+Explicit production sources: 26
+Output class files: 66
+Exit code: 0; compiler diagnostics: none
+Scope and classpath limitations: see BUILD-STATUS.md
+
+Gradle processResources: BUILD SUCCESSFUL in 9s
+1 actionable task: 1 executed

@@ -21,6 +21,8 @@ import qouteall.imm_ptl.core.portal.Portal;
  */
 public final class IplClientHostedLookup {
 
+    private static final boolean DIAGNOSTICS = Boolean.getBoolean("ipl.portalDiagnostics");
+
     private IplClientHostedLookup() {}
 
     @Nullable
@@ -94,7 +96,7 @@ public final class IplClientHostedLookup {
         // Diagnostic: prove the render hooks fire and show what the gather sees. Rate-limited;
         // remove once the dim-agnostic render path is stable.
         long now = System.currentTimeMillis();
-        if (now - lastGatherLogMs > 5000) {
+        if (DIAGNOSTICS && now - lastGatherLogMs > 5000) {
             lastGatherLogMs = now;
             int firstMatchedChunks = -1;
             Object firstPose = null;

@@ -21,15 +21,22 @@ public final class IplStraddleRenderCache {
         final ClientLevel level;
         @Nullable List<ClientSubLevel> hosted;
         @Nullable List<IplClientHostedLookup.StraddleProjection> projections;
-        final IdentityHashMap<ClientLevel, List<Portal>> portalCandidates = new IdentityHashMap<>();
-        final IdentityHashMap<Portal, Boolean> canonicalPortalFaces = new IdentityHashMap<>();
+        final IdentityHashMap<ClientSubLevel, IdentityHashMap<Object, Boolean>> visibility = new IdentityHashMap<>();
+        final IdentityHashMap<ClientSubLevel, List<SourceClipPortalFinder.ClipDecision>> allDecisions = new IdentityHashMap<>();
+        final IdentityHashMap<ClientSubLevel, List<Portal>> renderPortals = new IdentityHashMap<>();
+        final IdentityHashMap<ClientLevel, List<Portal>> portalCandidates;
+        final IdentityHashMap<Portal, Boolean> canonicalPortalFaces;
         final IdentityHashMap<ClientSubLevel, SourceClipPortalFinder.ClipDecision> decisions =
             new IdentityHashMap<>();
         final java.util.Set<ClientSubLevel> noDecision =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
-        Pass(ClientLevel level) {
+        Pass(ClientLevel level, @Nullable Pass root) {
             this.level = level;
+            // Portal entities/canonical identities do not depend on the camera. Geometry
+            // decisions and resolved ship sessions DO: keep those local to this pass.
+            portalCandidates = root == null ? new IdentityHashMap<>() : root.portalCandidates;
+            canonicalPortalFaces = root == null ? new IdentityHashMap<>() : root.canonicalPortalFaces;
         }
     }
 
@@ -52,7 +59,7 @@ public final class IplStraddleRenderCache {
         if (level == null) return;
         ArrayDeque<Pass> passes = PASSES.get();
         if (passes.isEmpty()) frameId++;
-        passes.addLast(new Pass(level));
+        passes.addLast(new Pass(level, passes.peekFirst()));
     }
 
     public static void end(@Nullable ClientLevel level) {
@@ -94,6 +101,38 @@ public final class IplStraddleRenderCache {
         if (pass == null) return supplier.get();
         if (pass.projections == null) pass.projections = supplier.get();
         return pass.projections;
+    }
+
+    @Nullable
+    public static Boolean visibility(ClientSubLevel sub, Object pose) {
+        Pass pass=current(null);
+        var instances=pass==null?null:pass.visibility.get(sub);
+        return instances==null?null:instances.get(pose);
+    }
+    public static void cacheVisibility(ClientSubLevel sub,Object pose,boolean visible) {
+        Pass pass=current(null);
+        if (pass!=null) pass.visibility.computeIfAbsent(sub,s->new IdentityHashMap<>()).put(pose,visible);
+    }
+    @Nullable
+    public static List<SourceClipPortalFinder.ClipDecision> allDecisions(ClientSubLevel sub) {
+        Pass pass=current(null);
+        return pass==null?null:pass.allDecisions.get(sub);
+    }
+    public static void cacheAllDecisions(ClientSubLevel sub,List<SourceClipPortalFinder.ClipDecision> decisions) {
+        Pass pass=current(null);
+        if (pass!=null) pass.allDecisions.put(sub,decisions);
+    }
+
+    /** Null is a cache miss; an empty list is a cached negative result. */
+    @Nullable
+    public static List<Portal> renderPortals(ClientSubLevel sub) {
+        Pass pass = current(null);
+        return pass == null ? null : pass.renderPortals.get(sub);
+    }
+
+    public static void cacheRenderPortals(ClientSubLevel sub, List<Portal> portals) {
+        Pass pass = current(null);
+        if (pass != null) pass.renderPortals.put(sub, List.copyOf(portals));
     }
 
     public static List<Portal> portalCandidates(
@@ -148,6 +187,9 @@ public final class IplStraddleRenderCache {
         for (Pass pass : PASSES.get()) {
             pass.hosted = null;
             pass.projections = null;
+            pass.renderPortals.clear();
+            pass.visibility.clear();
+            pass.allDecisions.clear();
             pass.portalCandidates.clear();
             pass.canonicalPortalFaces.clear();
             pass.decisions.clear();

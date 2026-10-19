@@ -203,9 +203,9 @@ public final class IplAtlasStraddleSession {
                 session.destScene, session.realId, session.imageHandle, imageRegion);
         }
 
-        // Portal containment rims are ALWAYS-ON per portal entity (IplPortalRimManager)
-        // — session-scoped rims had a hole: a ship shearing in laterally never starts a
-        // session, so nothing existed yet to stop it.
+        // IplPortalRimManager is currently disabled. There is NO physical containment
+        // rim here; session release must tolerate bounded solver penetration itself.
+        // The release skin does not enlarge these exact native clip rectangles.
 
         LOG.info("[IPL-IMAGE] start uuid={} portal={} dest={} rotated={} imageHandle={} destScene={}",
             hosted.getUniqueId(), portal.getUUID(), portal.getDestPos(),

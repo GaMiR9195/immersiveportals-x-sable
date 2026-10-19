@@ -1,0 +1,1 @@
+package org.lwjgl.opengl;import java.util.*;public class GL41{public record Write(int p,int loc,float a,float b,float c,float d){}public static final List<Write> writes=new ArrayList<>();public static void glProgramUniform4f(int p,int l,float a,float b,float c,float d){writes.add(new Write(p,l,a,b,c,d));}}

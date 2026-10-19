@@ -100,13 +100,20 @@ public final class SourceClipPortalFinder {
      */
     public static java.util.List<ClipDecision> findStraddlingPortalPlanes(ClientSubLevel sub) {
         if (sub == null) return java.util.List.of();
+        var cached = ipl.sable.client.IplStraddleRenderCache.allDecisions(sub);
+        if (cached != null) return cached;
         java.util.List<Portal> portals =
             ipl.sable.client.IplStraddleSessionStore.resolveAllRenderPortals(sub);
-        if (portals.isEmpty()) return java.util.List.of();
+        if (portals.isEmpty()) {
+            ipl.sable.client.IplStraddleRenderCache.cacheAllDecisions(sub,java.util.List.of());
+            return java.util.List.of();
+        }
         java.util.List<ClipDecision> out = new java.util.ArrayList<>(portals.size());
         for (Portal portal : portals) {
             out.add(new ClipDecision(portal, new Plane(portal.getOriginPos(), portal.getNormal())));
         }
-        return out;
+        var result = java.util.List.copyOf(out);
+        ipl.sable.client.IplStraddleRenderCache.cacheAllDecisions(sub,result);
+        return result;
     }
 }

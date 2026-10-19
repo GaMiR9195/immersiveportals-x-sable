@@ -8,7 +8,7 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.dim.SableSubLevelDimension;
 import ipl.sable.duck.IplSubLevelDuck;
 import ipl.sable.mixin.client.IplClientSubLevelRenderPoseAccessor;
-import ipl.sable.mixin.client.IplSubLevelLastPoseAccessor;
+import ipl.sable.mixin.IplSubLevelPreviousPoseAccessor;
 import ipl.sable.mixin.client.IplSnapshotInterpolatorAccessor;
 import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator;
@@ -40,6 +40,8 @@ import java.util.UUID;
  * client-side collision know which dimension the airship appears in.
  */
 public final class IplParentDimSync {
+
+    private static final boolean DIAGNOSTICS = Boolean.getBoolean("ipl.portalDiagnostics");
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-parent-sync");
 
@@ -74,6 +76,7 @@ public final class IplParentDimSync {
      * 5s cadence; remove after the declarative-straddle stack stabilizes.
      */
     public static void clientHeartbeat() {
+        if (!DIAGNOSTICS) return;
         long now = System.currentTimeMillis();
         if (now - ipl$lastDiagMs < 5000) return;
         ipl$lastDiagMs = now;
@@ -367,7 +370,7 @@ public final class IplParentDimSync {
                 Pose3d running = ((IplSnapshotInterpolatorAccessor) interpolator).ipl$getRunningSnapshot();
                 running.set(mapping.mapPose(new Pose3d(running)));
             }
-            ((IplSubLevelLastPoseAccessor) clientSubLevel).ipl$getLastPose().set(mappedLastPose);
+            ((IplSubLevelPreviousPoseAccessor) clientSubLevel).ipl$getPreviousPose().set(mappedLastPose);
             clientSubLevel.logicalPose().set(mappedLogicalPose);
             clientSubLevel.forceUpdateBounds();
             var bounds = clientSubLevel.getPlot().getBoundingBox();

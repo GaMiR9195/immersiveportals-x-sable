@@ -139,24 +139,40 @@ final class IplClientVisualTransitLatch {
     }
 
     static boolean isVisible(ClientSubLevel sub, Portal portal, boolean completed) {
+        return isVisible(sub, portal, completed, APERTURE_MARGIN);
+    }
+
+    /** Mirror the server's release skin only for server-owned sessions/tails.
+     * Prediction must continue to prove an exact finite-aperture entry.
+     */
+    static boolean isAuthoritativeVisible(ClientSubLevel sub, Portal portal, boolean completed) {
+        return isVisible(sub, portal, completed,
+            ipl.sable.transit.PortalCrossingDetector.SESSION_RELEASE_MARGIN);
+    }
+
+    private static boolean isVisible(ClientSubLevel sub, Portal portal, boolean completed, double margin) {
         Projection now = project(sub, sub.renderPose(), portal);
         if (now.maxPlane() < -EPSILON) return false;
         // A leading joint member has ALREADY exited through the finite rectangle;
         // until the group commits it is still represented by that destination image.
         if (completed && now.minPlane() >= EPSILON) return true;
-        if (!overlapsLaterally(now, portal)) return false;
+        if (!overlapsLaterally(now, portal, margin)) return false;
         // Fully-through geometry is a path-owned tail, not evidence that an infinite
         // plane is still being crossed. Its lifetime belongs to the session/watermark.
         if (now.minPlane() >= EPSILON) return true;
+        // This is only a conservative visual broad phase. A plot OBB includes empty
+        // gaps; rejecting its non-contained section could hide real server-admitted
+        // sparse geometry. Side RELEASE is owned by occupied-block server sections
+        // and the session end tick, consumed on the delayed render timeline.
         return ipl.sable.transit.PortalAperture.intersects(
-            sub.getPlot().getBoundingBox(), sub.renderPose(), portal, APERTURE_MARGIN, 0.0);
+            sub.getPlot().getBoundingBox(), sub.renderPose(), portal, margin, 0.0);
     }
 
-    private static boolean overlapsLaterally(Projection now, Portal portal) {
-        return now.maxWidth() >= -portal.getWidth() * 0.5 - APERTURE_MARGIN - EPSILON
-            && now.minWidth() <= portal.getWidth() * 0.5 + APERTURE_MARGIN + EPSILON
-            && now.maxHeight() >= -portal.getHeight() * 0.5 - APERTURE_MARGIN - EPSILON
-            && now.minHeight() <= portal.getHeight() * 0.5 + APERTURE_MARGIN + EPSILON;
+    private static boolean overlapsLaterally(Projection now, Portal portal, double margin) {
+        return now.maxWidth() >= -portal.getWidth() * 0.5 - margin - EPSILON
+            && now.minWidth() <= portal.getWidth() * 0.5 + margin + EPSILON
+            && now.maxHeight() >= -portal.getHeight() * 0.5 - margin - EPSILON
+            && now.minHeight() <= portal.getHeight() * 0.5 + margin + EPSILON;
     }
 
     static void clearAll() {
@@ -199,6 +215,8 @@ final class IplClientVisualTransitLatch {
     private static Portal findEnteringPortal(
         ClientSubLevel sub, ClientLevel level, Pose3dc previousRenderPose
     ) {
+        // A confirmed visible split already establishes parity. Still run prediction
+        // for other apertures (multi-straddle), but never rescan all world entities.
         ProjectionBest best = null;
         List<Portal> portals = portals(level);
         for (Portal portal : portals) {
@@ -239,6 +257,14 @@ final class IplClientVisualTransitLatch {
 
     /** Match the server's collapse of duplicate directed IP companion entities. */
     private static boolean isCanonicalEntranceFace(Portal portal, List<Portal> candidates) {
+        Boolean cached = IplStraddleRenderCache.canonicalPortalFace(portal);
+        if (cached != null) return cached;
+        boolean canonical = computeCanonicalEntranceFace(portal, candidates);
+        IplStraddleRenderCache.cacheCanonicalPortalFace(portal, canonical);
+        return canonical;
+    }
+
+    private static boolean computeCanonicalEntranceFace(Portal portal, List<Portal> candidates) {
         for (Portal other : candidates) {
             if (other == portal || !portal.getDestDim().equals(other.getDestDim())) continue;
             if (portal.getOriginPos().distanceToSqr(other.getOriginPos()) > 1.0e-12
@@ -253,7 +279,9 @@ final class IplClientVisualTransitLatch {
         return true;
     }
 
-    private static List<Portal> portals(ClientLevel level) {
+    static List<Portal> portals(ClientLevel level) {
+        List<Portal> cached = IplStraddleRenderCache.portalCandidates(level);
+        if (cached != null) return cached;
         Map<UUID, Portal> unique = new HashMap<>();
         for (Entity entity : level.entitiesForRendering()) {
             if (entity instanceof Portal portal) unique.put(portal.getUUID(), portal);
@@ -261,7 +289,9 @@ final class IplClientVisualTransitLatch {
         for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
             unique.put(portal.getUUID(), portal);
         }
-        return List.copyOf(unique.values());
+        List<Portal> portals = List.copyOf(unique.values());
+        IplStraddleRenderCache.cachePortalCandidates(level, portals);
+        return portals;
     }
 
     private static Portal findPortal(ClientLevel level, UUID portalId) {

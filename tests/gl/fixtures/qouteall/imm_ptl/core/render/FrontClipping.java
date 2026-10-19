@@ -1,0 +1,1 @@
+package qouteall.imm_ptl.core.render;public class FrontClipping{public static boolean isClippingEnabled;public static double[] getActiveClipPlaneEquationAfterModelView(){return new double[]{21,0,0,1};}public static double[] getActiveClipPlaneEquationBeforeModelView(){return new double[]{22,0,0,1};}}
