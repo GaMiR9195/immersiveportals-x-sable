@@ -105,6 +105,11 @@ public final class IplFusedStep {
         double dt = 1.0 / 20.0 / substeps;
 
         for (Entry e : systems) {
+            for (ServerSubLevel sub : e.container().getAllSubLevels()) {
+                if (!sub.isRemoved() && ipl.sable.dim.IplDimAgnostic.isHosted(sub)) {
+                    ipl.sable.transit.PortalCrossingDetector.seedPhysicsStart(sub);
+                }
+            }
             e.sys().getPipeline().prePhysicsTicks();
         }
 

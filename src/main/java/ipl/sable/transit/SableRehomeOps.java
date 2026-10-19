@@ -410,6 +410,19 @@ public final class SableRehomeOps {
         IplShipNetherPortal.onRehomeComplete(hosted, parentLevel);
     }
 
+    /** Side-effect-free group preflight; all members must pass before the first move. */
+    public static boolean canExecuteHostedTransit(ServerSubLevel hosted, Portal portal) {
+        if (hosted == null || hosted.isRemoved() || !IplDimAgnostic.isHosted(hosted)
+            || portal == null || portal.isRemoved() || !portal.isTeleportable()
+            || Math.abs(portal.getScaling() - 1.0) > 1e-9) return false;
+        ServerLevel parent = IplDimAgnostic.getServerParentLevel(hosted);
+        if (parent == null || portal.level() != parent) return false;
+        ServerLevel destination = hosted.getLevel().getServer().getLevel(portal.getDestDim());
+        if (destination == null || IplDimAgnostic.isHostingLevel(destination)) return false;
+        var container = SubLevelContainer.getContainer(hosted.getLevel());
+        return container != null && container.physicsSystem().getPipeline() != null;
+    }
+
     /**
      * Hosted cross-portal transit: the parent flip. Pose is remapped through the portal,
      * velocities rotated, riders teleported, {@code parentLevel} flipped, trackers reset.
@@ -418,6 +431,13 @@ public final class SableRehomeOps {
      * @return true if the flip completed.
      */
     public static boolean executeHostedTransit(ServerSubLevel hosted, Portal portal) {
+        return executeHostedTransit(hosted, portal, new java.util.HashSet<>());
+    }
+
+    /** A joint group's overlapping deck bounds must not teleport the same rider twice. */
+    public static boolean executeHostedTransit(ServerSubLevel hosted, Portal portal,
+                                              java.util.Set<UUID> movedRiders) {
+        if (!canExecuteHostedTransit(hosted, portal)) return false;
         ServerLevel hosting = hosted.getLevel();
         MinecraftServer server = hosting.getServer();
         if (server == null) return false;
@@ -440,6 +460,7 @@ public final class SableRehomeOps {
         PhysicsPipeline pipeline = hostingContainer.physicsSystem().getPipeline();
         UUID uuid = hosted.getUniqueId();
         Pose3d sourcePose = new Pose3d(hosted.logicalPose());
+        Pose3d mappedPrevious = IplStraddlePoseMap.StraddleMapping.of(portal).mapPose(hosted.lastPose());
         Pose3d mappedPose = SableTransitOps.computeMappedPose(sourcePose, portal);
 
         // Per-flip diagnostics are DEBUG. A working loop rehomes every tick for every
@@ -456,12 +477,10 @@ public final class SableRehomeOps {
         Vec3 mappedAng = portal.transformLocalVec(new Vec3(angular.x, angular.y, angular.z));
 
         // Teleport riders BEFORE moving the pose, while the deck is still under them.
-        int riders = teleportRiders(hosted, oldParent, newParent, portal);
+        int riders = teleportRiders(hosted, oldParent, newParent, portal, movedRiders);
 
-        // Move only this body's native frame. Connected bodies are deliberately NOT
-        // teleported: Atlas treats a portal as a window, so an active cross-aperture joint
-        // remains represented by source geometry plus image colliders until its own body
-        // legitimately completes transit.
+        // The controller has preflighted the whole rigid component and will map every
+        // member by this same isometry before the next native solver step.
         pipeline.teleport(hosted, mappedPose.position(), mappedPose.orientation());
         hosted.logicalPose().set(mappedPose);
         // A subsequent hosting tick must begin entirely in the destination frame. Merely
@@ -469,23 +488,10 @@ public final class SableRehomeOps {
         // seeds a missing trail from lastPose, which would otherwise still be source-space
         // and could create a fictitious segment through a chained or self-recursive portal.
         hosted.updateLastPose();
-        // ...and THEN pull that previous endpoint back onto the doorway.
-        //
-        // updateLastPose() collapses lastPose onto logicalPose, so for this one tick the
-        // body reports ZERO motion at the exact moment it travelled furthest. Everything
-        // that reads movement as lastPose -> logicalPose therefore sees a body that did not
-        // move yet changed frame -- the definition of a teleport, and the reason the exit
-        // reads as a jump instead of a fly-out.
-        //
-        // The body did not appear far from the portal, it LEFT the portal fast. Point A on
-        // the exit rectangle is that departure point, so it is the correct previous
-        // endpoint: the resulting motion vector is precisely "portal plane -> final rehome
-        // position". It is still a destination-frame pose, so the guarantee above -- no
-        // source-space pose survives into the next tick -- is preserved exactly.
-        Pose3d exitPlanePose =
-            PortalCrossingDetector.projectOntoExitPlane(hosted, portal, mappedPose);
+        // Preserve an actual destination-frame interpolation endpoint, not a point
+        // slid along the normal. Detection owns its separately trimmed residual trail.
         ((ipl.sable.mixin.IplSubLevelPreviousPoseAccessor) hosted)
-            .ipl$getPreviousPose().set(exitPlanePose);
+            .ipl$getPreviousPose().set(mappedPrevious);
         pipeline.resetVelocity(hosted);
         pipeline.addLinearAndAngularVelocity(hosted,
             new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
@@ -501,6 +507,7 @@ public final class SableRehomeOps {
             IplStraddleSessionSync.onSessionEnd(server, key, "parent-flip");
         }
 
+        IplStraddleSessionSync.advanceFrame(uuid, portal);
         stampParent(hosted, newParent, hosting);
         hosted.updateBoundingBox();
         ipl.sable.atlas.IplAtlasBodyImages.reconcile(hosted);
@@ -519,42 +526,37 @@ public final class SableRehomeOps {
         return true;
     }
 
-    /**
-     * HANDOFF COALESCING.
-     *
-     * <p>A handoff describes ONE fact: which chart a body's client object now lives in.
-     * Only the last one in a tick is true. Emitting it straight from the flip fanned out a
-     * custom-payload RPC to every tracking player, every dragging player and every ImmPtl
-     * chunk viewer of the destination chunk, once per flip. A body in a portal loop, or a
-     * rigid assembly whose members all flip through the same portal, turns that into a
-     * burst of near-identical payloads inside a single tick: every packet but the last one
-     * describes a chart the body has already left, and the burst itself is what shows up on
-     * the client as a custom-payload error.
-     *
-     * <p>So the flip records its intent and the tick flushes the LAST intent per body.
-     * One packet per body per tick, carrying the chart the body actually ended the tick in.
-     */
-    private record PendingHandoff(ServerSubLevel body, ServerLevel destination, Portal portal) {}
+    /** Immutable crossing data, captured at commit, not from a moving portal at flush. */
+    private record PendingHandoff(ServerSubLevel body, ServerLevel destination,
+                                  String transform, String portalNbt, int firstDestinationTick, long destinationFrame,
+                                  String inverseGrabLink) {}
 
-    private static final java.util.Map<UUID, PendingHandoff> PENDING_HANDOFFS =
-        new java.util.LinkedHashMap<>();
+    private static final java.util.List<PendingHandoff> PENDING_HANDOFFS =
+        new java.util.ArrayList<>();
 
     private static void queueParentHandoff(
         ServerSubLevel body, ServerLevel destination, Portal portal
     ) {
-        PENDING_HANDOFFS.put(body.getUniqueId(), new PendingHandoff(body, destination, portal));
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(body.getLevel());
+        if (container == null) throw new IllegalStateException("Missing hosting container at handoff");
+        // Transit runs at container TAIL: tracking sent source tick k and incremented
+        // its counter. k+1 is the FIRST destination-frame movement packet, even when
+        // several residual portal flips share this same boundary.
+        PENDING_HANDOFFS.add(new PendingHandoff(body, destination, encodePortalTransform(portal),
+            IplStraddleSessionSync.encodePortal(portal), container.trackingSystem().getInterpolationTick(),
+            IplStraddleSessionSync.frame(body.getUniqueId()), IplGrabLink.inverse(portal).encode()));
     }
 
-    /** Emits one handoff per body that flipped this tick. Called from the tail-of-tick sweep. */
+    /** Emit every committed transform in order after residual processing. */
     public static void flushParentHandoffs(MinecraftServer server) {
         if (server == null || PENDING_HANDOFFS.isEmpty()) return;
-        List<PendingHandoff> batch = new ArrayList<>(PENDING_HANDOFFS.values());
+        List<PendingHandoff> batch = new ArrayList<>(PENDING_HANDOFFS);
         PENDING_HANDOFFS.clear();
         for (PendingHandoff pending : batch) {
             ServerSubLevel body = pending.body();
             if (body == null || body.isRemoved()) continue;
             try {
-                sendParentHandoff(server, body, pending.destination(), pending.portal());
+                sendParentHandoff(server, pending);
             } catch (Throwable t) {
                 LOG.warn("[IPL-FLIP] failed to emit parent handoff for uuid={}",
                     body.getUniqueId(), t);
@@ -568,8 +570,10 @@ public final class SableRehomeOps {
     }
 
     private static void sendParentHandoff(
-        MinecraftServer server, ServerSubLevel body, ServerLevel destination, Portal portal
+        MinecraftServer server, PendingHandoff pending
     ) {
+        ServerSubLevel body = pending.body();
+        ServerLevel destination = pending.destination();
         java.util.Set<UUID> recipients = new java.util.HashSet<>(body.getTrackingPlayers());
         recipients.addAll(IplGrabChain.getDraggingPlayers(body.getUniqueId()));
         net.minecraft.world.level.ChunkPos destinationChunk = new net.minecraft.world.level.ChunkPos(
@@ -581,16 +585,15 @@ public final class SableRehomeOps {
         )) {
             recipients.add(viewer.getUUID());
         }
-        String transform = encodePortalTransform(portal);
-        String portalNbt = IplStraddleSessionSync.encodePortal(portal);
         for (UUID recipient : recipients) {
             ServerPlayer player = server.getPlayerList().getPlayer(recipient);
             if (player == null) continue;
             qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
                 player,
                 "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
-                body.getUniqueId().toString(), destination.dimension().location().toString(), transform,
-                portalNbt
+                body.getUniqueId().toString(), destination.dimension().location().toString(), pending.transform(),
+                pending.portalNbt(), Integer.toString(pending.firstDestinationTick()),
+                Long.toString(pending.destinationFrame()), pending.inverseGrabLink()
             );
         }
     }
@@ -701,7 +704,8 @@ public final class SableRehomeOps {
                     viewer,
                     "ipl.sable.client.IplParentDimSync.RemoteCallables.setParent",
                     hosted.getUniqueId().toString(),
-                    parent.dimension().location().toString()
+                    parent.dimension().location().toString(),
+                    Long.toString(IplStraddleSessionSync.frame(hosted.getUniqueId()))
                 );
             }
         }
@@ -782,7 +786,8 @@ public final class SableRehomeOps {
      * the test, so the fast-crossing fallback path is unchanged by construction.
      */
     private static int teleportRiders(
-        ServerSubLevel hosted, ServerLevel oldParent, ServerLevel newParent, Portal portal
+        ServerSubLevel hosted, ServerLevel oldParent, ServerLevel newParent, Portal portal,
+        java.util.Set<UUID> movedRiders
     ) {
         AABB queryBbox = hosted.boundingBox().toMojang().inflate(0.5);
         List<Entity> entities = oldParent.getEntitiesOfClass(Entity.class, queryBbox);
@@ -793,7 +798,7 @@ public final class SableRehomeOps {
         int teleported = 0;
         for (Entity entity : entities) {
             if (entity instanceof Portal) continue;
-            if (entity.isRemoved()) continue;
+            if (entity.isRemoved() || movedRiders.contains(entity.getUUID())) continue;
             if (entity.getVehicle() != null) continue;
             // Bounding-box CENTER, matching the collision family's frame selection —
             // a rider left behind must be the same rider collision hands the mapped image.
@@ -808,8 +813,10 @@ public final class SableRehomeOps {
                 Entity result = ServerTeleportationManager.teleportEntityGeneral(entity, mappedPos, newParent);
                 if (result != null && !result.isRemoved()) {
                     result.setDeltaMovement(mappedDelta);
+                    movedRiders.add(entity.getUUID());
+                    movedRiders.add(result.getUUID());
+                    teleported++;
                 }
-                teleported++;
             } catch (Throwable t) {
                 LOG.warn("[IPL-FLIP] failed to teleport rider {} during flip of {}",
                     entity, hosted.getUniqueId(), t);

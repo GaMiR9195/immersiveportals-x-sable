@@ -10,4 +10,7 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 public interface IplPhysicsStaffClientHandlerStateAccessorMixin {
     @Invoker(value = "isRotating", remap = false)
     boolean ipl$isRotating();
+
+    @Invoker(value = "stopDragging", remap = false)
+    void ipl$stopDragging();
 }

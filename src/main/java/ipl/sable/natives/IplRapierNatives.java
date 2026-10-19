@@ -82,9 +82,10 @@ public final class IplRapierNatives {
 
     /**
      * Sable bodies in {@code bodyId}'s joint component. {@code rigidOnly} restricts the
-     * walk to joints whose both endpoints are ship bodies — the rigid assembly (swivel
-     * bearings, couplings) that transits portals as one unit; rope particle chains do
-     * not bridge components in that mode.
+     * walk to joints whose both endpoints are ship bodies AND at least one angular
+     * axis is locked (the current native definition of a rigid assembly: bearings,
+     * fixed/prismatic couplings). Ball joints, springs and rope particle chains do
+     * not bridge components in this mode. This flag is not an all-joints traversal.
      */
     public static native int[] connectedSableBodyIds(
         long sceneHandle, int bodyId, boolean rigidOnly);

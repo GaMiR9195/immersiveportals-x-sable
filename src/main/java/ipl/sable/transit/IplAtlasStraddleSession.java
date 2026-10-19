@@ -37,7 +37,7 @@ public final class IplAtlasStraddleSession {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-atlas-straddle");
     /** Match detector admission laterally; clip regions remain a zero-thickness plane. */
-    private static final double APERTURE_MARGIN = 0.5;
+    private static final double APERTURE_MARGIN = 0.0;
 
     private static final Map<StraddleKey, Session> SESSIONS = new HashMap<>();
 
@@ -65,6 +65,10 @@ public final class IplAtlasStraddleSession {
         double[] realClipRegion;
         /** The image collider of the REAL body in the dest chart (atlas M2/M4). */
         long imageHandle = -1;
+        /** Predictive arming is not historical evidence of a physical aperture crossing. */
+        boolean admitted;
+        /** Finite trailing-edge exit, retained while the rest of a rigid group catches up. */
+        boolean completed;
 
         Session(ServerSubLevel sub, Portal portal, ServerLevel parent, ServerLevel dest,
                 IplStraddlePoseMap.StraddleMapping mapping, Vec3 sourceToDest,
@@ -79,6 +83,21 @@ public final class IplAtlasStraddleSession {
             this.destScene = destScene;
             this.realId = Rapier3D.getID(sub);
         }
+    }
+
+    public static boolean isCompleted(StraddleKey key) {
+        Session session = SESSIONS.get(key);
+        return session != null && session.completed;
+    }
+
+    public static void revokeCompletion(StraddleKey key) {
+        Session session = SESSIONS.get(key);
+        if (session != null) session.completed = false;
+    }
+
+    public static void markCompleted(StraddleKey key) {
+        Session session = SESSIONS.get(key);
+        if (session != null) { session.admitted = true; session.completed = true; }
     }
 
     public static boolean isEnabled() {
@@ -120,8 +139,14 @@ public final class IplAtlasStraddleSession {
         StraddleKey key = new StraddleKey(hosted.getUniqueId(), portal.getUUID());
         Session existing = SESSIONS.get(key);
         if (existing != null) {
-            refreshIfMoved(existing, portal, sourceToDest);
-            return;
+            if (existing.parent != parent || existing.dest != dest
+                || IplSceneOwnership.liveSceneHandle(parent) != existing.parentScene
+                || IplSceneOwnership.liveSceneHandle(dest) != existing.destScene) {
+                clear(key, "frame-invalidated");
+            } else {
+                refreshIfMoved(existing, portal, sourceToDest);
+                return;
+            }
         }
 
         RapierPhysicsPipeline parentPipeline = IplSceneOwnership.pipelineOf(parent);
@@ -157,7 +182,7 @@ public final class IplAtlasStraddleSession {
         //    doorway, so only the through-part is physically present destination-side.
         {
             Vec3 origin = portal.getOriginPos();
-            double depthLimit = clipDepthLimit(hosted);
+            double depthLimit = clipDepthLimit(hosted, portal);
             session.lastOrigin = origin;
             session.realClipRegion = clipRegion(
                 origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
@@ -206,13 +231,11 @@ public final class IplAtlasStraddleSession {
         org.joml.Quaterniond oldRot = s.mapping.mapQuat(new org.joml.Quaterniond());
         boolean isoMoved = oldShift.distanceToSqr(newShift) > 1.0e-10
             || Math.abs(newRot.dot(oldRot)) < 1.0 - 1.0e-10;
-        boolean apertureMoved = s.lastOrigin.distanceToSqr(origin) > 1.0e-10;
-        if (!isoMoved && !apertureMoved) return;
 
         s.mapping = fresh;
         s.sourceToDest = sourceToDest;
         s.lastOrigin = origin;
-        double depthLimit = clipDepthLimit(s.sub);
+        double depthLimit = clipDepthLimit(s.sub, portal);
 
         if (isoMoved) {
             ipl.sable.natives.IplRapierNatives.setImagePrefix(
@@ -221,12 +244,14 @@ public final class IplAtlasStraddleSession {
                 newRot.x, newRot.y, newRot.z, newRot.w);
         }
 
-        s.realClipRegion = clipRegion(
+        double[] freshReal = clipRegion(
             origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
             portal.getWidth() * 0.5 + APERTURE_MARGIN,
             portal.getHeight() * 0.5 + APERTURE_MARGIN,
             depthLimit);
-        applyRealClipRegions(s.sub, s.parentScene, s.realId);
+        boolean clipChanged = !java.util.Arrays.equals(s.realClipRegion, freshReal);
+        s.realClipRegion = freshReal;
+        if (clipChanged) applyRealClipRegions(s.sub, s.parentScene, s.realId);
         double[] imageRegion = clipRegion(
             fresh.mapPoint(origin),
             fresh.mapVec(sourceToDest).scale(-1.0),
@@ -235,7 +260,7 @@ public final class IplAtlasStraddleSession {
             portal.getWidth() * 0.5 + APERTURE_MARGIN,
             portal.getHeight() * 0.5 + APERTURE_MARGIN,
             depthLimit);
-        ipl.sable.natives.IplRapierNatives.setImageClipRegions(
+        if (clipChanged || isoMoved) ipl.sable.natives.IplRapierNatives.setImageClipRegions(
             s.destScene, s.realId, s.imageHandle, imageRegion);
     }
 
@@ -255,12 +280,18 @@ public final class IplAtlasStraddleSession {
      * into a closed box around exactly the volume that can be straddling: still Rapier's
      * own contact pass, just scoped to this crossing instead of to all of space.
      */
-    private static double clipDepthLimit(ServerSubLevel ship) {
+    private static double clipDepthLimit(ServerSubLevel ship, Portal portal) {
         var box = ship.getPlot().getBoundingBox();
         double dx = box.maxX() - box.minX() + 1.0;
         double dy = box.maxY() - box.minY() + 1.0;
         double dz = box.maxZ() - box.minZ() + 1.0;
-        return Math.sqrt(dx * dx + dy * dy + dz * dz) + APERTURE_MARGIN;
+        double diagonal = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        Vec3 center = ship.logicalPose().transformPosition(new Vec3(
+            (box.minX() + box.maxX() + 1.0) * .5,
+            (box.minY() + box.maxY() + 1.0) * .5,
+            (box.minZ() + box.maxZ() + 1.0) * .5));
+        double normalDistance = Math.abs(center.subtract(portal.getOriginPos()).dot(portal.getNormal()));
+        return diagonal + normalDistance + APERTURE_MARGIN;
     }
 
     private static double[] clipRegion(
@@ -290,7 +321,7 @@ public final class IplAtlasStraddleSession {
             System.arraycopy(regions.get(i), 0, flat, i * 16, 16);
         }
         ipl.sable.natives.IplRapierNatives.setClipRegions(parentScene, realId, flat);
-        for (double[] r : regions) {
+        if (LOG.isDebugEnabled()) for (double[] r : regions) {
             LOG.debug("[IPL-IMAGE-CLIP] realId={} plane=({},{},{}) normal=({},{},{})",
                 realId,
                 String.format("%.1f", r[0]), String.format("%.1f", r[1]), String.format("%.1f", r[2]),
@@ -302,11 +333,14 @@ public final class IplAtlasStraddleSession {
     public static void clear(StraddleKey key, String reason) {
         Session session = SESSIONS.remove(key);
         if (session == null) return;
-        ipl.sable.natives.IplRapierNatives.removeImageCollider(
-            session.destScene, session.realId, session.imageHandle);
+        if (IplSceneOwnership.liveSceneHandle(session.dest) == session.destScene) {
+            ipl.sable.natives.IplRapierNatives.removeImageCollider(
+                session.destScene, session.realId, session.imageHandle);
+        }
         // Recompute the real body's clip regions from whatever sessions remain (usually
         // none → cleared): the through-part becomes fully source-solid again.
-        if (session.realClipRegion != null && !session.sub.isRemoved()) {
+        if (session.realClipRegion != null && !session.sub.isRemoved()
+            && IplSceneOwnership.liveSceneHandle(session.parent) == session.parentScene) {
             applyRealClipRegions(session.sub, session.parentScene, session.realId);
         }
         LOG.info("[IPL-IMAGE] end uuid={} imageHandle={} reason={}",
@@ -341,6 +375,16 @@ public final class IplAtlasStraddleSession {
             }
         }
         return null;
+    }
+
+    public static void markAdmitted(StraddleKey key) {
+        Session session = SESSIONS.get(key);
+        if (session != null) session.admitted = true;
+    }
+
+    public static boolean isAdmitted(StraddleKey key) {
+        Session session = SESSIONS.get(key);
+        return session != null && session.admitted;
     }
 
     public static boolean hasSessionKey(StraddleKey key) {

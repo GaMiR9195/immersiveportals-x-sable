@@ -347,7 +347,8 @@ public abstract class SableCrossDimTrackingMixin {
                             viewer,
                             "ipl.sable.client.IplParentDimSync.RemoteCallables.setParent",
                             serverSubLevel.getUniqueId().toString(),
-                            parent.dimension().location().toString()
+                            parent.dimension().location().toString(),
+                            Long.toString(ipl.sable.transit.IplStraddleSessionSync.frame(serverSubLevel.getUniqueId()))
                         );
                     }
                     // Straddle parity is server state (see IplStraddleSessionSync); a viewer
@@ -407,7 +408,7 @@ public abstract class SableCrossDimTrackingMixin {
         require = 1
     )
     private boolean ipl$forceCrossDimToTCP(SableUDPServer server, ServerPlayer player, Operation<Boolean> original) {
-        if (player.serverLevel() != level) {
+        if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level) || player.serverLevel() != level) {
             return false;
         }
         return original.call(server, player);

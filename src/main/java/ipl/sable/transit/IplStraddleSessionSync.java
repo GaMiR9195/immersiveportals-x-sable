@@ -28,10 +28,10 @@ import java.util.UUID;
  * (source) half, and locks the crossing direction to exactly {@code -normal}. Portal
  * identity therefore carries the parity, and it rotates with the portal for free.
  *
- * <p>Snapshots are full per-ship state (not diffs): idempotent, order-tolerant, and a
- * late-joining client just gets one on track start. Payload is a few dozen bytes and
- * changes a handful of times per crossing, so it is broadcast to all players rather
- * than tracking-scoped — a client that doesn't know the ship ignores it.
+ * <p>Snapshots are full per-ship state, delivered on the ordered TCP stream. Each
+ * carries a coordinate-frame generation and completed tracking tick. Late tracking
+ * gets the current state after its frame stamp; untracked clients ignore broadcasts.
+ * Geometry changes and finite completion update the payload as well as session starts.
  */
 public final class IplStraddleSessionSync {
 
@@ -49,6 +49,40 @@ public final class IplStraddleSessionSync {
      */
     private static final Map<UUID, java.util.LinkedHashMap<UUID, String>> ACTIVE = new HashMap<>();
 
+    /** A same-dimension loop changes chart too: a dimension id is not a frame id. */
+    private static final Map<UUID, Long> FRAMES = new HashMap<>();
+
+    public static long frame(UUID ship) { return FRAMES.getOrDefault(ship, 0L); }
+    public record FrameHop(long frame, IplGrabLink link, int serverTick) {}
+    private static final Map<UUID, java.util.ArrayDeque<FrameHop>> HISTORY = new HashMap<>();
+
+    public static void advanceFrame(UUID ship, Portal portal) {
+        long next = frame(ship) + 1L;
+        FRAMES.put(ship, next);
+        int tick = portal.getServer().getTickCount();
+        var history = HISTORY.computeIfAbsent(ship, ignored -> new java.util.ArrayDeque<>());
+        history.addLast(new FrameHop(next, IplGrabLink.forward(portal), tick));
+        // Sable permits up to 100 ticks of render delay; retain that plus network slack.
+        while (!history.isEmpty() && tick - history.peekFirst().serverTick() > 160)
+            history.removeFirst();
+    }
+
+    /** Exact body transits missed by a pick made on an older delayed visual frame. */
+    public static java.util.List<FrameHop> hopsAfter(UUID ship, long sourceFrame) {
+        if (sourceFrame == frame(ship)) return java.util.List.of();
+        if (sourceFrame < 0 || sourceFrame > frame(ship)) return null;
+        var history = HISTORY.get(ship);
+        if (history == null) return null;
+        var out = new java.util.ArrayList<FrameHop>();
+        long expected = sourceFrame + 1;
+        for (FrameHop hop : history) {
+            if (hop.frame() <= sourceFrame) continue;
+            if (hop.frame() != expected++) return null;
+            out.add(hop);
+        }
+        return expected == frame(ship) + 1 ? java.util.List.copyOf(out) : null;
+    }
+
     private IplStraddleSessionSync() {}
 
     /** The transit controller latched a new (ship, portal) straddle session. */
@@ -56,8 +90,9 @@ public final class IplStraddleSessionSync {
         UUID shipId = ship.getUniqueId();
         java.util.LinkedHashMap<UUID, String> portals =
             ACTIVE.computeIfAbsent(shipId, k -> new java.util.LinkedHashMap<>());
-        if (portals.containsKey(portal.getUUID())) return;
-        portals.put(portal.getUUID(), encodePortal(portal));
+        String encoded = encodePortal(portal,
+            IplAtlasStraddleSession.isCompleted(new StraddleKey(shipId, portal.getUUID())));
+        if (encoded.equals(portals.put(portal.getUUID(), encoded))) return;
 
         LOG.debug("[IPL-STRADDLE-SYNC] start ship={} portal={}", shipId, portal.getUUID());
         broadcast(server, shipId);
@@ -65,9 +100,15 @@ public final class IplStraddleSessionSync {
 
     /** Full portal geometry for session snapshots and client-side handoff render tails. */
     public static String encodePortal(Portal portal) {
+        return encodePortal(portal, false);
+    }
+
+    private static String encodePortal(Portal portal, boolean completed) {
         try {
             net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
             portal.saveWithoutId(tag);
+            tag.putBoolean("ipl_session_completed", completed);
+            tag.putString("ipl_source_dimension", portal.level().dimension().location().toString());
             tag.putString("entity_type",
                 net.minecraft.world.entity.EntityType.getKey(portal.getType()).toString());
             return java.util.Base64.getEncoder().encodeToString(
@@ -111,6 +152,8 @@ public final class IplStraddleSessionSync {
 
     public static void clearAll() {
         ACTIVE.clear();
+        FRAMES.clear();
+        HISTORY.clear();
     }
 
     private static void broadcast(MinecraftServer server, UUID shipId) {
@@ -125,8 +168,18 @@ public final class IplStraddleSessionSync {
         qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
             player,
             "ipl.sable.client.IplStraddleSessionStore.RemoteCallables.snapshot",
-            shipId.toString(), encodedPortals
+            shipId.toString(), encodedPortals, Integer.toString(completedTrackingTick(player.server)),
+            Long.toString(frame(shipId))
         );
+    }
+
+    private static int completedTrackingTick(MinecraftServer server) {
+        var hosting = server.getLevel(ipl.sable.dim.SableSubLevelDimension.SUBLEVELS);
+        if (hosting == null) return Integer.MIN_VALUE;
+        dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer container =
+            dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(hosting);
+        return container == null ? Integer.MIN_VALUE
+            : container.trackingSystem().getInterpolationTick() - 1;
     }
 
     private static String encode(UUID shipId) {

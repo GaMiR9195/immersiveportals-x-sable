@@ -7,6 +7,7 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.client.IplParentDimSync;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -16,15 +17,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(value = ClientSableInterpolationState.class, remap = false)
 public abstract class IplPendingHandoffSnapshotMixin {
 
+    @Shadow private PacketReceiveMode receivingMode;
+
     @Inject(method = "receiveSnapshot", at = @At("HEAD"), cancellable = true, remap = false,
-        require = 0)
+        require = 1)
     private void ipl$keepPendingSnapshotsInSourceFrame(
         ClientSubLevel subLevel, int gameTick, Pose3dc pose, PacketReceiveMode receiveMode,
         CallbackInfo ci
     ) {
         Pose3dc sourceFramePose = IplParentDimSync.mapPendingDestinationSnapshotBack(
-            subLevel.getUniqueId(), pose);
+            subLevel.getUniqueId(), gameTick, pose);
         if (sourceFramePose == pose) return;
+        this.receivingMode = receiveMode;
         subLevel.getInterpolator().receiveSnapshot(gameTick, sourceFramePose);
         ci.cancel();
     }

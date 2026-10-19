@@ -109,6 +109,8 @@
     "client.IplSubLevelLastPoseAccessor",
     "client.IplSnapshotInterpolatorAccessor",
     "client.IplPendingHandoffSnapshotMixin",
+    "client.IplClientTransitCleanupMixin",
+    "client.IplClientTransitDisconnectMixin",
     "client.IplPhysicsStaffBeamAccessorMixin",
     "client.IplPhysicsStaffBeamInvokerMixin",
     "client.IplPhysicsStaffClientHandlerAccessorMixin",

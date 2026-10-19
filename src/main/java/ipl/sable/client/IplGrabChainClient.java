@@ -40,7 +40,7 @@ public final class IplGrabChainClient {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-grab-chain-client");
 
-    private record ChainState(UUID subId, long revision, List<IplGrabLink> chain) {}
+    private record ChainState(UUID subId, long revision, List<IplGrabLink> chain, long bodyFrame, String seedId) {}
 
     /** Every dragging player's chain, from server snapshots. */
     private static final ConcurrentMap<UUID, ChainState> SNAPSHOTS = new ConcurrentHashMap<>();
@@ -65,6 +65,12 @@ public final class IplGrabChainClient {
         ChainState snapshot = SNAPSHOTS.get(ownerId);
         if (snapshot != null && snapshot.subId().equals(subId)) return snapshot.chain();
         return List.of();
+    }
+
+    public static long chainFrame(UUID ownerId, UUID subId) {
+        LocalPlayer player = Minecraft.getInstance().player;
+        ChainState state = player != null && player.getUUID().equals(ownerId) ? local : SNAPSHOTS.get(ownerId);
+        return state != null && state.subId().equals(subId) ? state.bodyFrame() : IplParentDimSync.frame(subId);
     }
 
     /** The local player's active grab chain, or empty. */
@@ -100,16 +106,22 @@ public final class IplGrabChainClient {
             encodedPath.append(imageGrabPortal.getUUID()).append('@')
                 .append(imageGrabPortal.level().dimension().location()).append("@inv");
         }
-        local = new ChainState(subId, 0L, chain);
+        String seedId = UUID.randomUUID().toString();
+        local = new ChainState(subId, 0L, chain, IplParentDimSync.frame(subId), seedId);
         McRemoteProcedureCallClient.tellServerToInvoke(
             "ipl.sable.transit.IplGrabChain.RemoteCallables.seedChain",
-            subId.toString(), encodedPath.toString()
+            subId.toString(), encodedPath.toString(), Long.toString(IplParentDimSync.frame(subId)), seedId
         );
     }
 
     /** Drag ended locally. The server clears its side from its own stop hook. */
     public static void clearLocal() {
         local = null;
+    }
+
+    public static void clearAll() {
+        local = null;
+        SNAPSHOTS.clear();
     }
 
     /**
@@ -122,7 +134,7 @@ public final class IplGrabChainClient {
         if (mine == null) return;
         local = new ChainState(
             mine.subId(), mine.revision(),
-            IplGrabLink.prepend(mine.chain(), IplGrabLink.inverse(portal))
+            IplGrabLink.prepend(mine.chain(), IplGrabLink.inverse(portal)), mine.bodyFrame(), mine.seedId()
         );
         LOG.debug("[IPL-GRAB-CHAIN-C] local player crossed {} depth={}",
             portal.getUUID(), local.chain().size());
@@ -134,13 +146,23 @@ public final class IplGrabChainClient {
 
     public static final class RemoteCallables {
 
+        public static void rejectSeed(String subUuid, String seedId) {
+            if (local == null || !local.seedId().equals(seedId)) return;
+            var handler = SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
+            var session = handler.getDragSession();
+            if (session != null && session.dragSubLevel().getUniqueId().toString().equals(subUuid)) {
+                ((ipl.sable.mixin.client.IplPhysicsStaffClientHandlerStateAccessorMixin) (Object) handler)
+                    .ipl$stopDragging();
+            }
+        }
+
         /** Authoritative chain snapshot for one dragging player. */
-        public static void snapshot(String playerUuid, String subUuid, String revision, String encodedChain) {
+        public static void snapshot(String playerUuid, String subUuid, String revision, String encodedChain, String bodyFrame, String seedId) {
             try {
                 UUID playerId = UUID.fromString(playerUuid);
                 UUID subId = UUID.fromString(subUuid);
                 long rev = Long.parseLong(revision);
-                ChainState state = new ChainState(subId, rev, IplGrabLink.decodeChain(encodedChain));
+                ChainState state = new ChainState(subId, rev, IplGrabLink.decodeChain(encodedChain), Long.parseLong(bodyFrame), seedId);
                 SNAPSHOTS.put(playerId, state);
 
                 LocalPlayer player = Minecraft.getInstance().player;
@@ -148,21 +170,21 @@ public final class IplGrabChainClient {
                     ChainState mine = local;
                     // Adopt over prediction only when the server has seen at least every
                     // event we already applied locally (revision advances monotonically).
-                    if (mine == null || !mine.subId().equals(subId) || rev >= mine.revision()) {
-                        local = state;
-                    }
+                    if (mine != null && mine.seedId().equals(seedId) && rev >= mine.revision()) local = state;
                 }
             } catch (RuntimeException e) {
                 LOG.error("[IPL-GRAB-CHAIN-C] bad snapshot for {}", playerUuid, e);
             }
         }
 
-        public static void clear(String playerUuid) {
+        public static void clear(String playerUuid, String seedId) {
             try {
                 UUID playerId = UUID.fromString(playerUuid);
-                SNAPSHOTS.remove(playerId);
+                ChainState known = SNAPSHOTS.get(playerId);
+                if (known != null && known.seedId().equals(seedId)) SNAPSHOTS.remove(playerId, known);
                 LocalPlayer player = Minecraft.getInstance().player;
-                if (player != null && player.getUUID().equals(playerId)) {
+                if (player != null && player.getUUID().equals(playerId)
+                    && local != null && local.seedId().equals(seedId)) {
                     local = null;
                 }
             } catch (RuntimeException ignored) {
@@ -171,12 +193,12 @@ public final class IplGrabChainClient {
 
         /**
          * The grabbed body transited a portal while the local player drags it. Ordered
-         * after the pose handoff on the same channel: append the link, rotate the local
+         * with the server transit (independent of delayed visual handoff): append the link, rotate the local
          * drag orientation through the portal rotation (same-dimension included — the
          * old code skipped it there and threw away the held rotation), and acknowledge
          * so the server stops compensating this client's in-flight packets.
          */
-        public static void dragRebase(String subUuid, String revision, String encodedLink) {
+        public static void dragRebase(String subUuid, String revision, String encodedLink, String coordinateFrame, String seedId) {
             try {
                 UUID subId = UUID.fromString(subUuid);
                 IplGrabLink link = IplGrabLink.decode(encodedLink);
@@ -187,20 +209,23 @@ public final class IplGrabChainClient {
 
                 ChainState mine = local;
                 long rev = Long.parseLong(revision);
-                if (mine != null && mine.subId().equals(subId)) {
+                // A release/re-grab of the SAME UUID is a different session. Old RPCs
+                // and old acks must not rotate or clear this new session's state.
+                if (mine == null || !mine.subId().equals(subId) || !mine.seedId().equals(seedId)) return;
+                if (rev > mine.revision()) {
                     local = new ChainState(subId, Math.max(mine.revision(), rev),
-                        IplGrabLink.append(mine.chain(), link));
+                        IplGrabLink.append(mine.chain(), link), Long.parseLong(coordinateFrame), seedId);
                 }
 
                 PhysicsStaffClientHandler handler = SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
                 PhysicsStaffClientHandler.ClientDragSession session = handler.getDragSession();
-                if (session != null && session.dragSubLevel().getUniqueId().equals(subId)) {
+                if (rev > mine.revision() && session != null && session.dragSubLevel().getUniqueId().equals(subId)) {
                     session.dragOrientation().set(
                         new Quaterniond(link.rotation()).mul(session.dragOrientation()));
                 }
 
                 McRemoteProcedureCallClient.tellServerToInvoke(
-                    "ipl.sable.transit.IplGrabChain.RemoteCallables.ackRebase", revision
+                    "ipl.sable.transit.IplGrabChain.RemoteCallables.ackRebase", revision, seedId
                 );
                 LOG.debug("[IPL-GRAB-CHAIN-C] rebase sub={} rev={} depth={}",
                     subId, rev, local == null ? -1 : local.chain().size());

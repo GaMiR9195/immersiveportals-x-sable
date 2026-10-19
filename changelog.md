@@ -1,8 +1,29 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.  
+All notable changes to this project will be documented in this file, per sometimes.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project tries to adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.5.2]
+
+### Fixed
+
+- Preserve Sable snapshot timestamps and interpolation history across portal handoffs;
+  rebase the running, previous and current poses without clearing or reseeding the buffer.
+- Stamp each handoff with the exact tracking-tick boundary and coordinate-frame generation,
+  including same-dimension loops and ordered multi-portal residual sweeps.
+- Scope active/retired visual sessions to their coordinate frame; retire tails by both finite
+  aperture geometry and authoritative completion tick instead of an unbounded half-space.
+- Require finite trailing-edge exit, distinguish it from sideways withdrawal, and retain
+  completed leading rigid members until an atomic whole-group handoff is ready.
+- Keep prior-frame render samples identical across nested portal passes.
+- Align Staff visual routes with delayed poses while control uses server coordinates;
+  replay recorded body transits for picks made on older frames, and isolate re-grabs by seed ID.
+- Clear transit/session/Staff visual state on removal and world cleanup; refresh moved portal
+  surrogate payloads rather than keeping an obsolete transform under the same UUID.
+
+The Java sources were compiled against Sable 2.0.3 and the project dependencies. Native
+binaries and an in-game stress test are not included in this source release.
 
 ## [Unreleased Changes]
 

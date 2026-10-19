@@ -23,61 +23,11 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * THE VISUAL SIDE OF A PARENT FLIP: it makes a rehome look like a fly-through.
- *
- * <h2>What was actually wrong</h2>
- *
- * <p>Three separate defects produced one symptom -- "the object does not visibly travel
- * through the portal; sometimes the far half is missing entirely; at speed it hovers up and
- * down like falling drops, and the visual appears a moment late".
- *
- * <p><b>1. The interpolation was never missing -- it was invisible.</b> Sable's client
- * timeline is a buffer of snapshots stamped with the tracking system's tick, sampled at a
- * DELAYED pointer, and the rendered pose is {@code lerp(lastPose, logicalPose, partialTick)}.
- * The server already hands the client the right two endpoints: it pulls the body's previous
- * pose back onto the exit rectangle, so the motion it publishes is literally "portal plane ->
- * rehome point". A portal map {@code P} is an isometry, and for position-lerp plus slerp
- * <pre>P(lerp(a, b, u)) = lerp(P(a), P(b), u)</pre>
- * so mapping both endpoints and interpolating in the destination chart reproduces the
- * crossing fraction EXACTLY. Nothing needed to be re-derived, forced, or overridden in
- * sable/rapier. What was missing is that during those frames NEITHER HALF OF THE BODY WAS
- * BEING DRAWN, because the render path asked a session store ("is there a live straddle
- * session, and does the visual latch admit it?") instead of asking the geometry. A crossing
- * that completes inside one tick -- a fast body, or a small body whose whole crossing fits in
- * one physics segment -- never produces a straddle session at all, so it had no source of
- * truth and drew nothing. That is 1.1, and it is also exactly why SOME objects never showed
- * their far half (1.3): whether a session exists depends on body size and speed, not on
- * whether the body is visually straddling.
- *
- * <p><b>2. The buffer was being re-mapped.</b> The flip mapped EVERY buffered snapshot
- * through the portal with no notion of which ones were already post-flip. A snapshot produced
- * at the end of the flip tick is already expressed in the new chart, so mapping it again
- * displaces it by one whole portal delta -- in a vertical loop, the full loop height. The
- * interpolator then lerps toward those doubly-mapped entries for a few frames and back again,
- * once per flip: a periodic vertical beat in tick cadence, phase-locked to the camera. That
- * is 1.2, and it is a bookkeeping bug, not a frame-rate artefact. The fix is a WATERMARK:
- * map only snapshots strictly older than the flip.
- *
- * <p><b>3. The flip was deferred, which mixed two charts in one buffer.</b> While a handoff
- * waited for the delayed source geometry to "clear the source plane", arriving
- * destination-frame snapshots were mapped BACKWARD into the source chart. The buffer then
- * held poses from two different charts and the interpolator lerped between them -- and when
- * the deferral finally ended the pose snapped. That is the "visual appears a moment later"
- * part. Handoffs are applied immediately now; the buffer is single-chart at every instant.
- *
- * <h2>What this class does</h2>
- *
- * <ul>
- *   <li>{@link #applyFlip} rebases the interpolator buffer with the watermark, so the delayed
- *       timeline stays continuous ACROSS the portal instead of jumping or beating.</li>
- *   <li>{@link #rebaseIncomingSnapshot} maps late/out-of-order pre-flip snapshots forward
- *       into the current chart. Snapshots travel over UDP; one arriving after the flip used to
- *       inject a source-frame pose into a destination-frame buffer.</li>
- *   <li>{@link #window} exposes the EXIT WINDOW: for as long as the interpolated body still
- *       straddles the exit rectangle, both halves are drawn -- the near half natively in the
- *       destination chart, the far half as a projection back into the source chart -- decided
- *       purely from the rendered pose, with no session, latch or prediction involved.</li>
- * </ul>
+ * Unused experimental prototype, retained for source history only.
+ * No runtime hook calls this class. The 0.5.2 production path is
+ * IplParentDimSync + IplStraddleSessionStore, with tracking-tick boundaries and
+ * coordinate-frame generations. Do not wire this prototype into that path:
+ * its old immediate-flip/heuristic timeline assumptions do not apply there.
  */
 public final class IplPortalTransitVisual {
 

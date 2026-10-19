@@ -108,6 +108,11 @@ public final class IplStaffBeamRoutes {
     // Resolution.
     // ------------------------------------------------------------------
 
+    private static List<IplGrabLink> visualChain(UUID owner, UUID sub) {
+        return IplParentDimSync.visibleGrabChain(sub, IplGrabChainClient.chainFrame(owner, sub),
+            IplGrabChainClient.chainFor(owner, sub));
+    }
+
     /** Resolve with retention: build fresh, else bridge a short gap with the last geometry. */
     @Nullable
     public static Route resolve(
@@ -118,7 +123,7 @@ public final class IplStaffBeamRoutes {
         Route built = build(owner, staffLevel, staffStart, sub, localAnchor, partialTick);
         if (built != null) {
             LAST.put(owner, new Kept(built, now,
-                IplGrabChainClient.chainFor(owner, sub.getUniqueId()), sub.getUniqueId()));
+                visualChain(owner, sub.getUniqueId()), sub.getUniqueId()));
             return built;
         }
         Kept kept = LAST.get(owner);
@@ -132,7 +137,7 @@ public final class IplStaffBeamRoutes {
         // moment the chain changes shape (a link added, dropped, or the body released)
         // the kept route is stale by construction and is dropped immediately.
         if (!sub.getUniqueId().equals(kept.subId())
-            || !IplGrabChainClient.chainFor(owner, sub.getUniqueId()).equals(kept.chain())) {
+            || !visualChain(owner, sub.getUniqueId()).equals(kept.chain())) {
             LAST.remove(owner);
             LENGTHS.remove(owner);
             // The image/plane latch is per (owner, portal) memory of a route that no
@@ -208,7 +213,7 @@ public final class IplStaffBeamRoutes {
         if (parent == null) return null;
         Vec3 nativeAnchor = sub.renderPose(partialTick).transformPosition(localAnchor);
 
-        List<IplGrabLink> links = IplGrabChainClient.chainFor(owner, sub.getUniqueId());
+        List<IplGrabLink> links = visualChain(owner, sub.getUniqueId());
         Vec3 target = nativeAnchor;
         Quaterniond imageRotation = new Quaterniond();
         boolean targetsImage = false;
@@ -219,7 +224,7 @@ public final class IplStaffBeamRoutes {
         // on visible geometry. At the plane both representations coincide, so toggling
         // this refinement is visually continuous. Session order is server history
         // (session-start order), not a per-frame race.
-        for (Portal session : IplStraddleSessionStore.resolveAllPortals(sub)) {
+        for (Portal session : IplStraddleSessionStore.resolveAllRenderPortals(sub)) {
             if (session.isRemoved()) continue;
             if (!isPastPlaneSticky(owner, session, nativeAnchor)) continue;
             IplGrabLink sessionLink = IplGrabLink.forward(session);
@@ -289,7 +294,7 @@ public final class IplStaffBeamRoutes {
             || !sub.getUniqueId().equals(kept.subId())
             || kept.route().staffLevel() != staffLevel
             || staffLevel.getGameTime() - kept.gameTime() > RETENTION_TICKS
-            || !IplGrabChainClient.chainFor(owner, sub.getUniqueId()).equals(kept.chain())) {
+            || !visualChain(owner, sub.getUniqueId()).equals(kept.chain())) {
             return null;
         }
         return new Route(staffLevel, staffStart, kept.route().target(),
@@ -303,6 +308,14 @@ public final class IplStaffBeamRoutes {
      */
     @Nullable
     public static Quaterniond axisRotation(Player player, ClientSubLevel sub, Vec3 localAnchor) {
+        if (IplParentDimSync.hasPendingHandoff(sub.getUniqueId())) {
+            // dragRebase has already moved the motor/orientation into the server frame.
+            // Do not use the older visual endpoint's rotation for these input packets.
+            Quaterniond serverFrame = new Quaterniond();
+            for (IplGrabLink link : IplGrabChainClient.chainFor(player.getUUID(), sub.getUniqueId()))
+                serverFrame.premul(link.rotation());
+            return serverFrame;
+        }
         Route route = peek(
             player.getUUID(), player.level(), player.getEyePosition(), sub, localAnchor, 1.0f);
         if (route == null) return null;

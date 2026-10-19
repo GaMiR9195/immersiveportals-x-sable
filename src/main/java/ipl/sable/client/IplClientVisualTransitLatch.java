@@ -23,14 +23,13 @@ final class IplClientVisualTransitLatch {
 
     private static final double EPSILON = 1.0e-8;
     /** Server detector's lateral finite-plane extension; never applied along portal normal. */
-    private static final double APERTURE_MARGIN = 0.5;
+    private static final double APERTURE_MARGIN = 0.0;
     /** Server confirmation normally arrives before the delayed render reaches the plane. */
     private static final long CONFIRMATION_GRACE_TICKS = 6;
     private static final Map<UUID, Prediction> PREDICTIONS = new HashMap<>();
-    /** Exact client-side A→B proof, retained until the handoff commits or the body backs out. */
-    private static final Map<UUID, UUID> FORWARD_SWEEPS = new HashMap<>();
     /** Last submitted pose per ship. Interpolation changes every render frame, not only per tick. */
     private static final Map<UUID, Pose3d> LAST_RENDER_POSES = new HashMap<>();
+    private static final Map<UUID, Pose3d> PREVIOUS_RENDER_POSES = new HashMap<>();
     /** Render frame the pose above was sampled in; one sample per frame, not per pass. */
     private static final Map<UUID, Long> LAST_SAMPLE_FRAMES = new HashMap<>();
 
@@ -77,19 +76,14 @@ final class IplClientVisualTransitLatch {
             if (portal == null || tick > prediction.expiresAtTick()
                 || !stillEligible(sub, portal)) {
                 remove(shipId);
-                FORWARD_SWEEPS.remove(shipId, prediction.portalId());
             } else {
                 return appendIfMissing(resolved, portal);
             }
         }
 
         Portal candidate = findEnteringPortal(sub, level, previousRenderPose);
-        if (candidate == null) return resolved;
+        if (candidate == null || !isVisible(sub, candidate)) return resolved;
 
-        // Preserve the exact finite-AABB crossing proof even when the handoff RPC arrives
-        // after this frame. The pending handoff consumes it by portal UUID, never by a
-        // nearest-portal guess, so recursive/rapid crossings remain FIFO-safe.
-        FORWARD_SWEEPS.putIfAbsent(shipId, candidate.getUUID());
         PREDICTIONS.put(shipId, new Prediction(
             candidate.getUUID(), tick + CONFIRMATION_GRACE_TICKS));
         // A prediction can start while an enclosing portal render has already cached its
@@ -106,13 +100,15 @@ final class IplClientVisualTransitLatch {
     private static Pose3d ipl$sampleRenderPose(ClientSubLevel sub, UUID shipId) {
         long frame = IplStraddleRenderCache.frameId();
         Long sampledFrame = LAST_SAMPLE_FRAMES.get(shipId);
-        Pose3d previous = LAST_RENDER_POSES.get(shipId);
         if (sampledFrame == null || sampledFrame.longValue() != frame) {
+            Pose3d previous = LAST_RENDER_POSES.put(shipId, new Pose3d(sub.renderPose()));
+            if (previous == null) PREVIOUS_RENDER_POSES.remove(shipId);
+            else PREVIOUS_RENDER_POSES.put(shipId, previous);
             LAST_SAMPLE_FRAMES.put(shipId, frame);
-            LAST_RENDER_POSES.put(shipId, new Pose3d(sub.renderPose()));
         }
         ipl$pruneSamples(frame);
-        return previous;
+        // Every nested portal pass in THIS frame receives the SAME prior-frame pose.
+        return PREVIOUS_RENDER_POSES.get(shipId);
     }
 
     /**
@@ -125,6 +121,7 @@ final class IplClientVisualTransitLatch {
         LAST_SAMPLE_FRAMES.entrySet().removeIf(entry -> {
             if (frame - entry.getValue() < SAMPLE_RETENTION_FRAMES) return false;
             LAST_RENDER_POSES.remove(entry.getKey());
+            PREVIOUS_RENDER_POSES.remove(entry.getKey());
             return true;
         });
     }
@@ -138,89 +135,43 @@ final class IplClientVisualTransitLatch {
 
     /** The server owns physics parity; prediction only decides whether geometry reaches this frame. */
     static boolean isVisible(ClientSubLevel sub, Portal portal) {
+        return isVisible(sub, portal, false);
+    }
+
+    static boolean isVisible(ClientSubLevel sub, Portal portal, boolean completed) {
         Projection now = project(sub, sub.renderPose(), portal);
         if (now.maxPlane() < -EPSILON) return false;
+        // A leading joint member has ALREADY exited through the finite rectangle;
+        // until the group commits it is still represented by that destination image.
+        if (completed && now.minPlane() >= EPSILON) return true;
+        if (!overlapsLaterally(now, portal)) return false;
+        // Fully-through geometry is a path-owned tail, not evidence that an infinite
+        // plane is still being crossed. Its lifetime belongs to the session/watermark.
         if (now.minPlane() >= EPSILON) return true;
+        return ipl.sable.transit.PortalAperture.intersects(
+            sub.getPlot().getBoundingBox(), sub.renderPose(), portal, APERTURE_MARGIN, 0.0);
+    }
+
+    private static boolean overlapsLaterally(Projection now, Portal portal) {
         return now.maxWidth() >= -portal.getWidth() * 0.5 - APERTURE_MARGIN - EPSILON
             && now.minWidth() <= portal.getWidth() * 0.5 + APERTURE_MARGIN + EPSILON
             && now.maxHeight() >= -portal.getHeight() * 0.5 - APERTURE_MARGIN - EPSILON
             && now.minHeight() <= portal.getHeight() * 0.5 + APERTURE_MARGIN + EPSILON;
     }
 
+    static void clearAll() {
+        PREDICTIONS.clear();
+        LAST_RENDER_POSES.clear();
+        PREVIOUS_RENDER_POSES.clear();
+        LAST_SAMPLE_FRAMES.clear();
+        lastPruneFrame = 0L;
+    }
+
     static void clear(UUID shipId) {
         remove(shipId);
-        FORWARD_SWEEPS.remove(shipId);
         LAST_RENDER_POSES.remove(shipId);
+        PREVIOUS_RENDER_POSES.remove(shipId);
         LAST_SAMPLE_FRAMES.remove(shipId);
-    }
-
-    /**
-     * Drops the pending PREDICTION but keeps the crossing PROOF.
-     *
-     * <p>For the handoff path. Once the server confirms the crossing, the prediction has
-     * served its purpose and must go -- but {@link #FORWARD_SWEEPS} is the evidence that
-     * this client watched the body sweep forward through the aperture, and
-     * {@link #hasForwardApertureSweep} consults it FIRST precisely so the visual frame
-     * switch does not have to be re-derived afterwards.
-     *
-     * <p>Re-deriving it after a handoff is not merely wasteful, it is impossible: every pose
-     * available by then is destination-side, while both fallbacks
-     * ({@link #hasBufferedForwardSweep} and the lastPose test) require a start pose wholly
-     * on the source side. Wiping the proof here therefore made the switch fail and the body
-     * disappear rather than fly out of the doorway.
-     *
-     * <p>The render-pose samples are dropped as well: they were taken in the source frame
-     * and joining them to destination-frame samples would fabricate a sweep across the whole
-     * world on the next frame.
-     */
-    static void clearPredictionKeepingProof(UUID shipId) {
-        remove(shipId);
-        LAST_RENDER_POSES.remove(shipId);
-        LAST_SAMPLE_FRAMES.remove(shipId);
-    }
-
-    /**
-     * The visual parent must not switch merely because a server handoff arrived. Require this
-     * client's delayed OBB to cross the same finite aperture from source to destination.
-     * If it returns wholly source-side first, discard the proof and keep the source frame.
-     */
-    static boolean hasForwardApertureSweep(ClientSubLevel sub, Portal portal) {
-        UUID shipId = sub.getUniqueId();
-        Projection now = project(sub, sub.renderPose(), portal);
-        UUID recorded = FORWARD_SWEEPS.get(shipId);
-        if (recorded != null && recorded.equals(portal.getUUID())) {
-            if (now.maxPlane() < -EPSILON) {
-                FORWARD_SWEEPS.remove(shipId);
-                IplStraddleSessionStore.clearHandoffVisual(shipId);
-                IplStraddleRenderCache.invalidateActivePasses();
-                return false;
-            }
-            return true;
-        }
-        if (!hasBufferedForwardSweep(sub, portal)
-            && !crossesAperture(project(sub, sub.lastPose(), portal), now, portal)) {
-            return false;
-        }
-        FORWARD_SWEEPS.put(shipId, portal.getUUID());
-        IplStraddleRenderCache.invalidateActivePasses();
-        return true;
-    }
-
-    /**
-     * `renderPose` can already be fully through on a fast packet burst. Search adjacent
-     * delayed snapshots as well as this frame's endpoints, preserving the same finite
-     * aperture criterion instead of falling back to an unconditional server handoff.
-     */
-    private static boolean hasBufferedForwardSweep(ClientSubLevel sub, Portal portal) {
-        var buffer = sub.getInterpolator().buffer;
-        synchronized (buffer) {
-            for (int i = 1; i < buffer.size(); i++) {
-                Projection from = project(sub, buffer.get(i - 1).pose(), portal);
-                Projection to = project(sub, buffer.get(i).pose(), portal);
-                if (crossesAperture(from, to, portal)) return true;
-            }
-        }
-        return false;
     }
 
     private static void remove(UUID shipId) {
@@ -241,9 +192,6 @@ final class IplClientVisualTransitLatch {
 
     /** Keep a fully-through visual tail until handoff, but abort a straddler leaving aperture. */
     private static boolean stillEligible(ClientSubLevel sub, Portal portal) {
-        Projection now = project(sub, sub.renderPose(), portal);
-        if (now.maxPlane() < -EPSILON) return false;
-        if (now.minPlane() >= EPSILON) return true;
         return isVisible(sub, portal);
     }
 
