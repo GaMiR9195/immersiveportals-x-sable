@@ -1,7 +1,7 @@
 # v0.5.2
 1) Crossing detection was highly improved, right now i can't find any related bugs.
 2) Thanks to (1) loops can work forever, but expect more loop changes soon.
-3) Physics staff stability improved.
+3) Physics staff stability improved, and release velocity bug was fixed.
 
 # Immersive Portals × Sable Compatibility Fork
 Version: NeoForge 1.21.1; Targets: Sable 2.0.3+ · Create Aeronautics 1.3.0+ · Create 6.0.10
