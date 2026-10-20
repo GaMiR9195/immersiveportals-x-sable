@@ -1,0 +1,13 @@
+{
+  "vertex": "veil:light/area",
+  "fragment": "veil:light/area",
+  "textures": {
+    "DepthSampler": {
+      "type": "framebuffer",
+      "name": "veil:light_inscattering:depth"
+    }
+  },
+  "definitions": [
+    "INSCATTERING"
+  ]
+}

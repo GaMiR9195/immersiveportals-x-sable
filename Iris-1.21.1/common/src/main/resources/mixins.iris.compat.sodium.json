@@ -1,0 +1,32 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "net.irisshaders.iris.compat.sodium.mixin",
+  "refmap": "iris.refmap.json",
+  "plugin": "net.irisshaders.iris.mixin.IrisMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "BlockRendererAccessor",
+    "MixinAbstractBlockRenderContext",
+    "MixinBlockRenderer",
+    "MixinChunkMeshBuildTask",
+    "MixinDefaultChunkRenderer",
+    "MixinDefaultFluidRenderer",
+    "MixinGlRenderDevice",
+    "MixinRenderRegionArenas",
+    "MixinRenderSectionManager",
+    "MixinRenderSectionManagerShadow",
+    "MixinShaderChunkRenderer",
+    "MixinSodiumGameOptions",
+    "MixinSodiumWorldRenderer",
+    "EnumOptionBuilderImplAccessor",
+    "IntegerOptionBuilderImplAccessor",
+    "MixinChunkVertex",
+    "MixinRenderRegion",
+    "MixinRenderRegionManager",
+    "MixinSodiumOptions"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

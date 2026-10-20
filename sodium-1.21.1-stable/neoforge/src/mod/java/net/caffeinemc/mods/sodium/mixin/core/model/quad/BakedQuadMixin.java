@@ -1,0 +1,141 @@
+package net.caffeinemc.mods.sodium.mixin.core.model.quad;
+
+import net.caffeinemc.mods.sodium.client.model.quad.BakedQuadView;
+import net.caffeinemc.mods.sodium.client.model.quad.properties.ModelQuadFacing;
+import net.caffeinemc.mods.sodium.client.model.quad.properties.ModelQuadFlags;
+import net.caffeinemc.mods.sodium.client.util.ModelQuadUtil;
+import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.core.Direction;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+@Mixin(BakedQuad.class)
+public abstract class BakedQuadMixin implements BakedQuadView {
+    @Shadow
+    @Final
+    protected int[] vertices;
+
+    @Shadow
+    @Final
+    protected int tintIndex;
+
+    @Shadow
+    @Final
+    protected Direction direction; // This is really the light face, but we can't rename it.
+
+    @Shadow
+    @Final
+    private boolean shade;
+
+    @Shadow
+    public abstract boolean hasAmbientOcclusion();
+
+    @Unique
+    private int sodium$flags;
+
+    @Unique
+    private int sodium$normal = -1;
+
+    @Unique
+    private ModelQuadFacing sodium$normalFace = null;
+
+    @Inject(method = {
+            "<init>([IILnet/minecraft/core/Direction;Lnet/minecraft/client/renderer/texture/TextureAtlasSprite;ZZ)V"
+    }, at = @At("RETURN"))
+    private void init(int[] is, int i, Direction face, TextureAtlasSprite arg2, boolean bl, boolean hasAmbientOcclusion, CallbackInfo ci) {
+        this.sodium$flags = ModelQuadFlags.getQuadFlags(this, face);
+    }
+
+    @Override
+    public float sodium$getX(int idx) {
+        return Float.intBitsToFloat(this.vertices[ModelQuadUtil.vertexOffset(idx) + ModelQuadUtil.POSITION_INDEX]);
+    }
+
+    @Override
+    public float sodium$getY(int idx) {
+        return Float.intBitsToFloat(this.vertices[ModelQuadUtil.vertexOffset(idx) + ModelQuadUtil.POSITION_INDEX + 1]);
+    }
+
+    @Override
+    public float sodium$getZ(int idx) {
+        return Float.intBitsToFloat(this.vertices[ModelQuadUtil.vertexOffset(idx) + ModelQuadUtil.POSITION_INDEX + 2]);
+    }
+
+    @Override
+    public int sodium$getColor(int idx) {
+        return this.vertices[ModelQuadUtil.vertexOffset(idx) + ModelQuadUtil.COLOR_INDEX];
+    }
+
+    @Override
+    public int sodium$getVertexNormal(int idx) {
+        return this.vertices[ModelQuadUtil.vertexOffset(idx) + ModelQuadUtil.NORMAL_INDEX];
+    }
+
+    @Override
+    public int sodium$getLight(int idx) {
+        return this.vertices[ModelQuadUtil.vertexOffset(idx) + ModelQuadUtil.LIGHT_INDEX];
+    }
+
+    @Shadow
+    public abstract TextureAtlasSprite sodium$getSprite();
+
+    @Override
+    public float sodium$getTexU(int idx) {
+        return Float.intBitsToFloat(this.vertices[ModelQuadUtil.vertexOffset(idx) + ModelQuadUtil.TEXTURE_INDEX]);
+    }
+
+    @Override
+    public float sodium$getTexV(int idx) {
+        return Float.intBitsToFloat(this.vertices[ModelQuadUtil.vertexOffset(idx) + ModelQuadUtil.TEXTURE_INDEX + 1]);
+    }
+
+    @Override
+    public int sodium$getFlags() {
+        return this.sodium$flags;
+    }
+
+    @Override
+    public int sodium$getColorIndex() {
+        return this.tintIndex;
+    }
+
+    @Override
+    public ModelQuadFacing sodium$getNormalFace() {
+        if (this.sodium$normalFace == null) {
+            this.sodium$normalFace = ModelQuadFacing.fromPackedNormal(this.sodium$getFaceNormal());
+        }
+
+        return this.sodium$normalFace;
+    }
+
+    @Override
+    public int sodium$getFaceNormal() {
+        if (this.sodium$normal == -1) {
+            this.sodium$normal = this.sodium$calculateNormal();
+        }
+
+        return this.sodium$normal;
+    }
+
+    @Override
+    public Direction sodium$getLightFace() {
+        return this.direction;
+    }
+
+    @Override
+    @Unique(silent = true) // The target class has a function with the same name in a remapped environment
+    public boolean sodium$hasShade() {
+        return this.shade;
+    }
+
+    @Override
+    public boolean sodium$hasAO() {
+        return this.hasAmbientOcclusion();
+    }
+}

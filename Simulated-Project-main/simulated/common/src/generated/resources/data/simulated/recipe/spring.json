@@ -1,0 +1,21 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "N": {
+      "tag": "c:nuggets/iron"
+    },
+    "S": {
+      "tag": "c:plates/iron"
+    }
+  },
+  "pattern": [
+    "S",
+    "N",
+    "S"
+  ],
+  "result": {
+    "count": 2,
+    "id": "simulated:spring"
+  }
+}

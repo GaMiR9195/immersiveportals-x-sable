@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "group": "simulated:auger_swap",
+  "ingredients": [
+    {
+      "item": "simulated:auger_cog"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "id": "simulated:auger_shaft"
+  }
+}

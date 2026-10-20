@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "B": {
+      "tag": "c:plates/brass"
+    },
+    "C": {
+      "tag": "c:plates/copper"
+    },
+    "R": {
+      "tag": "c:dusts/redstone"
+    },
+    "S": {
+      "tag": "c:stones"
+    },
+    "T": {
+      "item": "minecraft:redstone_torch"
+    }
+  },
+  "pattern": [
+    " C ",
+    "RBT",
+    "SSS"
+  ],
+  "result": {
+    "count": 1,
+    "id": "simulated:redstone_inductor"
+  }
+}

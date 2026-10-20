@@ -1,0 +1,2 @@
+- Fix issues with JEI integration and creative tab compatibility with mods (PR #1403)
+- Fix swivel bearing not adjusting its mass when assembled properly

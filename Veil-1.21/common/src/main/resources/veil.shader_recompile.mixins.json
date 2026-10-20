@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "foundry.veil.mixin.shader_recompile",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "foundry.veil.VeilMixinPluginImpl",
+  "client": [
+    "accessor.ShaderRecompileProgramAccessor",
+    "client.ShaderRecompileGameRendererMixin",
+    "client.ShaderRecompileShaderInstanceMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
+  

@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "group": "simulated:sail_asymmetry",
+  "ingredients": [
+    {
+      "item": "simulated:white_symmetric_sail"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "id": "create:white_sail"
+  }
+}

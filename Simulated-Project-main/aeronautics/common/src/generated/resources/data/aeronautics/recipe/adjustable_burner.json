@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "A": {
+      "item": "create:andesite_alloy"
+    },
+    "C": {
+      "tag": "aeronautics:burner_fire"
+    },
+    "R": {
+      "tag": "c:dusts/redstone"
+    },
+    "S": {
+      "tag": "c:plates/iron"
+    }
+  },
+  "pattern": [
+    "S S",
+    "SCS",
+    "ARA"
+  ],
+  "result": {
+    "count": 1,
+    "id": "aeronautics:adjustable_burner"
+  }
+}
