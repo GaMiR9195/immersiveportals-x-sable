@@ -44,6 +44,17 @@ public final class IplClientHostedLookup {
         return hosting == null ? null : SubLevelContainer.getContainer((net.minecraft.world.level.Level) hosting);
     }
 
+    /** Resolve a plot-space render anchor without depending on Simulated/CPS. */
+    @Nullable
+    public static ClientSubLevel findHostedSubLevel(net.minecraft.world.phys.Vec3 localAnchor) {
+        SubLevelContainer container = getHostingContainerOrNull();
+        if (container == null) return null;
+        var chunk = new net.minecraft.world.level.ChunkPos(net.minecraft.core.BlockPos.containing(localAnchor));
+        var plot = container.getPlot(chunk);
+        var sub = plot == null ? null : plot.getSubLevel();
+        return sub instanceof ClientSubLevel clientSub ? clientSub : null;
+    }
+
     private static final org.slf4j.Logger LOG =
         org.slf4j.LoggerFactory.getLogger("ipl-hosted-gather");
 

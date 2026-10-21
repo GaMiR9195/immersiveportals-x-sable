@@ -13,5 +13,6 @@ public abstract class IplClientTransitDisconnectMixin {
     @Inject(method = "cleanUp", at = @At("HEAD"), remap = false, require = 1)
     private static void ipl$clearTransit(CallbackInfo ci) {
         IplParentDimSync.clear();
+        ipl.sable.client.IplStaffPortalBeamRenderer.clear();
     }
 }

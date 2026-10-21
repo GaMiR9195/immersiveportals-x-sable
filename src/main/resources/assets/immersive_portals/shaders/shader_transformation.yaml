@@ -190,23 +190,10 @@ configs:
               // Slot 0 (IP portal clip): eye-space dot. IP writes the
               // activeClipPlaneAfterModelView equation here (eye-space).
               gl_ClipDistance[0] = dot(_ipl_eyePos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
-              // Slot 1 (sub-level clip): recover camera-relative WORLD-space
-              // position via gbufferModelViewInverse, then dot against our
-              // world-space equation. The eye-space slot-1 path used here
-              // previously gave wrong-side clipping for Create cogs on
-              // assembled physics sub-levels because the cog's
-              // iris_ModelViewMat bakes in the per-sub-level transform on
-              // top of the camera view -- naive R_cam rotation of a
-              // world-space normal doesn't account for the sub-level
-              // transform, so the equation ends up at the wrong orientation.
-              // Recovering world-space inside the shader (same chain as the
-              // iris+sodium terrain entry uses) sidesteps the issue and
-              // matches what SubLevelClipUniformPatcher publishes via
-              // currentSubLevelEqWorld.
-              vec3 _ipl_worldRel = (gbufferModelViewInverse * vec4(_ipl_eyePos, 1.0)).xyz;
-              // Independent slots -- see the vanilla-terrain entry for why min() bends the cut.
-              gl_ClipDistance[1] = dot(_ipl_worldRel, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
-              gl_ClipDistance[2] = dot(_ipl_worldRel, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
+              // Same eye-space contract as slot 0. No gbufferModelViewInverse
+              // exists in Iris's no-shaderpack vanilla replacements.
+              gl_ClipDistance[1] = dot(_ipl_eyePos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
+              gl_ClipDistance[2] = dot(_ipl_eyePos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
     debugOutput: false
   - comment: |-
       Veil-managed Simulated / Aeronautics block-entity shaders. These are
@@ -263,6 +250,46 @@ configs:
               vec3 _ipl_eyePos = (ModelViewMat * vec4(Position.xyz, 1.0)).xyz;
               gl_ClipDistance[0] = dot(_ipl_eyePos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
               // Independent slots -- see the vanilla-terrain entry for why min() bends the cut.
+              gl_ClipDistance[1] = dot(_ipl_eyePos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
+              gl_ClipDistance[2] = dot(_ipl_eyePos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
+    debugOutput: false
+  - comment: |-
+      Vanilla entities, sign text, and Catnip cuboid outlines (the CPS beam and
+      selection). All supply Position + ModelViewMat. The previous list omitted
+      the entire vanilla entity family, so enabling clipping alone did nothing.
+      Keep all three distances independent, in eye space.
+    type: vs
+    affectedShaders:
+      - rendertype_entity_solid
+      - rendertype_entity_cutout
+      - rendertype_entity_cutout_no_cull
+      - rendertype_entity_cutout_no_cull_z_offset
+      - rendertype_item_entity_translucent_cull
+      - rendertype_entity_translucent_cull
+      - rendertype_entity_translucent
+      - rendertype_entity_smooth_cutout
+      - rendertype_beacon_beam
+      - rendertype_entity_translucent_emissive
+      - particle
+      - rendertype_text
+      - rendertype_text_intensity
+      - rendertype_text_see_through
+      - rendertype_text_intensity_see_through
+      - rendertype_text_background
+      - rendertype_text_background_see_through
+      - rendertype_leash
+      - rendertype_lightning
+    transformations:
+      - pattern: |-
+          void ( )*main( )*\(( )*( )*\)( )*(
+          )*\{
+        replacement: |-
+          out float gl_ClipDistance[3];
+          uniform vec4 iportal_ClippingEquation;
+          uniform vec4 ipl_subLevelClipEquation[2];
+          void main() {
+              vec3 _ipl_eyePos = (ModelViewMat * vec4(Position.xyz, 1.0)).xyz;
+              gl_ClipDistance[0] = dot(_ipl_eyePos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
               gl_ClipDistance[1] = dot(_ipl_eyePos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
               gl_ClipDistance[2] = dot(_ipl_eyePos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
     debugOutput: false

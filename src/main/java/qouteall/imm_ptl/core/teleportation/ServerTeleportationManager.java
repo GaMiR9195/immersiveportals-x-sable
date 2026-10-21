@@ -189,6 +189,14 @@ public class ServerTeleportationManager {
             
             ResourceKey<Level> dimensionTo = portal.getDestDim();
             Vec3 newEyePos = portal.transformPoint(eyePosBeforeTeleportation);
+            // Simulated interpolates the CPS target from Entity.xOld on every physics
+            // substep. teleportPlayer intentionally collapses old/current position in
+            // the destination frame, so retain that endpoint specifically for CPS.
+            Vec3 staffPreviousEyePos = new Vec3(
+                player.xOld,
+                player.yOld + player.getEyeHeight(),
+                player.zOld
+            );
             
             recordLastPosition(player, dimensionBefore, oldFeetPos);
             
@@ -198,7 +206,9 @@ public class ServerTeleportationManager {
 
             // IPL-Sable: a player holding a staff drag crossed this exact portal —
             // update the grab chain the moment the frame changes (same-dim included).
-            ipl.sable.transit.IplGrabChain.onPlayerTeleported(player, portal);
+            ipl.sable.transit.IplGrabChain.onPlayerTeleported(
+                player, portal, staffPreviousEyePos
+            );
 
             ScaleUtils.onServerEntityTeleported(player, portal);
             

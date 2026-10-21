@@ -14,6 +14,8 @@ import java.util.Set;
 
 public class ShaderCodeTransformation {
     private static final Logger LOGGER = LogUtils.getLogger();
+    private static final java.util.regex.Pattern CLIP_DISTANCE_ZERO =
+        java.util.regex.Pattern.compile("gl_ClipDistance\\s*\\[\\s*0\\s*\\]");
 
     public static enum ShaderType {
         vs, fs
@@ -106,6 +108,13 @@ public class ShaderCodeTransformation {
                 LOGGER.info("[IPL-SHADER-DUMP-NOMATCH] type={} id={} -- no matching config, source returned unchanged",
                     type, shaderId);
             }
+            return inputCode;
+        }
+
+        // Veil may receive source already processed by the vanilla Program hook.
+        // Reinjecting would redeclare uniforms/clip-distance arrays and fail linkage.
+        if (type == Program.Type.VERTEX && inputCode.contains("iportal_ClippingEquation")
+            && CLIP_DISTANCE_ZERO.matcher(inputCode).find()) {
             return inputCode;
         }
 

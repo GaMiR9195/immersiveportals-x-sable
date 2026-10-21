@@ -122,7 +122,9 @@ public final class IplGrabChain {
      * The player crossed a portal (any pair of dimensions, including the same one).
      * Called by {@code ServerTeleportationManager} with the exact portal crossed.
      */
-    public static void onPlayerTeleported(ServerPlayer player, Portal portal) {
+    public static void onPlayerTeleported(
+        ServerPlayer player, Portal portal, Vec3 previousEyePosition
+    ) {
         Frame frame = FRAMES.get(player.getUUID());
         if (frame == null) return;
 
@@ -131,12 +133,11 @@ public final class IplGrabChain {
 
         // The stored cursor vector was composed from the pre-teleport look direction. IP
         // rotates the client camera through the portal, so the next packet's vector is the
-        // portal rotation applied to the old one; apply the same rotation to the stored
-        // value so the physics substeps between now and that packet stay continuous.
-        Quaterniond rotation = rotationOf(portal);
+        // portal rotation applied to the old one. Apply the same rotation to the stored
+        // value so packets and the restored substep interpolation use one frame.
         IplStaffDragSessionControl session = liveSession(player.server, player.getUUID());
         if (session != null) {
-            session.ipl$rotateRelativeGoal(rotation);
+            session.ipl$reframePlayerGoal(portal, previousEyePosition);
         }
 
         LOG.info("[IPL-GRAB-CHAIN] player {} crossed portal {} ({} -> {}), depth={}",

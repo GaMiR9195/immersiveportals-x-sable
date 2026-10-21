@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file, per sometim
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project tries to adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3]
+
+### Fixed
+
+- Select CPS first/third-person focus from the physical camera mode, not IP's
+  `Camera.isDetached()` entity-visibility override during portal renders.
+- Use the rendered third-person CPS model tip as the beam origin. Do not substitute a
+  body-space approximation when the exact held-model sample is unavailable.
+- When a CPS beam approaches the back of a one-way portal entrance, route its visual
+  polyline around the nearest rim before entering from the front instead of drawing
+  straight through the portal's back.
+- Preserve the live soft CPS drag constraint across a sub-level parent flip: map both
+  joint frames and the linear-motor target through the same portal transform as the body,
+  then let Simulated replace the joint at its normal next-substep lifecycle point.
+- Preserve CPS target interpolation when the dragging player crosses a portal. Continue
+  Simulated's next substeps from the portal-mapped pre-teleport eye position instead of
+  inheriting IP's intentional old/current-position collapse.
+- Use the live BeamNode count for folded beams instead of resampling with a different
+  density; keep original node animation, line parameters and Catnip phase ordering.
+- Render registered Catnip block-cluster and chasing-AABB selections at BOTH native
+  and portal-mapped sub-level poses with complementary geometric cuts, including
+  same-dimension portals. Do not pick one half by the selected block's centre.
+- Flush each selection inside its own pose/clip scope using isolated phase buffers;
+  restore outer clip equations/GL flags and avoid stock onRender's global buffer flush.
+- Aim the Creative Physics Staff at the unfolded target image, not the near portal surface.
+- Move the visual beam origin through a finite grab-chain doorway when the barrel crosses
+  before the player; leave the server grab chain and motor untouched.
+- Capture rendered third-person staff origins and reuse one physical beam route per frame.
+- Restore missing vanilla entity/sign-text clip transformations, including Catnip's CPS
+  beam/selection shaders; use eye-space cuts for Iris no-shaderpack replacements.
+- Resolve late portal clipping from the current recursive path instead of a global last-plane
+  cache, and synchronize Java uniforms with raw shader binds without overwriting scoped
+  Sable plot-local terrain clipping.
+- Pin beam seams to portal apertures; isolate beam buffers and use typed node accessors.
+- Remove whole-BE center culling so a partly visible sign/chest can be clipped by geometry.
+
 ## [0.5.2]
 
 ### Fixed

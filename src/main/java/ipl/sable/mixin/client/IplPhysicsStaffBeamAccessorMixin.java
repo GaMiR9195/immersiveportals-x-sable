@@ -8,6 +8,9 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 @Pseudo
 @Mixin(targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler$PhysicsBeam", remap = false)
 public interface IplPhysicsStaffBeamAccessorMixin {
+    @Accessor(value = "nodes", remap = false)
+    java.util.List<?> ipl$getNodes();
+
     @Accessor(value = "previousStart", remap = false)
     Vec3 ipl$getPreviousStart();
 

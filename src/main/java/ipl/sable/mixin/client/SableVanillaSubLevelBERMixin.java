@@ -151,19 +151,10 @@ public abstract class SableVanillaSubLevelBERMixin {
             return;
         }
 
-        // Block entities use independent renderers, so they cannot inherit the
-        // section shader's clip distance. Apply the same plane before dispatch:
-        // a BE whose block center is in the culled half never emits vertices.
-        Vec3 blockCenter = Vec3.atCenterOf(be.getBlockPos());
-        Vec3 visibleCenter = sub.renderPose().transformPosition(blockCenter);
-        Vec3 planePoint = decision.plane().pos();
-        Vec3 planeNormal = decision.plane().normal();
-        double signedDistance = (visibleCenter.x - planePoint.x) * planeNormal.x
-            + (visibleCenter.y - planePoint.y) * planeNormal.y
-            + (visibleCenter.z - planePoint.z) * planeNormal.z;
-        if (signedDistance <= 0.0) {
-            return;
-        }
+        // Clip emitted geometry, not the block center. A sign/chest may cross
+        // the plane while its center is behind it; center culling removes the
+        // still-visible half. The wider hosted scope keeps the actual shader
+        // cut alive until the deferred vertices are flushed.
 
         // The hosted renderer owns one wider scope for a whole sub-level and keeps it
         // active through BufferSource.endBatch(), when deferred BE vertices actually draw.

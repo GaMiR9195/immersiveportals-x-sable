@@ -76,6 +76,25 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
         // bracket. The terrain YAML entry injects gl_ClipDistance[1]; register
         // the Java Uniform here so SubLevelClipUniformPatcher.patchForSubLevel
         // resolves and uploads to it via the setShader path.
+        "rendertype_entity_solid",
+        "rendertype_entity_cutout",
+        "rendertype_entity_cutout_no_cull",
+        "rendertype_entity_cutout_no_cull_z_offset",
+        "rendertype_item_entity_translucent_cull",
+        "rendertype_entity_translucent_cull",
+        "rendertype_entity_translucent",
+        "rendertype_entity_smooth_cutout",
+        "rendertype_beacon_beam",
+        "rendertype_entity_translucent_emissive",
+        "particle",
+        "rendertype_text",
+        "rendertype_text_intensity",
+        "rendertype_text_see_through",
+        "rendertype_text_intensity_see_through",
+        "rendertype_text_background",
+        "rendertype_text_background_see_through",
+        "rendertype_leash",
+        "rendertype_lightning",
         "rendertype_solid",
         "rendertype_cutout",
         "rendertype_cutout_mipped",
@@ -159,14 +178,10 @@ public abstract class IplShaderInstanceClipMixin implements IplSubLevelClipShade
         }
     }
 
-    @Unique private boolean ipl$hadActiveCut;
 
     @Inject(method = "apply", at = @At("HEAD"))
     private void ipl$prepareCurrentClipUniforms(CallbackInfo ci) {
-        boolean active = ipl.sable.render.SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld() != null;
-        if (active || this.ipl$hadActiveCut)
-            ipl.sable.render.IplProgramBindHook.prepareShader((ShaderInstance) (Object) this);
-        this.ipl$hadActiveCut = active;
+        ipl.sable.render.IplProgramBindHook.prepareShader((ShaderInstance) (Object) this);
     }
 
     @Nullable

@@ -39,6 +39,11 @@ public abstract class IplStaffDragSessionOverwriteMixin implements IplStaffDragS
     @Shadow(remap = false) private PhysicsConstraintHandle constraint;
     @Shadow(remap = false) private void attachConstraint(SubLevelPhysicsSystem physicsSystem) {}
 
+    @org.spongepowered.asm.mixin.Unique
+    private final Vector3d ipl$playerEyeInterpolationStart = new Vector3d();
+    @org.spongepowered.asm.mixin.Unique
+    private boolean ipl$hasPlayerEyeInterpolationStart;
+
     /**
      * @author IPL-Sable
      * @reason Preserve stock motor behavior while mapping the cursor into the hosted body frame.
@@ -66,9 +71,25 @@ public abstract class IplStaffDragSessionOverwriteMixin implements IplStaffDragS
         }
 
         double partial = physicsSystem.getPartialPhysicsTick();
-        double eyeX = Mth.lerp(partial, player.xOld, player.getX());
-        double eyeY = Mth.lerp(partial, player.yOld, player.getY()) + player.getEyeHeight();
-        double eyeZ = Mth.lerp(partial, player.zOld, player.getZ());
+        double eyeX;
+        double eyeY;
+        double eyeZ;
+        if (this.ipl$hasPlayerEyeInterpolationStart) {
+            // IP's server teleport sets old/current player position to the same
+            // destination point. Continue Simulated's normal substep lerp from the
+            // portal-mapped old eye instead of skipping the remaining target motion.
+            eyeX = Mth.lerp(partial, this.ipl$playerEyeInterpolationStart.x, player.getX());
+            eyeY = Mth.lerp(partial, this.ipl$playerEyeInterpolationStart.y,
+                player.getY() + player.getEyeHeight());
+            eyeZ = Mth.lerp(partial, this.ipl$playerEyeInterpolationStart.z, player.getZ());
+            if (partial >= 1.0) {
+                this.ipl$hasPlayerEyeInterpolationStart = false;
+            }
+        } else {
+            eyeX = Mth.lerp(partial, player.xOld, player.getX());
+            eyeY = Mth.lerp(partial, player.yOld, player.getY()) + player.getEyeHeight();
+            eyeZ = Mth.lerp(partial, player.zOld, player.getZ());
+        }
         this.localGoal.set(this.playerRelativeGoal).add(eyeX, eyeY, eyeZ);
 
         // The absolute cursor point is in the PLAYER's world frame; fold it through the
@@ -119,13 +140,22 @@ public abstract class IplStaffDragSessionOverwriteMixin implements IplStaffDragS
         this.localGoal.set(mapped.x, mapped.y, mapped.z);
         this.orientation.transformInverse(this.localGoal);
 
+        // Keep the live soft grip through the frame boundary. Removing it here is earlier
+        // than Simulated's normal per-substep lifecycle: Rapier then enters the next tick
+        // with no joint/island state and the body is briefly governed only by its carried
+        // velocity before CPS grabs it again. That is the tiny slow-down/re-acceleration
+        // visible at portal exit when the body is already trailing a moving soft target.
+        //
+        // Reframe both joint endpoints and its target instead. The body pose, target,
+        // orientation and velocity have all crossed through the same isometry, so the
+        // spring extension and its derivative are unchanged. The next ordinary CPS
+        // physicsTick may then replace this joint at its usual point, exactly as stock does.
         if (this.constraint == null || !this.constraint.isValid()) return;
         net.minecraft.server.level.ServerLevel hosting =
             (net.minecraft.server.level.ServerLevel) this.subLevel.getLevel();
         ServerSubLevelContainer container = SubLevelContainer.getContainer(hosting);
         if (container == null) return;
-        PhysicsPipeline pipeline = container.physicsSystem().getPipeline();
-        this.ipl$setMotorFrame(pipeline);
+        this.ipl$setMotorFrame(container.physicsSystem().getPipeline());
 
         SimPhysics config = SimConfigService.INSTANCE.server().physics;
         this.constraint.setMotor(ConstraintJointAxis.LINEAR_X, this.localGoal.x,
@@ -136,10 +166,27 @@ public abstract class IplStaffDragSessionOverwriteMixin implements IplStaffDragS
             config.physicsStaffLinearStiffness.getF(), config.physicsStaffLinearDamping.getF(), false, 0.0);
     }
 
-    /** Keep the stored cursor vector continuous when the dragging player crosses a portal. */
+    /**
+     * Keep the stored cursor vector continuous when the dragging player crosses a portal.
+     */
     @Override
-    public void ipl$rotateRelativeGoal(org.joml.Quaterniondc portalRotation) {
-        portalRotation.transform(this.playerRelativeGoal);
+    public void ipl$reframePlayerGoal(
+        qouteall.imm_ptl.core.portal.Portal portal,
+        net.minecraft.world.phys.Vec3 previousEyePosition
+    ) {
+        net.minecraft.world.phys.Vec3 mapped = portal.transformLocalVecNonScale(
+            new net.minecraft.world.phys.Vec3(
+                this.playerRelativeGoal.x, this.playerRelativeGoal.y, this.playerRelativeGoal.z
+            )
+        );
+        this.playerRelativeGoal.set(mapped.x, mapped.y, mapped.z);
+
+        net.minecraft.world.phys.Vec3 mappedPreviousEye =
+            portal.transformPoint(previousEyePosition);
+        this.ipl$playerEyeInterpolationStart.set(
+            mappedPreviousEye.x, mappedPreviousEye.y, mappedPreviousEye.z
+        );
+        this.ipl$hasPlayerEyeInterpolationStart = true;
     }
 
     @Override
@@ -151,23 +198,21 @@ public abstract class IplStaffDragSessionOverwriteMixin implements IplStaffDragS
     }
 
     /**
-     * Reframe the current substep's joint immediately after a portal handoff.
-     * The next ordinary substep recreates it, exactly as Simulated does.
+     * Rebase the current soft joint without changing its identity or dropping the grip.
+     * FreeConstraintConfiguration puts the world basis on endpoint 1 and the clicked
+     * plot-local anchor on endpoint 2.
      */
     private void ipl$setMotorFrame(PhysicsPipeline pipeline) {
         if (!(this.constraint instanceof RapierConstraintHandle handle)) return;
-        // FreeConstraintConfiguration installs orientation on static-world endpoint (frame 1)
-        // and plotAnchor on grabbed body endpoint (frame 2). Updating both prevents a newly
-        // created session from briefly grabbing body COM before its clicked anchor arrives.
+        long scene = ((IplRapierPipelineAccess) pipeline).ipl$sceneHandle();
+        long joint = ((IplRapierConstraintHandleAccessor) handle).ipl$getNativeHandle();
         Rapier3D.setConstraintFrame(
-            ((ipl.sable.mixin.IplRapierPipelineAccess) pipeline).ipl$sceneHandle(),
-            ((ipl.sable.mixin.IplRapierConstraintHandleAccessor) handle).ipl$getNativeHandle(), 0,
+            scene, joint, 0,
             0.0, 0.0, 0.0,
             this.orientation.x, this.orientation.y, this.orientation.z, this.orientation.w
         );
         Rapier3D.setConstraintFrame(
-            ((ipl.sable.mixin.IplRapierPipelineAccess) pipeline).ipl$sceneHandle(),
-            ((ipl.sable.mixin.IplRapierConstraintHandleAccessor) handle).ipl$getNativeHandle(), 1,
+            scene, joint, 1,
             this.plotAnchor.x, this.plotAnchor.y, this.plotAnchor.z,
             0.0, 0.0, 0.0, 1.0
         );

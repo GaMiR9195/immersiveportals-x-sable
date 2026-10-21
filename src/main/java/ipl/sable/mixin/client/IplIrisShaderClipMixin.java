@@ -16,13 +16,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Pseudo
 @Mixin(targets = "net.irisshaders.iris.pipeline.programs.ExtendedShader", remap = false)
 public abstract class IplIrisShaderClipMixin {
-    @Unique private boolean ipl$irisHadActiveCut;
 
     @Inject(method = "updateUniforms", at = @At("HEAD"), remap = false)
     private void ipl$prepareClipUniforms(CallbackInfo ci) {
-        boolean active = SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld() != null;
-        if (active || this.ipl$irisHadActiveCut)
-            IplProgramBindHook.prepareShader((ShaderInstance) (Object) this);
-        this.ipl$irisHadActiveCut = active;
+        IplProgramBindHook.prepareShader((ShaderInstance) (Object) this);
     }
 }

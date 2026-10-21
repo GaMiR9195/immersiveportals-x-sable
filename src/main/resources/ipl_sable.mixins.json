@@ -113,6 +113,7 @@
     "client.IplClientTransitDisconnectMixin",
     "client.IplPhysicsStaffBeamAccessorMixin",
     "client.IplPhysicsStaffBeamInvokerMixin",
+    "client.IplPhysicsStaffBeamNodeAccessorMixin",
     "client.IplPhysicsStaffClientHandlerAccessorMixin",
     "client.IplPhysicsStaffClientHandlerStateAccessorMixin",
     "client.IplPhysicsStaffClientHandlerControlMixin",
@@ -125,8 +126,11 @@
     "client.IplStaffBeamMixin",
     "client.IplStaffPortalBeamPassMixin",
     "client.IplStaffItemAimMixin",
+    "client.IplStaffFocusMixin",
+    "client.IplStaffItemFocusMixin",
     "client.IplHostedPlotEntityRenderMixin",
-    "client.IplLevelRendererEntityInvoker"
+    "client.IplLevelRendererEntityInvoker",
+    "client.IplClusterOutlineAnchorMixin"
   ],
   "injectors": {
     "defaultRequire": 0

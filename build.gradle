@@ -143,6 +143,10 @@ base {
     archivesName = archives_base_name
 }
 
+tasks.withType(AbstractArchiveTask).configureEach {
+    archiveVersion.set(fork_version)
+}
+
 jarJar.enable()
 
 minecraft.accessTransformers.entry 'public net.minecraft.server.MinecraftServer storageSource'

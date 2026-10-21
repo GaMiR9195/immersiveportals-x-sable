@@ -24,8 +24,8 @@ import org.spongepowered.asm.mixin.injection.At;
  * — the joint's native world position. When the joint is reached through a portal (a
  * cross-dimension grab, or a same-dimension construction held inside the portal) that position
  * is in the wrong place/dimension, so the staff points at nothing. We redirect that single
- * aim query to the beam's first endpoint (the entrance aperture, or the joint for a direct
- * grab), so the staff looks into the portal exactly where the beam leaves it.
+ * aim query to the target unfolded through the complete portal chain. The barrel aims
+ * through the doorway as a window, without converging on its nearby surface.
  */
 @Pseudo
 @Mixin(
@@ -55,7 +55,7 @@ public abstract class IplStaffItemAimMixin {
                 AnimationTickHolder.getPartialTicks()
             );
             // Item renderer normalizes this target into a barrel direction. Keep its
-            // target in the beam's visible frame, including an aperture endpoint.
+            // target in the eye's frame, as if every doorway were a window.
             if (aim != null) {
                 if (aim.distanceToSqr(player.getEyePosition(AnimationTickHolder.getPartialTicks())) > 1.0e-8) {
                     return new Vector3d(aim.x, aim.y, aim.z);

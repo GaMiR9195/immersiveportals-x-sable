@@ -6,7 +6,8 @@ import net.createmod.catnip.outliner.LineOutline;
 import net.createmod.catnip.render.SuperRenderTypeBuffer;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Overwrite;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -22,9 +23,6 @@ import java.util.List;
     remap = false
 )
 public abstract class IplStaffBeamMixin {
-
-    private static volatile java.lang.reflect.Field ipl$previousPosition;
-    private static volatile java.lang.reflect.Field ipl$position;
 
     @Shadow(remap = false) private LineOutline line;
     @Shadow(remap = false) private List<?> nodes;
@@ -48,37 +46,22 @@ public abstract class IplStaffBeamMixin {
         }
     }
 
-    /**
-     * @author IPL-Sable
-     * @reason Render one CONTINUOUS polyline in the actual IP pass frame.
-     *
-     * <p><b>What was wrong.</b> The beam used to be drawn as a set of independent
-     * per-world segments. Each segment re-derived its own node walk from the global
-     * fraction range it happened to cover, and it explicitly SKIPPED every node whose
-     * fraction fell outside that range. The two nodes closest to an aperture were
-     * therefore always dropped, and the piece was closed with a straight chord to the
-     * aperture point. Two independent chords met at the portal with unrelated noise
-     * phase, which is the visible kink: the beam looked like several beams that happen
-     * to touch, and the join point visibly jumped as the fraction boundaries moved.
-     *
-     * <p><b>What it does now.</b> {@link IplStaffBeamRoutes#runs} samples the WHOLE route
-     * once in global arc length and emits a vertex at every sample and at every aperture,
-     * so a run arrives as a finished list of points that only has to be stroked. The
-     * closing vertex of one run and the opening vertex of the next are the same physical
-     * point on opposite portal faces and carry the SAME fraction, so the noise offset
-     * matches in magnitude and differs only by the portal rotation the geometry itself
-     * received. There is no chord, no skipped node and no phase reset: continuity is a
-     * property of the construction, not of a tolerance.
-     */
-    @Overwrite(remap = false)
-    private void render(
+    /** Stock renderer is untouched for unbroken beams; only portal runs are folded. */
+    @WrapMethod(method = "render")
+    private void ipl$renderRun(
         Vec3 source, Vec3 target,
         com.mojang.blaze3d.vertex.PoseStack stack,
-        SuperRenderTypeBuffer buffer, Vec3 camera, float partialTick
+        SuperRenderTypeBuffer buffer, Vec3 camera, float partialTick, Operation<Void> original
     ) {
         if (!IplStaffPortalBeamRenderer.isPhysicalBeamPass()) return;
         IplStaffBeamRoutes.Run run = IplStaffPortalBeamRenderer.getActiveRun();
         if (run == null) return;
+        if (run.vertices().stream().noneMatch(IplStaffBeamRoutes.Vertex::aperture)) {
+            // This also preserves upstream's final-node convention and noisy motion,
+            // rather than approximating it with our own evenly resampled polyline.
+            original.call(source, target, stack, buffer, camera, partialTick);
+            return;
+        }
 
         // update() derives node count and noise radius from this.length; keep it fed with
         // the true physical beam length on the render path too.
@@ -104,6 +87,7 @@ public abstract class IplStaffBeamMixin {
      * it is rotated by the folded portal chain so it lands in this run's frame.
      */
     private Vec3 ipl$displace(IplStaffBeamRoutes.Vertex vertex, float partialTick) {
+        if (vertex.aperture()) return vertex.point();
         return vertex.point().add(IplStaffBeamRoutes.rotate(
             vertex.noiseRotation(), ipl$noiseAt(vertex.fraction(), partialTick)));
     }
@@ -119,28 +103,8 @@ public abstract class IplStaffBeamMixin {
 
     private Vec3 ipl$nodeOffset(int index, float partialTick) {
         if (index <= 0 || index >= this.nodes.size()) return Vec3.ZERO;
-        Object node = this.nodes.get(index);
-        return ipl$nodePosition(node, "previousPosition").lerp(
-            ipl$nodePosition(node, "position"), partialTick);
+        IplPhysicsStaffBeamNodeAccessorMixin node =
+            (IplPhysicsStaffBeamNodeAccessorMixin) this.nodes.get(index);
+        return node.ipl$getPreviousPosition().lerp(node.ipl$getPosition(), partialTick);
     }
-
-    private static Vec3 ipl$nodePosition(Object node, String fieldName) {
-        try {
-            java.lang.reflect.Field field = fieldName.equals("previousPosition")
-                ? ipl$previousPosition : ipl$position;
-            if (field == null) {
-                field = node.getClass().getDeclaredField(fieldName);
-                field.setAccessible(true);
-                if (fieldName.equals("previousPosition")) {
-                    ipl$previousPosition = field;
-                } else {
-                    ipl$position = field;
-                }
-            }
-            return (Vec3) field.get(node);
-        } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException("Simulated PhysicsBeam node layout changed", exception);
-        }
-    }
-
 }

@@ -1,26 +1,24 @@
 package ipl.sable.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
-import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
-import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItem;
 import ipl.sable.mixin.client.IplPhysicsStaffBeamAccessorMixin;
 import ipl.sable.mixin.client.IplPhysicsStaffBeamInvokerMixin;
 import ipl.sable.mixin.client.IplPhysicsStaffClientHandlerAccessorMixin;
 import net.createmod.catnip.animation.AnimationTickHolder;
-import net.createmod.catnip.render.DefaultSuperRenderTypeBuffer;
 import net.createmod.catnip.render.SuperRenderTypeBuffer;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
+import qouteall.imm_ptl.core.render.context_management.RenderStates;
+import java.util.List;
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 
 import java.util.HashMap;
@@ -40,10 +38,9 @@ import java.util.UUID;
  *       IP's stencil and destination clip decide whether it is visible through that
  *       aperture. This makes a beam a real world object from either portal face and
  *       through recursive portal renders, rather than only along its own traversal path.</li>
- *   <li><b>The staff focus position is sampled only on the main pass</b> and cached per
- *       owner. Portal passes reuse the cached tip: recomputing it there mixes the virtual
- *       portal camera with root-world player state and made the beam pivot with the
- *       camera (the old flicker/pivot bug).</li>
+ *   <li><b>Geometry is sampled once per frame</b>, even if a portal draws first.
+ *       Focus uses the physical owner's camera, never a virtual portal camera;
+ *       every subsequent pass replays that same route.</li>
  * </ul>
  */
 public final class IplStaffPortalBeamRenderer {
@@ -54,8 +51,13 @@ public final class IplStaffPortalBeamRenderer {
     private static final ThreadLocal<IplStaffBeamRoutes.Run> ACTIVE_RUN =
         new ThreadLocal<>();
 
-    /** Per-owner staff tip sampled on the main pass; reused verbatim by portal passes. */
-    private static final Map<UUID, Vec3> FOCUS = new HashMap<>();
+    private record FrameRuns(Object beam, int frame, net.minecraft.world.level.Level level,
+                             List<IplStaffBeamRoutes.Run> runs) {}
+    // One geometry snapshot per owner per frame, including when a nested pass draws FIRST.
+    private static final Map<UUID, FrameRuns> FRAME_RUNS = new HashMap<>();
+
+    // Never flush the singleton: it can contain another portal pass's selection.
+    private static IplOutlineBuffer beamBuffer;
 
     private IplStaffPortalBeamRenderer() {}
 
@@ -68,18 +70,18 @@ public final class IplStaffPortalBeamRenderer {
         Object2ObjectMap<UUID, Object> beams = ((IplPhysicsStaffClientHandlerAccessorMixin) (Object) handler)
             .ipl$getBeams();
         if (beams.isEmpty()) {
-            FOCUS.clear();
+            clear();
             return;
         }
-        FOCUS.keySet().retainAll(beams.keySet());
+        FRAME_RUNS.keySet().retainAll(beams.keySet());
 
         // IP reuses one LevelRenderer across recursive worlds. Its `level` field remains
         // the root level, so portal-pass geometry must select WorldRenderInfo.world instead.
         ClientLevel activeLevel = WorldRenderInfo.isRendering()
             ? WorldRenderInfo.getTopRenderInfo().world : renderLevel;
-        boolean mainPass = !WorldRenderInfo.isRendering();
         float partialTick = AnimationTickHolder.getPartialTicks();
-        SuperRenderTypeBuffer buffer = DefaultSuperRenderTypeBuffer.getInstance();
+        if (beamBuffer == null) beamBuffer = new IplOutlineBuffer();
+        SuperRenderTypeBuffer buffer = beamBuffer;
         boolean drew = false;
 
         for (Object2ObjectMap.Entry<UUID, Object> entry : beams.object2ObjectEntrySet()) {
@@ -93,51 +95,46 @@ public final class IplStaffPortalBeamRenderer {
             ClientSubLevel sub = findHostedSubLevel(localAnchor);
             if (sub == null) continue;
 
-            Vec3 staffStart = staffStart(owner, entry.getKey(), beam, mainPass, partialTick);
-
-            IplStaffBeamRoutes.registerBeamOwner(beam, entry.getKey());
-
-            IplStaffBeamRoutes.Route route = IplStaffBeamRoutes.resolve(
-                entry.getKey(), owner.level(), staffStart, sub, localAnchor, partialTick
-            );
-            if (route == null) continue;
-
-            // ONE continuous polyline, split into runs only where it changes world.
-            for (IplStaffBeamRoutes.Run run : IplStaffBeamRoutes.runs(route)) {
+            FrameRuns cached = FRAME_RUNS.get(entry.getKey());
+            Vec3 staffStart = staffFocus(owner, partialTick);
+            if (staffStart == null) continue;
+            if (cached == null || cached.beam() != beam || cached.frame() != RenderStates.frameIndex
+                || cached.level() != owner.level()) {
+                IplStaffBeamRoutes.registerBeamOwner(beam, entry.getKey());
+                IplStaffBeamRoutes.Route route = IplStaffBeamRoutes.resolve(
+                    entry.getKey(), owner.level(), staffStart, sub, localAnchor, partialTick);
+                if (route == null) continue;
+                route = IplStaffBeamRoutes.advancePastStaffTip(route, owner.getEyePosition(partialTick));
+                cached = new FrameRuns(beam, RenderStates.frameIndex, owner.level(),
+                    IplStaffBeamRoutes.runs(route, access.ipl$getNodes().size()));
+                FRAME_RUNS.put(entry.getKey(), cached);
+            }
+            for (IplStaffBeamRoutes.Run run : cached.runs()) {
                 if (!shouldDrawInThisPass(run, activeLevel)) continue;
                 renderPhysicalBeam(beam, run, poseStack, buffer, camera.getPosition(), partialTick);
                 drew = true;
             }
         }
 
-        if (drew) buffer.draw();
+        if (drew) {
+            buffer.draw();
+            com.mojang.blaze3d.systems.RenderSystem.enableCull(); // stock onRender postcondition
+        }
     }
 
     /**
-     * The staff tip for this pass. Sampled fresh on the main pass — where the real camera is
-     * active — and cached; portal passes replay the cached tip so route geometry is identical
-     * across all passes of a frame. Falls back to the beam's interpolated network start when
-     * a portal pass runs before any main pass produced a sample.
+     * Exact physical held-item tip. Third person deliberately has no approximate fallback:
+     * a portal-first pass waits until the physical held model supplied this frame's sample.
      */
-    private static Vec3 staffStart(
-        Player owner, UUID ownerId, PhysicsStaffClientHandler.PhysicsBeam beam,
-        boolean mainPass, float partialTick
-    ) {
-        if (mainPass) {
-            Vec3 fresh = staffFocus(owner, partialTick);
-            FOCUS.put(ownerId, fresh);
-            return fresh;
-        }
-        Vec3 cached = FOCUS.get(ownerId);
-        if (cached != null) return cached;
-        IplPhysicsStaffBeamAccessorMixin access = (IplPhysicsStaffBeamAccessorMixin) (Object) beam;
-        return access.ipl$getPreviousStart().lerp(access.ipl$getStart(), partialTick);
-    }
-
-    /** Same physical held-item tip used by both beam geometry and held-staff aiming. */
+    @Nullable
     public static Vec3 staffFocus(Player owner, float partialTick) {
         boolean mainHand = owner.getMainHandItem().getItem() instanceof PhysicsStaffItem
             || !(owner.getOffhandItem().getItem() instanceof PhysicsStaffItem);
+        boolean firstPerson = owner.isLocalPlayer()
+            && Minecraft.getInstance().options.getCameraType().isFirstPerson();
+        if (!firstPerson) {
+            return IplStaffFocus.capturedThirdPerson(owner, mainHand);
+        }
         return PhysicsStaffClientHandler.getStaffFocusPos(owner, mainHand, partialTick);
     }
 
@@ -146,6 +143,15 @@ public final class IplStaffPortalBeamRenderer {
         IplStaffBeamRoutes.Run run, ClientLevel renderLevel
     ) {
         return run.dim().equals(renderLevel.dimension());
+    }
+
+    public static void clear() {
+        FRAME_RUNS.clear();
+        IplStaffFocus.clear();
+        if (beamBuffer != null) {
+            beamBuffer.close();
+            beamBuffer = null;
+        }
     }
 
     public static boolean isPhysicalBeamPass() {
@@ -177,6 +183,13 @@ public final class IplStaffPortalBeamRenderer {
 
     private static Player findPlayer(UUID id) {
         Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player != null && minecraft.player.getUUID().equals(id)) return minecraft.player;
+        for (ClientLevel world : ClientWorldLoader.getClientWorlds()) {
+            if (world.dimension().equals(RenderStates.originalPlayerDimension)) {
+                Player rootPlayer = world.getPlayerByUUID(id);
+                if (rootPlayer != null) return rootPlayer;
+            }
+        }
         Player player = minecraft.level == null ? null : minecraft.level.getPlayerByUUID(id);
         if (player != null) return player;
         for (ClientLevel world : ClientWorldLoader.getClientWorlds()) {
@@ -188,11 +201,6 @@ public final class IplStaffPortalBeamRenderer {
 
     /** Beam anchors are plot coordinates, so resolve through hosting container, never main world. */
     public static ClientSubLevel findHostedSubLevel(Vec3 localAnchor) {
-        SubLevelContainer container = IplClientHostedLookup.getHostingContainerOrNull();
-        if (container == null) return null;
-        ChunkPos chunk = new ChunkPos(BlockPos.containing(localAnchor));
-        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(chunk);
-        SubLevel sub = plot == null ? null : plot.getSubLevel();
-        return sub instanceof ClientSubLevel clientSub ? clientSub : null;
+        return IplClientHostedLookup.findHostedSubLevel(localAnchor);
     }
 }

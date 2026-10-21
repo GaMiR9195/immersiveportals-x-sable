@@ -132,6 +132,17 @@ public final class IplGrabChainClient {
     public static void onLocalPlayerTeleported(Portal portal) {
         ChainState mine = local;
         if (mine == null) return;
+
+        PhysicsStaffClientHandler.ClientDragSession dragSession =
+            SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER.getDragSession();
+        if (dragSession != null
+            && dragSession.dragSubLevel().getUniqueId().equals(mine.subId())) {
+            // The server maps its stored player-relative goal by the same linear portal
+            // transform. Keep subsequent stock drag packets in that frame too; otherwise
+            // their unscaled distance would immediately reintroduce a target discontinuity.
+            dragSession.setDistance(dragSession.distance() * portal.getScaling());
+        }
+
         local = new ChainState(
             mine.subId(), mine.revision(),
             IplGrabLink.prepend(mine.chain(), IplGrabLink.inverse(portal)), mine.bodyFrame(), mine.seedId()

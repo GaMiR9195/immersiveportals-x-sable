@@ -144,6 +144,16 @@ public final class SubLevelClipUniformPatcher {
         return currentSubLevelEqVanillaInput2;
     }
 
+    // Slot-0 adaptation is scoped independently from the source-half cuts.
+    // Shader.apply and raw binds must not replace this plot-local equation
+    // with a camera-world equation during a Sable chunk draw.
+    private static int portalInputProgram = -1;
+    private static double[] portalInputEquation;
+
+    public static double[] portalInputEquation(int program) {
+        return program == portalInputProgram ? portalInputEquation : null;
+    }
+
     private SubLevelClipUniformPatcher() {}
 
     /**
@@ -322,6 +332,8 @@ public final class SubLevelClipUniformPatcher {
             // world equation by restorePortalClip() as soon as the bracket exits, so
             // the parent world's terrain still renders with the 0.01 back-shift.
             double exactW = worldEquation[3] - qouteall.imm_ptl.core.render.FrontClipping.ADJUSTMENT;
+            portalInputProgram = shader.getId();
+            portalInputEquation = new double[]{localNormal.x, localNormal.y, localNormal.z, exactW};
             uniform.set(
                 (float) localNormal.x, (float) localNormal.y, (float) localNormal.z,
                 (float) exactW
@@ -335,6 +347,8 @@ public final class SubLevelClipUniformPatcher {
 
     /** Restore IP's world-space slot-0 equation after the scoped Sable draw. */
     public static void restorePortalClip(ShaderInstance shader, double[] worldEquation) {
+        portalInputProgram = -1;
+        portalInputEquation = null;
         if (shader == null || worldEquation == null) return;
 
         Uniform uniform = ((IEShader) shader).ip_getClippingEquationUniform();
@@ -344,6 +358,27 @@ public final class SubLevelClipUniformPatcher {
             (float) worldEquation[2], (float) worldEquation[3]
         );
         uniform.upload();
+    }
+
+    /** Snapshot references are immutable equations; nested consumers must restore all spaces. */
+    public record State(float[] world, float[] eye, float[] input,
+                        float[] world2, float[] eye2, float[] input2) {}
+
+    public static State captureState() {
+        return new State(currentSubLevelEqWorld, currentSubLevelEqEye, currentSubLevelEqVanillaInput,
+            currentSubLevelEqWorld2, currentSubLevelEqEye2, currentSubLevelEqVanillaInput2);
+    }
+
+    public static void restoreState(State state) {
+        currentSubLevelEqWorld = state.world();
+        currentSubLevelEqEye = state.eye();
+        currentSubLevelEqVanillaInput = state.input();
+        currentSubLevelEqWorld2 = state.world2();
+        currentSubLevelEqEye2 = state.eye2();
+        currentSubLevelEqVanillaInput2 = state.input2();
+        ShaderInstance shader = RenderSystem.getShader();
+        if (shader != null) IplProgramBindHook.prepareShader(shader);
+        IplProgramBindHook.uploadSubLevel(GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM));
     }
 
     /**

@@ -1,6 +1,6 @@
 package ipl.sable.duck;
 
-import org.joml.Quaterniondc;
+import net.minecraft.world.phys.Vec3;
 import qouteall.imm_ptl.core.portal.Portal;
 
 /** Server-only control over Simulated's live staff constraint during a frame change. */
@@ -10,11 +10,11 @@ public interface IplStaffDragSessionControl {
     void ipl$reframeAfterTransit(Portal portal);
 
     /**
-     * The dragging PLAYER teleported through a portal: rotate the stored player-relative
-     * cursor vector so the physics substeps between the teleport and the client's next
-     * (already new-frame) drag packet stay continuous.
+     * The dragging PLAYER teleported through a portal: map the stored player-relative
+     * cursor vector into the destination frame so the physics substeps between the
+     * teleport and the client's next (already new-frame) drag packet stay continuous.
      */
-    void ipl$rotateRelativeGoal(Quaterniondc portalRotation);
+    void ipl$reframePlayerGoal(Portal portal, Vec3 previousEyePosition);
 
     /** Remove the native staff joint before its session leaves Simulated's map. */
     void ipl$removeConstraint();

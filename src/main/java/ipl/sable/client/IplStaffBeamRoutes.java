@@ -249,31 +249,48 @@ public final class IplStaffBeamRoutes {
         return new Route(staffLevel, staffStart, target, links, imageRotation, owner);
     }
 
-    /**
-     * Where the local player's staff should AIM: the first endpoint the beam heads toward —
-     * the entrance aperture when the beam goes through a portal, or the joint itself for a
-     * direct grab. Returns null to fall back to stock aiming.
-     */
+    /** Target as seen through a window: unfold every portal into the eye's frame. */
     @Nullable
     public static Vec3 staffAimPoint(Player player, ClientSubLevel sub, Vec3 localAnchor, float partialTick) {
-        Vec3 staffStart = IplStaffPortalBeamRenderer.staffFocus(player, partialTick);
-        Route route = peek(player.getUUID(), player.level(), staffStart, sub, localAnchor, partialTick);
-        if (route == null) return null;
-        return firstEndpoint(route);
+        Route route = peek(player.getUUID(), player.level(), player.getEyePosition(partialTick),
+            sub, localAnchor, partialTick);
+        return route == null ? null : endpointInFrame(route, 0);
     }
 
     /**
-     * The first point the beam heads for: the entrance aperture, or the joint itself for
-     * a direct grab. Computed WITHOUT cutting the whole route, because the aim query runs
-     * on the item-render path: going through {@link #segments} there republished the
-     * owner's route length from a second, differently-parameterised route every frame,
-     * and the beam's node count (derived from that length) flapped between the two
-     * values. That flapping is the visible jitter of both the beam and the held staff.
+     * The barrel can cross before the player does. Consume only the route prefix
+     * actually crossed by the eye-to-tip segment through the FINITE doorway.
+     * This is visual only: the authoritative grab chain must not be changed.
      */
-    private static Vec3 firstEndpoint(Route route) {
-        List<IplGrabLink> links = route.links();
-        if (links.isEmpty()) return route.target();
-        return clampToAperture(links.get(0), route.staffStart(), endpointInFrame(route, 0));
+    public static Route advancePastStaffTip(Route route, Vec3 eye) {
+        Vec3 tip = route.staffStart();
+        Level level = route.staffLevel();
+        int consumed = 0;
+        for (IplGrabLink link : route.links()) {
+            double eyeSide = eye.subtract(link.origin()).dot(link.normal());
+            double tipSide = tip.subtract(link.origin()).dot(link.normal());
+            if (eyeSide < 0.0 || tipSide >= 0.0) break;
+            double denominator = eyeSide - tipSide;
+            if (denominator <= 1.0e-12) break;
+            Vec3 crossing = eye.lerp(tip, eyeSide / denominator).subtract(link.origin());
+            if (Math.abs(crossing.dot(link.axisW())) > link.width() * 0.5
+                || Math.abs(crossing.dot(link.axisH())) > link.height() * 0.5) break;
+            // Do not manufacture a world during rendering. Retain the canonical
+            // route until IP has loaded the actual destination.
+            ClientLevel destination = null;
+            for (ClientLevel candidate : ClientWorldLoader.getClientWorlds()) {
+                if (candidate.dimension().equals(link.toDim())) { destination = candidate; break; }
+            }
+            if (destination == null) break;
+            tip = link.transform(tip);
+            eye = link.transform(eye);
+            level = destination;
+            consumed++;
+        }
+        if (consumed == 0) return route;
+        return new Route(level, tip, route.target(),
+            List.copyOf(route.links().subList(consumed, route.links().size())),
+            route.imageRotation(), route.owner());
     }
 
     /**
@@ -392,6 +409,8 @@ public final class IplStaffBeamRoutes {
     /** Simulated's own node spacing, reused so density matches a plain local beam. */
     private static final double POLYLINE_SPACING = 1.5;
     private static final int MIN_POLYLINE_POINTS = 8;
+    /** Small visual clearance on both sides of a portal rim when approaching its back. */
+    private static final double BACKFACE_RIM_CLEARANCE = 0.08;
 
     /**
      * One vertex of the SINGLE continuous beam polyline.
@@ -401,7 +420,7 @@ public final class IplStaffBeamRoutes {
      * {@code noiseRotation} is the folded rotation of every portal crossed before it, so a
      * noise offset sampled at {@code fraction} lands in the correct frame.
      */
-    public record Vertex(Vec3 point, double fraction, Quaterniond noiseRotation) {}
+    public record Vertex(Vec3 point, double fraction, Quaterniond noiseRotation, boolean aperture) {}
 
     /** A maximal stretch of the polyline living in ONE world; drawn in that world's pass. */
     public record Run(ResourceKey<Level> dim, List<Vertex> vertices, double totalLength) {}
@@ -427,32 +446,37 @@ public final class IplStaffBeamRoutes {
      * by tolerance, so it looks like one line held in one world.
      */
     public static List<Run> runs(Route route) {
+        return runs(route, -1);
+    }
+
+    /** Sample exactly the live stock BeamNode count, not a second density estimate. */
+    public static List<Run> runs(Route route, int liveNodeCount) {
         List<IplGrabLink> links = route.links();
         int count = links.size();
-        Vec3[] starts = new Vec3[count + 1];
-        Vec3[] ends = new Vec3[count + 1];
+        @SuppressWarnings("unchecked")
+        List<Vec3>[] paths = (List<Vec3>[]) new List<?>[count + 1];
         double[] lengths = new double[count + 1];
 
         Vec3 cursor = route.staffStart();
         for (int i = 0; i < count; i++) {
             IplGrabLink link = links.get(i);
             Vec3 aperture = clampToAperture(link, cursor, endpointInFrame(route, i));
-            starts[i] = cursor;
-            ends[i] = aperture;
-            lengths[i] = cursor.distanceTo(aperture);
+            paths[i] = visualPortalApproach(link, cursor, aperture);
+            lengths[i] = polylineLength(paths[i]);
             cursor = link.transform(aperture);
         }
-        starts[count] = cursor;
-        ends[count] = route.target();
-        lengths[count] = cursor.distanceTo(route.target());
+        paths[count] = List.of(cursor, route.target());
+        lengths[count] = polylineLength(paths[count]);
 
         double total = 0.0;
         for (double length : lengths) total += length;
         if (total <= 1.0e-9) return List.of();
         LENGTHS.put(route.owner(), total);
 
-        int nodeCount = Math.max(
-            MIN_POLYLINE_POINTS, (int) Math.ceil(total / POLYLINE_SPACING));
+        double scaled = total / POLYLINE_SPACING;
+        int stockCount = (int) Math.ceil(MIN_POLYLINE_POINTS * MIN_POLYLINE_POINTS
+            / (scaled + MIN_POLYLINE_POINTS) + scaled - 0.7);
+        int nodeCount = Math.max(2, liveNodeCount < 0 ? stockCount : liveNodeCount);
 
         List<Run> out = new ArrayList<>(count + 1);
         ResourceKey<Level> dim = route.staffLevel().dimension();
@@ -464,20 +488,37 @@ public final class IplStaffBeamRoutes {
             double span = endFraction - startFraction;
 
             List<Vertex> vertices = new ArrayList<>();
-            vertices.add(new Vertex(starts[i], startFraction, new Quaterniond(noiseRotation)));
+            List<Vec3> path = paths[i];
+            vertices.add(new Vertex(
+                path.get(0), startFraction, new Quaterniond(noiseRotation), i > 0));
+
+            // Keep every deliberate bend as a real vertex. Stock samples alone may fall
+            // on either side of a short rim detour and would otherwise draw a chord
+            // straight through the portal's back again.
+            double walked = 0.0;
+            for (int point = 1; point + 1 < path.size(); point++) {
+                walked += path.get(point - 1).distanceTo(path.get(point));
+                vertices.add(new Vertex(
+                    path.get(point), (before + walked) / total,
+                    new Quaterniond(noiseRotation), false));
+            }
+
             if (span > 1.0e-12) {
                 int first = (int) Math.floor(startFraction * nodeCount) + 1;
                 int last = (int) Math.ceil(endFraction * nodeCount) - 1;
                 for (int node = first; node <= last; node++) {
                     double fraction = node / (double) nodeCount;
                     if (fraction <= startFraction || fraction >= endFraction) continue;
-                    double local = (fraction - startFraction) / span;
+                    double localDistance = fraction * total - before;
                     vertices.add(new Vertex(
-                        starts[i].lerp(ends[i], local), fraction,
-                        new Quaterniond(noiseRotation)));
+                        pointAlong(path, localDistance), fraction,
+                        new Quaterniond(noiseRotation), false));
                 }
             }
-            vertices.add(new Vertex(ends[i], endFraction, new Quaterniond(noiseRotation)));
+            vertices.add(new Vertex(
+                path.get(path.size() - 1), endFraction,
+                new Quaterniond(noiseRotation), i < count));
+            vertices.sort(java.util.Comparator.comparingDouble(Vertex::fraction));
             out.add(new Run(dim, List.copyOf(vertices), total));
 
             before += lengths[i];
@@ -488,6 +529,72 @@ public final class IplStaffBeamRoutes {
             }
         }
         return out;
+    }
+
+    /**
+     * A forward portal is entered from its +normal side. When the staff is behind that
+     * plane, route the visual beam around the nearest rectangular rim before letting the
+     * existing aperture route enter from the front. This changes render geometry only.
+     */
+    private static List<Vec3> visualPortalApproach(
+        IplGrabLink link, Vec3 from, Vec3 aperture
+    ) {
+        double side = from.subtract(link.origin()).dot(link.normal());
+        if (side >= -1.0e-4) return List.of(from, aperture);
+
+        Vec3 rim = nearestRimPoint(link, from);
+        Vec3 offset = link.normal().scale(BACKFACE_RIM_CLEARANCE);
+        return List.of(from, rim.subtract(offset), rim.add(offset), aperture);
+    }
+
+    /** Nearest point on the border of the link's rectangular aperture. */
+    private static Vec3 nearestRimPoint(IplGrabLink link, Vec3 point) {
+        Vec3 rel = point.subtract(link.origin());
+        double halfW = link.width() * 0.5;
+        double halfH = link.height() * 0.5;
+        double rawW = rel.dot(link.axisW());
+        double rawH = rel.dot(link.axisH());
+        double w = Math.clamp(rawW, -halfW, halfW);
+        double h = Math.clamp(rawH, -halfH, halfH);
+
+        // A projection inside the rectangle has no border coordinate yet. Snap only
+        // the nearer axis to its closest edge; projections outside are already clamped
+        // onto an edge (or a corner).
+        if (Math.abs(rawW) <= halfW && Math.abs(rawH) <= halfH) {
+            double toW = halfW - Math.abs(rawW);
+            double toH = halfH - Math.abs(rawH);
+            if (toW <= toH) {
+                w = Math.copySign(halfW, rawW == 0.0 ? 1.0 : rawW);
+            } else {
+                h = Math.copySign(halfH, rawH == 0.0 ? 1.0 : rawH);
+            }
+        }
+
+        return link.origin()
+            .add(link.axisW().scale(w))
+            .add(link.axisH().scale(h));
+    }
+
+    private static double polylineLength(List<Vec3> path) {
+        double length = 0.0;
+        for (int i = 1; i < path.size(); i++) {
+            length += path.get(i - 1).distanceTo(path.get(i));
+        }
+        return length;
+    }
+
+    private static Vec3 pointAlong(List<Vec3> path, double distance) {
+        double remaining = Math.clamp(distance, 0.0, polylineLength(path));
+        for (int i = 1; i < path.size(); i++) {
+            Vec3 from = path.get(i - 1);
+            Vec3 to = path.get(i);
+            double length = from.distanceTo(to);
+            if (remaining <= length || i + 1 == path.size()) {
+                return length <= 1.0e-12 ? to : from.lerp(to, remaining / length);
+            }
+            remaining -= length;
+        }
+        return path.get(path.size() - 1);
     }
 
     /** Route target expressed in the frame BEFORE link {@code frame} (unfold the suffix). */

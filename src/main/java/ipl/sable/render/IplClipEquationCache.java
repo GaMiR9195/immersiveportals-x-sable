@@ -1,54 +1,36 @@
 package ipl.sable.render;
 
-import qouteall.imm_ptl.core.render.FrontClipping;
+import com.mojang.blaze3d.systems.RenderSystem;
+import org.joml.Matrix4f;
+import org.joml.Vector4f;
+import qouteall.imm_ptl.core.CHelper;
+import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
 /**
- * Cache of the most recent non-null clip-plane equations IP computed.
- *
- * <p><b>Why this is needed:</b> when a shader pack is loaded, Iris runs its
- * own gbuffer / deferred passes outside of IP's
- * {@code setupInnerClipping → render → disableClipping} bracket. By the time
- * Iris binds the entity shader for a leaky chest, IP has already called
- * {@code disableClipping()} -- {@code FrontClipping.isClippingEnabled} is
- * {@code false} and the equation getters return {@code null}, so IP's
- * {@code MixinRenderSystem_Clipping} writes the {@code (0,0,0,1)} no-clip
- * sentinel to the chest's program. The chest then renders unclipped.
- *
- * <p>This cache holds the last <i>real</i> equation we observed so the hook
- * can keep using it across the gap between {@code disableClipping()} and the
- * actual end of portal-related rendering ({@code PortalRendering.isRendering()}
- * going back to {@code false}). Stale across frame boundaries doesn't matter
- * for correctness because the cache is only consulted while
- * {@code PortalRendering.isRendering()} is true -- a stale value used during
- * normal main-scene rendering can't happen, because in that case
- * {@code PortalRendering.isRendering()} is false and the no-clip sentinel
- * path runs instead.
- *
- * <p>Read by {@link ipl.sable.mixin.client.IplGlUseProgramProbeMixin} (so
- * Iris-bound programs still get the right equation) and by IP's
- * {@code MixinRenderSystem_Clipping} (so IP doesn't unset the uniform during
- * Iris's pass). Refreshed lazily -- any caller observing live, non-null
- * equations on {@link FrontClipping} should call {@link #refreshFromActive}
- * before using the cache.
+ * Compatibility facade for late shader binds. Never reuse another portal layer's
+ * last plane: recursive rendering may return from B to A before either draws.
  */
 public final class IplClipEquationCache {
     private IplClipEquationCache() {}
 
-    private static volatile double[] lastWorldEq = null;
-    private static volatile double[] lastEyeEq = null;
-
-    public static void refreshFromActive() {
-        double[] w = FrontClipping.getActiveClipPlaneEquationBeforeModelView();
-        double[] e = FrontClipping.getActiveClipPlaneEquationAfterModelView();
-        if (w != null) lastWorldEq = w;
-        if (e != null) lastEyeEq = e;
-    }
+    /** Kept for existing callers; no global plane is retained any more. */
+    public static void refreshFromActive() {}
 
     public static double[] getWorldEq() {
-        return lastWorldEq;
+        if (!PortalRendering.isRendering()) return null;
+        var plane = PortalRendering.getActiveClippingPlane();
+        if (plane == null) return null;
+        var n = plane.normal();
+        var relative = plane.pos().subtract(CHelper.getCurrentCameraPos());
+        return new double[]{n.x, n.y, n.z, -n.dot(relative)};
     }
 
     public static double[] getEyeEq() {
-        return lastEyeEq;
+        double[] world = getWorldEq();
+        if (world == null) return null;
+        Vector4f eye = new Vector4f((float) world[0], (float) world[1],
+            (float) world[2], (float) world[3]);
+        new Matrix4f(RenderSystem.getModelViewMatrix()).invert().transpose().transform(eye);
+        return new double[]{eye.x, eye.y, eye.z, eye.w};
     }
 }
