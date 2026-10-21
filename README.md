@@ -1,5 +1,6 @@
 # v0.5.3
-Creative Physics Staff stability was improved, more polished visuals (fixed smooth constraint teleport).
+1) Creative Physics Staff stability was improved, more polished visuals (fixed smooth constraint teleport).
+2) New jar naming format
 
 # Immersive Portals × Sable Compatibility Fork
 Version: NeoForge 1.21.1; Targets: Sable 2.0.3+ · Create Aeronautics 1.3.0+ · Create 6.0.10
