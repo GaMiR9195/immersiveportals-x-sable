@@ -1,0 +1,1 @@
+package dev.ryanhcode.sable.api.sublevel; import java.util.*; import net.minecraft.world.level.Level; import dev.ryanhcode.sable.sublevel.SubLevel; public class SubLevelContainer { public Level level; public List<SubLevel> subs=new ArrayList<>(); public Level getLevel(){return level;} public List<SubLevel> getAllSubLevels(){return subs;} }

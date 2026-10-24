@@ -81,7 +81,18 @@
     "IplPlotBiomeAccessor",
     "IplDimensionEnvironmentMixin",
     "IplBalloonEnvironmentScopeMixin",
-    "IplHostedParticleBroadcastMixin"
+    "IplHostedParticleBroadcastMixin",
+    "IplReadViewClipMixin",
+    "IplScaledClipReadViewMixin",
+    "IplHostedBroadcastViewMixin",
+    "IplContactColliderCallbackMixin",
+    "IplContactSteppingSystemMixin",
+    "IplCreateLinkNetworkViewMixin",
+    "IplHostedRetainedEntityInsertionMixin",
+    "IplContainerSpatialReadMixin",
+    "IplPhysicsSpatialReadMixin",
+    "IplContactEffectsViewMixin",
+    "IplCreateLinkConnectionsAccessor"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
@@ -137,7 +148,18 @@
     "client.IplClusterOutlineAnchorMixin",
     "client.IplHostedStaffLocksMixin",
     "client.IplHostedVisualRemovalMixin",
-    "client.IplHostedParticleOwnerMixin"
+    "client.IplHostedParticleOwnerMixin",
+    "client.IplHostedFlywheelApiMixin",
+    "client.IplHostedFlywheelPoseCacheMixin",
+    "client.IplHostedClientEffectsMixin",
+    "client.IplClientSoundInvoker",
+    "client.IplFlywheelStorageAccessor",
+    "client.IplHostedFlywheelStorageMixin",
+    "client.IplHostedFlywheelEntityEventsMixin",
+    "client.IplFlywheelChunkLifecycleMixin",
+    "client.IplFlywheelBeLifecycleMixin",
+    "client.IplFlywheelDirtyLifecycleMixin",
+    "client.IplFlywheelScopedManagerMixin"
   ],
   "injectors": {
     "defaultRequire": 0

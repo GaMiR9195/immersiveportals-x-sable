@@ -1,0 +1,1 @@
+package net.minecraft.world.level; public class Level implements LevelAccessor { public final boolean storage; public Level(boolean s){storage=s;} }

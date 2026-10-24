@@ -46,64 +46,7 @@ public abstract class IplHostedIntersectionMixin {
     private Iterable<SubLevel> ipl$includeHostedSubLevels(
         Iterable<SubLevel> original, Level level, BoundingBox3dc bounds
     ) {
-        if (IplDimAgnostic.isHostingLevel(level)) {
-            return original;
-        }
-
-        SubLevelContainer hostingContainer = ipl$resolveHostingContainer(level);
-        if (hostingContainer == null) {
-            return original;
-        }
-
-        List<SubLevel> extra = null;
-        for (SubLevel sub : hostingContainer.getAllSubLevels()) {
-            if (sub.isRemoved()) continue;
-
-            if (IplDimAgnostic.getParentLevel(sub) != level) {
-                // Foreign ship straddling INTO this dimension: include it when ANY of
-                // its portal-MAPPED images intersects the query (multi-straddle). Pose
-                // mapping for the collision math happens in IplStraddleCollisionPoseMixin.
-                boolean[] hits = {false};
-                ipl.sable.transit.IplStraddlePoseMap.forEachStraddleInto(sub, level,
-                    (portal, mapping) -> {
-                        if (!hits[0] && mapping.mapAabb(sub.boundingBox()).intersects(bounds)) {
-                            hits[0] = true;
-                        }
-                    });
-                if (!hits[0]) continue;
-                if (extra == null) extra = new ArrayList<>(4);
-                extra.add(sub);
-                continue;
-            }
-
-            // In a same-dimension crossing the source and destination share the
-            // Level object. Add whichever half (of any session's image) reaches the
-            // query. Hosted ships are not in the parent level's native Sable
-            // container, so source bounds still need to be appended here for
-            // ordinary collision as well.
-            boolean intersectsSource = sub.boundingBox().intersects(bounds);
-            boolean[] mappedHits = {false};
-            if (!intersectsSource) {
-                ipl.sable.transit.IplStraddlePoseMap.forEachStraddleInto(sub, level,
-                    (portal, mapping) -> {
-                        if (!mappedHits[0]
-                            && mapping.mapAabb(sub.boundingBox()).intersects(bounds)) {
-                            mappedHits[0] = true;
-                        }
-                    });
-            }
-            if (!intersectsSource && !mappedHits[0]) continue;
-            if (extra == null) extra = new ArrayList<>(4);
-            extra.add(sub);
-        }
-        if (extra == null) {
-            return original;
-        }
-
-        List<SubLevel> combined = new ArrayList<>(extra.size() + 4);
-        for (SubLevel sub : original) combined.add(sub);
-        combined.addAll(extra);
-        return combined;
+        return ipl.sable.dim.IplHostedSpatialQueries.include(level,bounds,original);
     }
 
     /** Hosting container on the matching side, without creating client worlds in a hot path. */

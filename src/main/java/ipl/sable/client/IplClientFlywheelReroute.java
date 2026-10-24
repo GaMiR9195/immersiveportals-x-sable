@@ -61,6 +61,7 @@ public final class IplClientFlywheelReroute {
      */
     public static void sweepHostedContainer(dev.ryanhcode.sable.api.sublevel.SubLevelContainer container) {
         if (!ipl$flywheelPresent()) return;
+        IplHostedEntityVisuals.sweep(container);
         // A plot can disappear without LevelChunk.removeBlockEntity: Sable also
         // replaces its own plot/chunk tables. Weak keys do not delete a Visual
         // already retained by Flywheel. Explicitly retire every stale identity.
@@ -144,6 +145,7 @@ public final class IplClientFlywheelReroute {
 
     /** Retire visuals while their old client worlds/managers are still alive. */
     public static void clear() {
+        if (ipl$flywheelPresent()) IplHostedEntityVisuals.clear();
         synchronized (QUEUED_UNDER) {
             QUEUED_UNDER.forEach((be, parent) -> queueRemove(parent, be));
             QUEUED_UNDER.clear();

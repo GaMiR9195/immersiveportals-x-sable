@@ -1,0 +1,1 @@
+package ipl.sable.dim; import net.minecraft.world.level.Level; public class IplEnvironmentFrame { public static Level contextualLevel(Level l){return l.storage ? IplWorldFrameContext.current():null;} }

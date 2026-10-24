@@ -1,0 +1,1 @@
+package dev.ryanhcode.sable.companion.math; public interface BoundingBox3dc { boolean intersects(BoundingBox3dc b); }

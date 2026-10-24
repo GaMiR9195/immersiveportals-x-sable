@@ -1,0 +1,1 @@
+package net.minecraft.server.level; public class ServerLevel extends net.minecraft.world.level.Level { public net.minecraft.server.MinecraftServer server; public ServerLevel(boolean s){super(s);} public net.minecraft.server.MinecraftServer getServer(){return server;} }

@@ -117,10 +117,10 @@ public abstract class IplPlotBridgeMixin {
     private java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> ipl$frameScopedHostedEnumeration(
         java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> original
     ) {
-        if (!ipl.sable.dim.IplWorldFrameContext.frameActive()) return original;
+        if (!ipl.sable.dim.IplWorldFrameContext.frameActive()
+            && !ipl.sable.dim.IplReadViewScope.active()) return original;
         Level self = this.getLevel();
-        if (!(self instanceof net.minecraft.server.level.ServerLevel)
-            || IplDimAgnostic.isHostingLevel(self)) {
+        if (self == null || IplDimAgnostic.isHostingLevel(self)) {
             return original;
         }
         SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(self);

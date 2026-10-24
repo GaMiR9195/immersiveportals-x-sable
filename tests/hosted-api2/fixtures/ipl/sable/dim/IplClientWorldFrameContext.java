@@ -1,0 +1,1 @@
+package ipl.sable.dim; import net.minecraft.client.multiplayer.ClientLevel; import net.minecraft.core.BlockPos; public class IplClientWorldFrameContext { public static java.util.Map<BlockPos,ClientLevel> owners=new java.util.HashMap<>(); public static ClientLevel resolveParentForPlotBe(ClientLevel source,BlockPos pos){return source.storage?owners.get(pos):null;} }

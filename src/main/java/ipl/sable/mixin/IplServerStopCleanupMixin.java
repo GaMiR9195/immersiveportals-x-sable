@@ -19,6 +19,7 @@ public abstract class IplServerStopCleanupMixin {
 
     @Inject(method = "stopServer", at = @At("RETURN"))
     private void ipl$cleanupOnStop(CallbackInfo ci) {
+        if (net.neoforged.fml.ModList.get().isLoaded("create")) ipl.sable.compat.IplMovingLinkNetworks.clear();
         MinecraftServer server = (MinecraftServer) (Object) this;
         try {
             SableTransitController.onServerStopping(server);

@@ -42,7 +42,7 @@ import qouteall.imm_ptl.core.ClientWorldLoader;
  * and the airship visibly snaps to its current pose. The "snap on return" was the dead
  * giveaway that snapshots were arriving but interpolation wasn't running.
  *
- * <p><b>The fix:</b> after Sable's hook runs (at {@code Minecraft.tick} TAIL), iterate
+ * <p><b>The fix:</b> after Sable's hook runs (at the stock Sable pre-entity tick seam), iterate
  * IP's alt {@code ClientLevel}s (everything in {@link ClientWorldLoader#getClientWorlds})
  * other than the current one and call {@code container.tick()} on each. That advances
  * the interpolation state on alt-dim containers so a sub-level visible cross-dim through
@@ -60,11 +60,13 @@ public abstract class SableAltContainerTickMixin {
     @Unique
     private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-sable");
 
-    @Inject(method = "tick", at = @At("TAIL"))
+    @Inject(method = "tick", at = @At(value = "INVOKE",
+        target = "Lnet/minecraft/client/tutorial/Tutorial;onLookAt(Lnet/minecraft/client/multiplayer/ClientLevel;Lnet/minecraft/world/phys/HitResult;)V",
+        shift = At.Shift.AFTER), require = 1)
     private void ipl$tickAltSableContainers(CallbackInfo ci) {
         Minecraft mc = (Minecraft) (Object) this;
         ClientLevel current = mc.level;
-        if (current == null) return;
+        if (current == null || mc.isPaused()) return;
 
         try {
             boolean hostingTicked = false;
@@ -83,7 +85,7 @@ public abstract class SableAltContainerTickMixin {
                     }
                 }
             }
-            // Sable ticks only Minecraft.level before this TAIL hook. Hosted ships all
+            // Sable ticks only Minecraft.level before this pre-entity hook. Hosted ships all
             // interpolate in the dedicated hosting container, which is normally neither
             // the player's current world nor an IP alt world. Tick it exactly once so
             // staff snapshots advance every client tick instead of arriving in a buffer
