@@ -1,6 +1,8 @@
 pub mod algo;
 mod boxes;
 mod buoyancy;
+#[cfg(test)]
+mod compatibility_tests;
 mod collider;
 mod config;
 mod contraptions;
@@ -54,6 +56,10 @@ pub struct ActiveLevelColliderInfo {
     /// IPL atlas: which chart (dimension frame) this body lives in. Drives chunk-map
     /// selection in the dispatcher, buoyancy scoping, and collision-report routing.
     pub chart: scene::ChartId,
+    /// Terrain/fluid frame, independent from plot storage and body ownership.
+    /// None preserves upstream semantics. Hosted bodies explicitly select their
+    /// current parent; portal images must NOT implicitly choose this frame.
+    pub environment_chart: Option<scene::ChartId>,
     /// IPL atlas: parent-frame id of a hosted body. Real hosted bodies share the
     /// hosting chart at their own parents' coordinates, so numeric overlap between
     /// bodies with different parents is meaningless — the dispatcher's dynamic pair
@@ -103,6 +109,7 @@ impl ActiveLevelColliderInfo {
         Self {
             collider,
             chart,
+            environment_chart: None,
             ipl_parent_frame: 0,
             static_mount: None,
             fake_velocities: None,
@@ -588,8 +595,11 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ste
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         with_handle(handle, |scene| {
-            rope::tick(scene);
-            joints::tick(scene);
+            // The armed Java call may belong to ANY chart. All actors have run
+            // by this point, so update all newly created joints and rope anchors
+            // exactly once before solving the single shared world.
+            rope::prepare_world_step(scene);
+            joints::prepare_world_step(scene);
 
             scene.manifold_info_map.clear();
 

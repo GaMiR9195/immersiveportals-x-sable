@@ -61,6 +61,35 @@ public final class IplClientFlywheelReroute {
      */
     public static void sweepHostedContainer(dev.ryanhcode.sable.api.sublevel.SubLevelContainer container) {
         if (!ipl$flywheelPresent()) return;
+        // A plot can disappear without LevelChunk.removeBlockEntity: Sable also
+        // replaces its own plot/chunk tables. Weak keys do not delete a Visual
+        // already retained by Flywheel. Explicitly retire every stale identity.
+        var queued = new java.util.ArrayList<Map.Entry<BlockEntity, ClientLevel>>();
+        synchronized (QUEUED_UNDER) {
+            QUEUED_UNDER.forEach((be, parent) ->
+                queued.add(new java.util.AbstractMap.SimpleImmutableEntry<>(be, parent)));
+        }
+        for (var entry : queued) {
+            BlockEntity be = entry.getKey();
+            SubLevel owner = ipl$owningSub(container.getLevel(), be.getBlockPos());
+            boolean stale = be.isRemoved() || owner == null || owner.isRemoved();
+            if (!stale) {
+                var holder = owner.getPlot().getChunkHolder(owner.getPlot().toLocal(
+                    new net.minecraft.world.level.ChunkPos(be.getBlockPos())));
+                var chunk = holder == null ? null : holder.getChunk();
+                stale = chunk == null || chunk.getBlockEntities().get(be.getBlockPos()) != be;
+            }
+            if (stale) onBlockEntityRemoved(container.getLevel(), be);
+        }
+        synchronized (SUB_BES) {
+            SUB_BES.entrySet().removeIf(entry -> {
+                Set<BlockEntity> bes = entry.getValue();
+                synchronized (bes) {
+                    bes.removeIf(be -> be == null || be.isRemoved() || !QUEUED_UNDER.containsKey(be));
+                    return bes.isEmpty();
+                }
+            });
+        }
         for (SubLevel sub : container.getAllSubLevels()) {
             if (sub == null || sub.isRemoved()) continue;
             Level parentRaw = ((ipl.sable.duck.IplSubLevelDuck) sub).ipl$getParentLevel();
@@ -90,6 +119,9 @@ public final class IplClientFlywheelReroute {
         if (sub == null) return;
         ClientLevel parent = resolveParentForPlotPos(chunkLevel, pos);
         if (parent == null) return; // parent not synced yet; renderer falls back until reload
+        ClientLevel previous = QUEUED_UNDER.get(be);
+        if (previous == parent) return;
+        if (previous != null) queueRemove(previous, be);
 
         if (queueAdd(parent, be)) {
             QUEUED_UNDER.put(be, parent);
@@ -105,6 +137,18 @@ public final class IplClientFlywheelReroute {
         if (target != null) {
             queueRemove(target, be);
         }
+        synchronized (SUB_BES) {
+            SUB_BES.values().forEach(bes -> bes.remove(be));
+        }
+    }
+
+    /** Retire visuals while their old client worlds/managers are still alive. */
+    public static void clear() {
+        synchronized (QUEUED_UNDER) {
+            QUEUED_UNDER.forEach((be, parent) -> queueRemove(parent, be));
+            QUEUED_UNDER.clear();
+        }
+        SUB_BES.clear();
     }
 
     /**

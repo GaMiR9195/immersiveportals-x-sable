@@ -369,6 +369,10 @@ public final class SableTransitOps {
         ServerLevelPlot src, ServerLevelPlot dst,
         ServerLevel srcLevel, ServerLevel dstLevel
     ) {
+        // Set this BEFORE allocating destination chunks: LevelPlot builds their
+        // biome palettes from this field. Rehome otherwise silently resets a
+        // non-plains ship to the hosting dimension's default biome.
+        dst.setBiome(((ipl.sable.mixin.IplPlotBiomeAccessor) src).ipl$getBiome());
         int blocksCopied = 0;
         int blocksSkippedOutOfYRange = 0;
 

@@ -52,14 +52,22 @@ public final class IplAtlasBodyImages {
         }
 
         ServerLevel parent = IplDimAgnostic.getServerParentLevel(sub);
-        if (parent == null) {
+        long parentScene = IplSceneOwnership.liveSceneHandle(parent);
+        long ownerScene = IplSceneOwnership.liveSceneHandle((ServerLevel) sub.getLevel());
+        int bodyId = Rapier3D.getID(sub);
+        if (parent == null || parentScene == 0) {
+            // Do not retain the previous world's water when a parent is unresolved
+            // or being disposed. Clearing restores honest storage sampling.
+            if (ownerScene != 0 && bodyId >= 0) {
+                IplRapierNatives.setEnvironmentChart(ownerScene, bodyId, 0);
+            }
             remove(sub.getUniqueId());
             return;
         }
-
-        long parentScene = IplSceneOwnership.liveSceneHandle(parent);
-        if (parentScene == 0) return;
-        int bodyId = Rapier3D.getID(sub);
+        if (ownerScene == 0 || bodyId < 0) return;
+        // A body's voxel materials remain in the hosting chart. Water and drag
+        // volumes must come from its actual parent, not the empty storage world.
+        if (!IplRapierNatives.setEnvironmentChart(ownerScene, bodyId, parentScene)) return;
         UUID id = sub.getUniqueId();
         Image current = IMAGES.get(id);
 

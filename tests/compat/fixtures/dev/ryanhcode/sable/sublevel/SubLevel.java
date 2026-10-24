@@ -1,0 +1,1 @@
+package dev.ryanhcode.sable.sublevel; import net.minecraft.world.level.Level; import org.joml.*; public class SubLevel {public Level parent; public boolean removed; public final Matrix4d pose=new Matrix4d(); public boolean isRemoved(){return removed;} public Matrix4d logicalPose(){return pose;} }

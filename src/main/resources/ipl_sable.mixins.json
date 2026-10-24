@@ -77,7 +77,11 @@
     "IplFusedStepMixin",
     "IplPhysicsSystemFusionAccess",
     "IplRapierStepArmMixin",
-    "IplPortalVolumeCacheInvalidationMixin"
+    "IplPortalVolumeCacheInvalidationMixin",
+    "IplPlotBiomeAccessor",
+    "IplDimensionEnvironmentMixin",
+    "IplBalloonEnvironmentScopeMixin",
+    "IplHostedParticleBroadcastMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
@@ -130,7 +134,10 @@
     "client.IplStaffItemFocusMixin",
     "client.IplHostedPlotEntityRenderMixin",
     "client.IplLevelRendererEntityInvoker",
-    "client.IplClusterOutlineAnchorMixin"
+    "client.IplClusterOutlineAnchorMixin",
+    "client.IplHostedStaffLocksMixin",
+    "client.IplHostedVisualRemovalMixin",
+    "client.IplHostedParticleOwnerMixin"
   ],
   "injectors": {
     "defaultRequire": 0

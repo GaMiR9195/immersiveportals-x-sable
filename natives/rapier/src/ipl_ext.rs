@@ -335,6 +335,45 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setParentFrame<'l
     1
 }
 
+/// Storage identity and environmental sampling are separate contracts. Never
+/// infer this from the first image collider: another image may be a portal view.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setEnvironmentChart<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    environment_handle: jlong,
+) -> jboolean {
+    if scene_handle == 0 || body_id < 0 {
+        return 0;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let environment_chart = if environment_handle == 0 {
+        None
+    } else {
+        let environment = unsafe { &*(environment_handle as *const PhysicsScene) };
+        if !std::sync::Arc::ptr_eq(&scene.world, &environment.world) {
+            return 0;
+        }
+        Some(environment.chart)
+    };
+    let mut data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(info) = data.level_colliders.get_mut(&(body_id as LevelColliderID)) else {
+        return 0;
+    };
+    info.environment_chart = environment_chart;
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_compatibilityAbi<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jint {
+    2
+}
+
 /// Dormancy switch for a hosted body whose parent-pointer chunks are unloaded: a Fixed
 /// body skips integration entirely (no gravity, immovable, still a valid joint/rope
 /// anchor), so an unloaded-area ship cannot fall through terrain that was never baked.

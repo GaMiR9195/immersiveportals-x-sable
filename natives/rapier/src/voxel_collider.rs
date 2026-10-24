@@ -50,7 +50,6 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_new
     restitution: jdouble,
     is_fluid: jboolean,
     contact_events: JObject,
-    dynamic: jboolean,
 ) -> jint {
     let mut state = get_physics_state_mut();
 
@@ -89,7 +88,11 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_new
             restitution: restitution as Real,
             contact_events: global_ref,
             contact_method: global_method,
-            dynamic: dynamic > 0,
+            // Sable 2.0.6's Java ABI has FIVE material arguments. Reading a
+            // sixth "dynamic" argument consumed an unspecified JNI register.
+            // Keep the fork's optional dynamic storage, but default it off for
+            // the actual public registration API.
+            dynamic: false,
         }));
 
     next_index as jint

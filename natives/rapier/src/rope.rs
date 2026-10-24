@@ -54,6 +54,53 @@ pub struct RopeMap {
 }
 
 pub fn tick(scene: &PhysicsScene) {
+    tick_scoped(scene, false);
+}
+
+/// Maintain ALL attachment anchors before integrating the shared Atlas world.
+pub fn prepare_world_step(scene: &PhysicsScene) {
+    tick_scoped(scene, true);
+}
+
+#[cfg(test)]
+mod compatibility_regressions {
+    use super::*;
+    use crate::compatibility_tests::{body, scene};
+
+    #[test]
+    fn rope_attachment_updates_when_a_different_chart_owns_the_step() {
+        let scene = scene(9);
+        let center = DVec3::new(20_000_000.0, 60.0, 20_000_000.0);
+        let rb = body(&scene, 3, 4, center);
+        let joint = {
+            let mut sim = scene.sim_data.write().unwrap();
+            sim.impulse_joint_set.insert(
+                rb, scene.ground_handle.unwrap(),
+                GenericJointBuilder::new(JointAxesMask::empty()).build(), true,
+            )
+        };
+        scene.sable_data.write().unwrap().rope_map.ropes.insert(1, RopeStrand {
+            points: vec![], joints: vec![], point_radius: 0.1, first_joint_length: 1.0,
+            start_attachment: Some(RopeAttachment {
+                joint, sub_level_id: Some(3),
+                location: center + DVec3::new(1.0, 0.5, -1.0), portal_prefix: None,
+            }),
+            end_attachment: None, chart: 4,
+        });
+        tick(&scene);
+        assert_eq!(
+            scene.sim_data.read().unwrap().impulse_joint_set.get(joint).unwrap().data.local_anchor1(),
+            Vec3::ZERO,
+        );
+        prepare_world_step(&scene);
+        assert_eq!(
+            scene.sim_data.read().unwrap().impulse_joint_set.get(joint).unwrap().data.local_anchor1(),
+            Vec3::new(1.0, 0.5, -1.0),
+        );
+    }
+}
+
+fn tick_scoped(scene: &PhysicsScene, all_charts: bool) {
     let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
@@ -62,7 +109,7 @@ pub fn tick(scene: &PhysicsScene) {
 
     for (id, rope) in sable_data.rope_map.ropes.iter() {
         // Atlas: this view's tick maintains only its own chart's strands.
-        if rope.chart != scene.chart {
+        if !all_charts && rope.chart != scene.chart {
             continue;
         }
         if let Some(attachment) = &rope.start_attachment {
@@ -326,13 +373,15 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
     _class: JClass<'local>,
     handle: jlong,
     id: jlong,
-) {
+) -> jlong {
     with_handle(handle, |scene| {
         let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let sim_data = &mut *sim_data;
 
-        let strand = sable_data.rope_map.ropes.remove(&(id as usize)).unwrap();
+        let Some(strand) = sable_data.rope_map.ropes.remove(&(id as usize)) else {
+            return 0; // repeated teardown must not panic across the JNI boundary
+        };
         for handle in strand.points {
             sim_data.rigid_body_set.remove(
                 handle,
@@ -343,6 +392,9 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
                 true,
             );
         }
+        // The Sable 2.0.6 declaration returns long (the pipeline ignores it).
+        // Return a defined value rather than exposing an undefined return register.
+        id
     })
 }
 

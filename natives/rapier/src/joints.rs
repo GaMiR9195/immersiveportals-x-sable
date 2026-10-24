@@ -49,13 +49,62 @@ impl SableJointSet {
 }
 
 pub fn tick(scene: &PhysicsScene) {
+    tick_scoped(scene, false);
+}
+
+/// A fused world step integrates every chart, not just the scene passed to JNI.
+/// In particular, actors may have created joints AFTER the chart-local tick.
+/// Publish their real anchors before the solver sees them (never solve at ZERO).
+pub fn prepare_world_step(scene: &PhysicsScene) {
+    tick_scoped(scene, true);
+}
+
+#[cfg(test)]
+mod compatibility_regressions {
+    use super::*;
+    use crate::compatibility_tests::{body, scene};
+
+    #[test]
+    fn fresh_handle_joint_is_initialized_even_when_another_chart_steps() {
+        let scene = scene(9); // the last/armed chart is NOT the ship's storage chart
+        let center = DVec3::new(20_000_000.0, 70.0, 20_000_000.0);
+        let rb = body(&scene, 3, 4, center);
+        let handle = {
+            let mut sim = scene.sim_data.write().unwrap();
+            sim.impulse_joint_set.insert(
+                scene.ground_handle.unwrap(), rb,
+                GenericJointBuilder::new(JointAxesMask::empty()).build(), true,
+            )
+        };
+        let goal = DVec3::new(8.0, 72.0, -3.0);
+        scene.sable_data.write().unwrap().joint_set.joints.insert(1, SubLevelJoint {
+            id_a: None, id_b: Some(3),
+            pos_a: goal, pos_b: center + DVec3::new(0.5, 0.0, -0.5),
+            normal_a: DVec3::ZERO, normal_b: DVec3::ZERO,
+            rotation_a: None, rotation_b: None, handle,
+            fixed: true, contacts_enabled: true,
+        });
+        tick(&scene); // a local tick correctly leaves other charts alone
+        {
+            let sim = scene.sim_data.read().unwrap();
+            assert_eq!(sim.impulse_joint_set.get(handle).unwrap().data.local_anchor1(), Vec3::ZERO);
+        }
+        prepare_world_step(&scene); // the fused solve MUST publish every anchor
+        let sim = scene.sim_data.read().unwrap();
+        let joint = &sim.impulse_joint_set.get(handle).unwrap().data;
+        assert_eq!(joint.local_anchor1(), goal.as_vec3());
+        assert_eq!(joint.local_anchor2(), Vec3::new(0.5, 0.0, -0.5));
+    }
+}
+
+fn tick_scoped(scene: &PhysicsScene, all_charts: bool) {
     let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     // The shared Atlas world is visited once per chart. Pruning a world-global map here
     // was O(charts * joints) even though only the body's owning chart can change a joint.
     // A stale entry is harmless: all mutation paths already check the native set below.
-    if scene.chart == 0 {
+    if all_charts || scene.chart == 0 {
         sable_data
             .joint_set
             .joints
@@ -73,7 +122,7 @@ pub fn tick(scene: &PhysicsScene) {
             .or(joint.id_b)
             .and_then(|id| sable_data.level_colliders.get(&id))
             .map(|info| info.chart);
-        if joint_chart.is_some() && joint_chart != Some(scene.chart) {
+        if !all_charts && joint_chart.is_some() && joint_chart != Some(scene.chart) {
             continue;
         }
         let Some(impulse_joint) = sim.impulse_joint_set.get_mut(joint.handle, false) else {

@@ -316,11 +316,13 @@ public abstract class IplHostedSubLevelRenderMixin {
             ipl.sable.dim.IplClientWorldFrameContext.push(this.level);
         try {
             for (ClientSubLevel sub : hosted) {
-                SubLevelBlockEntityRenderScope.renderAndFlush(sub, this.renderBuffers.bufferSource(), () ->
+                SubLevelBlockEntityRenderScope.renderAndFlush(sub, this.renderBuffers.bufferSource(), () -> {
                     SubLevelRenderDispatcher.get().renderBlockEntities(
                         List.of(sub), ipl$hostedBeRenderer,
-                        cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick)
-                );
+                        cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick);
+                    ipl.sable.client.IplHostedGlobalBlockEntities.render(
+                        sub, ipl$hostedBeRenderer, cameraPosition, partialTick);
+                });
             }
 
             for (IplClientHostedLookup.StraddleProjection proj : projections) {
@@ -328,11 +330,14 @@ public abstract class IplHostedSubLevelRenderMixin {
                     proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
                 try {
                     SubLevelBlockEntityRenderScope.renderAndFlush(
-                        proj.sub(), this.renderBuffers.bufferSource(), () ->
+                        proj.sub(), this.renderBuffers.bufferSource(), () -> {
                             SubLevelRenderDispatcher.get().renderBlockEntities(
                                 List.of(proj.sub()), ipl$hostedBeRenderer,
                                 cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick
-                            )
+                            );
+                            ipl.sable.client.IplHostedGlobalBlockEntities.render(
+                                proj.sub(), ipl$hostedBeRenderer, cameraPosition, partialTick);
+                        }
                     );
                 } finally {
                     ipl.sable.client.IplStraddleRenderState.clear();
