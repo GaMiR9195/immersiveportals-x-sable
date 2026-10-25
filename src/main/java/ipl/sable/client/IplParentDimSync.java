@@ -529,16 +529,10 @@ public final class IplParentDimSync {
             ClientLevel parent = ClientWorldLoader.getWorld(parentKey);
 
             IplSubLevelDuck duck = (IplSubLevelDuck) subLevel;
-            ClientLevel oldParent = duck.ipl$getParentLevel() instanceof ClientLevel old ? old : null;
             duck.ipl$setParentLevel(parent);
             duck.ipl$setHostingLevel(hosting);
-
-            // Flywheel visuals live in the parent's visualization world — re-home them
-            // with the flip so swivel bearings / throttle levers keep rendering after
-            // a cross-portal transit.
-            if (oldParent != parent) {
-                ipl.sable.client.IplClientFlywheelReroute.onParentFlip(subLevel, oldParent, parent);
-            }
+            // Flywheel visuals follow the parent on the next frame of each world's
+            // manager (IplHostedFlywheelSceneMixin); nothing to re-home here.
         }
     }
 }

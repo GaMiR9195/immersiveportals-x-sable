@@ -290,45 +290,70 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
     }
 
     /**
-     * {@code add(KinematicContraption)} -- enrolling a Create contraption that sits
-     * on a sub-level. The method derives the mount sub-level from the contraption's
-     * position and calls {@code Rapier3D.getID(mount)} -> {@code createKinematicContraption};
-     * if the mount is a mirror, that's a stale id into native -> abort. Cancel the
-     * enrollment entirely: a mirror's contraptions are not part of the physics scene
-     * (the mirror itself isn't). Mirrors the mount lookup the original does
-     * ({@code Sable.HELPER.getContaining(level, contraption.position())}) so we gate
-     * on exactly the sub-level the original would have fed to native.
+     * {@code add(KinematicContraption)} -- enrolling a Create contraption that sits on a
+     * sub-level. The method derives the mount from the contraption's position and attaches
+     * the contraption's voxel collider to the mount's rigid body, in THIS pipeline's chart.
+     *
+     * <p>Chart choice ({@link ipl.sable.atlas.IplContraptionCharts#chartFor}): a hosted
+     * mount's contraption belongs in the mount's PARENT chart — the world it physically
+     * moves through, where its terrain and the other ships' images are. The hosting chart
+     * holds no terrain, so a collider created there never touches the ground. Atlas'
+     * shared native world lets the parent pipeline attach to the hosted body directly.
+     * Calls arriving at the wrong pipeline (the entity's level, the rehome path) are
+     * forwarded; a mount with no native body anywhere (e.g. a kinematic mirror) is
+     * refused, since the native lookup would abort the process.
      */
     @Inject(method = "add(Ldev/ryanhcode/sable/api/sublevel/KinematicContraption;)V",
         at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private void ipl$guardAddContraption(KinematicContraption contraption, CallbackInfo ci) {
+        if (this.activeContraptions.containsKey(contraption)) {
+            ci.cancel(); // already held here (idempotent re-enrollment after a storage move)
+            return;
+        }
         SubLevel mount = Sable.HELPER.getContaining(this.level, contraption.sable$getPosition());
-        if (mount instanceof ServerSubLevel serverMount && ipl$notOwnedSub(serverMount)) {
-            // Dim-agnostic forward: a Create contraption assembling on a hosted airship must
-            // enroll in the pipeline that owns the mount's body.
-            RapierPhysicsPipeline target = ipl$forwardTarget(serverMount);
-            if (target != null) {
-                target.add(contraption);
-                ci.cancel();
-                return;
-            }
-
-            IPL$LOG.warn("[IPL-RAPIER-GUARD] refused add(KinematicContraption) on unowned mount "
+        if (!(mount instanceof ServerSubLevel serverMount)) {
+            ipl.sable.atlas.IplContraptionCharts.recordAdded(contraption, this.level);
+            return; // static contraption: stock path
+        }
+        ServerLevel desired = ipl.sable.atlas.IplContraptionCharts.chartFor(serverMount);
+        if (desired == null) {
+            IPL$LOG.warn("[IPL-RAPIER-GUARD] refused add(KinematicContraption) on mount "
                 + "sub-level {} (no native body -- e.g. a kinematic mirror). Skipping enrollment.",
                 serverMount.getUniqueId());
             ci.cancel();
+            return;
         }
+        if (desired != this.level) {
+            RapierPhysicsPipeline target = ipl.sable.dim.IplSceneOwnership.pipelineOf(desired);
+            if (target != null) target.add(contraption);
+            ci.cancel();
+            return;
+        }
+        // Held elsewhere already (mount changed chart): move it here.
+        ServerLevel previous = ipl.sable.atlas.IplContraptionCharts.holderOf(contraption);
+        if (previous != null && previous != this.level) {
+            RapierPhysicsPipeline old = ipl.sable.dim.IplSceneOwnership.pipelineOf(previous);
+            if (old != null) old.remove(contraption);
+        }
+        ipl.sable.atlas.IplContraptionCharts.recordAdded(contraption, this.level);
     }
 
+    /**
+     * Removals arrive at the pipeline of the level the contraption ENTITY is in; the
+     * collider may be held by another chart's pipeline (see {@link #ipl$guardAddContraption}).
+     * Route to the actual holder.
+     */
     @Inject(method = "remove(Ldev/ryanhcode/sable/api/sublevel/KinematicContraption;)V",
         at = @At("HEAD"), cancellable = true, remap = false, require = 1)
     private void ipl$forwardContraptionRemoval(KinematicContraption contraption, CallbackInfo ci) {
-        // Consult actual actor ownership first. Its mount may already have been
-        // removed from the plot lookup by the time an entity removal arrives.
-        if (this.activeContraptions.containsKey(contraption)) return;
-        var storage = ipl.sable.dim.IplDimAgnostic.getHostingContainerFor(this.level);
-        if (storage instanceof dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer serverStorage && storage.getLevel() != this.level) {
-            serverStorage.physicsSystem().getPipeline().remove(contraption);
+        if (this.activeContraptions.containsKey(contraption)) {
+            ipl.sable.atlas.IplContraptionCharts.recordRemoved(contraption, this.level);
+            return;
+        }
+        ServerLevel holder = ipl.sable.atlas.IplContraptionCharts.holderOf(contraption);
+        if (holder != null && holder != this.level) {
+            RapierPhysicsPipeline target = ipl.sable.dim.IplSceneOwnership.pipelineOf(holder);
+            if (target != null) target.remove(contraption);
             ci.cancel();
         }
     }

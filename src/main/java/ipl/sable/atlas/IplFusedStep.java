@@ -110,7 +110,9 @@ public final class IplFusedStep {
                     ipl.sable.transit.PortalCrossingDetector.seedPhysicsStart(sub);
                 }
             }
-            e.sys().getPipeline().prePhysicsTicks();
+            // Each dimension's phases are that container's processing pass: addon
+            // listeners enumerating it see each ship once, in its own world frame.
+            ipl.sable.dim.IplProcessingPass.runPhysics(e.container(), () -> e.sys().getPipeline().prePhysicsTicks());
         }
 
         for (int s = 0; s < substeps; s++) {
@@ -129,7 +131,8 @@ public final class IplFusedStep {
             for (int i = 0; i < systems.size(); i++) {
                 Entry e = systems.get(i);
                 boolean last = i == systems.size() - 1;
-                runGuarded(e, () -> {
+                // The native step steps every chart at once: it is no container's pass.
+                runGuarded(e, false, () -> {
                     STEP_ARMED = last;
                     try {
                         e.sys().getPipeline().physicsTick(dt);
@@ -198,9 +201,17 @@ public final class IplFusedStep {
 
     /** Mirror stock's crash-report framing, naming the dimension whose phases failed. */
     private static void runGuarded(Entry e, Runnable phases) {
+        runGuarded(e, true, phases);
+    }
+
+    private static void runGuarded(Entry e, boolean containerPass, Runnable phases) {
         SubLevelPhysicsSystem.currentlySteppingSystem = e.sys();
         try {
-            phases.run();
+            if (containerPass) {
+                ipl.sable.dim.IplProcessingPass.runPhysics(e.container(), phases);
+            } else {
+                ipl.sable.dim.IplProcessingPass.runOutside(phases);
+            }
         } catch (Exception ex) {
             CrashReport crashReport = CrashReport.forThrowable(ex, "Sable ticking physics (IPL fused step)");
             CrashReportCategory category = crashReport.addCategory("Current physics state");

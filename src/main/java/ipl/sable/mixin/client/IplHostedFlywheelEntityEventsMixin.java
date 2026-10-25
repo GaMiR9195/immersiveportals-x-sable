@@ -4,7 +4,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
 import dev.engine_room.flywheel.api.visualization.VisualizationManager;
 import dev.engine_room.flywheel.impl.visualization.VisualizationEventHandler;
-import ipl.sable.client.IplHostedEntityVisuals;
+import ipl.sable.client.IplHostedFlywheelVisuals;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelAccessor;
@@ -18,6 +18,6 @@ public abstract class IplHostedFlywheelEntityEventsMixin {
         target = "Ldev/engine_room/flywheel/api/visualization/VisualizationManager;get(Lnet/minecraft/world/level/LevelAccessor;)Ldev/engine_room/flywheel/api/visualization/VisualizationManager;"), require = 2)
     private static VisualizationManager ipl$entityView(LevelAccessor level, Operation<VisualizationManager> original,
             @Local(argsOnly = true) Entity entity) {
-        return original.call(IplHostedEntityVisuals.view((Level)level,entity));
+        return original.call(IplHostedFlywheelVisuals.entityView((Level)level,entity));
     }
 }

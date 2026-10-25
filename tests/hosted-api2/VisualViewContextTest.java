@@ -16,6 +16,16 @@ public class VisualViewContextTest {
   check(IplClientVisualViewContext.resolve(storage)==storage,"no scope leak after event");
   IplClientWorldFrameContext.owners.put(pos,b);outer=IplClientVisualViewContext.enter(storage,pos);
   check(IplClientVisualViewContext.resolve(storage)==b,"parent flip read live");IplClientVisualViewContext.exit(outer);
+  IplClientWorldFrameContext.frame=a;
+  check(IplClientVisualViewContext.resolve(storage)==a,"hosted render/tick frame answers for the world being drawn");
+  check(IplClientVisualViewContext.resolve(b)==b,"world frame never redirects an ordinary world's manager");
+  outer=IplClientVisualViewContext.enter(storage,pos);
+  check(IplClientVisualViewContext.resolve(storage)==b,"object lifecycle frame wins over the ambient world frame");
+  IplClientVisualViewContext.exit(outer);
+  IplClientWorldFrameContext.frame=storage;
+  check(IplClientVisualViewContext.resolve(storage)==storage,"storage frame never resolves to itself as a world");
+  IplClientWorldFrameContext.frame=null;
+  check(IplClientVisualViewContext.resolve(storage)==storage,"no ambient frame keeps manager identity honest");
   System.out.println("PASS: "+checks+" production visualization-view fixture assertions");
  }
 }

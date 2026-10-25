@@ -155,6 +155,27 @@ public abstract class IplHostedWorldFrameRouterMixin extends Level {
         return target != null ? target.isLoaded(pos) : super.isLoaded(pos);
     }
 
+    // World-frame light (solar/daylight checks, mob-spawn style "can see sky" probes run by
+    // hosted ship code at world coordinates) belongs to the world the ship flies through.
+
+    @Override
+    public int getBrightness(net.minecraft.world.level.LightLayer layer, BlockPos pos) {
+        ServerLevel target = ipl$worldFrameTarget(pos);
+        return target != null ? target.getBrightness(layer, pos) : super.getBrightness(layer, pos);
+    }
+
+    @Override
+    public int getRawBrightness(BlockPos pos, int amount) {
+        ServerLevel target = ipl$worldFrameTarget(pos);
+        return target != null ? target.getRawBrightness(pos, amount) : super.getRawBrightness(pos, amount);
+    }
+
+    @Override
+    public boolean canSeeSky(BlockPos pos) {
+        ServerLevel target = ipl$worldFrameTarget(pos);
+        return target != null ? target.canSeeSky(pos) : super.canSeeSky(pos);
+    }
+
     /** Chunk-grid variant of the world-frame gate: plot chunks live at |chunk| >= 62,500. */
     @Unique
     @Nullable

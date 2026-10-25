@@ -101,6 +101,7 @@ public final class IplSceneOwnership {
         ipl.sable.atlas.IplAtlasBodyImages.clearAll();
         ipl.sable.atlas.IplHostedTerrainGate.clearAll();
         ipl.sable.atlas.IplParentFrames.clearAll();
+        ipl.sable.atlas.IplContraptionCharts.clearAll();
         bodyHome.clear();
         bodiesByParent.clear();
     }
@@ -125,7 +126,7 @@ public final class IplSceneOwnership {
         if (!isEnabled()) return;
 
         Map<ServerLevel, List<ServerSubLevel>> rebuilt = new HashMap<>();
-        for (ServerSubLevel sub : hostingContainer.getAllSubLevels()) {
+        for (ServerSubLevel sub : IplOwnedSubLevels.owned(hostingContainer)) {
             if (sub.isRemoved()) continue;
             if (!IplDimAgnostic.isHosted(sub)) continue;
 
@@ -137,9 +138,10 @@ public final class IplSceneOwnership {
         }
         bodiesByParent.clear();
         bodiesByParent.putAll(rebuilt);
-        ipl.sable.atlas.IplAtlasBodyImages.reconcileAll(hostingContainer.getAllSubLevels());
-        ipl.sable.atlas.IplParentFrames.reconcile(hostingContainer.getAllSubLevels());
-        ipl.sable.atlas.IplHostedTerrainGate.retainLive(hostingContainer.getAllSubLevels());
+        ipl.sable.atlas.IplAtlasBodyImages.reconcileAll(IplOwnedSubLevels.owned(hostingContainer));
+        ipl.sable.atlas.IplParentFrames.reconcile(IplOwnedSubLevels.owned(hostingContainer));
+        ipl.sable.atlas.IplHostedTerrainGate.retainLive(IplOwnedSubLevels.owned(hostingContainer));
+        ipl.sable.atlas.IplContraptionCharts.reconcile();
     }
 
 }

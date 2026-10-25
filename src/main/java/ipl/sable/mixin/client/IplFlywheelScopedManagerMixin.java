@@ -13,4 +13,15 @@ public interface IplFlywheelScopedManagerMixin {
     private static VisualizationManager ipl$objectView(LevelAccessor source,Operation<VisualizationManager> original) {
         return original.call(IplClientVisualViewContext.resolve(source));
     }
+
+    @WrapMethod(method = "getOrThrow")
+    private static VisualizationManager ipl$objectViewOrThrow(LevelAccessor source, Operation<VisualizationManager> original) {
+        return original.call(IplClientVisualViewContext.resolve(source));
+    }
+
+    /** Same object-scoped view for the support query renderers use to skip visualized parts. */
+    @WrapMethod(method = "supportsVisualization")
+    private static boolean ipl$objectSupport(LevelAccessor source, Operation<Boolean> original) {
+        return original.call(IplClientVisualViewContext.resolve(source));
+    }
 }

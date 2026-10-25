@@ -112,6 +112,25 @@ public final class IplWorldFrameContext {
     /** Saved state for restoring at frame end (frames may nest via enqueueWork). */
     public record DeferredFrame(boolean prevDeferred, @Nullable ServerLevel prevParent) {}
 
+    /**
+     * Rolling frame of the hosting container's processing pass. Code run by that pass that
+     * names no ship up front — an addon's per-world physics listener iterating its own
+     * per-world registry (balloons, thrusters...) — still resolves its ship's plot before
+     * it samples the world around the ship ({@code Sable.HELPER.getContaining}, BE lookups),
+     * so each hosted plot resolution re-arms the frame with that ship's parent. Unlike a
+     * packet's deferred frame the owner may change from one resolution to the next (one
+     * pass handles many ships), and it never overrides a frame armed by an explicit seam.
+     */
+    private static final ThreadLocal<Boolean> ROLLING = new ThreadLocal<>();
+
+    public static boolean rollingActive() {
+        return Boolean.TRUE.equals(ROLLING.get());
+    }
+
+    static void setRolling(boolean rolling) {
+        if (rolling) ROLLING.set(Boolean.TRUE); else ROLLING.remove();
+    }
+
     public static boolean deferredActive() {
         return Boolean.TRUE.equals(DEFERRED.get());
     }
@@ -141,7 +160,14 @@ public final class IplWorldFrameContext {
      * one-owner scoping.
      */
     public static void notifyPlotResolved(@Nullable LevelPlot plot) {
-        if (plot == null || !deferredActive() || CURRENT.get() != null) return;
+        if (plot == null) return;
+        if (!deferredActive()) {
+            if (Boolean.TRUE.equals(ROLLING.get())) {
+                IplSubLevelReadViews.followResolvedShip(plot.getSubLevel());
+            }
+            return;
+        }
+        if (CURRENT.get() != null) return;
         SubLevel subLevel = plot.getSubLevel();
         if (subLevel == null || subLevel.isRemoved() || !IplDimAgnostic.isHosted(subLevel)) {
             return;

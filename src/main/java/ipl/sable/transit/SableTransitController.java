@@ -468,7 +468,7 @@ public final class SableTransitController {
             java.util.List<ServerSubLevel> mates = new java.util.ArrayList<>(ids.length - 1);
             for (int id : ids) {
                 if (id == selfId) continue;
-                for (var sub : hosting.getAllSubLevels()) {
+                for (var sub : ipl.sable.dim.IplOwnedSubLevels.owned(hosting)) {
                     if (sub.getRuntimeId() == id && !sub.isRemoved()) {
                         mates.add(sub);
                         break;

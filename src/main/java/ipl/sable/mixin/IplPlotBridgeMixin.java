@@ -103,14 +103,40 @@ public abstract class IplPlotBridgeMixin {
         ci.cancel();
     }
 
-    /** Public world membership is available outside tick/render/packet scopes too.
-     * Internal ownership consumers use IplOwnedSubLevels rather than this read view. */
+    /**
+     * Public world membership is available outside tick/render/packet scopes too.
+     * Internal ownership consumers use IplOwnedSubLevels rather than this read view.
+     *
+     * <p>Server-side enumeration follows the frame of the caller (see
+     * {@link ipl.sable.dim.IplProcessingPass}):
+     * <ul>
+     *   <li>a parent world's OWN processing pass lists only what it owns — its hosted ships
+     *       are processed once, by the storage pass, never a second time here;</li>
+     *   <li>storage enumerated from inside one world's frame lists that world's ships;</li>
+     *   <li>storage's own processing pass lists every owned ship with that ship's world frame
+     *       armed while it is handled (container-scoped addon loops then probe the world the
+     *       ship flies through, not the empty storage void);</li>
+     *   <li>everything else is unchanged: world view for worlds, honest storage list.</li>
+     * </ul>
+     */
     @ModifyReturnValue(method = "getAllSubLevels()Ljava/util/List;", at = @At("RETURN"), require = 1)
     private java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> ipl$hostedWorldEnumeration(
         java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> original
     ) {
         Level self = this.getLevel();
-        if (self == null || IplDimAgnostic.isHostingLevel(self)) return original;
+        if (self == null) return original;
+        boolean server = self instanceof net.minecraft.server.level.ServerLevel;
+        boolean ownPass = server && ipl.sable.dim.IplProcessingPass.isPassOf((SubLevelContainer) (Object) this);
+        if (IplDimAgnostic.isHostingLevel(self)) {
+            if (!server) return original;
+            net.minecraft.server.level.ServerLevel frame = ipl.sable.dim.IplWorldFrameContext.current();
+            if (frame != null && frame != self && !IplDimAgnostic.isHostingLevel(frame)
+                && !(ownPass && ipl.sable.dim.IplSubLevelReadViews.isElementFrame(frame))) {
+                return ipl.sable.dim.IplSubLevelReadViews.ofParent(original, frame);
+            }
+            return ownPass ? ipl.sable.dim.IplSubLevelReadViews.framed(original) : original;
+        }
+        if (ownPass) return original;
         SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(self);
         if (hosting == null || hosting == (Object) this) return original;
         return ipl.sable.dim.IplSubLevelReadViews.inWorld(

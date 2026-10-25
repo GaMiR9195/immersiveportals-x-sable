@@ -59,7 +59,7 @@
 
 Сохранены исправления posLookup, удаления embedding, выбора фактического parent manager, scale в embedding transform и удаления старых embedding при recreateAll. F3+A для этого пути не требуется.
 
-Файлы: `client/IplHostedBlockEntityLiveness.java`, `IplClientFlywheelReroute.java`, `mixin/client/IplHostedFlywheelStorageMixin.java`.
+Файлы: `client/IplHostedBlockEntityLiveness.java`, `mixin/client/IplHostedFlywheelStorageMixin.java` (собственная reroute-очередь `IplClientFlywheelReroute` удалена в итерации sable-api-fix, см. ниже).
 
 ### 4. Невидимые верёвки: общая ошибка BER gate
 
@@ -95,6 +95,68 @@ Gate теперь учитывает живые BE в фактических з�
 
 Файлы: `dim/IplParentPlotEntityTicking.java`, `client/IplClientPlotEntityTicking.java`, `mixin/IplParentPlotEntityTickingMixin.java`, `IplPlotChunkTickingGuardMixin.java`, `client/IplClientPlotTickingGuardMixin.java`, `client/SableAltContainerTickMixin.java`, server heartbeat/stop и client disconnect cleanup. Удалён `IplPlotEntityUnloadGuardMixin`.
 
+## Итерация sable-api-fix: storage-измерение как обычный мир Sable
+
+Цель: всё, что Sable и аддоны делают через его API, работает для ship в `ipl_sable:sublevels` так же, как для stock ship в обычном мире, без портала и без правок под конкретный мод. Каждое правило ниже сформулировано через границу Sable/Level/Flywheel/звука, а не через предмет или блок.
+
+### 7. Проходы обработки контейнера и кадры мира
+
+Публичный список мира содержит его hosted ships (п. 1). Если parent-мир сам перебирает `getAllSubLevels()` в tick/physics-цикле, hosted ship обработался бы второй раз. Поэтому у каждого серверного контейнера есть **owner-local проход** (`dim/IplProcessingPass`): пока идёт tick, observer-системы или physics-фаза контейнера, его перечисление отдаёт только своё. Проход storage отдаёт своих ships через `framed` view: при выдаче элемента включается кадр мира этого ship (поиск terrain, entities, звуков идёт в мире, где ship летит, а не в пустом storage). Вне проходов ничего не меняется.
+
+- Physics-фазы storage-прохода используют **rolling frame**: listener аддона, который сам не называет ship, получает кадр мира ship, чей plot он первым разрешил. Каждый listener события Sable — отдельная единица (`unit`): кадр предыдущего listener не утекает. Явно включённые кадры (BE tick, interaction, collision callback) никогда не перезаписываются.
+- Native step Atlas идёт **вне** любого прохода: contact callbacks (fragile blocks, взрывы) видят обычные world views.
+- Tick ship/актора включает кадр его parent. Внутренние циклы IPL перебирают только owned-list.
+- Серверная аудитория: звуки/частицы/level events, отправленные hosted plot, адресуются игрокам мира, где ship виден (`IplHostedAudienceMixin`, `IplStorageAudience`, `IplStorageDimensionBroadcastMixin`).
+
+Удалён per-mod `IplBalloonEnvironmentScopeMixin` (Aeronautics): его случай покрыт rolling frame + listener unit.
+
+Файлы: `dim/IplProcessingPass.java`, `dim/IplSubLevelReadViews.java`, `dim/IplWorldFrameContext.java`, `dim/IplStorageAudience.java`, `atlas/IplFusedStep.java`, `mixin/IplContainerProcessingPassMixin.java`, `IplPhysicsListenerUnitMixin.java`, `IplHostedShipTickFrameMixin.java`, `IplHostedActorTickFrameMixin.java`, `IplHostedAudienceMixin.java`, `IplStorageDimensionBroadcastMixin.java`, правила в `IplPlotBridgeMixin.ipl$hostedWorldEnumeration`.
+
+### 8. Entities plot и мира в sub-level-inclusive запросах
+
+`SubLevelInclusiveLevelEntityGetter` Sable отвечает на одну часть запроса (plot-local bounds, world bounds, local bounds пересекающих ships) из одного хранилища — в stock это один Level. Теперь каждая часть читается из своего: entities plot — из `SubLevel.getLevel()`, мир — из parent ship, world-запрос к storage — из включённого кадра. Чтение идёт через raw getter (без рекурсии). Так entities на hosted ship (Honey Glue, seats, contraption entities) снова находятся штатным API.
+
+Файлы: `dim/IplPlotEntityStorage.java`, `mixin/IplPlotEntityStorageRoutingMixin.java`, `IplInclusiveEntityGetterAccessor.java`.
+
+### 9. Контрапции на hosted ship в chart parent-мира
+
+Sable регистрирует `KinematicContraption` в pipeline своего mount. Для hosted mount это pipeline storage, где нет terrain parent: контрапция не сталкивалась с землёй. Теперь контрапция живёт в Atlas chart мира, в котором летит её ship, и переезжает при смене parent (`IplSceneOwnership.reconcile`).
+
+Файлы: `atlas/IplContraptionCharts.java`, `mixin/SableRapierPipelineOwnershipGuardMixin.java` (add/remove contraption), `IplRapierPipelineAccess.java`, `dim/IplSceneOwnership.java`.
+
+### 10. Свет hosted plot
+
+Plot BE и renderers запрашивают свет у своего Level. Для hosted plot это storage без неба parent, поэтому освещение зависело от наклона ship (Rope Connector белел). Внутри кадра мира `getBrightness/getRawBrightness/canSeeSky` storage-уровня отвечают по миру кадра; sky light sub-level на клиенте берётся из parent (`IplHostedSubLevelSkyLightMixin`).
+
+Файлы: `mixin/IplHostedWorldFrameRouterMixin.java`, `mixin/client/IplHostedClientWorldFrameRouterMixin.java`, `mixin/client/IplHostedSubLevelSkyLightMixin.java`.
+
+### 11. Клиентские tickable sounds
+
+Hosted BE тикают внутри переключения IP на storage-мир, а `SoundEngine` тикает их звук уже вне него: стандартная проверка «уровень моей BE всё ещё client level?» проваливалась на первом тике, звук сразу останавливался (молчали двигатели/трастеры). Tickable sound, начатый в storage-кадре, тикается в том же кадре. Звуки, начатые где-либо ещё, не затрагиваются.
+
+Файлы: `client/IplClientSoundFrames.java`, `mixin/client/IplHostedTickableSoundFrameMixin.java`.
+
+### 12. Flywheel: исходный путь вместо собственной reroute-очереди
+
+Удалены `IplClientFlywheelReroute`, `IplHostedEntityVisuals`, `IplHostedFlywheelVisualRerouteMixin`, `IplHostedVisualRemovalMixin`. Штатный lifecycle Flywheel уже доходит до manager мира через object-scoped view (`IplClientVisualViewContext`: lifecycle-кадры BE, теперь также кадры render/tick hosted BE) и entity events через parent ship. Единственное событие без штатного hook — ship входит в сцену мира или выходит из неё (parent стал известен после plot, transit, пересоздание manager). Его обрабатывает `IplHostedFlywheelVisuals.reconcile` в начале кадра каждого manager через публичный API Flywheel; per-BE/per-entity состояния нет.
+
+Файлы: `client/IplHostedFlywheelVisuals.java`, `mixin/client/IplHostedFlywheelSceneMixin.java`, `client/IplClientVisualViewContext.java`, `mixin/client/IplFlywheelScopedManagerMixin.java`, `IplHostedFlywheelEntityEventsMixin.java`.
+
+### 13. Мёртвые mixins
+
+Полный transform-аудит конфигурации нашёл injectors, которые никогда не применялись (`defaultRequire: 0` их молча пропускал):
+
+- `IplHostedClientEntityLookupMixin` целился в абстрактный `Level.getEntity(int)`. Перенесён на `ClientLevel.getEntity(int)` (client-список): поиск entity по network id теперь действительно пересекает границу storage/мир (owners, leash, pair links).
+- `IplSubLevelSelectorBridgeMixin` целился в несуществующий в Sable 2.0.6 класс `SubLevelSelector`. Удалён: `SubLevelTargetSelector` читает `getAllSubLevels()`, а публичный список мира уже содержит hosted ships (п. 1).
+
+Остальные непримененные injectors относятся к portal/straddle/staff и методам, которые добавляют mixins Sable вне harness. Здесь они не менялись.
+
+### Что осталось mod-specific и почему
+
+- Create Redstone Link (`IplCreateLinkNetworkViewMixin`, `IplMovingLinkNetworks`): сеть хранится по ключу мира. Общего API Sable для этого нет. Create разрешён как крайний случай.
+- Simulated physics staff, plunger, Waystones, `SimAssemblyHelper`: интеграции 0.5.x для portal transit; в этой итерации не трогались. `IplHostedStaffLocksMixin` — клиентская половина уже существующего staff routing.
+- Fragile leaves: путь native callback → `IplCollisionCallbackContext` → system parent → штатный `FragileBlockCallback` корректен; native step теперь вне проходов. Ограничения upstream остаются: PERSISTENT leaves не ломаются, порог удара 4 м/с.
+
 ## Что реально проверено
 
 Логи лежат в `checks/` архива. Это не запись игрового playtest.
@@ -111,6 +173,7 @@ Gate теперь учитывает живые BE в фактических з�
 | Старые регрессии | 14 environment + dedicated-server linkage; 40 GL bind; 27 render cache; 7011 culling/section; 5523 portal sweep geometry |
 | Реальный Linux JNI | ABI smoke и actual contact simulation: обычная сцена и Atlas image в другом chart, по 2052 callbacks с каждой стороны, max impact ~8.34 |
 | JNI declarations | Все 53 native signatures сопоставлены с фактическим Sable 2.0.6 JAR |
+| sable-api-fix | `compileJava`/`assemble jarJar` OK; transform harness 65 targets (новые seams: inclusive entity getter, ship/actor tick, physics listeners, audience, SoundEngine, Flywheel scene, ClientLevel lookup), 2752 ownership assertions; `ProcessingPassTest` 37; visual view 13; полный конфиг применён к 91 target без ошибок, мёртвые injectors перечислены в п. 13; check-jar. Игровой playtest не выполнялся |
 
 Нативный contact-test доказывает прохождение callback при настоящем Rapier шаге, но сам по себе не доказывает разрушение листьев в Minecraft. Fixture со штатным FragileBlockCallback проверяет выбор мира/правила разрушения, но не заменяет GameTest.
 
@@ -157,6 +220,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 ```bash
 ./gradlew assemble jarJar writeHostedApi2Classpath -I tests/hosted-api2/write-classpath.gradle
 bash tests/hosted-api2/run-transform.sh
+bash tests/hosted-api2/run-dead-injectors.sh
 SABLE_SOURCES=/path/to/sable-main bash tests/hosted-api2/run.sh
 bash tests/entity/run.sh
 bash tests/visual-liveness/run.sh

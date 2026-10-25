@@ -54,7 +54,7 @@ public final class IplHostingTeleportGuard {
             return target; // genuine plot-space teleport (debug/rescue) — allowed
         }
 
-        for (SubLevel sub : container.getAllSubLevels()) {
+        for (SubLevel sub : IplOwnedSubLevels.owned(container)) {
             if (sub.isRemoved() || !IplDimAgnostic.isHosted(sub)) continue;
             BoundingBox3dc bb = sub.boundingBox();
             if (x < bb.minX() - XZ_MARGIN || x > bb.maxX() + XZ_MARGIN

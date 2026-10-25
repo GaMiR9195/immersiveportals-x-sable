@@ -7,9 +7,13 @@ with zipfile.ZipFile(jar) as z:
     names=set(z.namelist());config=json.loads(z.read('ipl_sable.mixins.json'))
     for name in config['mixins']+config['client']:
         assert 'ipl/sable/mixin/'+name.replace('.','/')+'.class' in names,name
-    for name in ['IplScaledClipReadViewMixin','IplPlotEntityUnloadGuardMixin','IplOwnedRenderConsumersMixin','IplOwnedSodiumRenderConsumersMixin']:
+    for name in ['IplScaledClipReadViewMixin','IplPlotEntityUnloadGuardMixin','IplOwnedRenderConsumersMixin','IplOwnedSodiumRenderConsumersMixin',
+                 'IplBalloonEnvironmentScopeMixin','IplSubLevelSelectorBridgeMixin','IplClientFlywheelReroute','IplHostedEntityVisuals',
+                 'IplHostedFlywheelVisualRerouteMixin','IplHostedVisualRemovalMixin','ipl/sable/mixin/IplHostedClientEntityLookupMixin']:
         assert not any(name in entry for entry in names),name
-    for name in ['ipl/sable/IplSableRenderOwnershipPlugin.class','ipl/sable/dim/IplHostedEntityOwnership.class','ipl/sable/render/IplSubLevelBlockEntityPresence.class','ipl/sable/dim/IplHostedPlotHeight.class']:
+    for name in ['ipl/sable/IplSableRenderOwnershipPlugin.class','ipl/sable/dim/IplHostedEntityOwnership.class','ipl/sable/render/IplSubLevelBlockEntityPresence.class','ipl/sable/dim/IplHostedPlotHeight.class',
+                 'ipl/sable/dim/IplProcessingPass.class','ipl/sable/dim/IplPlotEntityStorage.class','ipl/sable/atlas/IplContraptionCharts.class',
+                 'ipl/sable/client/IplHostedFlywheelVisuals.class','ipl/sable/client/IplClientSoundFrames.class']:
         assert name in names,name
     assert config['plugin']=='ipl.sable.IplSableRenderOwnershipPlugin'
     assert not any(n.startswith(('com/misterblusky9/pym/','dev/simulated_team/','com/simibubi/create/')) for n in names)

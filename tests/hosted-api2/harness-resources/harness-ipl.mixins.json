@@ -26,7 +26,18 @@
     "IplHostedInteractionHeightMixin",
     "IplParentPlotEntityTickingMixin",
     "IplPlotChunkTickingGuardMixin",
-    "SableRapierPipelineOwnershipGuardMixin"
+    "SableRapierPipelineOwnershipGuardMixin",
+    "IplPlotEntityStorageRoutingMixin",
+    "IplInclusiveEntityGetterAccessor",
+    "IplHostedAudienceMixin",
+    "IplContainerProcessingPassMixin",
+    "IplHostedShipTickFrameMixin",
+    "IplHostedActorTickFrameMixin",
+    "IplStorageDimensionBroadcastMixin",
+    "IplPhysicsListenerUnitMixin",
+    "IplHostedWorldFrameRouterMixin",
+    "IplRapierPipelineAccess",
+    "IplHostingEntityTrackingMixin"
   ],
   "client": [
     "client.SableAltContainerTickMixin",
@@ -44,7 +55,12 @@
     "client.IplClientPlotTickingGuardMixin",
     "client.IplClientParentPlotEntityTickingMixin",
     "client.IplClientEntityStorageAccessor",
-    "client.IplHostedSubLevelRenderSodiumMixin"
+    "client.IplHostedSubLevelRenderSodiumMixin",
+    "client.IplHostedClientEntityLookupMixin",
+    "client.IplHostedSubLevelSkyLightMixin",
+    "client.IplHostedTickableSoundFrameMixin",
+    "client.IplHostedFlywheelSceneMixin",
+    "client.IplHostedClientWorldFrameRouterMixin"
   ],
   "plugin": "ipl.sable.IplSableRenderOwnershipPlugin"
 }

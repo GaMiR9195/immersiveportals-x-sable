@@ -23,7 +23,7 @@ public final class IplHostedSpatialQueries {
         }
         var hosting = IplDimAgnostic.getHostingContainerFor(source);
         if (hosting == null) return out;
-        for (SubLevel sub : hosting.getAllSubLevels()) {
+        for (SubLevel sub : IplOwnedSubLevels.owned(hosting)) {
             if (sub.isRemoved() || seen.contains(sub)) continue;
             boolean hit = IplDimAgnostic.getParentLevel(sub) == view && sub.boundingBox().intersects(bounds);
             if (!hit) {

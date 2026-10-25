@@ -6,8 +6,10 @@ ANNOTATIONS_JAR="${ANNOTATIONS_JAR:-$(find "${GRADLE_USER_HOME:-$HOME/.gradle}/c
 out="$(mktemp -d)";trap 'rm -rf "$out"' EXIT
 JAVAC="${JAVA_HOME:+$JAVA_HOME/bin/}javac"; JAVA="${JAVA_HOME:+$JAVA_HOME/bin/}java"
 mapfile -t fixtures < <(find tests/hosted-api2/fixtures -name '*.java')
-"$JAVAC" --release 21 -cp "$JOML_JAR:$ANNOTATIONS_JAR" -d "$out" "${fixtures[@]}" src/main/java/ipl/sable/dim/{IplReadViewScope,IplCollisionCallbackContext,IplHostedSpatialQueries,IplSubLevelReadViews,IplHostedPlotHeight}.java src/main/java/ipl/sable/compat/IplMovingLinkNetworks.java src/main/java/ipl/sable/client/IplClientVisualViewContext.java tests/hosted-api2/{HostedBoundariesTest,MovingNetworksTest,VisualViewContextTest,HeightProfilesTest}.java
+"$JAVAC" --release 21 -cp "$JOML_JAR:$ANNOTATIONS_JAR" -d "$out" "${fixtures[@]}" src/main/java/ipl/sable/dim/{IplReadViewScope,IplCollisionCallbackContext,IplHostedSpatialQueries,IplSubLevelReadViews,IplProcessingPass,IplHostedPlotHeight}.java src/main/java/ipl/sable/compat/IplMovingLinkNetworks.java src/main/java/ipl/sable/client/IplClientVisualViewContext.java tests/hosted-api2/{HostedBoundariesTest,ProcessingPassTest,MovingNetworksTest,VisualViewContextTest,HeightProfilesTest}.java
 "$JAVA" -cp "$out:$JOML_JAR:$ANNOTATIONS_JAR" ipl.sable.dim.HostedBoundariesTest
+
+"$JAVA" -cp "$out:$JOML_JAR:$ANNOTATIONS_JAR" ipl.sable.dim.ProcessingPassTest
 
 "$JAVA" -cp "$out:$JOML_JAR:$ANNOTATIONS_JAR" ipl.sable.compat.MovingNetworksTest
 

@@ -26,6 +26,9 @@ cp -r tests/hosted-api2/harness-resources/* "$out/"
  dev.ryanhcode.sable.neoforge.compatibility.flywheel.FlywheelCompatNeoForge \
  dev.engine_room.flywheel.impl.visualization.storage.Storage \
  net.minecraft.world.level.chunk.LevelChunk net.minecraft.world.level.block.entity.BlockEntity \
- net.minecraft.client.renderer.LevelRenderer net.caffeinemc.mods.sodium.client.render.SodiumWorldRenderer dev.engine_room.flywheel.api.visualization.VisualizationManager
+ net.minecraft.client.renderer.LevelRenderer net.caffeinemc.mods.sodium.client.render.SodiumWorldRenderer dev.engine_room.flywheel.api.visualization.VisualizationManager \
+ dev.ryanhcode.sable.util.SubLevelInclusiveLevelEntityGetter dev.ryanhcode.sable.sublevel.ServerSubLevel dev.ryanhcode.sable.sublevel.ClientSubLevel \
+ dev.ryanhcode.sable.neoforge.platform.SableEventPlatformImpl net.minecraft.client.sounds.SoundEngine \
+ dev.engine_room.flywheel.impl.visualization.VisualizationManagerImpl net.minecraft.server.level.ChunkMap
 
 "$JAVA" -cp "$out:build/classes/java/main:$cp" harness.OwnershipAudit

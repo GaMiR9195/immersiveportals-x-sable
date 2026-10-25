@@ -78,10 +78,6 @@ public abstract class SableAltContainerTickMixin {
                     container.tick();
                     if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(alt)) {
                         hostingTicked = true;
-                        // Flywheel visual safety net: plot BEs missed by the chunk hooks
-                        // (Sable's own chunk pipeline / late parent sync) get queued into
-                        // their parent's visualization world here.
-                        ipl.sable.client.IplClientFlywheelReroute.sweepHostedContainer(container);
                     }
                 }
             }
@@ -95,7 +91,6 @@ public abstract class SableAltContainerTickMixin {
                     .getHostingContainerOrNull();
                 if (hosting != null) {
                     hosting.tick();
-                    ipl.sable.client.IplClientFlywheelReroute.sweepHostedContainer(hosting);
                 }
             }
             ipl.sable.client.IplParentDimSync.applyPendingHandoffs();

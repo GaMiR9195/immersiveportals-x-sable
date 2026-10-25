@@ -83,4 +83,27 @@ public abstract class IplHostedClientWorldFrameRouterMixin extends Level {
         ClientLevel target = ipl$clientWorldFrameTarget(pos);
         return target != null ? target.isLoaded(pos) : super.isLoaded(pos);
     }
+
+    // Light is part of the world-frame environment too: renderers light world-space
+    // geometry (rope strands, beams, chains) with LevelRenderer.getLightColor(be.getLevel(),
+    // worldPos). Hosted, that sampled the void storage dimension — full sky light, no block
+    // light — so such geometry rendered washed-out white regardless of where the ship is.
+
+    @Override
+    public int getBrightness(net.minecraft.world.level.LightLayer layer, BlockPos pos) {
+        ClientLevel target = ipl$clientWorldFrameTarget(pos);
+        return target != null ? target.getBrightness(layer, pos) : super.getBrightness(layer, pos);
+    }
+
+    @Override
+    public int getRawBrightness(BlockPos pos, int amount) {
+        ClientLevel target = ipl$clientWorldFrameTarget(pos);
+        return target != null ? target.getRawBrightness(pos, amount) : super.getRawBrightness(pos, amount);
+    }
+
+    @Override
+    public boolean canSeeSky(BlockPos pos) {
+        ClientLevel target = ipl$clientWorldFrameTarget(pos);
+        return target != null ? target.canSeeSky(pos) : super.canSeeSky(pos);
+    }
 }

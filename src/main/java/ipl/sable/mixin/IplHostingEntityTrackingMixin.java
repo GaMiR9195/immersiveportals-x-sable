@@ -131,7 +131,7 @@ public abstract class IplHostingEntityTrackingMixin {
         Set<UUID> seen = new HashSet<>();
         List<ServerPlayer> viewers = new ArrayList<>();
         var playerList = this.level.getServer().getPlayerList();
-        for (SubLevel sub : container.getAllSubLevels()) {
+        for (SubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (!(sub instanceof ServerSubLevel hosted) || hosted.isRemoved()) continue;
             for (UUID uuid : hosted.getTrackingPlayers()) {
                 if (!seen.add(uuid)) continue;
