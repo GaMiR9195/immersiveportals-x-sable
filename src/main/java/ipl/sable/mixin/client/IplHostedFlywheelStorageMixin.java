@@ -21,6 +21,30 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Pseudo
 @Mixin(value = BlockEntityStorage.class, remap = false, priority = 1100)
 public abstract class IplHostedFlywheelStorageMixin {
+    @Dynamic("Merged by Sable BlockEntityStorageMixin")
+    @Inject(method = "sable$preFlywheelFrame", at = @At("HEAD"), require = 1)
+    private void ipl$retireOrphanedVisuals(CallbackInfo ci) {
+        // Inspect the actual storage: visuals created through stock callbacks may
+        // never have been registered in our queue bookkeeping. This runs before
+        // Flywheel starts executing frame plans, not on an arbitrary client tick.
+        var visuals = ((IplFlywheelStorageAccessor)this).ipl$visuals();
+        for (Object key : new java.util.ArrayList<>(visuals.keySet())) {
+            if (key instanceof BlockEntity be && be.getLevel() != null
+                && IplDimAgnostic.isHostingLevel(be.getLevel())
+                && !ipl.sable.client.IplHostedBlockEntityLiveness.isLive(be)) {
+                ((BlockEntityStorage)(Object)this).remove(be);
+            }
+        }
+    }
+
+    @Inject(method="willAccept(Lnet/minecraft/world/level/block/entity/BlockEntity;)Z",
+        at=@At("HEAD"), cancellable=true, require=1)
+    private void ipl$rejectStaleIdentity(BlockEntity be,
+        org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        if (be.getLevel()!=null && IplDimAgnostic.isHostingLevel(be.getLevel())
+            && !ipl.sable.client.IplHostedBlockEntityLiveness.isLive(be)) cir.setReturnValue(false);
+    }
+
     @Shadow @Final private Long2ObjectMap<BlockEntityVisual<?>> posLookup;
 
     @Inject(method = "remove(Lnet/minecraft/world/level/block/entity/BlockEntity;)V",

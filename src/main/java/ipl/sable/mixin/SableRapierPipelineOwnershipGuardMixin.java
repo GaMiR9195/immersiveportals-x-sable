@@ -90,6 +90,8 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
 
     @Shadow @Final private Int2ObjectMap<ServerSubLevel> activeSubLevels;
 
+    @Shadow @Final private it.unimi.dsi.fastutil.objects.Object2ObjectMap<KinematicContraption, ?> activeContraptions;
+
     @Shadow @Final private ServerLevel level;
 
     /** True when the pipeline has no native rigid body for this sub-level. */
@@ -314,6 +316,19 @@ public abstract class SableRapierPipelineOwnershipGuardMixin {
             IPL$LOG.warn("[IPL-RAPIER-GUARD] refused add(KinematicContraption) on unowned mount "
                 + "sub-level {} (no native body -- e.g. a kinematic mirror). Skipping enrollment.",
                 serverMount.getUniqueId());
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "remove(Ldev/ryanhcode/sable/api/sublevel/KinematicContraption;)V",
+        at = @At("HEAD"), cancellable = true, remap = false, require = 1)
+    private void ipl$forwardContraptionRemoval(KinematicContraption contraption, CallbackInfo ci) {
+        // Consult actual actor ownership first. Its mount may already have been
+        // removed from the plot lookup by the time an entity removal arrives.
+        if (this.activeContraptions.containsKey(contraption)) return;
+        var storage = ipl.sable.dim.IplDimAgnostic.getHostingContainerFor(this.level);
+        if (storage instanceof dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer serverStorage && storage.getLevel() != this.level) {
+            serverStorage.physicsSystem().getPipeline().remove(contraption);
             ci.cancel();
         }
     }

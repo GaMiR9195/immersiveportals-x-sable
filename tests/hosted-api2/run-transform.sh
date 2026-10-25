@@ -9,16 +9,16 @@ if [[ -n "${2:-}" ]]; then cp="$2:$cp"; fi
 out="$(mktemp -d)"; trap 'rm -rf "$out"' EXIT
 JAVAC="${JAVA_HOME:+$JAVA_HOME/bin/}javac"; JAVA="${JAVA_HOME:+$JAVA_HOME/bin/}java"
 cp -r tests/hosted-api2/harness-resources/* "$out/"
-"$JAVAC" -proc:none -cp "$cp" -d "$out" tests/hosted-api2/harness/*.java tests/hosted-api2/TargetAudit.java
+"$JAVAC" -proc:none -cp "build/classes/java/main:$cp" -d "$out" tests/hosted-api2/harness/*.java tests/hosted-api2/TargetAudit.java
 "$JAVA" -cp "$out:build/classes/java/main:$cp" TargetAudit
 "$JAVA" -cp "$out:build/classes/java/main:src/main/resources:$cp" harness.ApplyMixins \
  dev.engine_room.flywheel.impl.visualization.storage.BlockEntityStorage \
- net.minecraft.world.level.BlockGetter net.minecraft.client.Minecraft \
+ net.minecraft.world.level.BlockGetter net.minecraft.world.level.Level net.minecraft.server.network.ServerGamePacketListenerImpl net.minecraft.world.entity.Entity net.minecraft.world.level.entity.PersistentEntitySectionManager net.minecraft.world.level.entity.TransientEntitySectionManager net.minecraft.client.Minecraft \
  dev.ryanhcode.sable.physics.impl.rapier.Rapier3D \
  dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem \
  dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline \
  com.simibubi.create.content.redstone.link.RedstoneLinkNetworkHandler \
- dev.ryanhcode.sable.api.sublevel.SubLevelContainer dev.ryanhcode.sable.ActiveSableCompanion net.minecraft.server.MinecraftServer \
+ dev.ryanhcode.sable.api.sublevel.SubLevelContainer dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicketManager dev.ryanhcode.sable.sublevel.system.SubLevelTrackingSystem dev.ryanhcode.sable.sublevel.storage.holding.SubLevelHoldingChunkMap dev.ryanhcode.sable.ActiveSableCompanion net.minecraft.server.MinecraftServer \
  net.minecraft.server.players.PlayerList net.minecraft.server.level.ServerLevel \
  net.minecraft.client.multiplayer.ClientLevel \
  dev.engine_room.flywheel.lib.visualization.VisualizationHelper \
@@ -26,4 +26,6 @@ cp -r tests/hosted-api2/harness-resources/* "$out/"
  dev.ryanhcode.sable.neoforge.compatibility.flywheel.FlywheelCompatNeoForge \
  dev.engine_room.flywheel.impl.visualization.storage.Storage \
  net.minecraft.world.level.chunk.LevelChunk net.minecraft.world.level.block.entity.BlockEntity \
- net.minecraft.client.renderer.LevelRenderer dev.engine_room.flywheel.api.visualization.VisualizationManager
+ net.minecraft.client.renderer.LevelRenderer net.caffeinemc.mods.sodium.client.render.SodiumWorldRenderer dev.engine_room.flywheel.api.visualization.VisualizationManager
+
+"$JAVA" -cp "$out:build/classes/java/main:$cp" harness.OwnershipAudit

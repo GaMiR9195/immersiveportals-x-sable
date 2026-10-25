@@ -13,15 +13,7 @@ public final class IplSubLevelRenderVisibility {
     private IplSubLevelRenderVisibility() {}
 
     public static boolean hasBlockEntities(ClientSubLevel sub) {
-        var data=sub.getRenderData();
-        if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData chunks) {
-            for (var section:chunks.allRenderSections())
-                if (!section.getCompiled().getRenderableBlockEntities().isEmpty()) return true;
-            return false;
-        }
-        if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaSingleSubLevelRenderData single)
-            return single.getRenderBlockEntity()!=null;
-        return true; // A custom backend can have its own BE storage.
+        return IplSubLevelBlockEntityPresence.hasBlockEntities(sub);
     }
 
     public static boolean visible(ClientSubLevel sub, Pose3dc pose) {

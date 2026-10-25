@@ -1,0 +1,1 @@
+package net.minecraft.server; public class MinecraftServer {public boolean isSameThread(){return true;}public int getTickCount(){return 1;}public Iterable<net.minecraft.server.level.ServerLevel> getAllLevels(){return java.util.List.of();}}

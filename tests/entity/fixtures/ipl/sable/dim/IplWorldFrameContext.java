@@ -1,0 +1,1 @@
+package ipl.sable.dim; public class IplWorldFrameContext {public static net.minecraft.server.level.ServerLevel parent;public static net.minecraft.server.level.ServerLevel resolveParentForPlotBe(net.minecraft.server.level.ServerLevel storage,Object pos){return parent;}}

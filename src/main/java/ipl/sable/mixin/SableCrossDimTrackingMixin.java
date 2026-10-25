@@ -166,7 +166,7 @@ public abstract class SableCrossDimTrackingMixin {
             double range = dev.ryanhcode.sable.SableConfig.SUB_LEVEL_TRACKING_RANGE.getAsDouble();
             double rangeSq = range * range;
 
-            for (SubLevel subLevel : container.getAllSubLevels()) {
+            for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
                 if (subLevel.isRemoved()) continue;
 
                 net.minecraft.server.level.ServerLevel parent =
@@ -196,7 +196,7 @@ public abstract class SableCrossDimTrackingMixin {
             return;
         }
 
-        for (SubLevel subLevel : container.getAllSubLevels()) {
+        for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (subLevel.isRemoved()) continue;
 
             Vector3dc pos = subLevel.logicalPose().position();
@@ -310,7 +310,7 @@ public abstract class SableCrossDimTrackingMixin {
     @Inject(method = "sendBoundsUpdates", at = @At("HEAD"), require = 0)
     private void ipl$bootstrapCrossDimViewers(SubLevelContainer container, CallbackInfo ci) {
         if (ipl$crossDimViewersBySubLevel.isEmpty()) return;
-        for (SubLevel subLevel : container.getAllSubLevels()) {
+        for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (subLevel.isRemoved()) continue;
             ServerSubLevel serverSubLevel = (ServerSubLevel) subLevel;
             Set<UUID> crossDim = ipl$crossDimViewersBySubLevel.get(serverSubLevel.getUniqueId());

@@ -39,6 +39,30 @@ public final class IplClientPlotEntityTicking {
 
     private IplClientPlotEntityTicking() {}
 
+    /** Repairs entity-before-plot packet ordering, independently of Flywheel availability. */
+    public static void reconcile() {
+        if (!qouteall.imm_ptl.core.ClientWorldLoader.getIsInitialized()) return;
+        for (var world : qouteall.imm_ptl.core.ClientWorldLoader.getClientWorlds()) {
+            if (IplDimAgnostic.isHostingLevel(world)) continue;
+            for (Entity entity : world.entitiesForRendering()) update(entity, entity.getX(), entity.getZ());
+        }
+        for (Entity entity : java.util.List.copyOf(MEMBERSHIPS.keySet())) {
+            if (entity.isRemoved()) remove(entity);
+            else update(entity, entity.getX(), entity.getZ());
+        }
+    }
+
+    /** Cancel the downgrade before ticking-end callbacks, not by restoring it afterwards. */
+    public static synchronized boolean protects(Object manager, ChunkPos chunk) {
+        for (var membership : ACTIVE_COUNTS.keySet()) {
+            if (membership.chunk.equals(chunk)
+                && ((IplClientEntityStorageAccessor)membership.level).ipl$entityStorage() == manager) return true;
+        }
+        return false;
+    }
+
+    public static synchronized void clear() { MEMBERSHIPS.clear(); ACTIVE_COUNTS.clear(); }
+
     public static void update(Entity entity, double x, double z) {
         if (!(entity.level() instanceof ClientLevel level)) return;
 

@@ -12,6 +12,7 @@ public abstract class IplParentPlotEntityTickingMixin {
 
     @Inject(method = "setPosRaw(DDD)V", at = @At("TAIL"), require = 0)
     private void ipl$markParentPlotEntityTicking(double x, double y, double z, CallbackInfo ci) {
+        ipl.sable.dim.IplHostedEntityOwnership.moved((Entity)(Object)this);
         ipl.sable.dim.IplParentPlotEntityTicking.update((Entity) (Object) this, x, z);
     }
 

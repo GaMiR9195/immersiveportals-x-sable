@@ -105,7 +105,7 @@ public final class IplFusedStep {
         double dt = 1.0 / 20.0 / substeps;
 
         for (Entry e : systems) {
-            for (ServerSubLevel sub : e.container().getAllSubLevels()) {
+            for (ServerSubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(e.container())) {
                 if (!sub.isRemoved() && ipl.sable.dim.IplDimAgnostic.isHosted(sub)) {
                     ipl.sable.transit.PortalCrossingDetector.seedPhysicsStart(sub);
                 }
@@ -160,20 +160,20 @@ public final class IplFusedStep {
         SubLevelPhysicsSystem.currentlySteppingSystem = sys;
         ServerSubLevelContainer container = e.container();
 
-        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
+        for (ServerSubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (subLevel.isRemoved()) continue;
             subLevel.prePhysicsTickBegin();
         }
-        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
+        for (ServerSubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (subLevel.isRemoved()) continue;
             subLevel.updateMergedMassData((float) sys.getPartialPhysicsTick());
         }
-        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
+        for (ServerSubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (subLevel.isRemoved()) continue;
             subLevel.prePhysicsTick(sys, sys.getPhysicsHandle(subLevel), dt);
         }
         SableEventPublishPlatform.INSTANCE.prePhysicsTick(sys, dt);
-        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
+        for (ServerSubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (subLevel.isRemoved()) continue;
             subLevel.applyQueuedForces(sys, sys.getPhysicsHandle(subLevel), dt);
         }

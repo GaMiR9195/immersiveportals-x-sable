@@ -31,7 +31,6 @@
     "IplClientKickPoseGuardMixin",
     "IplPlungerClientTargetFixMixin",
     "IplPlotChunkTickingGuardMixin",
-    "IplPlotEntityUnloadGuardMixin",
     "IplParentPlotChunkCacheMixin",
     "IplServerEntityManagerAccessor",
     "IplParentPlotEntityTickingMixin",
@@ -83,7 +82,6 @@
     "IplBalloonEnvironmentScopeMixin",
     "IplHostedParticleBroadcastMixin",
     "IplReadViewClipMixin",
-    "IplScaledClipReadViewMixin",
     "IplHostedBroadcastViewMixin",
     "IplContactColliderCallbackMixin",
     "IplContactSteppingSystemMixin",
@@ -92,7 +90,13 @@
     "IplContainerSpatialReadMixin",
     "IplPhysicsSpatialReadMixin",
     "IplContactEffectsViewMixin",
-    "IplCreateLinkConnectionsAccessor"
+    "IplCreateLinkConnectionsAccessor",
+    "IplOwnedSubLevelsAccessor",
+    "IplOwnedSubLevelConsumersMixin",
+    "IplOwnedContainerCloseMixin",
+    "IplEntityLifecycleAccessor",
+    "IplHostedPlotHeightMixin",
+    "IplHostedInteractionHeightMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
@@ -159,9 +163,11 @@
     "client.IplFlywheelChunkLifecycleMixin",
     "client.IplFlywheelBeLifecycleMixin",
     "client.IplFlywheelDirtyLifecycleMixin",
-    "client.IplFlywheelScopedManagerMixin"
+    "client.IplFlywheelScopedManagerMixin",
+    "client.IplClientPlotTickingGuardMixin"
   ],
   "injectors": {
     "defaultRequire": 0
-  }
+  },
+  "plugin": "ipl.sable.IplSableRenderOwnershipPlugin"
 }

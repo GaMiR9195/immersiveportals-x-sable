@@ -20,8 +20,8 @@ import java.util.WeakHashMap;
 
 /**
  * Atlas stores plot chunks in the hosting level, while stock Sable permits ordinary parent
- * entities to hold plot-local coordinates. Such an entity must remain in its parent level so
- * arbitrary addon state keyed by that level remains valid, but the parent entity manager must
+ * entities to hold plot-local coordinates. Kinematic actors remain in their physical parent level so
+ * their world-keyed addon state remains valid; retained plot volumes live in storage. The parent entity manager must
  * still tick its exact plot chunk. This class mirrors only entity-ticking status; block/chunk
  * reads are served separately by the parent plot cache bridge.
  */
@@ -34,6 +34,33 @@ public final class IplParentPlotEntityTicking {
     private static final Map<Entity, Membership> MEMBERSHIPS =
         Collections.synchronizedMap(new WeakHashMap<>());
     private static final Map<Membership, Integer> ACTIVE_COUNTS = new HashMap<>();
+    private static final java.util.Set<Membership> PLOT_SECTIONS = new java.util.HashSet<>();
+
+    /** Load saved parent-owned actors even before their first move/join callback. Only
+     * entity sections are made ticking; no parent block chunks are manufactured. */
+    public static synchronized void reconcilePlots(net.minecraft.server.MinecraftServer server) {
+        var next = new java.util.HashSet<Membership>();
+        var storage = SableSubLevelDimension.getSableSubLevelsOrNull(server);
+        if (storage != null) {
+            var container = SubLevelContainer.getContainer(storage);
+            if (container != null) for (var sub : IplOwnedSubLevels.owned(container)) {
+                if (sub.isRemoved()) continue;
+                var parent = IplDimAgnostic.getServerParentLevel(sub);
+                if (parent == null) continue;
+                for (var holder : sub.getPlot().getLoadedChunks()) next.add(new Membership(parent,holder.getPos()));
+            }
+        }
+        var old = new java.util.HashSet<>(PLOT_SECTIONS);
+        PLOT_SECTIONS.clear(); PLOT_SECTIONS.addAll(next);
+        for (var entry : next) if (!old.contains(entry))
+            ((IplServerEntityManagerAccessor)entry.level).ipl$entityManager()
+                .updateChunkStatus(entry.chunk,FullChunkStatus.ENTITY_TICKING);
+        for (var entry : old) if (!next.contains(entry) && !ACTIVE_COUNTS.containsKey(entry))
+            ((IplServerEntityManagerAccessor)entry.level).ipl$entityManager()
+                .updateChunkStatus(entry.chunk,FullChunkStatus.INACCESSIBLE);
+    }
+    public static synchronized void clear() { MEMBERSHIPS.clear();ACTIVE_COUNTS.clear();PLOT_SECTIONS.clear(); }
+
 
     private IplParentPlotEntityTicking() {}
 
@@ -49,20 +76,11 @@ public final class IplParentPlotEntityTicking {
      * restore ENTITY_TICKING — otherwise the entities silently stop ticking and tracking
      * (the client sees them disappear) even when the unload guard keeps them alive.
      */
-    public static synchronized boolean reassertIfActive(Object manager, ChunkPos chunk) {
-        for (Membership membership : ACTIVE_COUNTS.keySet()) {
-            if (!membership.chunk.equals(chunk)) continue;
-            if (((IplServerEntityManagerAccessor) membership.level).ipl$entityManager()
-                != manager) {
-                continue;
-            }
-            if (membership.level.getServer().isStopped()) return false;
-            LOG.warn("[IPL-PLOT-TICKING] re-asserting ENTITY_TICKING on chunk={} after "
-                + "external downgrade ({} active plot entities)",
-                chunk, ACTIVE_COUNTS.get(membership));
-            ((IplServerEntityManagerAccessor) membership.level).ipl$entityManager()
-                .updateChunkStatus(chunk, FullChunkStatus.ENTITY_TICKING);
-            return true;
+    public static synchronized boolean protects(Object manager, ChunkPos chunk) {
+        for (Membership membership : java.util.stream.Stream.concat(ACTIVE_COUNTS.keySet().stream(),PLOT_SECTIONS.stream()).distinct().toList()) {
+            if (membership.chunk.equals(chunk)
+                && membership.level.getServer().isRunning()
+                && ((IplServerEntityManagerAccessor)membership.level).ipl$entityManager()==manager) return true;
         }
         return false;
     }
@@ -147,6 +165,7 @@ public final class IplParentPlotEntityTicking {
             return;
         }
         ACTIVE_COUNTS.remove(membership);
+        if (PLOT_SECTIONS.contains(membership)) return;
         // A live hosted plot owns this coordinate, so no ordinary parent terrain chunk should
         // share it. The next parent-owned plot entity re-arms it through setPosRaw.
         ((IplServerEntityManagerAccessor) membership.level).ipl$entityManager()

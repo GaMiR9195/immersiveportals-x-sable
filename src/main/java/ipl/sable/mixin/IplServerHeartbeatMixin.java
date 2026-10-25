@@ -57,6 +57,7 @@ public abstract class IplServerHeartbeatMixin {
         if (net.neoforged.fml.ModList.get().isLoaded("create")) {
             ipl.sable.compat.IplMovingLinkNetworks.tick((MinecraftServer)(Object)this);
         }
+        ipl.sable.dim.IplHostedEntityOwnership.tick((MinecraftServer)(Object)this);
         ipl$tickCount++;
         long now = System.nanoTime();
         if (ipl$lastReportNanos == 0L) {

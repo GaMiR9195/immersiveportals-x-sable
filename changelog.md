@@ -1,3 +1,7 @@
+# 0.6.0 — hosted API ownership boundary
+
+Public parent-world sublevel enumeration is unscoped; internal physics/render/storage ownership remains explicit. Removed the PYM-specific clip scope hook. Corrected position-specific storage height gates, actual Flywheel visual liveness, global-only BER pass gating, retained entity identity/bounds migration, KinematicContraption enrollment and entity section lifecycle. See `060NOTES.MD` for file-level details, verification and unresolved cases.
+
 # Changelog
 
 All notable changes to this project will be documented in this file, per sometimes.

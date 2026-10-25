@@ -14,6 +14,7 @@ public abstract class IplClientTransitDisconnectMixin {
     private static void ipl$clearTransit(CallbackInfo ci) {
         ipl.sable.client.IplClientFlywheelReroute.clear();
         IplParentDimSync.clear();
+        ipl.sable.client.IplClientPlotEntityTicking.clear();
         ipl.sable.client.IplStaffPortalBeamRenderer.clear();
     }
 }

@@ -62,7 +62,20 @@ public class HostedBoundariesTest {
   check(list(IplHostedSpatialQueries.include(parent,query,List.of())).equals(List.of(a,b)),"explicit portal image remains queryable");
   a.parent=other;
   check(list(IplHostedSpatialQueries.include(parent,query,List.of())).equals(List.of(b)),"parent flip has no stale owner cache");
-  check(!IplReadViewScope.active(),"enumeration default is ownership-only");
+  a.parent=parent;
+  check(!IplReadViewScope.active() && IplWorldFrameContext.current()==null,"no operation scope required");
+  var owned=new ArrayList<SubLevel>();
+  var hosted=List.of(a,b,c,dead,a);
+  var worldView=IplSubLevelReadViews.inWorld(parent,owned,hosted);
+  check(worldView.equals(List.of(a,c)),"unscoped public read view includes all live parent ships, not just intersecting ones");
+  check(owned.isEmpty(),"public view never mutates physical ownership");
+  try {worldView.clear();throw new AssertionError("mutable union");}catch(UnsupportedOperationException expected){checks++;}
+  check(IplSubLevelReadViews.inWorld(storage,owned,hosted)==owned,"storage enumeration stays owner-local");
+  check(IplSubLevelReadViews.inWorld(other,owned,hosted).equals(List.of(b)),"world read view filters foreign owners");
+  a.parent=other;
+  check(IplSubLevelReadViews.inWorld(parent,owned,hosted).equals(List.of(c)),"next query follows a parent flip");
+  check(IplSubLevelReadViews.inWorld(parent,new ArrayList<>(List.of(c)),hosted).equals(List.of(c)),"identity dedupe covers preexisting membership");
+  check(!IplReadViewScope.active(),"optional clip scope inactive");
   int first=IplReadViewScope.enter();check(IplReadViewScope.active(),"clip read scope active");
   int second=IplReadViewScope.enter();IplReadViewScope.exit(second);check(IplReadViewScope.active(),"nested local clip preserves outer read view");
   Thread thread=new Thread(()->{if(IplReadViewScope.active())throw new AssertionError("cross-thread scope leak");});thread.start();thread.join();

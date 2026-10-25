@@ -103,37 +103,18 @@ public abstract class IplPlotBridgeMixin {
         ci.cancel();
     }
 
-    /**
-     * FRAME-SCOPED enumeration: inside an armed or deferred world frame (addon packet
-     * handlers via the universal packet bridge, hosted BE ticks, interactions),
-     * {@code getAllSubLevels()} on a parent-level container includes hosted ships whose
-     * parent is that level — so addon enumerations (Photomancy's camera capture and
-     * sub-level list, and anything else that lists "the ships in this world") see the
-     * dim-agnostic truth. Deliberately NOT blanket: Sable's own tick/holding/physics
-     * machinery runs OUTSIDE frames and keeps stock semantics — a blanket bridge here
-     * would re-open the parent-holding-serializes-hosted-ships disease.
-     */
-    @ModifyReturnValue(method = "getAllSubLevels()Ljava/util/List;", at = @At("RETURN"), require = 0)
-    private java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> ipl$frameScopedHostedEnumeration(
+    /** Public world membership is available outside tick/render/packet scopes too.
+     * Internal ownership consumers use IplOwnedSubLevels rather than this read view. */
+    @ModifyReturnValue(method = "getAllSubLevels()Ljava/util/List;", at = @At("RETURN"), require = 1)
+    private java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> ipl$hostedWorldEnumeration(
         java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> original
     ) {
-        if (!ipl.sable.dim.IplWorldFrameContext.frameActive()
-            && !ipl.sable.dim.IplReadViewScope.active()) return original;
         Level self = this.getLevel();
-        if (self == null || IplDimAgnostic.isHostingLevel(self)) {
-            return original;
-        }
+        if (self == null || IplDimAgnostic.isHostingLevel(self)) return original;
         SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(self);
         if (hosting == null || hosting == (Object) this) return original;
-
-        java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> out = null;
-        for (dev.ryanhcode.sable.sublevel.SubLevel sub : hosting.getAllSubLevels()) {
-            if (sub.isRemoved() || IplDimAgnostic.getParentLevel(sub) != self) continue;
-            if (original.contains(sub)) continue;
-            if (out == null) out = new java.util.ArrayList<>(original);
-            out.add(sub);
-        }
-        return out != null ? out : original;
+        return ipl.sable.dim.IplSubLevelReadViews.inWorld(
+            self,original,ipl.sable.dim.IplOwnedSubLevels.owned(hosting));
     }
 
     /**

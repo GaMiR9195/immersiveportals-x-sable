@@ -588,7 +588,7 @@ public final class IplShipPortalAnchor {
         for (ServerLevel any : level.getServer().getAllLevels()) {
             ServerSubLevelContainer container = SubLevelContainer.getContainer(any);
             if (container == null) continue;
-            for (ServerSubLevel sub : container.getAllSubLevels()) {
+            for (ServerSubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
                 if (sub.isRemoved()) continue;
                 ServerLevel parent = ipl.sable.dim.IplDimAgnostic.isHosted(sub)
                     ? ipl.sable.dim.IplDimAgnostic.getServerParentLevel(sub)
@@ -616,7 +616,7 @@ public final class IplShipPortalAnchor {
         for (ServerLevel level : server.getAllLevels()) {
             ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
             if (container == null) continue;
-            for (ServerSubLevel sub : container.getAllSubLevels()) {
+            for (ServerSubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
                 if (sub.getUniqueId().equals(shipId)) return sub;
             }
         }

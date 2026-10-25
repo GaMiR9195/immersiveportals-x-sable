@@ -6,9 +6,17 @@ ANNOTATIONS_JAR="${ANNOTATIONS_JAR:-$(find "${GRADLE_USER_HOME:-$HOME/.gradle}/c
 out="$(mktemp -d)";trap 'rm -rf "$out"' EXIT
 JAVAC="${JAVA_HOME:+$JAVA_HOME/bin/}javac"; JAVA="${JAVA_HOME:+$JAVA_HOME/bin/}java"
 mapfile -t fixtures < <(find tests/hosted-api2/fixtures -name '*.java')
-"$JAVAC" --release 21 -cp "$JOML_JAR:$ANNOTATIONS_JAR" -d "$out" "${fixtures[@]}" src/main/java/ipl/sable/dim/{IplReadViewScope,IplCollisionCallbackContext,IplHostedSpatialQueries}.java src/main/java/ipl/sable/compat/IplMovingLinkNetworks.java src/main/java/ipl/sable/client/IplClientVisualViewContext.java tests/hosted-api2/{HostedBoundariesTest,MovingNetworksTest,VisualViewContextTest}.java
+"$JAVAC" --release 21 -cp "$JOML_JAR:$ANNOTATIONS_JAR" -d "$out" "${fixtures[@]}" src/main/java/ipl/sable/dim/{IplReadViewScope,IplCollisionCallbackContext,IplHostedSpatialQueries,IplSubLevelReadViews,IplHostedPlotHeight}.java src/main/java/ipl/sable/compat/IplMovingLinkNetworks.java src/main/java/ipl/sable/client/IplClientVisualViewContext.java tests/hosted-api2/{HostedBoundariesTest,MovingNetworksTest,VisualViewContextTest,HeightProfilesTest}.java
 "$JAVA" -cp "$out:$JOML_JAR:$ANNOTATIONS_JAR" ipl.sable.dim.HostedBoundariesTest
 
 "$JAVA" -cp "$out:$JOML_JAR:$ANNOTATIONS_JAR" ipl.sable.compat.MovingNetworksTest
 
 "$JAVA" -cp "$out:$JOML_JAR:$ANNOTATIONS_JAR" ipl.sable.client.VisualViewContextTest
+
+"$JAVA" -cp "$out:$JOML_JAR:$ANNOTATIONS_JAR" ipl.sable.dim.HeightProfilesTest
+
+# Optional original callback source from the user-provided Sable source tree.
+if [[ -n "${SABLE_SOURCES:-}" ]]; then
+ "$JAVAC" --release 21 -cp "$out:$JOML_JAR:$ANNOTATIONS_JAR" -d "$out" "$SABLE_SOURCES/common/src/main/java/dev/ryanhcode/sable/physics/callback/FragileBlockCallback.java" tests/hosted-api2/FragileCallbackTest.java
+ "$JAVA" -cp "$out:$JOML_JAR:$ANNOTATIONS_JAR" ipl.sable.dim.FragileCallbackTest
+fi

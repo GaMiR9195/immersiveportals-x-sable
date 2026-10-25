@@ -73,7 +73,7 @@ public final class IplClientFlywheelReroute {
         for (var entry : queued) {
             BlockEntity be = entry.getKey();
             SubLevel owner = ipl$owningSub(container.getLevel(), be.getBlockPos());
-            boolean stale = be.isRemoved() || owner == null || owner.isRemoved();
+            boolean stale = !IplHostedBlockEntityLiveness.isLive(be) || owner == null || owner.isRemoved();
             if (!stale) {
                 var holder = owner.getPlot().getChunkHolder(owner.getPlot().toLocal(
                     new net.minecraft.world.level.ChunkPos(be.getBlockPos())));
@@ -101,7 +101,7 @@ public final class IplClientFlywheelReroute {
                 net.minecraft.world.level.chunk.LevelChunk chunk = holder.getChunk();
                 if (chunk == null) continue;
                 for (BlockEntity be : chunk.getBlockEntities().values()) {
-                    if (be == null || be.isRemoved() || QUEUED_UNDER.containsKey(be)) continue;
+                    if (be == null || !IplHostedBlockEntityLiveness.isLive(be) || QUEUED_UNDER.containsKey(be)) continue;
                     if (queueAdd(parent, be)) {
                         QUEUED_UNDER.put(be, parent);
                         SUB_BES.computeIfAbsent(sub.getUniqueId(),

@@ -100,7 +100,7 @@ public final class SableRehomeOps {
         ServerLevel hosting = SableSubLevelDimension.getSableSubLevelsOrNull(level.getServer());
         if (hosting == null) return; // dim not loaded; phase-0 kill-switch already warned
 
-        for (SubLevel subLevel : container.getAllSubLevels()) {
+        for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (!(subLevel instanceof ServerSubLevel airship)) continue;
             if (airship.isRemoved()) continue;
 
@@ -173,9 +173,9 @@ public final class SableRehomeOps {
                 }
             }
 
-            int before = container.getAllSubLevels().size();
+            int before = ipl.sable.dim.IplOwnedSubLevels.owned(container).size();
             holdingMap.processChanges();
-            int released = container.getAllSubLevels().size() - before;
+            int released = ipl.sable.dim.IplOwnedSubLevels.owned(container).size() - before;
             LOG.info("[IPL-BOOT-RESTORE] scanned {} region file(s), released {} held sub-level(s)",
                 regions, released);
         } catch (Throwable t) {
@@ -189,7 +189,7 @@ public final class SableRehomeOps {
      */
     private static void restoreParents(ServerSubLevelContainer container, ServerLevel hosting) {
         MinecraftServer server = hosting.getServer();
-        for (SubLevel subLevel : container.getAllSubLevels()) {
+        for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (!(subLevel instanceof ServerSubLevel hosted)) continue;
             if (hosted.isRemoved()) continue;
 
@@ -693,7 +693,7 @@ public final class SableRehomeOps {
 
         MinecraftServer server = hosting.getServer();
         if (server == null) return;
-        for (SubLevel sub : container.getAllSubLevels()) {
+        for (SubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (!(sub instanceof ServerSubLevel hosted) || hosted.isRemoved()) continue;
             ServerLevel parent = IplDimAgnostic.getServerParentLevel(hosted);
             if (parent == null) continue;
@@ -730,6 +730,10 @@ public final class SableRehomeOps {
      * parent dim) to the corresponding position in the hosted plot. Skips players, portals,
      * and passengers (their vehicles move; vanilla re-seats passengers on its own).
      */
+    private static PhysicsPipeline sourceContainerPipeline(ServerSubLevel source) {
+        return SubLevelContainer.getContainer(source.getLevel()).physicsSystem().getPipeline();
+    }
+
     private static int relocatePlotEntities(
         ServerSubLevel source, ServerSubLevel hosted,
         ServerLevel parentLevel, ServerLevel hosting
@@ -758,6 +762,28 @@ public final class SableRehomeOps {
                 if (entity.getVehicle() != null) continue;
 
                 Vec3 newPos = entity.position().add(dx, 0.0, dz);
+                // Kinematic actors are already real entities in the parent world.
+                // Recreating them for a storage migration stops their actors and
+                // throws away transient initialization/collision/render state.
+                if (entity instanceof dev.ryanhcode.sable.api.sublevel.KinematicContraption actor) {
+                    boolean enrolled=srcPlot.getContraptions().contains(actor);
+                    if(enrolled) {
+                        sourceContainerPipeline(source).remove(actor);
+                        srcPlot.removeContraption(actor);
+                    }
+                    entity.setPos(newPos.x,newPos.y,newPos.z);
+                    ipl.sable.dim.IplParentPlotEntityTicking.update(entity,entity.getX(),entity.getZ());
+                    if(enrolled) {
+                        dstPlot.addContraption(actor);
+                        SubLevelContainer.getContainer(hosting).physicsSystem().getPipeline().add(actor);
+                    }
+                    moved++;
+                    continue;
+                }
+                if (!dev.ryanhcode.sable.api.entity.EntitySubLevelUtil.shouldKick(entity)) {
+                    if(ipl.sable.dim.IplHostedEntityOwnership.transfer(entity,hosting,newPos))moved++;
+                    continue;
+                }
                 try {
                     Entity result = ServerTeleportationManager.teleportEntityGeneral(entity, newPos, hosting);
                     if (result != null && !result.isRemoved()) {

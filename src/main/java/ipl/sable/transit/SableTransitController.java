@@ -62,7 +62,7 @@ public final class SableTransitController {
                     .getContainer((net.minecraft.world.level.Level) hosting);
                 LOG.info("[IPL-SHUTDOWN] hosting dim post-drain: loadedChunks={} liveSubLevels={}",
                     hosting.getChunkSource().getLoadedChunksCount(),
-                    container == null ? -1 : container.getAllSubLevels().size());
+                    container == null ? -1 : ipl.sable.dim.IplOwnedSubLevels.owned(container).size());
             }
         } catch (Throwable t) {
             LOG.warn("[IPL-SHUTDOWN] post-drain diagnostic failed", t);
@@ -104,7 +104,7 @@ public final class SableTransitController {
         java.util.Set<StraddleKey> seenHostedKeys = new java.util.HashSet<>();
 
         if (!continuation) {
-            for (SubLevel sub : container.getAllSubLevels()) {
+            for (SubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
                 if (!(sub instanceof ServerSubLevel body) || body.isRemoved()
                     || !IplDimAgnostic.isHosted(body)) continue;
                 ServerLevel parent = IplDimAgnostic.getServerParentLevel(body);
@@ -117,7 +117,7 @@ public final class SableTransitController {
         }
 
         List<TransitCandidate> candidates = null;
-        for (SubLevel subLevel : container.getAllSubLevels()) {
+        for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
             if (!(subLevel instanceof ServerSubLevel airship)) continue;
             if (airship.isRemoved()) continue;
 
