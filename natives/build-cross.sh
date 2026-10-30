@@ -1,141 +1,60 @@
 #!/usr/bin/env bash
-# Кросс-сборка патченных нативов Rapier под ВСЕ платформы на одной машине с Docker
-# (Linux x86_64/arm64, macOS с Docker Desktop, WSL2). Тот же способ, что у самого Sable
-# (sable_rapier/build.gradle + .github/workflows/build-rust.yml): cargo-zigbuild для Linux и
-# macOS, cargo-xwin (MSVC) для Windows. Образы — natives/container/{zigbuild,xwin}, Rust —
-# закреплённый nightly из natives/rust-toolchain.toml.
+# IPSable natives cross-build for release jars (same toolchain as Sable's own natives).
 #
-# Почему так, а не «по раннеру на ОС»: один хост, одни и те же образы и тулчейн для всех целей —
-# сборка воспроизводима, не зависит от того, что предустановлено на раннерах Windows/macOS, а
-# Windows-DLL собирается MSVC-линкером (как у стокового Sable) — без GNU-ld и без
-# fix_import_descriptors.py.
+# Builds the patched sable_rapier library for ONE target inside the Docker images from
+# natives/container/ (cargo-zigbuild for Linux/macOS, cargo-xwin for Windows MSVC) and
+# stages it at the project root as sable_rapier_<arch>_<os>.<ext>, where build.gradle
+# packs it. The release workflow (.github/workflows/release.yml) runs this once per target.
 #
-# Использование (из корня проекта или из natives/):
-#   bash natives/build-cross.sh                      # linux x86_64+aarch64, macos x86_64+aarch64, windows x86_64
-#   bash natives/build-cross.sh all                  # то же + windows aarch64
-#   bash natives/build-cross.sh linux-x86_64 windows-x86_64
-#   NO_STAGE=1 bash natives/build-cross.sh            # только natives/out/, без раскладки в проект
-#   DOCKER=podman bash natives/build-cross.sh         # другой движок контейнеров
+# Prereqs: Docker. Everything else (pinned nightly, targets, linkers, Windows SDK) lives
+# in the images, so any host OS works.
 #
-# Результат: natives/out/sable_rapier_<arch>_<os>.<ext>. Затем (если не NO_STAGE=1):
-#   Windows x86_64 -> src/main/resources/natives_ipl/ (заменяет лежащую там DLL; копия в корне
-#                     проекта проиграла бы ей из-за DuplicatesStrategy.EXCLUDE в processResources),
-#   остальные      -> корень проекта (processResources кладёт их в /natives_ipl/ jar'а).
-# Код выхода != 0, если хотя бы одна цель не собралась (остальные всё равно собираются).
-set -uo pipefail
+# Usage:  ./natives/build-cross.sh <windows|linux|macos> <x86_64|aarch64>
+set -euo pipefail
+
+usage="usage: $0 <windows|linux|macos> <x86_64|aarch64>"
+os="${1:?$usage}"
+arch="${2:?$usage}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/.." && pwd)"
-docker="${DOCKER:-docker}"
-toolchain="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$here/rust-toolchain.toml")"
-if [ -z "$toolchain" ]; then
-  echo "cannot read toolchain channel from $here/rust-toolchain.toml" >&2
-  exit 2
-fi
-cache="${IPL_CARGO_CACHE:-$here/target/docker-cargo}"
-out="$here/out"
-zig_image="ipl-sable-zigbuild:${toolchain}"
-xwin_image="ipl-sable-xwin:${toolchain}"
+rust_version="$(sed -n 's/^channel *= *"\(.*\)".*/\1/p' "$here/rust-toolchain.toml")"
 
-default_targets="linux-x86_64 linux-aarch64 macos-x86_64 macos-aarch64 windows-x86_64"
-if [ "$#" -eq 0 ]; then
-  set -- $default_targets
-elif [ "$*" = "all" ]; then
-  set -- $default_targets windows-aarch64
-fi
+case "$arch" in
+  x86_64|aarch64) ;;
+  *) echo "unsupported arch: $arch ($usage)" >&2; exit 1 ;;
+esac
 
-# цель -> "образ triple собранный-файл имя-в-jar"
-spec() {
-  case "$1" in
-    linux-x86_64)    echo "zig x86_64-unknown-linux-gnu.2.17 libsable_rapier.so sable_rapier_x86_64_linux.so" ;;
-    linux-aarch64)   echo "zig aarch64-unknown-linux-gnu.2.17 libsable_rapier.so sable_rapier_aarch64_linux.so" ;;
-    macos-x86_64)    echo "zig x86_64-apple-darwin libsable_rapier.dylib sable_rapier_x86_64_macos.dylib" ;;
-    macos-aarch64)   echo "zig aarch64-apple-darwin libsable_rapier.dylib sable_rapier_aarch64_macos.dylib" ;;
-    windows-x86_64)  echo "xwin x86_64-pc-windows-msvc sable_rapier.dll sable_rapier_x86_64_windows.dll" ;;
-    windows-aarch64) echo "xwin aarch64-pc-windows-msvc sable_rapier.dll sable_rapier_aarch64_windows.dll" ;;
-    *) return 1 ;;
-  esac
-}
+# Target table mirrors Sable's sable_rapier/build.gradle. Linux links against glibc 2.17
+# so the library loads on old distros.
+case "$os" in
+  windows) triple="$arch-pc-windows-msvc";   image=xwin;     cargo_args=(xwin build --target "$triple");  built="sable_rapier.dll" ;;
+  linux)   triple="$arch-unknown-linux-gnu"; image=zigbuild; cargo_args=(zigbuild --target "$triple.2.17"); built="libsable_rapier.so" ;;
+  macos)   triple="$arch-apple-darwin";      image=zigbuild; cargo_args=(zigbuild --target "$triple");    built="libsable_rapier.dylib" ;;
+  *) echo "unsupported os: $os ($usage)" >&2; exit 1 ;;
+esac
+staged="sable_rapier_${arch}_${os}.${built##*.}"
 
-for target in "$@"; do
-  spec "$target" > /dev/null || { echo "unknown target: $target" >&2; exit 2; }
-done
+# Git Bash on Windows: stop MSYS from rewriting the container-side paths, and hand Docker
+# native host paths.
+export MSYS_NO_PATHCONV=1
+host_path() { if (cd "$1" && pwd -W) >/dev/null 2>&1; then (cd "$1" && pwd -W); else echo "$1"; fi; }
 
-mkdir -p "$cache/registry" "$cache/git" "$out"
+tag="ipl-sable-build-$image:$rust_version"
+docker build -t "$tag" --build-arg "RUST_VERSION=$rust_version" "$(host_path "$here/container/$image")"
 
-need_zig=0; need_xwin=0
-for target in "$@"; do
-  case "$(spec "$target" | cut -d' ' -f1)" in
-    zig) need_zig=1 ;;
-    xwin) need_xwin=1 ;;
-  esac
-done
+# Crate downloads persist between runs (and between CI jobs via actions/cache).
+cargo_cache="${CARGO_CACHE_DIR:-$here/target/docker-cargo}"
+mkdir -p "$cargo_cache/registry" "$cargo_cache/git"
 
-build_image() { # тег, каталог
-  if "$docker" image inspect "$1" > /dev/null 2>&1; then return 0; fi
-  echo "== building image $1"
-  "$docker" build -t "$1" "$here/container/$2" --build-arg "RUST_VERSION=$toolchain"
-}
-[ "$need_zig" = 1 ] && { build_image "$zig_image" zigbuild || exit 3; }
-[ "$need_xwin" = 1 ] && { build_image "$xwin_image" xwin || exit 3; }
+docker run --rm \
+  -v "$(host_path "$here"):/io" \
+  -v "$(host_path "$cargo_cache/registry"):/usr/local/cargo/registry" \
+  -v "$(host_path "$cargo_cache/git"):/usr/local/cargo/git" \
+  -w /io/rapier \
+  "$tag" cargo "${cargo_args[@]}" --release
 
-run_in() { # образ, команда...
-  local image="$1"; shift
-  "$docker" run --rm \
-    -v "$here:/io" \
-    -v "$cache/registry:/usr/local/cargo/registry" \
-    -v "$cache/git:/usr/local/cargo/git" \
-    -w /io/rapier \
-    "$image" "$@"
-}
-
-failed=()
-for target in "$@"; do
-  read -r kind triple built staged <<< "$(spec "$target")"
-  echo "== $target ($triple)"
-  if [ "$kind" = zig ]; then
-    image="$zig_image"; cmd=(cargo zigbuild --release --target "$triple")
-  else
-    image="$xwin_image"; cmd=(cargo xwin build --release --target "$triple")
-  fi
-  # zigbuild кладёт результат в каталог цели БЕЗ суффикса glibc (.2.17).
-  dir_triple="${triple%.2.17}"
-  rm -f "$out/$staged"
-  if run_in "$image" "${cmd[@]}" && [ -f "$here/target/$dir_triple/release/$built" ]; then
-    cp -f "$here/target/$dir_triple/release/$built" "$out/$staged"
-    echo "   ok: natives/out/$staged ($(wc -c < "$out/$staged") bytes)"
-    command -v file > /dev/null 2>&1 && file -b "$out/$staged" | sed 's/^/   /'
-  else
-    echo "   FAILED: $target" >&2
-    failed+=("$target")
-  fi
-done
-
-# Контейнер пишет от root: вернуть файлы владельцу, иначе локально не сделать cargo clean,
-# а на CI кэш/артефакты читаются пользователем раннера.
-if [ "$(id -u)" != 0 ]; then
-  img="$zig_image"; [ "$need_zig" = 1 ] || img="$xwin_image"
-  "$docker" run --rm -v "$here:/io" "$img" \
-    chown -R "$(id -u):$(id -g)" /io/target /io/out > /dev/null 2>&1 || true
-fi
-
-if [ "${NO_STAGE:-0}" != 1 ]; then
-  for f in "$out"/sable_rapier_*; do
-    [ -e "$f" ] || continue
-    name="$(basename "$f")"
-    if [ "$name" = sable_rapier_x86_64_windows.dll ]; then
-      mkdir -p "$root/src/main/resources/natives_ipl"
-      cp -f "$f" "$root/src/main/resources/natives_ipl/$name"
-      echo "staged: src/main/resources/natives_ipl/$name"
-    else
-      cp -f "$f" "$root/$name"
-      echo "staged: $name"
-    fi
-  done
-fi
-
-if [ "${#failed[@]}" -gt 0 ]; then
-  echo "failed targets: ${failed[*]}" >&2
-  exit 1
-fi
-echo "all requested targets built"
+lib="$here/target/$triple/release/$built"
+[ -f "$lib" ] || { echo "expected $lib after build" >&2; exit 1; }
+cp -f "$lib" "$root/$staged"
+echo "staged: $root/$staged ($(wc -c < "$root/$staged") bytes)"

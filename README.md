@@ -63,7 +63,14 @@ NeoForge 1.21.1, JDK 21: `./gradlew jarJar` → jar in `build/libs/`
 Patched physics natives live under `natives/` (Sable Rust workspace fork + aperture clipping extension + atlas approach).
 - Windows x86_64: `natives/build-windows.ps1`
 - Linux / macOS (x86_64 or aarch64, built on that machine): `natives/build-linux.sh`
-- Universal jar: put every `sable_rapier_<arch>_<os>` library at the project root, then build the jar.
+- Any target from any host, with Docker (same containers Sable uses): `natives/build-cross.sh <windows|linux|macos> <x86_64|aarch64>`
+- Every `sable_rapier_<arch>_<os>` library at the project root is packed into the jar as
+  `natives_ipl/sable_rapier_binaries.zip.l4z`, like Sable packs its own. `-PrequireAllNatives` fails the build unless all six are there.
+
+# Release
+Push a tag `vX.Y.Z` matching `fork_version`. `.github/workflows/release.yml` builds all six natives,
+builds the jar and opens a draft pre-release with it and the changelog section. Running the workflow
+by hand only produces the jar as a workflow artifact (tick "draft release" to also create the draft).
 
 If you don’t build natives, the mod still runs on stock Sable natives — portal collision
 (projections, aperture clipping) is then disabled.

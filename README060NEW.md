@@ -101,25 +101,28 @@ Sable, а дальняя сторона портала — это **проекц
 - `arch` = `aarch64`, если `os.arch` равен `arm` или начинается с `aarch64`, иначе `x86_64`;
 - `os` = `windows.dll` / `linux.so` / `macos.dylib`.
 
-Наш `mixin/IplNativesOverrideMixin` вычисляет то же имя и ищет его в `/natives_ipl/` внутри jar. Найденная библиотека распаковывается в `.sable/natives-ipl/` и грузится вместо стоковой. Если для платформы нашей библиотеки нет, одна строка INFO — и загружаются стоковые нативы. Портальная физика (проекции, клип апертуры) тогда отключена, всё остальное работает. Аварийный выключатель: `-Dipl.sable.customNatives=false`.
+Наш `mixin/IplNativesOverrideMixin` вычисляет то же имя и ищет его в архиве `/natives_ipl/sable_rapier_binaries.zip.l4z` внутри jar (тот же формат, что у Sable). Найденная библиотека распаковывается в `.sable/natives-ipl/` и грузится вместо стоковой. Если для платформы нашей библиотеки нет, одна строка INFO — и загружаются стоковые нативы. Портальная физика (проекции, клип апертуры) тогда отключена, всё остальное работает. Аварийный выключатель: `-Dipl.sable.customNatives=false`.
 
 ### Сборка
 Исходники — `natives/` (форк Rust-воркспейса Sable + `natives/rapier/src/ipl_ext.rs`). Для сборки под хост нужен `rustup` (nightly из `rust-toolchain.toml` поставится сам), для `build-cross.sh` — только Docker.
 
 | Платформа | Команда | Куда кладёт |
 |---|---|---|
-| **Все сразу** (Docker: Linux, macOS с Docker Desktop, WSL2) | `bash natives/build-cross.sh` | Windows x86_64 — в `src/main/resources/natives_ipl/`, остальные — в корень проекта |
-| Windows x86_64 | `natives/build-windows.ps1` | `src/main/resources/natives_ipl/sable_rapier_x86_64_windows.dll` |
+| Windows x86_64 | `natives/build-windows.ps1` | `./sable_rapier_x86_64_windows.dll` |
 | Linux x86_64 / aarch64 | `./natives/build-linux.sh` (на этой машине) | `./sable_rapier_<arch>_linux.so` |
 | macOS x86_64 / arm64 | `./natives/build-linux.sh` (на этом Mac) | `./sable_rapier_<arch>_macos.dylib` |
+| Любая цель с любого хоста (нужен Docker) | `./natives/build-cross.sh <windows\|linux\|macos> <x86_64\|aarch64>` | `./sable_rapier_<arch>_<os>.<ext>` |
 
-`processResources` упаковывает в `/natives_ipl/` все `sable_rapier_*.{dll,so,dylib}` из корня проекта (плюс то, что лежит в `src/main/resources/natives_ipl`).
+`build-cross.sh` собирает в тех же Docker-образах, что и сам Sable (`natives/container/`: cargo-zigbuild для Linux/macOS, cargo-xwin для Windows MSVC).
 
-### Универсальный jar и GitHub Actions
-Один jar несёт библиотеки всех платформ, а нужная выбирается при запуске.
+Задача `packIplNatives` пакует все `sable_rapier_<arch>_<os>` из корня проекта как Sable: zip без сжатия, затем LZ4-фрейм, в `/natives_ipl/sable_rapier_binaries.zip.l4z`.
 
-- **Локально:** `bash natives/build-cross.sh`, затем `bash ./gradlew jarJar`. Скрипт собирает Linux x86_64/aarch64 (glibc 2.17), macOS x86_64/arm64 и Windows x86_64 (с аргументом `all` — ещё Windows aarch64). Сборка идёт в Docker-образах `natives/container/{zigbuild,xwin}`, как у самого Sable: cargo-zigbuild для Linux и macOS, cargo-xwin (MSVC) для Windows. Тулчейн — nightly из `rust-toolchain.toml`. Если какая-то цель упала, остальные всё равно собираются, но код выхода будет ≠ 0. `NO_STAGE=1` — только `natives/out/`, без раскладки в проект.
-- **CI:** `.github/workflows/build.yml`. Запуск: Actions → **Build** → Run workflow, или пуш тега `v*` — тогда jar ещё и прикрепляется к GitHub Release. Задача `natives` вызывает тот же скрипт на одном ubuntu-раннере и проверяет, что каждая библиотека нужной ОС и архитектуры. Задача `jar` раскладывает библиотеки и проверяет, что все они попали в jar. Прежний workflow (по раннеру на каждую ОС, GNU-тулчейн для Windows) удалён. Настройка, галочки `windows_arm64` / `allow_partial` и неполадки — в `docs/GITHUB_ACTIONS.md`.
+### Универсальный jar
+1. Сложите все шесть файлов `sable_rapier_<arch>_<os>` в корень проекта (например, `build-cross.sh` для каждой цели).
+2. Выполните `./gradlew jarJar -PrequireAllNatives`. Флаг валит сборку, если какой-то библиотеки нет. Один jar содержит все платформы, а нужная выбирается при запуске.
+
+### Релиз
+Тег `vX.Y.Z`, совпадающий с `fork_version`, запускает `.github/workflows/release.yml`: шесть нативов собираются параллельно, затем jar, затем создаётся черновик пре-релиза с jar и разделом из `changelog.md`. Ручной запуск workflow даёт только jar как артефакт (галочка «draft release» создаёт и черновик).
 
 `build-windows.ps1` и `build-linux.sh` по-прежнему собирают только под хост — для быстрой итерации без Docker.
 
@@ -164,8 +167,8 @@ Sable, а дальняя сторона портала — это **проекц
 - Пока корабль пересекает портал, его Flywheel-визуалы рисуются BER-путём: освещение и анимация могут чуть отличаться от инстансинга, а очень большие корабли с сотнями шестерён у портала стоят дороже по CPU.
 - Под Sodium, пока в кадре видны порталы того же измерения, отсечение сущностей по графу пещер (occlusion culling Sodium) в корневом проходе отключается; фрустум-отсечение остаётся.
 - Призрак экстраполирует позу не дольше 10 тиков (≈0,5 с). Если большой корабль компилируется дольше, на выходе в другое измерение возможна короткая пауза. Радикальное решение — держать одно rigid body через карты Атласа без переноса саб-уровня между уровнями — требует изменений в нативах и отложено.
-- Windows-DLL, лежащая в `src/main/resources/natives_ipl/` этого архива, собрана кросс-компиляцией (zig, GNU-ABI) с обязательным `fix_import_descriptors.py`; на реальной Windows она не проверялась. `build-cross.sh` и CI собирают MSVC-DLL через cargo-xwin, как сток Sable. Если что-то не так, пересоберите DLL любым из этих способов или через `natives/build-windows.ps1`.
-- Изменения этой ревизии проверены компиляцией и сверкой целей миксинов с байткодом Sable 2.0.3 / Flywheel 1.0.6 / Sodium 0.8.12 / Simulated 1.3.0, но **не в игре**. Workflow CI и `build-cross.sh` проверены только синтаксически: Docker и Rust в среде разработки недоступны.
+- Windows-DLL в релизном jar собирает CI через cargo-xwin (MSVC), как сток Sable. `natives/build-windows.ps1` собирает GNU-ABI-DLL с обязательным `fix_import_descriptors.py`.
+- Изменения этой ревизии проверены компиляцией и сверкой целей миксинов с байткодом Sable 2.0.3 / Flywheel 1.0.6 / Sodium 0.8.12 / Simulated 1.3.0, но **не в игре**.
 - Детект цепочки берёт отображённый объём всего тела, а не только прошедшей части. Иногда это открывает лишнюю, физически безвредную дочернюю сессию.
 - Масштабирующие порталы (scale ≠ 1) для проекций не поддерживаются: одна строка INFO, проекции нет.
 - Группы с нативными джойнтами не меняют измерение; верёвки и якоря держат флип; в группе перехода не больше 16 тел (раздел 4).
@@ -192,7 +195,7 @@ Sable, а дальняя сторона портала — это **проекц
 - `transit/IplProjectionTree`, `transit/IplProjectionRaycast`, `transit/IplProjectionEntities` — куски корабля, рейкасты, механики сущностей и блоков;
 - `client/IplProjectionLevelScope` — BER проекции в уровне-владельце; `client/IplRopePacketRouting` (+`mixin/client/IplRope*PacketRoutingMixin`) — пакеты верёвок для зрителей из другого измерения;
 - `mixin/IplProjectionIntersectionMixin`, `IplPlotBridgeMixin`, `IplForeignPlotWriteGuardMixin`, `SableCrossDimTrackingMixin`, `IplNativesOverrideMixin`;
-- `natives/build-cross.sh`, `.github/workflows/build.yml`, `docs/GITHUB_ACTIONS.md` — сборка нативов под все ОС и CI.
+- `natives/build-cross.sh`, `.github/workflows/release.yml` — сборка нативов под все ОС и релиз (раздел 7).
 
 ## 13. Сборка мода
 
@@ -200,4 +203,4 @@ Sable, а дальняя сторона портала — это **проекц
 bash ./gradlew jarJar   # JDK 21 → build/libs/immersive-portals-x-sable-0.6.0.jar
 ```
 
-В jar попадают нативы, лежащие в проекте (раздел 7). Jar со всеми платформами — `bash natives/build-cross.sh` перед сборкой или workflow `.github/workflows/build.yml` (`docs/GITHUB_ACTIONS.md`).
+В jar попадают нативы, лежащие в проекте (раздел 7). Jar со всеми платформами — `natives/build-cross.sh` для каждой цели перед сборкой или workflow `.github/workflows/release.yml` (раздел 7).

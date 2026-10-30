@@ -1,0 +1,119 @@
+name: Release
+
+# Pushing a tag vX.Y.Z (matching fork_version in gradle.properties) builds the patched
+# Rapier natives for every platform Sable supports, bundles them into the mod jar and opens
+# a draft pre-release with the jar attached. Run it by hand to get the jar as a workflow
+# artifact without releasing anything.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: 'Also create a draft release for the fork_version in gradle.properties'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  natives:
+    name: natives (${{ matrix.os }} ${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        os: [windows, linux, macos]
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: natives/target/docker-cargo
+          key: cargo-${{ hashFiles('natives/Cargo.lock') }}
+          restore-keys: cargo-
+
+      - name: Build natives
+        run: natives/build-cross.sh ${{ matrix.os }} ${{ matrix.arch }}
+
+      - name: Upload natives
+        uses: actions/upload-artifact@v7
+        with:
+          name: natives-${{ matrix.os }}-${{ matrix.arch }}
+          path: sable_rapier_${{ matrix.arch }}_${{ matrix.os }}.*
+          if-no-files-found: error
+          retention-days: 7
+
+  jar:
+    needs: natives
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Download natives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: natives-*
+          merge-multiple: true
+          path: .
+
+      - name: Read version
+        id: version
+        run: |
+          version="$(sed -n 's/^fork_version=//p' gradle.properties | tr -d '\r')"
+          name="$(sed -n 's/^archives_base_name=//p' gradle.properties | tr -d '\r')"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match fork_version=$version in gradle.properties"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "jar=build/libs/$name-$version.jar" >> "$GITHUB_OUTPUT"
+
+      - name: Build jar
+        run: ./gradlew jarJar -PrequireAllNatives
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v7
+        with:
+          name: jar
+          path: ${{ steps.version.outputs.jar }}
+          if-no-files-found: error
+
+      - name: Create draft release
+        if: github.ref_type == 'tag' || inputs.draft_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          JAR: ${{ steps.version.outputs.jar }}
+        run: |
+          # Release notes: this version's section of changelog.md.
+          awk -v head="## [$VERSION]" '
+            index($0, head) == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' changelog.md > notes.md
+          [ -s notes.md ] || echo "See changelog.md." > notes.md
+          gh release create "v$VERSION" "$JAR" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --notes-file notes.md \
+            --draft --prerelease

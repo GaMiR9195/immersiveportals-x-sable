@@ -40,6 +40,10 @@ projections. See `README060NEW.md`.
   like stock Sable, falls back to stock natives (single INFO line) when missing; kill switch
   `-Dipl.sable.customNatives=false`. New `natives/build-linux.sh` (Linux/macOS); any
   `sable_rapier_*` library at the project root is bundled into the jar.
+- Natives are packed like Sable's: one `natives_ipl/sable_rapier_binaries.zip.l4z` in the jar,
+  the platform's library extracted to `.sable/natives-ipl/`.
+- Release jars bundle natives for Windows, Linux and macOS (x86_64 and aarch64), built by
+  the GitHub release workflow (`natives/build-cross.sh`).
 - Much less console spam: per-event logs moved to DEBUG.
 
 ### Removed
