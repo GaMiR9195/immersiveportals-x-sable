@@ -47,12 +47,17 @@ docker build -t "$tag" --build-arg "RUST_VERSION=$rust_version" "$(host_path "$h
 cargo_cache="${CARGO_CACHE_DIR:-$here/target/docker-cargo}"
 mkdir -p "$cargo_cache/registry" "$cargo_cache/git"
 
-docker run --rm \
-  -v "$(host_path "$here"):/io" \
-  -v "$(host_path "$cargo_cache/registry"):/usr/local/cargo/registry" \
-  -v "$(host_path "$cargo_cache/git"):/usr/local/cargo/git" \
-  -w /io/rapier \
-  "$tag" cargo "${cargo_args[@]}" --release
+mounts=(
+  -v "$(host_path "$here"):/io"
+  -v "$(host_path "$cargo_cache/registry"):/usr/local/cargo/registry"
+  -v "$(host_path "$cargo_cache/git"):/usr/local/cargo/git"
+)
+docker run --rm "${mounts[@]}" -w /io/rapier "$tag" cargo "${cargo_args[@]}" --release
+
+# The container builds as root: hand the build output and crate cache back to the host
+# user, or later non-root reads (CI cache saves, local cargo builds) hit owner-only files.
+docker run --rm "${mounts[@]}" "$tag" \
+  chown -R "$(id -u):$(id -g)" /io/target /usr/local/cargo/registry /usr/local/cargo/git || true
 
 lib="$here/target/$triple/release/$built"
 [ -f "$lib" ] || { echo "expected $lib after build" >&2; exit 1; }
