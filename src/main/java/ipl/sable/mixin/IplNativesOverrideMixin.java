@@ -1,6 +1,7 @@
 package ipl.sable.mixin;
 
 import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
+import net.jpountz.lz4.LZ4FrameInputStream;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
@@ -11,21 +12,25 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
+import java.util.Arrays;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
- * Load IPSable's locally-built Sable natives instead of the ones bundled in the sable jar
+ * Load IPSable's patched Sable natives instead of the ones bundled in the sable jar
  * (aperture contact clipping, image colliders and contact-impulse readout live in the Rust
  * layer).
  *
  * <p>Sable re-extracts its bundled {@code .l4z} natives with {@code REPLACE_EXISTING} on
  * every launch, so swapping the extracted file can't stick; and repacking the sable jar
- * couples our deploy loop to theirs. Instead: this mod carries the patched library as a
- * resource ({@code /natives_ipl/sable_rapier_<arch>_<os>.<ext>}, same naming as Sable:
- * arch {@code x86_64|aarch64}, os/ext {@code windows.dll|linux.so|macos.dylib}), and this
- * mixin — whose handler executes as merged {@code Rapier3D} code, i.e. the exact
- * classloader whose natives the JVM resolves — extracts and {@code System.load}s it at the
- * head of {@code loadLibrary}, cancelling the stock path.
+ * couples our deploy loop to theirs. Instead: this mod carries the patched libraries packed
+ * exactly like Sable's ({@code /natives_ipl/sable_rapier_binaries.zip.l4z}: a STORED zip,
+ * LZ4-frame compressed, entries named {@code sable_rapier_<arch>_<os>.<ext>} with arch
+ * {@code x86_64|aarch64}, os/ext {@code windows.dll|linux.so|macos.dylib}), and this
+ * mixin (whose handler executes as merged {@code Rapier3D} code, i.e. the exact
+ * classloader whose natives the JVM resolves) extracts the running platform's entry to
+ * {@code .sable/natives-ipl/} and {@code System.load}s it at the head of
+ * {@code loadLibrary}, cancelling the stock path.
  *
  * <p>Fail-open: a platform without a bundled library, an IO error or a link error logs once
  * and falls through to Sable's stock natives (the portal features that need the patched
@@ -53,30 +58,46 @@ public abstract class IplNativesOverrideMixin {
         // Resource lookup notes: this handler executes as MERGED Rapier3D code (sable's
         // module), so the lookup must anchor on a real class in OUR module — and module
         // resource encapsulation can still null it, so fall back to the classloader view.
-        String resource = "/natives_ipl/" + fileName;
+        String resource = "natives_ipl/sable_rapier_binaries.zip.l4z";
         try {
-            InputStream in = ipl.sable.natives.IplRapierNatives.class.getResourceAsStream(resource);
+            InputStream in = ipl.sable.natives.IplRapierNatives.class.getResourceAsStream("/" + resource);
             if (in == null) {
-                in = ipl.sable.natives.IplRapierNatives.class.getClassLoader()
-                    .getResourceAsStream("natives_ipl/" + fileName);
+                in = ipl.sable.natives.IplRapierNatives.class.getClassLoader().getResourceAsStream(resource);
             }
-            if (in == null) {
+            byte[] bytes = null;
+            if (in != null) {
+                try (ZipInputStream zip = new ZipInputStream(new LZ4FrameInputStream(in))) {
+                    for (ZipEntry entry; (entry = zip.getNextEntry()) != null; ) {
+                        if (entry.getName().equals(fileName)) {
+                            bytes = zip.readAllBytes();
+                            break;
+                        }
+                    }
+                }
+            }
+            if (bytes == null) {
                 log.info("[IPL-NATIVES] no IPSable natives bundled for this platform ({}); "
-                    + "using sable's stock natives — portal collision features are disabled", fileName);
+                    + "using sable's stock natives, portal collision features are disabled", fileName);
                 return;
             }
-            try (InputStream stream = in) {
-                Path dir = Paths.get(".sable", "natives-ipl");
-                Files.createDirectories(dir);
-                Path lib = dir.resolve(fileName.replace("sable_rapier_", "sable_rapier_ipl_"));
-                Files.copy(stream, lib, StandardCopyOption.REPLACE_EXISTING);
-                System.load(lib.toAbsolutePath().toString());
-                ipl.sable.natives.IplRapierNatives.markAvailable();
-                log.info("[IPL-NATIVES] loaded IPSable-built sable_rapier natives from {}", lib.toAbsolutePath());
-                ci.cancel();
+
+            // Same base as Sable's resolveNativeDir: the game directory, else user.dir.
+            Path gameDir = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get();
+            Path dir = (gameDir != null ? gameDir : Paths.get(System.getProperty("user.dir", ".")))
+                .resolve(".sable").resolve("natives-ipl").normalize();
+            Files.createDirectories(dir);
+            Path lib = dir.resolve(fileName.replace("sable_rapier_", "sable_rapier_ipl_"));
+            // Another instance sharing this game directory may hold the library loaded, and
+            // Windows refuses to overwrite a loaded DLL: rewrite only when the content changed.
+            if (!Files.exists(lib) || !Arrays.equals(Files.readAllBytes(lib), bytes)) {
+                Files.write(lib, bytes);
             }
+            System.load(lib.toAbsolutePath().toString());
+            ipl.sable.natives.IplRapierNatives.markAvailable();
+            log.info("[IPL-NATIVES] loaded IPSable-built sable_rapier natives from {}", lib.toAbsolutePath());
+            ci.cancel();
         } catch (Throwable t) {
-            log.error("[IPL-NATIVES] failed to load custom natives — falling back to sable's bundled build", t);
+            log.error("[IPL-NATIVES] failed to load custom natives, falling back to sable's bundled build", t);
             // fall through: stock loadLibrary proceeds
         }
     }

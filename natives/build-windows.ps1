@@ -1,8 +1,9 @@
 # IPSable local natives build (portal-physics spec phase 4).
 #
-# Builds the patched sable_rapier natives for Windows x86_64 and stages the DLL into this
-# mod's resources (/natives_ipl/), where IplNativesOverrideMixin loads it in place of the
-# sable jar's bundled build.
+# Builds the patched sable_rapier natives for Windows x86_64 and stages the DLL at the
+# project root, where build.gradle packs it into /natives_ipl/ for IplNativesOverrideMixin
+# to load in place of the sable jar's bundled build. Release jars use build-cross.sh
+# (MSVC, all platforms) instead.
 #
 # Prereqs (one-time):
 #   rustup with toolchain nightly-2026-01-29 (GNU host: x86_64-pc-windows-gnu),
@@ -34,8 +35,7 @@ try {
 
 $dll = "$PSScriptRoot\target\release\sable_rapier.dll"
 if (!(Test-Path $dll)) { throw "expected $dll after build" }
-$dest = "$PSScriptRoot\..\src\main\resources\natives_ipl"
-New-Item -ItemType Directory -Force $dest | Out-Null
+$dest = (Resolve-Path "$PSScriptRoot\..").Path
 Copy-Item $dll "$dest\sable_rapier_x86_64_windows.dll" -Force
 
 # MANDATORY post-link fix: the GNU-ld + llvm-dlltool combination emits kernel32 import

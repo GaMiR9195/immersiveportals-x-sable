@@ -52,11 +52,8 @@ src/main/resources/immersive_portals.timestamp
 # IPSable natives dev loop: cargo build artifacts + locally-built DLL resource
 natives/target/
 src/main/resources/natives_ipl/
-# natives/build-cross.sh output and natives staged at the project root (CI builds them itself)
-natives/out/
-/sable_rapier_*.dll
-/sable_rapier_*.so
-/sable_rapier_*.dylib
+# natives staged at the project root (natives/build-*; CI builds them itself)
+/sable_rapier_*
 
 # gam1r
 OTHERREQUIREDSOURCES/
