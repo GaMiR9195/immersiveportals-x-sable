@@ -81,7 +81,10 @@ public abstract class IplNativesOverrideMixin {
                 return;
             }
 
-            Path dir = Paths.get(".sable", "natives-ipl");
+            // Same base as Sable's resolveNativeDir: the game directory, else user.dir.
+            Path gameDir = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get();
+            Path dir = (gameDir != null ? gameDir : Paths.get(System.getProperty("user.dir", ".")))
+                .resolve(".sable").resolve("natives-ipl").normalize();
             Files.createDirectories(dir);
             Path lib = dir.resolve(fileName.replace("sable_rapier_", "sable_rapier_ipl_"));
             // Another instance sharing this game directory may hold the library loaded, and
