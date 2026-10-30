@@ -39,7 +39,7 @@ jobs:
           restore-keys: cargo-
 
       - name: Build natives
-        run: natives/build-cross.sh ${{ matrix.os }} ${{ matrix.arch }}
+        run: bash natives/build-cross.sh ${{ matrix.os }} ${{ matrix.arch }}
 
       - name: Upload natives
         uses: actions/upload-artifact@v7
