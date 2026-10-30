@@ -16,6 +16,8 @@ import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import qouteall.imm_ptl.core.portal.Portal;
+import ipl.sable.transit.IplProjectionRaycast;
+import ipl.sable.transit.IplProjectionTree;
 
 import com.mojang.datafixers.util.Pair;
 import java.util.HashMap;
@@ -109,9 +111,30 @@ public final class IplStraddleStaffPick {
         BlockHitResult block = level.clip(new ClipContext(
             from, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player
         ));
-        ClientSubLevel sub = block.getType() == HitResult.Type.MISS ? null : getHitSubLevel(level, block);
-        VisibleHit visible = sub == null ? null : visibleHit(level, from, to, sub, block);
-        double blockDistance = visible == null ? Double.MAX_VALUE : visible.distance();
+        // `level.clip` is projection-aware (IplProjectionRaycast): it already hits every
+        // piece of every straddling ship present in `level` -- native pieces cut at their
+        // portal tubes, direct images, chained images, foreign images. The winning frame
+        // tells exactly which representation was hit; no candidate guessing needed.
+        IplProjectionRaycast.FrameHit frame = IplProjectionRaycast.lastWinner(block);
+        ClientSubLevel sub = block.getType() == HitResult.Type.MISS ? null
+            : frame != null && frame.sub() instanceof ClientSubLevel frameSub ? frameSub
+            : getHitSubLevel(level, block);
+        VisibleHit visible = null;
+        double blockDistance = Double.MAX_VALUE;
+        if (sub != null) {
+            if (frame != null) {
+                blockDistance = frame.distance();
+                // Images reached through a CHAIN are view-only for the staff (its drag
+                // frame algebra maps through one session portal); they still occlude.
+                if (frame.node() == null || !frame.node().isChained()) {
+                    visible = new VisibleHit(frame.distance(),
+                        frame.node() == null ? null : frame.node().portal);
+                }
+            } else {
+                visible = visibleHit(level, from, to, sub, block);
+                if (visible != null) blockDistance = visible.distance();
+            }
+        }
 
         Optional<Pair<Portal, qouteall.q_misc_util.my_util.RayTraceResult>> portalHit =
             qouteall.imm_ptl.core.portal.PortalUtils.raytracePortals(
@@ -119,33 +142,6 @@ public final class IplStraddleStaffPick {
             );
         double portalDistance = portalHit.map(hit -> hit.getSecond().hitPos().distanceTo(from))
             .orElse(Double.MAX_VALUE);
-
-        // PROJECTION PASS IN THE DESTINATION WORLD.
-        //
-        // `level.clip` above only finds geometry that physically lives in `level`. A
-        // hosted plot does not: it lives in the sub-level container dimension and appears
-        // in this world only as a portal-mapped IMAGE. On the player's own level that gap
-        // is covered by the ClientLevel clip override, but this recursion walks into
-        // `portal.getDestinationWorld()` and asks it for raw blocks, so a body straddling
-        // into the far side was simply not there to be hit. The ray fell through it and
-        // the pick resolved against whatever real world geometry stood behind -- which is
-        // exactly the "the point is not refracted into the portal, it flies off to real
-        // world coordinates" behaviour. Clip the same ray against every straddle
-        // projection into this world and let the nearest of the three candidates win.
-        ProjectionHit projected = null;
-        if (level instanceof ClientLevel projectionLevel) {
-            projected = clipProjections(projectionLevel, new ClipContext(
-                from, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-        }
-        if (projected != null && projected.sub() != null) {
-            double projectedDistance = Math.sqrt(projected.distSq());
-            if (projectedDistance <= blockDistance
-                && projectedDistance <= portalDistance + 0.0001) {
-                return new PortalTarget(
-                    projected.sub(), level, projected.hit(), path,
-                    projected.imagePortal(), traveled + projectedDistance);
-            }
-        }
 
         if (visible != null && blockDistance <= portalDistance + 0.0001) {
             // traveled through prior frames + the visible reach within this frame = the true
@@ -189,28 +185,25 @@ public final class IplStraddleStaffPick {
     private static VisibleHit visibleHit(
         Level level, Vec3 from, Vec3 to, ClientSubLevel sub, BlockHitResult hit
     ) {
-        Vec3 nearest = null;
-        double nearestError = Double.MAX_VALUE;
-        Portal imagePortal = null;
-
-        if (sub.getLevel() == level) {
-            Vec3 candidate = sub.renderPose().transformPosition(hit.getLocation());
-            nearest = candidate;
-            nearestError = rayErrorSq(from, to, candidate);
-        }
-
-        IplClientProjections.StraddleProjection projection =
-            IplClientProjections.getStraddleProjectionFor(sub);
-        if (projection != null && projection.portal().getDestDim() == level.dimension()) {
-            Vec3 candidate = projection.mappedPose().transformPosition(hit.getLocation());
+        // Every frame through which the ship is present in `level` (native piece + each
+        // session image, chains included) is a candidate; the one ON the ray wins.
+        Vec3[] nearest = {null};
+        double[] nearestError = {Double.MAX_VALUE};
+        IplProjectionTree.Node[] chosen = {null};
+        Pose3dc real = sub.renderPose();
+        IplProjectionTree.forEachFrameIn(sub, level, node -> {
+            Pose3dc pose = node == null ? real : node.mapping.mapPose(real);
+            Vec3 candidate = pose.transformPosition(hit.getLocation());
             double error = rayErrorSq(from, to, candidate);
-            if (error < nearestError) {
-                nearest = candidate;
-                nearestError = error;
-                imagePortal = projection.portal();
+            if (error < nearestError[0]) {
+                nearestError[0] = error;
+                nearest[0] = candidate;
+                chosen[0] = node;
             }
-        }
-        return nearest == null ? null : new VisibleHit(from.distanceTo(nearest), imagePortal);
+        });
+        if (nearest[0] == null) return null;
+        if (chosen[0] != null && chosen[0].isChained()) return null; // view-only image
+        return new VisibleHit(from.distanceTo(nearest[0]), chosen[0] == null ? null : chosen[0].portal);
     }
 
     private record VisibleHit(double distance, @Nullable Portal imagePortal) {}
@@ -503,80 +496,19 @@ public final class IplStraddleStaffPick {
 
         Vec3 from = ctx.getFrom();
         Vec3 to = ctx.getTo();
-        ipl.sable.mixin.client.IplClipContextAccessor access =
-            (ipl.sable.mixin.client.IplClipContextAccessor) ctx;
-
-        BlockHitResult best = null;
-        ClientSubLevel bestSub = null;
-        Portal bestPortal = null;
-        double bestDistSq = Double.MAX_VALUE;
-
+        java.util.Set<ClientSubLevel> seen =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        IplProjectionRaycast.FrameHit best = null;
         for (IplClientProjections.StraddleProjection projection : projections) {
-            // Picks map through ONE portal; images reached via a chain are view-only.
-            if (projection.isChained()) continue;
-            Pose3dc mapped = projection.mappedPose();
-
-            // Which half of the image physically exists is decided in PLOT SPACE by
-            // the source-half keep filter — the same cut physics and interaction use.
-            // (The old half-space ray gate against the infinite dest plane was
-            // orientation-fragile: it both rejected legitimate rays aimed straight at
-            // the emerged part and let near-portal rays alias onto source-half twin
-            // blocks through the image frame.)
-            java.util.function.Predicate<net.minecraft.core.BlockPos> keep =
-                ipl.sable.transit.IplStraddlePoseMap.getSourceHalfKeepFilter(
-                    projection.sub(), level);
-
-            // Distance frame anchor: the ORIGINAL ray origin, not the clipped segment
-            // start — distSq must stay comparable with the stock hit's measurement.
-            Vector3d localStart = mapped.transformPositionInverse(
-                new Vector3d(from.x, from.y, from.z));
-            Vector3d segStart = localStart;
-            Vector3d segStop = mapped.transformPositionInverse(
-                new Vector3d(to.x, to.y, to.z));
-
-            // The rays below are already in plot space — Sable's own sub-level
-            // projection is suppressed per cast, leaving pure vanilla traversal whose
-            // block reads resolve through the plot bridge.
-
-            // Only the THROUGH half exists as this image: hits on source-half blocks
-            // reached via the image frame are phantoms (the twin-block alias) — skip
-            // past them along the ray (bounded), like the native drop pass re-casts.
-            Vec3 rayFrom = new Vec3(segStart.x, segStart.y, segStart.z);
-            Vec3 rayTo = new Vec3(segStop.x, segStop.y, segStop.z);
-            Vec3 rayDir = rayTo.subtract(rayFrom).normalize();
-            BlockHitResult hit = null;
-            for (int guard = 0; guard < 4; guard++) {
-                ClipContext stepCtx = new ClipContext(
-                    rayFrom, rayTo,
-                    access.ipl$getBlock(), access.ipl$getFluid(),
-                    access.ipl$getCollisionContext());
-                ((dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension) stepCtx)
-                    .sable$setDoNotProject(true);
-                BlockHitResult step = level.clip(stepCtx);
-                if (step.getType() == HitResult.Type.MISS) {
-                    hit = null;
-                    break;
-                }
-                if (keep == null || !keep.test(step.getBlockPos())) {
-                    hit = step;
-                    break;
-                }
-                // Phantom: advance just past the hit and re-cast.
-                rayFrom = step.getLocation().add(rayDir.scale(1.0e-3));
-                hit = null;
-            }
-            if (hit == null) continue;
-
-            double distSq = hit.getLocation().distanceToSqr(
-                localStart.x, localStart.y, localStart.z);
-            if (distSq < bestDistSq) {
-                bestDistSq = distSq;
-                best = hit;
-                bestSub = projection.sub();
-                bestPortal = projection.portal();
-            }
+            if (!seen.add(projection.sub())) continue;
+            // Image frames only (the native piece is the stock pick's business); picks
+            // map through ONE portal, so chained images are excluded here.
+            IplProjectionRaycast.FrameHit hit = IplProjectionRaycast.clipSubLevel(
+                level, ctx, from, to, projection.sub(), false, node -> !node.isChained());
+            if (hit != null && (best == null || hit.distance() < best.distance())) best = hit;
         }
-        return best != null
-            ? new ProjectionHit(best, bestDistSq, bestSub, bestPortal) : null;
+        if (best == null || !(best.sub() instanceof ClientSubLevel bestSub)) return null;
+        return new ProjectionHit(best.hit(), best.distance() * best.distance(), bestSub,
+            best.node() == null ? null : best.node().portal);
     }
 }

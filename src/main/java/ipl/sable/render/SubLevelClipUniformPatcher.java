@@ -144,6 +144,33 @@ public final class SubLevelClipUniformPatcher {
         return currentSubLevelEqVanillaInput2;
     }
 
+    /**
+     * Пространство входных вершин «как у чанков Sable» включено ТОЛЬКО внутри скобки
+     * {@code SableSourceClipMixin} вокруг {@code renderChunkedSubLevel}.
+     *
+     * <p>Почему флаг, а не имя шейдера: у чанковой отрисовки Sable {@code Position + ChunkOffset}
+     * — повернутые plot-локальные координаты, и нормаль среза надо обратно повернуть позой
+     * саб-уровня. Но те же программы {@code rendertype_solid/cutout/translucent} рисуют и
+     * BER (кинетика Create без Flywheel, верёвки Simulated через {@code RenderType.solid()}),
+     * а у BER-вершин позиция уже мировая относительно камеры. Раньше выбор шёл по имени
+     * программы, и для повернутого корабля BER резались по повернутой плоскости — «кривой
+     * срез» визуалов у портала. Теперь вне чанковой скобки эти программы получают мировое
+     * уравнение, как и всё остальное.
+     */
+    private static boolean chunkInputSpace;
+
+    public static void beginChunkInputSpace() {
+        chunkInputSpace = true;
+    }
+
+    public static void endChunkInputSpace() {
+        chunkInputSpace = false;
+    }
+
+    public static boolean isChunkInputSpace() {
+        return chunkInputSpace;
+    }
+
     // Slot-0 adaptation is scoped independently from the source-half cuts.
     // Shader.apply and raw binds must not replace this plot-local equation
     // with a camera-world equation during a Sable chunk draw.

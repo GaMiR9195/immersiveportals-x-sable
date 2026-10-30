@@ -38,10 +38,18 @@ public final class IplProgramBindHook {
         boolean portalClip = FrontClipping.isClippingEnabled;
         boolean portalPass = PortalRendering.isRendering();
         boolean subClip = SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld() != null;
-        if (!portalClip && !portalPass && latePortalClipEnabled) {
+        if (!portalClip && !portalPass) {
             // A late bind can re-enable slot 0 while FrontClipping's flag is
             // false. FrontClipping.disableClipping() cannot clear that raw GL
             // state; explicitly release it on return to the root pass.
+            //
+            // Раньше это делалось только если слот 0 включили МЫ (latePortalClipEnabled).
+            // Но IP сам включает GL_CLIP_PLANE0 в MixinRenderSystem_Clipping
+            // (ip$writeCachedEquation) во время портального прохода, не поднимая флаг
+            // FrontClipping, а disableClipping() его потом не гасит. В корневом проходе
+            // такой «забытый» слот 0 со старым уравнением отсекал существ/BE возле портала
+            // в зависимости от положения камеры. Вне портального прохода и без активного
+            // FrontClipping слот 0 никому не нужен — гасим всегда (дешёвый вызов).
             GL11.glDisable(GL11.GL_CLIP_PLANE0);
             latePortalClipEnabled = false;
         }
@@ -66,7 +74,10 @@ public final class IplProgramBindHook {
     }
 
     private static float[] equation(int program, boolean second) {
-        if (IplProgramRegistry.usesVanillaSubLevelInputSpace(program)) {
+        // Plot-local («чанковое») уравнение — только внутри чанковой скобки Sable; см.
+        // SubLevelClipUniformPatcher#chunkInputSpace. BER на тех же программах — мировое.
+        if (SubLevelClipUniformPatcher.isChunkInputSpace()
+            && IplProgramRegistry.usesVanillaSubLevelInputSpace(program)) {
             return second ? SubLevelClipUniformPatcher.getCurrentSubLevelEqVanillaInput2()
                 : SubLevelClipUniformPatcher.getCurrentSubLevelEqVanillaInput();
         }

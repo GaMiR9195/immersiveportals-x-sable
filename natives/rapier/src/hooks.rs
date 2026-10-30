@@ -46,6 +46,14 @@ impl PhysicsHooks for SablePhysicsHooks {
 
         let mut remove = false;
         for contact in context.solver_contacts.iter_mut() {
+            // IPSable: a contact neutralized by the aperture clip above belongs to geometry
+            // that is on the OTHER side of a portal. It must not reach the block-property
+            // path: that path fires Java contact events (block collision callbacks, sounds,
+            // damage), can clear the whole manifold via `remove`, and re-applies block
+            // restitution / conveyor tangent velocity to a contact that does not exist.
+            if crate::ipl_ext::ipl_contact_neutralized(contact) {
+                continue;
+            }
             let Some(collider_a) = context.colliders.get(context.collider1) else {
                 panic!("No collider A!");
             };
@@ -185,7 +193,7 @@ impl SablePhysicsHooks {
             // invisible to the batcher.
             let mut clipped = 0u64;
             for c in context.solver_contacts.iter_mut() {
-                if regions.iter().any(|r| r.contains(c.point)) {
+                if crate::ipl_ext::ipl_point_clipped(regions, c.point) {
                     c.dist = 10.0;
                     c.friction = 0.0;
                     c.restitution = 0.0;

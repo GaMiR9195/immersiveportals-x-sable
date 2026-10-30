@@ -1,4 +1,4 @@
-package ipl.sable.mixin.client;
+package ipl.sable.mixin;
 
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.shapes.CollisionContext;

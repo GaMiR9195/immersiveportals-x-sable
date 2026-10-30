@@ -7,6 +7,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.SubLevelRenderDispatcher;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.VanillaSubLevelRenderDispatcher;
+import ipl.sable.render.IplSubLevelBlockEntityPass;
 import ipl.sable.render.SourceClipPortalFinder;
 import ipl.sable.render.SubLevelBlockEntityRenderScope;
 import ipl.sable.render.SubLevelClipUniformPatcher;
@@ -15,7 +16,8 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL30;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
-import qouteall.imm_ptl.core.render.FrontClipping;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.Collection;
 
@@ -56,6 +58,32 @@ import java.util.Collection;
 @Pseudo
 @Mixin(value = VanillaSubLevelRenderDispatcher.class, remap = false)
 public abstract class SableSubLevelBlockEntityClipMixin {
+
+    /**
+     * Весь проход BE саб-уровней идёт через {@link IplSubLevelBlockEntityPass#route}: по одному
+     * саб-уровню, пересекающие портал — внутри общей области отсечения со сбросом буфера ПОСЛЕ
+     * прохода, плюс глобальные BE (верёвки) самого саб-уровня. Оригинал вызывается повторно
+     * изнутри маршрута (флаг повторного входа), поэтому вложенные обёртки ниже продолжают
+     * работать как запасной путь.
+     */
+    @Inject(
+        method = "renderBlockEntities(Ljava/lang/Iterable;Ldev/ryanhcode/sable/sublevel/render/dispatcher/SubLevelRenderDispatcher$BlockEntityRenderer;DDDF)V",
+        at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
+        cancellable = true,
+        remap = false,
+        require = 0
+    )
+    private void ipl$routeBlockEntities(
+        Iterable<ClientSubLevel> subLevels,
+        SubLevelRenderDispatcher.BlockEntityRenderer renderer,
+        double camX, double camY, double camZ, float partialTick,
+        CallbackInfo ci
+    ) {
+        if (IplSubLevelBlockEntityPass.route(
+            (SubLevelRenderDispatcher) (Object) this, subLevels, renderer, camX, camY, camZ, partialTick)) {
+            ci.cancel();
+        }
+    }
 
     @WrapOperation(
         method = "renderBlockEntities",
@@ -141,7 +169,9 @@ public abstract class SableSubLevelBlockEntityClipMixin {
             return;
         }
 
-        SubLevelClipUniformPatcher.patchForSubLevel(sub, decision.plane());
+        // Вторая плоскость куска (выход в следующий портал / граница соседнего куска).
+        SubLevelClipUniformPatcher.patchForSubLevel(
+            sub, decision.plane(), SourceClipPortalFinder.secondPlaneFor(sub));
 
         // Manage GL_CLIP_DISTANCE1 carefully: respect IP's portal-through state
         // when restoring on cleanup, since IP may want it on for subsequent

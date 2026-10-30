@@ -342,6 +342,44 @@ public final class SableBridge {
         return SableImpl.plotOwnerLevel(serverLevel, pos);
     }
 
+    /**
+     * The level that OWNS plot block {@code pos} when that is not {@code here}: a ship
+     * projected into {@code here} through a portal lives (and must be edited) elsewhere.
+     * Null for world blocks and for ships native to {@code here}.
+     */
+    @Nullable
+    public static net.minecraft.server.level.ServerLevel foreignPlotOwnerLevel(
+        net.minecraft.server.level.ServerLevel here, @Nullable BlockPos pos
+    ) {
+        if (!PRESENT || here == null || pos == null) return null;
+        net.minecraft.server.level.ServerLevel owner = SableImpl.plotOwnerLevel(here, pos);
+        return owner != here ? owner : null;
+    }
+
+    /**
+     * Cross-portal reach for a block of a ship owned by {@code dimension} whose PIECE
+     * physically reaches the player's level through a portal (a projection): measured at
+     * the block's image there, so interacting with a projected ship does not depend on a
+     * reverse portal being near the player.
+     */
+    public static boolean isProjectedBlockWithinReach(
+        net.minecraft.server.level.ServerPlayer player, ResourceKey<Level> dimension,
+        BlockPos pos, double distanceSquare
+    ) {
+        if (!PRESENT || player == null || pos == null) return false;
+        return SableImpl.isProjectedBlockWithinReach(player, dimension, pos, distanceSquare);
+    }
+
+    /**
+     * CLIENT: dimension of the level owning the ship whose plot contains {@code pos}, or
+     * null for world blocks (and when Sable is absent).
+     */
+    @Nullable
+    public static ResourceKey<Level> clientPlotOwnerDimension(@Nullable BlockPos pos) {
+        if (!PRESENT || pos == null) return null;
+        return SableImpl.clientPlotOwnerDimension(pos);
+    }
+
     /** Plot identity belongs to a live container plot, never a coordinate threshold. */
     private static boolean isPlotPos(net.minecraft.server.level.ServerLevel context, BlockPos pos) {
         return SableImpl.isPlotPos(context, pos);

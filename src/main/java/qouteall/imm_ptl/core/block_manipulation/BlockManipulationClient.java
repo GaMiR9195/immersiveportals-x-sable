@@ -31,6 +31,13 @@ public class BlockManipulationClient {
     
     public static ResourceKey<Level> remotePointedDim;
     public static HitResult remoteHitResult;
+    /**
+     * Sable: the dimension through whose portal view the remote hit was SEEN, when that
+     * differs from {@link #remotePointedDim} (a ship owned by one level, projected into the
+     * portal's destination). The hit outline is drawn in that dimension's render pass.
+     */
+    @Nullable
+    public static ResourceKey<Level> remoteViewDim;
     
     public static boolean isPointingToPortal() {
         return remotePointedDim != null;
@@ -61,6 +68,7 @@ public class BlockManipulationClient {
         
         remotePointedDim = null;
         remoteHitResult = null;
+        remoteViewDim = null;
 
         if (!NeoForge.EVENT_BUS.post(new BlockManipulationServer.CrossPortalInteractionEvent(client.player)).canDo()) {
             return;
@@ -87,6 +95,53 @@ public class BlockManipulationClient {
                 );
             }
         });
+        
+        if (ipl.sable.SableBridge.PRESENT) {
+            retargetShipHit();
+        }
+    }
+    
+    /**
+     * Sable ships straddling portals. A hit on a ship comes back in the ship's PLOT
+     * coordinates, and those blocks live in the level that OWNS the ship -- not necessarily
+     * the world the hit was found in: a cross-dimension projection is picked in the
+     * player's own level (or in a portal's destination). Interactions must run in the
+     * owner level, so IP's remote-interaction machinery is pointed at it (switched client
+     * world for prediction, packets redirected to the owner dimension).
+     *
+     * <p>A ship owned by the player's own level goes down the vanilla path even when its
+     * piece was seen through a portal: its native-frame position is exactly the position
+     * seen through the portal, unfolded. The outline stays on the hit either way; the
+     * piece-aware outline renderer draws it only in the pass where that piece lives.
+     *
+     * <p>Русский комментарий: раньше клик по проекции корабля из другого измерения шёл
+     * ванильным путём в уровень игрока: чтение блоков работало (мост плотов), а любая
+     * запись отклонялась — "взаимодействие частично работает".
+     */
+    private static void retargetShipHit() {
+        HitResult target = remotePointedDim != null ? remoteHitResult : client.hitResult;
+        if (!(target instanceof BlockHitResult blockHit) || blockHit.getType() != HitResult.Type.BLOCK) {
+            return;
+        }
+        ResourceKey<Level> owner = ipl.sable.SableBridge.clientPlotOwnerDimension(blockHit.getBlockPos());
+        if (owner == null || owner == remotePointedDim) {
+            return;
+        }
+        if (owner == client.level.dimension()) {
+            // Seen through a portal, owned here: vanilla interaction on the real block.
+            client.hitResult = blockHit;
+            remotePointedDim = null;
+            remoteViewDim = null;
+            return;
+        }
+        // Owned by another level: remote interaction there. Through a portal the outline
+        // belongs to the portal's pass; locally it stays on client.hitResult.
+        remoteViewDim = remotePointedDim;
+        remotePointedDim = owner;
+        remoteHitResult = blockHit;
+        if (remoteViewDim == null) {
+            client.hitResult = blockHit;
+        }
     }
     
     private static double getCurrentTargetDistance() {

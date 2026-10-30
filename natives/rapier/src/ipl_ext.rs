@@ -188,6 +188,140 @@ pub struct IplClipRegion {
     /// symptom. Java sends the owning body's own diagonal, so the cutter is a closed box
     /// around exactly the volume that can be straddling.
     pub max_depth: Real,
+    /// ABI 2: region MODE. `false` = EXCLUDE (legacy: a contact inside is neutralized),
+    /// `true` = KEEP (a contact must lie inside EVERY keep region of the set to survive).
+    /// Image colliders describe "the part of the body that went through this portal"
+    /// as an intersection of keep tubes; describing it as the complement (a union of
+    /// exclusions) leaked contacts everywhere outside the aperture tube of the image --
+    /// the duplicated full copies seen with several portals.
+    pub keep: bool,
+}
+
+/// Native ABI level probed by Java (`IplRapierNatives.nativeAbiLevel()`):
+/// 1 = (implicit, symbol absent) exclusion-only regions, 2 = keep/exclude regions
+/// via `setClipRegionsV2` / `setImageClipRegionsV2` (17 doubles per region).
+pub const IPL_NATIVE_ABI_LEVEL: jint = 2;
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_nativeAbiLevel<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jint {
+    IPL_NATIVE_ABI_LEVEL
+}
+
+/// True when a scene-frame contact point must be neutralized for a body whose clip set is
+/// `regions`: inside any EXCLUDE region, or outside any KEEP region.
+#[inline]
+pub fn ipl_point_clipped(regions: &[IplClipRegion], p: Vec3) -> bool {
+    for r in regions {
+        let inside = r.contains(p);
+        if r.keep != inside {
+            // keep && !inside  -> outside a keep tube
+            // !keep && inside  -> inside an exclusion
+            return true;
+        }
+    }
+    false
+}
+
+/// Marker test for contacts neutralized by `SablePhysicsHooks::ipl_clip_contacts`
+/// (separated by 10 m with zero friction -- never produced by the narrow phase itself,
+/// whose prediction distance is a few centimetres).
+#[inline]
+pub fn ipl_contact_neutralized(c: &rapier3d::geometry::SolverContact) -> bool {
+    c.dist >= 9.99 && c.friction == 0.0
+}
+
+/// Decode a region payload. `stride` 17 carries an explicit mode (17th value, >0.5 = KEEP);
+/// 16/14 are the legacy exclusion-only layouts.
+fn ipl_parse_regions(values: &[f64], stride: usize) -> Vec<IplClipRegion> {
+    let mut out = Vec::with_capacity(values.len() / stride.max(1));
+    for c in values.chunks_exact(stride) {
+        let normal = Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real);
+        // A degenerate frame would make `contains` meaningless (NaN dot products are
+        // never <= anything, so a NaN KEEP region would clip every contact). Skip it.
+        if !(normal.length_squared() > 1.0e-12) || c.iter().any(|v| v.is_nan()) {
+            continue;
+        }
+        out.push(IplClipRegion {
+            point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
+            normal,
+            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
+            half_w: c[9] as Real,
+            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
+            half_h: c[13] as Real,
+            skin: if c.len() > 14 { c[14] as Real } else { 1.0e-3 },
+            max_depth: if c.len() > 15 { c[15] as Real } else { Real::MAX },
+            keep: c.len() > 16 && c[16] > 0.5,
+        });
+    }
+    out
+}
+
+fn ipl_read_doubles(env: &JNIEnv, data: &JDoubleArray) -> Option<Vec<f64>> {
+    let len = env.get_array_length(data).ok()? as usize;
+    let mut values = vec![0.0f64; len];
+    if len > 0 && env.get_double_array_region(data, 0, &mut values).is_err() {
+        return None;
+    }
+    Some(values)
+}
+
+/// ABI 2 body regions: N x 17 doubles
+/// `[px py pz  nx ny nz  wx wy wz halfW  hx hy hz halfH  skin maxDepth  mode]`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegionsV2<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    data: JDoubleArray<'local>,
+) {
+    if scene_handle == 0 {
+        return;
+    }
+    let Some(values) = ipl_read_doubles(&env, &data) else { return; };
+    let regions = ipl_parse_regions(&values, 17);
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(info) = sable_data.level_colliders.get_mut(&(body_id as LevelColliderID)) else {
+        return;
+    };
+    info.clip_regions = regions;
+}
+
+/// ABI 2 image regions (same 17-double layout as `setClipRegionsV2`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegionsV2<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    packed_handle: jlong,
+    data: JDoubleArray<'local>,
+) {
+    use rapier3d::prelude::ColliderHandle;
+
+    if scene_handle == 0 || packed_handle < 0 {
+        return;
+    }
+    let Some(values) = ipl_read_doubles(&env, &data) else { return; };
+    let regions = ipl_parse_regions(&values, 17);
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(info) = sable_data.level_colliders.get_mut(&(body_id as LevelColliderID)) else {
+        return;
+    };
+    let handle = ColliderHandle::from_raw_parts(
+        (packed_handle >> 32) as u32,
+        (packed_handle & 0xFFFF_FFFF) as u32,
+    );
+    if regions.is_empty() {
+        info.image_clip.remove(&handle);
+    } else {
+        info.image_clip.insert(handle, regions);
+    }
 }
 
 /// Clip-region stride. The current payload is 16 doubles per region:
@@ -252,19 +386,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
         return; // body already gone — nothing to clip
     };
 
-    info.clip_regions.clear();
-    for c in values.chunks_exact(ipl_clip_stride(values.len())) {
-        info.clip_regions.push(IplClipRegion {
-            point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
-            normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
-            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
-            half_w: c[9] as Real,
-            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
-            half_h: c[13] as Real,
-            skin: if c.len() > 14 { c[14] as Real } else { 1.0e-3 },
-            max_depth: if c.len() > 15 { c[15] as Real } else { Real::MAX },
-        });
-    }
+    info.clip_regions = ipl_parse_regions(&values, ipl_clip_stride(values.len()));
     // No success log: straddle sessions re-push regions per tick — an unconditional
     // stderr write here is a server-thread tick cost. The MISS branch above stays.
 }
@@ -635,19 +757,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegio
         (packed_handle >> 32) as u32,
         (packed_handle & 0xFFFF_FFFF) as u32,
     );
-    let mut regions = Vec::with_capacity(values.len() / 14);
-    for c in values.chunks_exact(ipl_clip_stride(values.len())) {
-        regions.push(IplClipRegion {
-            point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
-            normal: Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real),
-            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
-            half_w: c[9] as Real,
-            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
-            half_h: c[13] as Real,
-            skin: if c.len() > 14 { c[14] as Real } else { 1.0e-3 },
-            max_depth: if c.len() > 15 { c[15] as Real } else { Real::MAX },
-        });
-    }
+    let regions = ipl_parse_regions(&values, ipl_clip_stride(values.len()));
     if regions.is_empty() {
         info.image_clip.remove(&handle);
     } else {

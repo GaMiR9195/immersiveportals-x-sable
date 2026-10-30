@@ -14,6 +14,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /**
  * Write guard for the projection plot bridge (server and client).
  *
+ * <p>Server writes are ROUTED to the owning level (see below); client writes are rejected.
+ *
  * <p>{@code IplPlotBridgeMixin} lets a level read the plot of a ship that projects into it
  * from another dimension. Writes must never take that path: a {@code setBlock} at those plot
  * coordinates would mutate the other level's chunk with this level's neighbour updates,
@@ -42,7 +44,20 @@ public abstract class IplForeignPlotWriteGuardMixin {
         LevelPlot plot = container.getPlot(chunkX, chunkZ);
         SubLevel owner = plot == null ? null : plot.getSubLevel();
         if (owner != null && owner.getLevel() != self) {
-            cir.setReturnValue(false);
+            Level own = owner.getLevel();
+            if (!self.isClientSide && own != null && !own.isClientSide) {
+                // SERVER: the write goes to the level that owns the plot, with that level's
+                // neighbour updates, light engine, block entities and chunk trackers -- any
+                // code path that still holds the wrong level (buckets, explosions, block
+                // logic of other mods) edits the real ship instead of being dropped.
+                // Русский комментарий: раньше такая запись просто отклонялась, и всё, что
+                // шло не через маршрутизацию по владельцу, на проекции "не работало".
+                cir.setReturnValue(own.setBlock(pos, state, flags, recursionLeft));
+            } else {
+                // CLIENT: never predict into another level's plot; the server's block update
+                // for the owner level is authoritative.
+                cir.setReturnValue(false);
+            }
         }
     }
 }

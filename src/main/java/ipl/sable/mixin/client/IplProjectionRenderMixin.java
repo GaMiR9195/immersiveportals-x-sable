@@ -9,9 +9,11 @@ import dev.ryanhcode.sable.sublevel.render.dispatcher.SubLevelRenderDispatcher;
 import foundry.veil.api.client.render.VeilRenderBridge;
 import foundry.veil.api.client.render.rendertype.VeilRenderType;
 import ipl.sable.client.IplClientProjections;
+import ipl.sable.client.IplProjectionLevelScope;
 import ipl.sable.client.IplProjectionRenderSequence;
 import ipl.sable.client.IplStraddleRenderState;
 import ipl.sable.client.IplStraddleRenderCache;
+import ipl.sable.render.IplSubLevelBlockEntityPass;
 import ipl.sable.render.SubLevelBlockEntityRenderScope;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import net.minecraft.client.Camera;
@@ -95,6 +97,8 @@ public abstract class IplProjectionRenderMixin {
         LightTexture lightTexture, Matrix4f modelView, Matrix4f projection, CallbackInfo ci
     ) {
         IplStraddleRenderCache.begin(this.level);
+        // Свой набор «уже нарисованных глобальных BE» на каждый (в т.ч. вложенный) проход.
+        IplSubLevelBlockEntityPass.beginLevelPass();
     }
 
     @Inject(method = "renderLevel", at = @At("RETURN"))
@@ -103,6 +107,7 @@ public abstract class IplProjectionRenderMixin {
         LightTexture lightTexture, Matrix4f modelView, Matrix4f projection, CallbackInfo ci
     ) {
         IplStraddleRenderCache.end(this.level);
+        IplSubLevelBlockEntityPass.endLevelPass();
     }
 
     /**
@@ -142,8 +147,7 @@ public abstract class IplProjectionRenderMixin {
         Vec3 cameraPosition = camera.getPosition();
         SubLevelRenderDispatcher dispatcher = SubLevelRenderDispatcher.get();
         for (IplClientProjections.StraddleProjection projection : projections) {
-            IplStraddleRenderState.set(
-                projection.sub(), projection.mappedPose(), projection.destPlane(), projection.portal());
+            IplStraddleRenderState.set(projection);
             try {
                 dispatcher.updateCulling(
                     List.of(projection.sub()), cameraPosition.x, cameraPosition.y, cameraPosition.z,
@@ -168,7 +172,7 @@ public abstract class IplProjectionRenderMixin {
         if (projections.isEmpty()) return;
         float partialTick = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
         for (IplClientProjections.StraddleProjection proj : projections) {
-            IplStraddleRenderState.set(proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
+            IplStraddleRenderState.set(proj);
             try {
                 ipl$updateCullingForDraw(List.of(proj.sub()));
                 SubLevelRenderDispatcher.get().renderSectionLayer(
@@ -201,7 +205,7 @@ public abstract class IplProjectionRenderMixin {
                 Minecraft.getInstance().getWindow());
             shader.apply();
             for (IplClientProjections.StraddleProjection proj : projections) {
-                IplStraddleRenderState.set(proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
+                IplStraddleRenderState.set(proj);
                 try {
                     ipl$updateCullingForDraw(List.of(proj.sub()));
                     dispatcher.renderSectionLayer(
@@ -255,14 +259,17 @@ public abstract class IplProjectionRenderMixin {
         Vec3 cameraPosition = camera.getPosition();
         float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
         for (IplClientProjections.StraddleProjection proj : projections) {
-            IplStraddleRenderState.set(proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
+            IplStraddleRenderState.set(proj);
             try {
+                // BER межизмеренческой проекции видят «свой» мир в Minecraft.level (пружины,
+                // свет Sable) — см. IplProjectionLevelScope; сброс буфера уже вне подмены.
                 SubLevelBlockEntityRenderScope.renderAndFlush(
                     proj.sub(), this.renderBuffers.bufferSource(), () ->
-                        SubLevelRenderDispatcher.get().renderBlockEntities(
-                            List.of(proj.sub()), ipl$projectionBeRenderer,
-                            cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick
-                        )
+                        IplProjectionLevelScope.runInOwnerLevel(proj.sub(), () ->
+                            SubLevelRenderDispatcher.get().renderBlockEntities(
+                                List.of(proj.sub()), ipl$projectionBeRenderer,
+                                cameraPosition.x, cameraPosition.y, cameraPosition.z, partialTick
+                            ))
                 );
             } finally {
                 IplStraddleRenderState.clear();

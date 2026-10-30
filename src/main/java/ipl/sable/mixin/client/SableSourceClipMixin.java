@@ -135,16 +135,15 @@ public abstract class SableSourceClipMixin {
             return;
         }
         primaryPlane = decision.plane();
-        if (ipl.sable.client.IplStraddleRenderState.getPlaneFor(getSubLevel()) == null) {
-            java.util.List<SourceClipPortalFinder.ClipDecision> all =
-                SourceClipPortalFinder.findStraddlingPortalPlanes(getSubLevel());
-            if (all.size() > 1) {
-                secondaryPlane = all.get(1).plane();
-            }
-        }
+        // Вторая плоскость: у родного куска — второй корневой портал, у куска проекции —
+        // вход в следующий портал цепочки (раньше у проекций её не было вовсе).
+        secondaryPlane = SourceClipPortalFinder.secondPlaneFor(getSubLevel());
 
+        // Чанковые вершины Sable plot-локальны: только в этой скобке программы
+        // rendertype_* получают обратно повернутую нормаль (см. SubLevelClipUniformPatcher).
+        SubLevelClipUniformPatcher.beginChunkInputSpace();
         // Independent clip planes: write to our ipl_subLevelClipEquation[2] uniform
-        // (both min into gl_ClipDistance[1]), not IP's slot 0.
+        // (two independent gl_ClipDistance slots 1 and 2), not IP's slot 0.
         SubLevelClipUniformPatcher.patchForSubLevel(getSubLevel(), primaryPlane, secondaryPlane);
 
         // Enable hardware respect for gl_ClipDistance[1] writes. GL_CLIP_DISTANCE1
@@ -199,6 +198,7 @@ public abstract class SableSourceClipMixin {
         // inSubLevelBracket so it only re-enables while a bracket is live.
         GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
         GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
+        SubLevelClipUniformPatcher.endChunkInputSpace();
         SubLevelClipUniformPatcher.clearAndUpload();
     }
 

@@ -151,11 +151,18 @@ public final class IplEnteringVolumeVisualization {
         BUFFERS.put(ship.getUniqueId(), new dev.ryanhcode.sable.companion.math.Pose3d(pose));
     }
 
+    /**
+     * Потолок строки RPC: строка длиннее 32767 символов не кодируется, и сервер рвёт соединение
+     * игрока (на клиенте — «ClosedChannelException»). Отладочный оверлей при множестве кораблей
+     * просто показывает первые записи.
+     */
+    private static final int MAX_RPC_CHARS = 30_000;
+
     private static void broadcast(MinecraftServer server) {
         StringBuilder payload = new StringBuilder(LIVE.size() * 256);
         for (Snapshot snapshot : LIVE.values()) {
-            if (payload.length() > 0) payload.append('|');
-            payload.append(snapshot.shipId()).append(',').append(snapshot.phase().name()).append(',')
+            StringBuilder record = new StringBuilder(256);
+            record.append(snapshot.shipId()).append(',').append(snapshot.phase().name()).append(',')
                 .append(snapshot.dimension()).append(',').append(snapshot.previousTransform())
                 .append('/').append(snapshot.currentTransform()).append('~')
                 .append(snapshot.apertureHit() ? '1' : '0').append('~')
@@ -164,6 +171,9 @@ public final class IplEnteringVolumeVisualization {
                 .append(snapshot.netherPortal() ? '1' : '0').append('~')
                 .append(snapshot.mappingTransform()).append('~')
                 .append(snapshot.bufferTransform());
+            if (payload.length() + record.length() + 1 > MAX_RPC_CHARS) break;
+            if (payload.length() > 0) payload.append('|');
+            payload.append(record);
         }
         for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
             qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(viewer,

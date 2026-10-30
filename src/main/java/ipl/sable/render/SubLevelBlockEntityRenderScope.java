@@ -42,12 +42,8 @@ public final class SubLevelBlockEntityRenderScope {
         // Finish prior, unrelated vertices BEFORE changing their clip equations.
         // This boundary is outside the entire sub-level renderer, never inside a BER.
         buffers.endBatch();
-        qouteall.q_misc_util.my_util.Plane second=null;
-        if (ipl.sable.client.IplStraddleRenderState.getPlaneFor(sub)==null) {
-            var cuts=SourceClipPortalFinder.findStraddlingPortalPlanes(sub);
-            if (cuts.size()>1) second=cuts.get(1).plane();
-        }
-        SubLevelClipUniformPatcher.patchForSubLevel(sub, decision.plane(),second);
+        SubLevelClipUniformPatcher.patchForSubLevel(
+            sub, decision.plane(), SourceClipPortalFinder.secondPlaneFor(sub));
         // IP owns slot 0 while its portal bracket is live. Outside that bracket it
         // must be off: a portal pass can otherwise leave an old slot-0 equation
         // enabled and cull native destination BEs after the parent handoff.

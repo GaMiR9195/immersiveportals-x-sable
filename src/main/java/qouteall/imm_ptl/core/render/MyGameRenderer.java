@@ -201,7 +201,8 @@ public class MyGameRenderer {
         
         FogRendererContext.swappingManager.pushSwapping(newDimension);
         ((IEParticleManager) client.particleEngine).ip_setWorld(newWorld);
-        if (BlockManipulationClient.remotePointedDim == newDimension) {
+        if (BlockManipulationClient.remotePointedDim == newDimension
+            || (BlockManipulationClient.remoteViewDim == newDimension && BlockManipulationClient.remoteHitResult != null)) {
             client.hitResult = BlockManipulationClient.remoteHitResult;
         }
         if (!PortalRendering.shouldRenderHitResult()) {

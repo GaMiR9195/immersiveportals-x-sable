@@ -87,8 +87,7 @@ public abstract class IplProjectionRenderSodiumMixin {
         Vec3 cameraPosition = camera.getPosition();
         SubLevelRenderDispatcher dispatcher = SubLevelRenderDispatcher.get();
         for (IplClientProjections.StraddleProjection projection : projections) {
-            IplStraddleRenderState.set(
-                projection.sub(), projection.mappedPose(), projection.destPlane(), projection.portal());
+            IplStraddleRenderState.set(projection);
             try {
                 dispatcher.updateCulling(
                     List.of(projection.sub()), cameraPosition.x, cameraPosition.y, cameraPosition.z,
@@ -161,7 +160,7 @@ public abstract class IplProjectionRenderSodiumMixin {
                 Minecraft.getInstance().getWindow());
             shader.apply();
             for (IplClientProjections.StraddleProjection proj : projections) {
-                IplStraddleRenderState.set(proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());
+                IplStraddleRenderState.set(proj);
                 try {
                     ipl$updateCulling(List.of(proj.sub()));
                     dispatcher.renderSectionLayer(

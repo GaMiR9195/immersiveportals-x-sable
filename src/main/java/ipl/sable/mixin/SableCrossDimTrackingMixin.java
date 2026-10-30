@@ -120,9 +120,31 @@ import java.util.UUID;
  */
 @Pseudo
 @Mixin(value = SubLevelTrackingSystem.class, remap = false)
-public abstract class SableCrossDimTrackingMixin {
+public abstract class SableCrossDimTrackingMixin implements ipl.sable.transit.IplTrackingStamp {
 
     @Shadow @Final private ServerLevel level;
+
+    @Shadow private int interpolationTick;
+
+    /**
+     * Серверный тик, в котором этот уровень последний раз штамповал снимки. Нужен, чтобы
+     * при межизмеренческом переходе посчитать сдвиг часов двух уровней для одного и того же
+     * серверного тика (уровни тикают по очереди, поэтому «текущая» метка уровня, который уже
+     * оттикал, на единицу больше метки этого тика).
+     */
+    @Unique
+    private int ipl$stampServerTick = Integer.MIN_VALUE;
+
+    @Inject(method = "sendMovementUpdates", at = @At("HEAD"), require = 0)
+    private void ipl$recordStampTick(SubLevelContainer container, CallbackInfo ci) {
+        ipl$stampServerTick = level.getServer().getTickCount();
+    }
+
+    @Override
+    public int ipl$stampFor(int serverTick) {
+        // sendMovementUpdates увеличивает interpolationTick последней строкой.
+        return ipl$stampServerTick == serverTick ? interpolationTick - 1 : interpolationTick;
+    }
 
     @Shadow
     private void sendFullSync(ServerPlayer player, ServerSubLevel subLevel, CustomPacketPayload extraPacket) {

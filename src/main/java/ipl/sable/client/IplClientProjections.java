@@ -49,7 +49,8 @@ public final class IplClientProjections {
         Pose3d mappedPose,
         Plane destPlane,
         List<Portal> via,
-        IplStraddlePoseMap.StraddleMapping mapping
+        IplStraddlePoseMap.StraddleMapping mapping,
+        @Nullable Plane exclude
     ) {
         public boolean isChained() { return via.size() > 1; }
     }
@@ -161,17 +162,19 @@ public final class IplClientProjections {
                 if (sub.isRemoved() || !(sub instanceof ClientSubLevel clientSub)) continue;
                 if (clientSub.getRenderData() == null || IplParentDimSync.isSuppressedSuccessor(clientSub)) continue;
                 // ONE projection per session portal (multi-straddle).
-                for (SourceClipPortalFinder.ClipDecision decision :
-                        SourceClipPortalFinder.findStraddlingPortalPlanes(clientSub)) {
+                List<SourceClipPortalFinder.ClipDecision> roots =
+                    SourceClipPortalFinder.findStraddlingPortalPlanes(clientSub);
+                List<List<Portal>> chains = IplStraddleSessionStore.resolveChains(clientSub);
+                for (SourceClipPortalFinder.ClipDecision decision : roots) {
                     if (decision.portal() == null || decision.portal().getDestDim() != destLevel.dimension()) continue;
                     if (out == null) out = new ArrayList<>(2);
-                    out.add(direct(clientSub, decision));
+                    out.add(direct(clientSub, decision, chains));
                 }
-                for (List<Portal> chain : IplStraddleSessionStore.resolveChains(clientSub)) {
+                for (List<Portal> chain : chains) {
                     Portal last = chain.get(chain.size() - 1);
                     if (last.getDestDim() != destLevel.dimension()) continue;
                     if (out == null) out = new ArrayList<>(2);
-                    out.add(chained(clientSub, chain));
+                    out.add(chained(clientSub, chain, chains));
                 }
             }
         }
@@ -179,16 +182,23 @@ public final class IplClientProjections {
     }
 
     private static StraddleProjection direct(ClientSubLevel sub, SourceClipPortalFinder.ClipDecision decision) {
+        return direct(sub, decision, IplStraddleSessionStore.resolveChains(sub));
+    }
+
+    private static StraddleProjection direct(
+        ClientSubLevel sub, SourceClipPortalFinder.ClipDecision decision, List<List<Portal>> chains
+    ) {
         Portal portal = decision.portal();
         IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.StraddleMapping.of(portal);
         // Through the portal the kept half flips: n_dest = -R(n_src), anchored at the mapped point.
         Plane destPlane = new Plane(portal.transformPoint(decision.plane().pos()),
             portal.transformLocalVec(decision.plane().normal()).scale(-1.0));
+        List<Portal> via = List.of(portal);
         return new StraddleProjection(sub, portal, computeMappedPose(sub.renderPose(), mapping),
-            destPlane, List.of(portal), mapping);
+            destPlane, via, mapping, childEntryPlane(via, chains));
     }
 
-    private static StraddleProjection chained(ClientSubLevel sub, List<Portal> chain) {
+    private static StraddleProjection chained(ClientSubLevel sub, List<Portal> chain, List<List<Portal>> chains) {
         IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.StraddleMapping.of(chain.get(0));
         for (int i = 1; i < chain.size(); i++) {
             mapping = mapping.then(IplStraddlePoseMap.StraddleMapping.of(chain.get(i)));
@@ -196,8 +206,47 @@ public final class IplClientProjections {
         Portal last = chain.get(chain.size() - 1);
         Plane destPlane = new Plane(last.transformPoint(last.getOriginPos()),
             last.transformLocalVec(last.getNormal()).scale(-1.0));
+        // Вторая плоскость куска цепочки. Приоритет — вход в СЛЕДУЮЩИЙ портал (кусок, ушедший
+        // глубже, рисует уже следующая проекция). Если глубже никто не ушёл — выход ПРЕДЫДУЩЕГО
+        // портала, перенесённый через последний: без неё «родная» часть корабля, отображённая
+        // составной изометрией, могла попасть за выход последнего портала при косой
+        // расстановке порталов и рисовалась лишней копией.
+        Plane exclude = childEntryPlane(chain, chains);
+        if (exclude == null && chain.size() >= 2) {
+            Portal parent = chain.get(chain.size() - 2);
+            Vec3 parentExitPos = parent.transformPoint(parent.getOriginPos());
+            Vec3 parentExitKeep = parent.transformLocalVec(parent.getNormal()).scale(-1.0);
+            exclude = new Plane(last.transformPoint(parentExitPos), last.transformLocalVec(parentExitKeep));
+        }
         return new StraddleProjection(sub, last, computeMappedPose(sub.renderPose(), mapping),
-            destPlane, List.copyOf(chain), mapping);
+            destPlane, List.copyOf(chain), mapping, exclude);
+    }
+
+    /**
+     * Плоскость входа в первый дочерний портал куска {@code path}: кусок проекции, который
+     * уже зашёл в следующий портал, должен быть ОБРЕЗАН на его входе (то, что за входом,
+     * рисует дочерняя проекция в своём измерении). Без этой второй плоскости прямая
+     * проекция рисовала корабль целиком за входом следующего портала — «несколько копий
+     * саб-уровня» вместо кусков, переходящих из портала в портал.
+     *
+     * <p>Сохраняемое полупространство — сторона нормали входа (по конвенции IP нормаль
+     * смотрит на исходную сторону), как и у корневого среза в {@link SourceClipPortalFinder}.
+     * Дочерних порталов может быть несколько; шейдер даёт только два независимых среза,
+     * поэтому берётся первый (детерминированно — порядок сессий сервера).
+     */
+    @Nullable
+    private static Plane childEntryPlane(List<Portal> path, List<List<Portal>> chains) {
+        for (List<Portal> chain : chains) {
+            if (chain.size() != path.size() + 1) continue;
+            boolean prefix = true;
+            for (int i = 0; i < path.size() && prefix; i++) {
+                prefix = chain.get(i).getUUID().equals(path.get(i).getUUID());
+            }
+            if (!prefix) continue;
+            Portal child = chain.get(path.size());
+            return new Plane(child.getOriginPos(), child.getNormal());
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------ collision / interaction
@@ -257,7 +306,7 @@ public final class IplClientProjections {
         for (List<Portal> chain : IplStraddleSessionStore.resolveChains(clientSub)) {
             Portal last = chain.get(chain.size() - 1);
             if (last.getDestDim() != contextLevel.dimension()) continue;
-            visitor.accept(last, chained(clientSub, chain).mapping());
+            visitor.accept(last, chained(clientSub, chain, List.of()).mapping());
         }
     }
 
@@ -280,6 +329,42 @@ public final class IplClientProjections {
         if (decision == null || decision.portal() == null) return null;
         if (Math.abs(decision.portal().getScaling() - 1.0) > 1e-9) return null;
         return decision.portal();
+    }
+
+    // ------------------------------------------------------------------ projection tree
+
+    /** Client clock for {@link ipl.sable.transit.IplProjectionTree}'s per-tick cache. */
+    public static long clientStamp() {
+        ClientLevel level = Minecraft.getInstance().level;
+        return level == null ? 0L : level.getGameTime();
+    }
+
+    /**
+     * The mirrored server sessions of {@code sub} as projection-tree entries: the ROOT
+     * session portals (authoritative, no render tails) and every resolvable chain, each
+     * prefix registered before its extension. Transit ghosts are visual-only and have no
+     * tree (their real successor owns interaction).
+     */
+    public static List<ipl.sable.transit.IplProjectionTree.Entry> treeEntries(SubLevel sub) {
+        if (!(sub instanceof ClientSubLevel clientSub) || IplParentDimSync.isGhost(clientSub)) return List.of();
+        if (!IplStraddleSessionStore.mayStraddle(sub.getUniqueId())) return List.of();
+        List<ipl.sable.transit.IplProjectionTree.Entry> out = new ArrayList<>(2);
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Portal portal : IplStraddleSessionStore.resolveAllPortals(clientSub)) {
+            String path = portal.getUUID().toString();
+            if (seen.add(path)) out.add(new ipl.sable.transit.IplProjectionTree.Entry(path, "", portal,
+                IplStraddleSessionStore.isWide(sub.getUniqueId(), path)));
+        }
+        for (List<Portal> chain : IplStraddleSessionStore.resolveChains(clientSub)) {
+            String via = "";
+            for (Portal portal : chain) {
+                String path = via.isEmpty() ? portal.getUUID().toString() : via + ">" + portal.getUUID();
+                if (seen.add(path)) out.add(new ipl.sable.transit.IplProjectionTree.Entry(path, via, portal,
+                    IplStraddleSessionStore.isWide(sub.getUniqueId(), path)));
+                via = path;
+            }
+        }
+        return out;
     }
 
     /** Pose through a portal isometry (rotation point and scale unchanged). */

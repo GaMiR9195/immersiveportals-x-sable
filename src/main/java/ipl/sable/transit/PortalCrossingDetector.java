@@ -55,6 +55,84 @@ public final class PortalCrossingDetector {
         }
     }
 
+    /**
+     * Piece scope: which blocks of a body take part in a crossing test.
+     *
+     * <p>Русский комментарий (почему): раньше и корневые, и цепочечные проверки брали ВСЕ
+     * блоки тела. Часть, уже прошедшая портал P1, физически отсутствует в исходном мире,
+     * но её реальные координаты продолжают лежать там — и она "пересекала" следующие
+     * порталы P2, P3 того же мира (ряд порталов со сдвигом на блок): открывались
+     * фантомные корневые сессии и их цепочки, образы в неверных местах толкали тело, а
+     * снапшот разрастался до обрыва соединения. Теперь кусок берётся из того же дерева
+     * проекций, что и физика: корневой тест портала P видит только родной кусок и кусок,
+     * уже ушедший в P; тест дочернего портала Q узла N — только кусок N и поддерево N>Q.
+     * С одной сессией фильтр ничего не отбрасывает, поведение обычного прохода прежнее.
+     */
+    private record PieceScope(String parentPath, UUID portal) {
+        String id() {
+            return parentPath + "|" + portal;
+        }
+    }
+
+    @org.jetbrains.annotations.Nullable
+    private static PieceScope pieceScope;
+    private record ScopedBlocksKey(UUID body, String scope, long generation, long tick, long revision) {}
+    private static final Map<ScopedBlocksKey, List<BlockPos>> SCOPED_BLOCKS = new HashMap<>();
+
+    /** Runs {@code action} with crossing tests restricted to one projection piece. */
+    public static <T> T inPieceScope(String parentPath, UUID portal, java.util.function.Supplier<T> action) {
+        PieceScope previous = pieceScope;
+        pieceScope = new PieceScope(parentPath == null ? "" : parentPath, portal);
+        try {
+            return action.get();
+        } finally {
+            pieceScope = previous;
+        }
+    }
+
+    /** Enter/exit pair for loop bodies with {@code continue}; always exit in a finally. */
+    public static void enterPieceScope(String parentPath, UUID portal) {
+        pieceScope = new PieceScope(parentPath == null ? "" : parentPath, portal);
+    }
+
+    public static void exitPieceScope() {
+        pieceScope = null;
+    }
+
+    /** Occupied blocks of {@code body} inside the current piece scope (all without scope). */
+    private static List<BlockPos> blocks(ServerSubLevel body) {
+        List<BlockPos> all = IplPortalVolumeCache.blocks(body);
+        PieceScope scope = pieceScope;
+        if (scope == null || all.isEmpty()) return all;
+        IplProjectionTree tree = IplProjectionTree.of(body);
+        if (tree.isEmpty()) return all;
+        ScopedBlocksKey key = new ScopedBlocksKey(body.getUniqueId(), scope.id(),
+            IplProjectionTree.generation(), trailTick, IplPortalVolumeCache.revision(body));
+        List<BlockPos> cached = SCOPED_BLOCKS.get(key);
+        if (cached != null) return cached;
+        Frame frame = new Frame(realTrail(body).end);
+        String childPath = scope.parentPath().isEmpty() ? null : scope.parentPath() + ">" + scope.portal();
+        List<BlockPos> out = new java.util.ArrayList<>(all.size());
+        for (BlockPos block : all) {
+            IplProjectionTree.Node piece = tree.pieceAt(
+                new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block)));
+            boolean accept;
+            if (childPath == null) {
+                // Root test of portal P: native piece, or a piece whose path starts at P.
+                IplProjectionTree.Node root = piece;
+                while (root != null && root.parent != null) root = root.parent;
+                accept = root == null || root.portal.getUUID().equals(scope.portal());
+            } else {
+                accept = piece != null && (piece.path.equals(scope.parentPath())
+                    || piece.path.equals(childPath) || piece.path.startsWith(childPath + ">"));
+            }
+            if (accept) out.add(block);
+        }
+        List<BlockPos> result = out.size() == all.size() ? all : List.copyOf(out);
+        SCOPED_BLOCKS.put(key, result);
+        return result;
+    }
+
     private static void invalidateMapped(UUID body) {
         if (!MAPPED_TRAILS.isEmpty()) MAPPED_TRAILS.keySet().removeIf(k -> k.body().equals(body));
     }
@@ -85,6 +163,7 @@ public final class PortalCrossingDetector {
 
     public static void beginTrailTick() {
         MAPPED_TRAILS.clear();
+        SCOPED_BLOCKS.clear();
         trailTick++;
     }
 
@@ -297,7 +376,7 @@ public final class PortalCrossingDetector {
         double apertureMargin, double lookaheadSegments
     ) {
         if (lookaheadSegments <= 0.0) return false;
-        List<BlockPos> blocks = IplPortalVolumeCache.blocks(airship);
+        List<BlockPos> blocks = blocks(airship);
         if (blocks.isEmpty()) return false;
         Trail trail = trail(airship);
         if (sameBasis(trail.start, trail.end) && trail.start.position().equals(trail.end.position()))
@@ -354,7 +433,7 @@ public final class PortalCrossingDetector {
         Vec3 normal = exitFrame.mapVec(portal.getNormal());
         Vec3 axisW = exitFrame.mapVec(portal.getAxisW());
         Vec3 axisH = exitFrame.mapVec(portal.getAxisH());
-        EXIT_LATCHES.put(airship.getUniqueId(), new ExitLatch(
+        ExitLatch latch = new ExitLatch(
             portal.getUUID(),
             origin.x, origin.y, origin.z,
             normal.x, normal.y, normal.z,
@@ -362,16 +441,33 @@ public final class PortalCrossingDetector {
             axisH.x, axisH.y, axisH.z,
             portal.getWidth() * 0.5,
             portal.getHeight() * 0.5,
-            clearance));
+            clearance);
+        latch.sourceDim = portal.level().dimension();
+        latch.sourceOrigin = portal.getOriginPos();
+        EXIT_LATCHES.put(airship.getUniqueId(), latch);
     }
 
+    /**
+     * Fresh exit: a crossing of the plate we just came out of is not a new entrance.
+     *
+     * <p>Русский комментарий: блокируется только грань, ведущая НАЗАД в исходный портал
+     * (иначе тело "пинг-понгом" возвращалось бы сразу после флипа). Раньше блокировался
+     * любой портал на той же плоскости — и ряд порталов "выход P1 = вход P2" вставал после
+     * первого же перехода.
+     */
     public static boolean withinExitClearance(ServerSubLevel airship, Portal portal) {
         ExitLatch latch = liveExitLatch(airship);
         if (latch == null) return false;
 
         if (!overlapsExit(airship, latch, trail(airship).end)) return false;
 
-        return plateIsRectangleOf(latch, portal);
+        return plateIsRectangleOf(latch, portal) && leadsBack(latch, portal);
+    }
+
+    private static boolean leadsBack(ExitLatch latch, Portal candidate) {
+        if (latch.sourceDim == null || latch.sourceOrigin == null) return true;
+        return candidate.getDestDim().equals(latch.sourceDim)
+            && candidate.getDestPos().distanceToSqr(latch.sourceOrigin) <= 1.0e-4;
     }
 
     public static void clearTrails() {
@@ -422,7 +518,7 @@ public final class PortalCrossingDetector {
     }
 
     public static boolean hasSourceGeometry(ServerSubLevel body, Portal portal) {
-        var blocks = IplPortalVolumeCache.blocks(body);
+        var blocks = blocks(body);
         return !blocks.isEmpty() && sample(blocks, new Frame(trail(body).end),
             portal.getOriginPos(), portal.getNormal().scale(-1.0)).minDistance < -EPSILON;
     }
@@ -439,7 +535,7 @@ public final class PortalCrossingDetector {
 
     public static boolean completesThroughAperture(ServerSubLevel body, Portal portal, double releaseMargin) {
         Trail trail = trail(body);
-        List<BlockPos> blocks = IplPortalVolumeCache.blocks(body);
+        List<BlockPos> blocks = blocks(body);
         if (blocks.isEmpty()) return false;
         Vec3 normal = portal.getNormal().scale(-1.0), origin = portal.getOriginPos();
         if (sample(blocks, new Frame(trail.start), origin, normal).minDistance >= -EPSILON)
@@ -455,7 +551,7 @@ public final class PortalCrossingDetector {
      * rest of the object still overlaps the opening. Distant non-crossing geometry
      * is irrelevant; a sparse plot's empty AABB gap cannot retain the seam either. */
     public static boolean retainsAdmittedSession(ServerSubLevel body, Portal portal) {
-        return sectionFits(portal, IplPortalVolumeCache.blocks(body),
+        return sectionFits(portal, blocks(body),
             new Frame(trail(body).end), SESSION_RELEASE_MARGIN, PORTAL_HYSTERESIS_DEPTH);
     }
 
@@ -481,7 +577,7 @@ public final class PortalCrossingDetector {
 
     private static double completionTime(ServerSubLevel body, Portal portal, double depth) {
         Trail trail = trail(body);
-        List<BlockPos> blocks = IplPortalVolumeCache.blocks(body);
+        List<BlockPos> blocks = blocks(body);
         if (blocks.isEmpty()) return 1.0;
         Vec3 normal = portal.getNormal().scale(-1.0), origin = portal.getOriginPos();
         // With a fixed affine basis every occupied vertex has the same displacement.
@@ -585,7 +681,7 @@ public final class PortalCrossingDetector {
     public static CrossingState evaluate(
         ServerSubLevel airship, Portal portal, Vec3 sourceToDestNormal, double apertureMargin
     ) {
-        List<BlockPos> blocks = IplPortalVolumeCache.blocks(airship);
+        List<BlockPos> blocks = blocks(airship);
         if (blocks.isEmpty()) {
             return new CrossingState(
                 CrossingPhase.APPROACHING, false, false, false,
@@ -595,7 +691,8 @@ public final class PortalCrossingDetector {
         Trail trail = trail(airship);
         EvaluationKey key = new EvaluationKey(portal.getUUID(), portal.getOriginPos(),
             portal.getAxisW(), portal.getAxisH(), sourceToDestNormal,
-            portal.getWidth(), portal.getHeight(), apertureMargin, IplPortalVolumeCache.revision(airship));
+            portal.getWidth(), portal.getHeight(), apertureMargin, IplPortalVolumeCache.revision(airship),
+            pieceScope == null ? "" : pieceScope.id() + "@" + IplProjectionTree.generation());
         CrossingState cached = trail.evaluations.get(key);
         if (cached != null) return cached;
         Frame start = new Frame(trail.start);
@@ -768,7 +865,7 @@ public final class PortalCrossingDetector {
         double[] origin = {latch.ox, latch.oy, latch.oz};
         double[] w = {latch.wx, latch.wy, latch.wz}, h = {latch.hx, latch.hy, latch.hz};
         double[] n = {latch.nx, latch.ny, latch.nz};
-        for (BlockPos block : IplPortalVolumeCache.blocks(body)) {
+        for (BlockPos block : blocks(body)) {
             double[] center = {frame.centerX(block), frame.centerY(block), frame.centerZ(block)};
             if (PortalSweepMath.sweep(center, center, basis, basis, origin, w, h, n,
                 latch.halfW, latch.halfH, latch.halfThickness, 0.0) != null) return true;
@@ -814,6 +911,9 @@ public final class PortalCrossingDetector {
         final double wx, wy, wz;
         final double hx, hy, hz;
         final double halfW, halfH, halfThickness;
+        /** Level and origin of the portal we came through (to recognise its reverse face). */
+        @org.jetbrains.annotations.Nullable net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> sourceDim;
+        @org.jetbrains.annotations.Nullable Vec3 sourceOrigin;
 
         ExitLatch(UUID portalId,
                   double ox, double oy, double oz,
@@ -834,7 +934,7 @@ public final class PortalCrossingDetector {
     }
 
     private record EvaluationKey(UUID portal, Vec3 origin, Vec3 axisW, Vec3 axisH,
-        Vec3 normal, double width, double height, double margin, long blockRevision) {}
+        Vec3 normal, double width, double height, double margin, long blockRevision, String scope) {}
 
     private static final class Trail {
         final Map<EvaluationKey, CrossingState> evaluations = new HashMap<>();

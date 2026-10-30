@@ -170,6 +170,12 @@ public class PortalRendering {
             
             if ((hitResult instanceof BlockHitResult blockHitResult) && hitResult.getType() == HitResult.Type.BLOCK) {
                 BlockPos blockPos = blockHitResult.getBlockPos();
+                if (ipl.sable.SableBridge.clientPlotOwnerDimension(blockPos) != null) {
+                    // Sable ship hit (plot coordinates): the plane test below would compare a
+                    // plot position with a world plane. The piece-aware outline renderer
+                    // decides per pass where the hit block physically is.
+                    return true;
+                }
                 Plane innerClipping = renderingPortal.getInnerClipping();
                 if (innerClipping != null) {
                     boolean roughlyInside = innerClipping.move(-0.1)

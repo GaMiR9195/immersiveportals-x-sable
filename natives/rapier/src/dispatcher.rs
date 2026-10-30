@@ -179,6 +179,16 @@ where
 
             if g1.is_static && !g2.is_static {
                 self.world_vs_world::<ContactData>(pos12, g1, g2, prediction, manifolds, false);
+            } else if !g1.is_static && g2.is_static {
+                // IPL atlas: pairs are ordered by collider INDEX (broad phase swaps to
+                // co1 < co2), not by kind. Upstream Sable has exactly one terrain
+                // collider created before any body, so (body, terrain) never occurred.
+                // The atlas creates one terrain collider per chart when that dimension's
+                // scene initializes, and image colliders reuse freed arena slots -- so a
+                // body/image can sort BEFORE a chart's terrain. That pair used to fall
+                // through every branch and produce no manifold at all: the image simply
+                // did not collide with the destination ground.
+                self.world_vs_world::<ContactData>(&pos12.inverse(), g2, g1, prediction, manifolds, true);
             } else if !g1.is_static && !g2.is_static {
                 // Portal rims can exclude a registered pair from contacts. Clear rather
                 // than keep persisted manifolds: stale contacts must not survive exclusion.

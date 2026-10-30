@@ -2,7 +2,12 @@ package ipl.sable.mixin.client;
 
 import dev.engine_room.flywheel.backend.engine.embed.EmbeddedEnvironment;
 import dev.engine_room.flywheel.backend.gl.shader.GlProgram;
+import ipl.sable.render.IplFlywheelFallback;
 import ipl.sable.render.IplProgramBindHook;
+import org.joml.Matrix4f;
+import org.lwjgl.system.MemoryUtil;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Shadow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
@@ -46,6 +51,33 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @Mixin(value = EmbeddedEnvironment.class, remap = false)
 public class IplFlywheelEmbeddedClipMixin {
+
+    @Shadow @Final private EmbeddedEnvironment parent;
+    @Shadow @Final private Matrix4f poseComposed;
+
+    /**
+     * Схлопнуть окружение саб-уровня, чьи BE сейчас рисует BER-путь (пересечение портала,
+     * скрытый преемник перехода) — см. {@link IplFlywheelFallback}. Матрица модели «всё в одну
+     * точку» (нулевая, кроме w = 1) превращает каждый треугольник в вырожденный — растеризатор
+     * его не рисует: instancing читает {@code poseComposed} в {@code setupDraw}, indirect —
+     * буфер матриц, куда {@code flush} только что её записал. Вложенные окружения (родитель
+     * скрыт) схлопываются тоже. {@code flush} пересчитывает матрицу каждый кадр, так что
+     * окружение возвращается само, как только саб-уровень отходит от портала.
+     */
+    @Inject(method = "flush(J)V", at = @At("TAIL"), remap = false, require = 0)
+    private void ipl$collapseHiddenEnvironment(long ptr, CallbackInfo ci) {
+        EmbeddedEnvironment env = (EmbeddedEnvironment) (Object) this;
+        for (int depth = 0; env != null && depth < 16; depth++) {
+            if (IplFlywheelFallback.isHiddenEnvironment(env)) {
+                this.poseComposed.zero().m33(1.0f);
+                MemoryUtil.memSet(ptr, 0, 64);
+                // Столбцовый порядок (как ExtraMemoryOps.putMatrix4f): m33 — последний float.
+                MemoryUtil.memPutFloat(ptr + 60L, 1.0f);
+                return;
+            }
+            env = ((IplFlywheelEmbeddedClipMixin) (Object) env).parent;
+        }
+    }
 
     @Unique
     private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-flywheel-embedded-clip");

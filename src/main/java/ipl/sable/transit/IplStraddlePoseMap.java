@@ -190,10 +190,18 @@ public final class IplStraddlePoseMap {
         return IplAtlasStraddleSession.hasSession(sub.getUniqueId());
     }
 
-    /** One straddle image's portal and isometry. */
+    /**
+     * One straddle image's portal and isometry, plus its projection-tree node (null for
+     * frames not backed by a session node).
+     */
     public record StraddleFrame(
-        @Nullable qouteall.imm_ptl.core.portal.Portal portal, StraddleMapping mapping
-    ) {}
+        @Nullable qouteall.imm_ptl.core.portal.Portal portal, StraddleMapping mapping,
+        @Nullable IplProjectionTree.Node node
+    ) {
+        public StraddleFrame(@Nullable qouteall.imm_ptl.core.portal.Portal portal, StraddleMapping mapping) {
+            this(portal, mapping, null);
+        }
+    }
 
     /** Visit every straddle of {@code sub} mapping INTO {@code ctx} (dest side). */
     public static void forEachStraddleInto(
@@ -206,33 +214,6 @@ public final class IplStraddlePoseMap {
             return;
         }
         IplAtlasStraddleSession.forEachSessionInto(sub, ctx, visitor);
-    }
-
-    /**
-     * Atlas pick fix: a world point that lies on a straddling ship's THROUGH half
-     * (past the portal plane — the physics clip's cut)
-     * physically exists at its MAPPED position. Remaps such points; returns null when
-     * the point is on the source half (caller keeps the unmapped projection).
-     * Multi-straddle: the first session whose cut contains the point wins.
-     *
-     * <p>This is what makes plot-space pick hits SURVIVE vanilla's reach clamp:
-     * distance checks project the hit out of the sub level, and the through half's
-     * truthful world position is the mapped one.
-     */
-    @Nullable
-    public static Vec3 remapThroughHalfProjection(SubLevel sub, Level ctx, Vec3 world) {
-        if (sub == null || ctx == null || world == null) return null;
-        Vec3[] result = {null};
-        forEachStraddleFrom(sub, ctx, (portal, mapping) -> {
-            if (result[0] != null || portal == null || mapping == null) return;
-            Vec3 origin = portal.getOriginPos();
-            Vec3 n = portal.getNormal(); // source side keeps +normal (keep-filter convention)
-            double d = (world.x - origin.x) * n.x + (world.y - origin.y) * n.y
-                + (world.z - origin.z) * n.z;
-            if (d >= 0.0) return; // source half
-            result[0] = mapping.mapPoint(world);
-        });
-        return result[0];
     }
 
     /** Visit every straddle of {@code sub} exiting FROM {@code ctx} (its parent side). */
@@ -249,55 +230,92 @@ public final class IplStraddlePoseMap {
     }
 
     /**
-     * The interaction frame for a position: null = the native/source frame; otherwise
-     * the (portal, mapping) of the NEAREST mapped image. Multi-straddle-aware: every
-     * session's image competes, each measured against its plane-CLIPPED half box (the
-     * half that physically exists), and the native candidate is the source box clipped
-     * by EVERY session's cut. Ties resolve to the mapped side (legacy behavior).
+     * One keep half-space of a frame, expressed in the ship's REAL frame (its own level,
+     * real pose): material is kept where {@code (p - point) . keep >= 0}.
+     */
+    public record RealHalfSpace(Vec3 point, Vec3 keep) {}
+
+    /**
+     * The half-space cuts of one frame (null = native piece), all in the REAL frame:
+     * native piece = front side of every root portal; node = beyond side of every portal
+     * of its path (each pulled back to the real frame through its parent's mapping) and
+     * front side of every child portal (pulled back through the node's own mapping).
+     *
+     * <p>Русский комментарий: раньше плоскость выхода для образа считалась как
+     * mapping.mapPoint(origin) первого портала — для цепочек это неверно (нужна плоскость
+     * ПОСЛЕДНЕГО портала пути), а дочерние сессии не вырезались вовсе. Теперь срезы
+     * строятся по дереву проекций и совпадают с регионами физики (KEEP/EXCLUDE трубки),
+     * с приближением трубки полупространством для коллизий сущностей.
+     */
+    public static java.util.List<RealHalfSpace> frameCuts(IplProjectionTree tree, @Nullable IplProjectionTree.Node node) {
+        java.util.List<RealHalfSpace> out = new java.util.ArrayList<>(2);
+        if (node == null) {
+            for (IplProjectionTree.Node root : tree.roots()) {
+                out.add(new RealHalfSpace(root.portal.getOriginPos(), root.portal.getNormal()));
+            }
+            return out;
+        }
+        for (IplProjectionTree.Node a = node; a != null; a = a.parent) {
+            Vec3 point = a.portal.getOriginPos();
+            Vec3 keep = a.portal.getNormal().scale(-1.0);
+            if (a.parent != null) {
+                point = a.parent.mapping.unmapPoint(point);
+                keep = a.parent.mapping.unmapVec(keep);
+            }
+            out.add(new RealHalfSpace(point, keep));
+        }
+        for (IplProjectionTree.Node child : node.children) {
+            out.add(new RealHalfSpace(
+                node.mapping.unmapPoint(child.portal.getOriginPos()),
+                node.mapping.unmapVec(child.portal.getNormal())));
+        }
+        return out;
+    }
+
+    /**
+     * The interaction/collision frame for a position in {@code ctx}: null = the native
+     * frame; otherwise the frame of the NEAREST present image. Every frame through which
+     * the ship exists in {@code ctx} competes (native piece and every session node into
+     * {@code ctx}, chains included), each measured against its CUT box (the part that
+     * physically exists). Ties resolve to the image (legacy behaviour).
      */
     @Nullable
     public static StraddleFrame chooseCollisionFrame(SubLevel sub, Level ctx, Vec3 position) {
         if (sub == null || ctx == null) return null;
+        IplProjectionTree tree = IplProjectionTree.of(sub);
+        if (tree.isEmpty()) return null;
 
         dev.ryanhcode.sable.companion.math.BoundingBox3dc shipBox = sub.boundingBox();
         boolean nativeHere = sub.getLevel() == ctx;
 
-        double nativeDist = Double.MAX_VALUE;
-        if (nativeHere) {
-            dev.ryanhcode.sable.companion.math.BoundingBox3d src =
-                new dev.ryanhcode.sable.companion.math.BoundingBox3d();
-            src.set(shipBox);
-            dev.ryanhcode.sable.companion.math.BoundingBox3d[] srcRef = {src};
-            forEachStraddleFrom(sub, ctx, (portal, mapping) -> {
-                if (srcRef[0] == null || portal == null) return;
-                srcRef[0] = clipBoxKeeping(srcRef[0], portal.getOriginPos(), portal.getNormal());
-            });
-            nativeDist = srcRef[0] == null
-                ? Double.MAX_VALUE : distanceSqToBox(srcRef[0], position);
-        }
-
-        double[] best = {nativeDist};
+        double[] best = {Double.MAX_VALUE};
         StraddleFrame[] chosen = {null};
-        boolean nativeHereFinal = nativeHere;
-        forEachStraddleInto(sub, ctx, (portal, mapping) -> {
-            double d;
-            if (portal != null) {
-                Vec3 destPlanePoint = mapping.mapPoint(portal.getOriginPos());
-                Vec3 destInward = mapping.mapVec(portal.getNormal().scale(-1.0));
-                // Same-dimension: the image only claims positions past ITS dest plane.
-                if (nativeHereFinal
-                    && destInward.dot(position.subtract(destPlanePoint)) < 0.0) {
-                    return;
-                }
-                dev.ryanhcode.sable.companion.math.BoundingBox3d img =
-                    clipBoxKeeping(mapping.mapAabb(shipBox), destPlanePoint, destInward);
-                d = img == null ? Double.MAX_VALUE : distanceSqToBox(img, position);
-            } else {
-                d = distanceSqToBox(mapping.mapAabb(shipBox), position);
+        IplProjectionTree.forEachFrameIn(sub, ctx, node -> {
+            StraddleMapping mapping = node == null ? null : node.mapping;
+            if (node != null && nativeHere) {
+                // Same dimension: an image only claims positions past ITS exit plane.
+                Vec3 exitPoint = node.portal.getDestPos();
+                Vec3 exitInward = node.portal.getContentDirection();
+                if (exitInward.dot(position.subtract(exitPoint)) < 0.0) return;
+            }
+            dev.ryanhcode.sable.companion.math.BoundingBox3d box =
+                new dev.ryanhcode.sable.companion.math.BoundingBox3d();
+            box.set(mapping == null ? shipBox : mapping.mapAabb(shipBox));
+            dev.ryanhcode.sable.companion.math.BoundingBox3d cut = box;
+            for (RealHalfSpace h : frameCuts(tree, node)) {
+                if (cut == null) break;
+                Vec3 point = mapping == null ? h.point() : mapping.mapPoint(h.point());
+                Vec3 keep = mapping == null ? h.keep() : mapping.mapVec(h.keep());
+                cut = clipBoxKeeping(cut, point, keep);
+            }
+            double d = cut == null ? Double.MAX_VALUE : distanceSqToBox(cut, position);
+            if (node == null) {
+                if (d < best[0]) best[0] = d;
+                return; // native: chosen stays null unless an image is nearer/equal
             }
             if (d <= best[0]) {
                 best[0] = d;
-                chosen[0] = new StraddleFrame(portal, mapping);
+                chosen[0] = new StraddleFrame(node.portal, node.mapping, node);
             }
         });
         return chosen[0];
@@ -348,25 +366,20 @@ public final class IplStraddlePoseMap {
     /**
      * Plot-local block keep-filter for entity-vs-ship collision while the ship straddles
      * a portal, or null when no clipping applies. Selects the frame the collision code
-     * uses for this entity (the chosen image's mapped filter, or the AND of every
-     * source-side cut) — both from the same {@link #chooseCollisionFrame} the pose
-     * wraps use, so filter and pose can never disagree.
+     * uses for this entity ({@link #chooseCollisionFrame}, the same choice the pose wraps
+     * use, so filter and pose can never disagree) and keeps exactly that piece's blocks.
      */
     @Nullable
     public static java.util.function.Predicate<BlockPos> getBlockCollisionKeepFilter(
         @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
     ) {
         if (sub == null || contextLevel == null || entityBounds == null) return null;
+        IplProjectionTree tree = IplProjectionTree.of(sub);
+        if (tree.isEmpty()) return null;
         StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
-        if (frame != null) {
-            if (frame.portal() == null) return null;
-            return buildKeepFilter(
-                frame.mapping().mapPose(leadPose(sub)),
-                frame.mapping().mapPoint(frame.portal().getOriginPos()),
-                frame.mapping().mapVec(frame.portal().getNormal().scale(-1.0)),
-                SEAM_SUPPORT_MARGIN);
-        }
-        return getSourceHalfKeepFilter(sub, contextLevel, SEAM_SUPPORT_MARGIN);
+        IplProjectionTree.Node node = frame == null ? null : frame.node();
+        if (node == null && sub.getLevel() != contextLevel) return null;
+        return cutFilter(leadPose(sub), frameCuts(tree, node), SEAM_SUPPORT_MARGIN);
     }
 
     /**
@@ -386,30 +399,41 @@ public final class IplStraddlePoseMap {
      * geometry instead of a whole-block predicate, so callers can trim individual
      * collision boxes at the portal plane instead of keeping or dropping entire blocks.
      *
-     * <p>Null when no clipping applies. Multi-straddle returns every cut; a box must
-     * survive all of them.
+     * <p>Null when no clipping applies. A box must survive every returned cut.
      */
     @Nullable
     public static java.util.List<LocalHalfSpace> getBlockCollisionKeepPlanes(
         @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
     ) {
         if (sub == null || contextLevel == null || entityBounds == null) return null;
+        IplProjectionTree tree = IplProjectionTree.of(sub);
+        if (tree.isEmpty()) return null;
         StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
-        if (frame != null) {
-            if (frame.portal() == null) return null;
-            return java.util.List.of(localHalfSpace(
-                frame.mapping().mapPose(leadPose(sub)),
-                frame.mapping().mapPoint(frame.portal().getOriginPos()),
-                frame.mapping().mapVec(frame.portal().getNormal().scale(-1.0))));
-        }
-        if (sub.getLevel() != contextLevel) return null;
+        IplProjectionTree.Node node = frame == null ? null : frame.node();
+        if (node == null && sub.getLevel() != contextLevel) return null;
         Pose3dc pose = leadPose(sub);
         java.util.List<LocalHalfSpace> parts = new java.util.ArrayList<>(2);
-        forEachStraddleFrom(sub, contextLevel, (portal, mapping) -> {
-            if (portal == null) return;
-            parts.add(localHalfSpace(pose, portal.getOriginPos(), portal.getNormal()));
-        });
+        for (RealHalfSpace h : frameCuts(tree, node)) {
+            parts.add(localHalfSpace(pose, h.point(), h.keep()));
+        }
         return parts.isEmpty() ? null : parts;
+    }
+
+    /** AND of real-frame half-space cuts as a plot-local block predicate. */
+    @Nullable
+    private static java.util.function.Predicate<BlockPos> cutFilter(
+        Pose3dc pose, java.util.List<RealHalfSpace> cuts, double planeMargin
+    ) {
+        if (cuts.isEmpty()) return null;
+        java.util.List<java.util.function.Predicate<BlockPos>> parts = new java.util.ArrayList<>(cuts.size());
+        for (RealHalfSpace h : cuts) parts.add(buildKeepFilter(pose, h.point(), h.keep(), planeMargin));
+        if (parts.size() == 1) return parts.get(0);
+        return pos -> {
+            for (java.util.function.Predicate<BlockPos> part : parts) {
+                if (!part.test(pos)) return false;
+            }
+            return true;
+        };
     }
 
     /**
@@ -542,24 +566,11 @@ public final class IplStraddlePoseMap {
     ) {
         if (sub == null || contextLevel == null) return null;
         if (sub.getLevel() != contextLevel) return null;
-
+        IplProjectionTree tree = IplProjectionTree.of(sub);
+        if (tree.isEmpty()) return null;
         // Source side keeps +portal normal (crossing direction is -normal, the same
-        // convention as isInMappedHalf and the transit controller's parity rule).
-        Pose3dc pose = leadPose(sub);
-        java.util.List<java.util.function.Predicate<BlockPos>> parts = new java.util.ArrayList<>(2);
-        forEachStraddleFrom(sub, contextLevel, (portal, mapping) -> {
-            if (portal == null) return;
-            parts.add(buildKeepFilter(
-                pose, portal.getOriginPos(), portal.getNormal(), planeMargin));
-        });
-        if (parts.isEmpty()) return null;
-        if (parts.size() == 1) return parts.get(0);
-        return pos -> {
-            for (java.util.function.Predicate<BlockPos> part : parts) {
-                if (!part.test(pos)) return false;
-            }
-            return true;
-        };
+        // convention as the transit controller's parity rule).
+        return cutFilter(leadPose(sub), frameCuts(tree, null), planeMargin);
     }
 
     /**

@@ -25,6 +25,47 @@ public final class IplRapierNatives {
         return available;
     }
 
+    /** Region mode values of the ABI-2 payload (17th double of each region). */
+    public static final double REGION_EXCLUDE = 0.0;
+    public static final double REGION_KEEP = 1.0;
+    /** Doubles per region in the ABI-2 payload. */
+    public static final int REGION_STRIDE_V2 = 17;
+
+    private static volatile int abiLevel = -1;
+
+    /**
+     * Native ABI level: 1 = exclusion-only clip regions (natives that predate the probe),
+     * 2 = keep/exclude regions ({@link #setClipRegionsV2}, {@link #setImageClipRegionsV2}).
+     * Probed once; an older DLL simply lacks the symbol, which is caught here instead of
+     * surfacing as an {@link UnsatisfiedLinkError} in a physics tick.
+     */
+    public static int abiLevel() {
+        int level = abiLevel;
+        if (level >= 0) return level;
+        if (!available) return 0;
+        try {
+            level = Math.max(1, nativeAbiLevel());
+        } catch (UnsatisfiedLinkError e) {
+            level = 1;
+        }
+        abiLevel = level;
+        return level;
+    }
+
+    private static native int nativeAbiLevel();
+
+    /**
+     * ABI 2 body clip regions: N regions × 17 doubles —
+     * {@code [px py pz  nx ny nz  wx wy wz halfW  hx hy hz halfH  skin maxDepth  mode]}.
+     * A contact is neutralized when it lies inside any EXCLUDE region or outside any KEEP
+     * region (KEEP regions intersect).
+     */
+    public static native void setClipRegionsV2(long sceneHandle, int bodyId, double[] regions);
+
+    /** ABI 2 image clip regions (same 17-double layout as {@link #setClipRegionsV2}). */
+    public static native void setImageClipRegionsV2(
+        long sceneHandle, int bodyId, long imageHandle, double[] regions);
+
     /**
      * Set (or clear, with an empty array) body clip regions: solver contacts past the
      * region's plane and within its lateral rectangle are dropped from its manifolds.

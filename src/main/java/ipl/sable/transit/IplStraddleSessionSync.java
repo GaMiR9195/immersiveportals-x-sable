@@ -93,23 +93,48 @@ public final class IplStraddleSessionSync {
         UUID shipId = ship.getUniqueId();
         java.util.LinkedHashMap<String, String> portals =
             ACTIVE.computeIfAbsent(shipId, k -> new java.util.LinkedHashMap<>());
-        String encoded = encodePortal(portal, IplAtlasStraddleSession.isCompleted(key));
+        String encoded = encodePortal(portal, IplAtlasStraddleSession.isCompleted(key),
+            IplAtlasStraddleSession.isWide(key));
         if (encoded.equals(portals.put(key.path(), encoded))) return;
 
         LOG.debug("[IPL-STRADDLE-SYNC] start ship={} path={}", shipId, key.path());
         broadcast(server, shipId);
     }
 
-    /** Full portal geometry for session snapshots and client-side handoff render tails. */
+    /**
+     * Portal geometry for session snapshots and client-side handoff render tails.
+     *
+     * <p>Русский комментарий: раньше сюда шёл ПОЛНЫЙ {@code saveWithoutId} портала
+     * (анимация, форма, NeoForge-аттачменты, команды...) в base64 — 2-3 КБ на сессию.
+     * Снапшот всех сессий тела склеивался в одну строку RPC, а IP пишет строки через
+     * {@code writeUtf} с лимитом 32767 символов: цепочка порталов подряд давала десятки
+     * сессий, сервер падал на кодировании пакета, клиент видел
+     * {@code ClosedChannelException}. Клиенту нужен только прямоугольник и изометрия,
+     * поэтому берём белый список ключей (≈0.4 КБ), а сам снапшот идёт как NBT-список.
+     */
     public static String encodePortal(Portal portal) {
-        return encodePortal(portal, false);
+        return encodePortal(portal, false, false);
     }
 
-    private static String encodePortal(Portal portal, boolean completed) {
+    /** Keys {@code Portal.readAdditionalSaveData}/{@code Entity.load} need for geometry. */
+    private static final java.util.Set<String> GEOMETRY_KEYS = java.util.Set.of(
+        "Pos", "width", "height", "thickness",
+        "axisWX", "axisWY", "axisWZ", "axisHX", "axisHY", "axisHZ",
+        "dimensionTo", "destinationX", "destinationY", "destinationZ",
+        "rotationA", "rotationB", "rotationC", "rotationD",
+        "scale", "teleportable", "interactable", "isVisible");
+
+    private static String encodePortal(Portal portal, boolean completed, boolean wide) {
         try {
+            net.minecraft.nbt.CompoundTag full = new net.minecraft.nbt.CompoundTag();
+            portal.saveWithoutId(full);
             net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
-            portal.saveWithoutId(tag);
+            for (String key : GEOMETRY_KEYS) {
+                net.minecraft.nbt.Tag value = full.get(key);
+                if (value != null) tag.put(key, value.copy());
+            }
             tag.putBoolean("ipl_session_completed", completed);
+            if (wide) tag.putBoolean("ipl_session_wide", true);
             tag.putString("ipl_source_dimension", portal.level().dimension().location().toString());
             tag.putString("entity_type",
                 net.minecraft.world.entity.EntityType.getKey(portal.getType()).toString());
@@ -187,19 +212,24 @@ public final class IplStraddleSessionSync {
 
     private static void broadcast(MinecraftServer server, UUID shipId) {
         if (server == null) return;
-        String encoded = encode(shipId);
+        net.minecraft.nbt.CompoundTag encoded = encode(shipId);
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             send(player, shipId, encoded);
         }
     }
 
-    private static void send(ServerPlayer player, UUID shipId, String encodedPortals) {
-        qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
-            player,
-            "ipl.sable.client.IplStraddleSessionStore.RemoteCallables.snapshot",
-            shipId.toString(), encodedPortals, Integer.toString(completedTrackingTick(player.server, shipId)),
-            Long.toString(frame(shipId))
-        );
+    private static void send(ServerPlayer player, UUID shipId, net.minecraft.nbt.CompoundTag sessions) {
+        try {
+            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                player,
+                "ipl.sable.client.IplStraddleSessionStore.RemoteCallables.snapshot",
+                shipId.toString(), sessions, Integer.toString(completedTrackingTick(player.server, shipId)),
+                Long.toString(frame(shipId))
+            );
+        } catch (Throwable t) {
+            // Никогда не роняем соединение из-за диагностики/синхронизации образов.
+            LOG.error("[IPL-STRADDLE-SYNC] snapshot send failed for ship {}", shipId, t);
+        }
     }
 
     /** The last completed tracking tick of the container that currently owns the ship. */
@@ -217,14 +247,20 @@ public final class IplStraddleSessionSync {
         return fallback == null ? Integer.MIN_VALUE : fallback.trackingSystem().getInterpolationTick() - 1;
     }
 
-    private static String encode(UUID shipId) {
+    /** {@code {s:[{p:path, g:geometry}...]}}; NBT has no 32767-char string-argument limit. */
+    private static net.minecraft.nbt.CompoundTag encode(UUID shipId) {
+        net.minecraft.nbt.CompoundTag root = new net.minecraft.nbt.CompoundTag();
+        net.minecraft.nbt.ListTag list = new net.minecraft.nbt.ListTag();
         java.util.LinkedHashMap<String, String> portals = ACTIVE.get(shipId);
-        if (portals == null || portals.isEmpty()) return "";
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, String> entry : portals.entrySet()) {
-            if (sb.length() > 0) sb.append(';');
-            sb.append(entry.getKey()).append(':').append(entry.getValue());
+        if (portals != null) {
+            for (Map.Entry<String, String> entry : portals.entrySet()) {
+                net.minecraft.nbt.CompoundTag e = new net.minecraft.nbt.CompoundTag();
+                e.putString("p", entry.getKey());
+                e.putString("g", entry.getValue());
+                list.add(e);
+            }
         }
-        return sb.toString();
+        root.put("s", list);
+        return root;
     }
 }

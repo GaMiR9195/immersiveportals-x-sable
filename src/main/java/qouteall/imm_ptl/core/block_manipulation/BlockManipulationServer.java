@@ -105,6 +105,13 @@ public class BlockManipulationServer {
                 return true;
             }
         }
+        else if (ipl.sable.SableBridge.isProjectedBlockWithinReach(player, dimension, requestPos, distanceSquare)) {
+            // Sable: the block belongs to a ship owned by `dimension` whose piece reaches the
+            // player's level through a portal (projection) -- measured at its image here.
+            // Русский комментарий: без этого взаимодействие с проекцией корабля из другого
+            // измерения зависело от наличия обратного портала рядом с игроком.
+            return true;
+        }
         return IPMcHelper.getNearbyPortals(
             player,
             IPGlobal.maxNormalPortalRadius
@@ -172,13 +179,10 @@ public class BlockManipulationServer {
             ServerboundPlayerActionPacket packet = ServerboundPlayerActionPacket.STREAM_CODEC.decode(buf);
             ServerLevel world = player.server.getLevel(dimension);
             Validate.notNull(world, "missing %s", dimension.location());
+            // Sable: a ship block seen through a portal may be owned by yet another level.
+            world = (ServerLevel) ipl.sable.SableBridge.plotAwareLevel(world, packet.getPos());
             
-            withRedirect(
-                new Context(world, null),
-                () -> {
-                    doProcessPlayerAction(world, player, packet);
-                }
-            );
+            processPlayerActionIn(world, player, packet);
         }
         
         /**
@@ -195,18 +199,34 @@ public class BlockManipulationServer {
 
             ServerLevel world = player.server.getLevel(dimension);
             Validate.notNull(world, "missing %s", dimension.location());
+            // Sable: a ship block seen through a portal may be owned by yet another level.
+            world = (ServerLevel) ipl.sable.SableBridge.plotAwareLevel(world, packet.getHitResult().getBlockPos());
             
-            withRedirect(
-                new Context(world, packet.getHitResult()),
-                () -> {
-                    doProcessUseItemOn(world, player, packet);
-                }
-            );
+            processUseItemOnIn(world, player, packet);
         }
     }
     
     public static void init() {
     
+    }
+    
+    /**
+     * Process a block action in {@code world} with IP's remote-interaction context (the
+     * actual world for the game mode, redirected update packets, cross-portal reach).
+     * Also used for blocks of Sable ships projected into the player's level through a
+     * portal: those blocks live in -- and must be edited in -- the level owning the ship.
+     */
+    public static void processPlayerActionIn(
+        ServerLevel world, ServerPlayer player, ServerboundPlayerActionPacket packet
+    ) {
+        withRedirect(new Context(world, null), () -> doProcessPlayerAction(world, player, packet));
+    }
+    
+    /** {@link #processPlayerActionIn} for item use on a block. */
+    public static void processUseItemOnIn(
+        ServerLevel world, ServerPlayer player, ServerboundUseItemOnPacket packet
+    ) {
+        withRedirect(new Context(world, packet.getHitResult()), () -> doProcessUseItemOn(world, player, packet));
     }
     
     private static void withRedirect(

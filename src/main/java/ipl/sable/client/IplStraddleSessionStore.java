@@ -47,9 +47,9 @@ public final class IplStraddleSessionStore {
     private static final Logger LOG = LoggerFactory.getLogger("ipl-straddle-session-store");
 
     /** {@code path} = chain path ({@code root} or {@code root>child>...}); roots use the portal id. */
-    private record SessionPortal(UUID portalId, String portalNbtB64, boolean completed, String path) {
-        SessionPortal(UUID id, String payload) { this(id, payload, false, id.toString()); }
-        SessionPortal(UUID id, String payload, boolean completed) { this(id, payload, completed, id.toString()); }
+    private record SessionPortal(UUID portalId, String portalNbtB64, boolean completed, String path, boolean wide) {
+        SessionPortal(UUID id, String payload) { this(id, payload, false, id.toString(), false); }
+        SessionPortal(UUID id, String payload, boolean completed) { this(id, payload, completed, id.toString(), false); }
     }
     private record DeferredSnapshot(String payload, int endTick) {}
     /** Later chart's sessions cannot replace the delayed current chart's state. */
@@ -108,6 +108,17 @@ public final class IplStraddleSessionStore {
         return SESSIONS.containsKey(shipId);
     }
 
+    /**
+     * Server verdict for the region shape of session {@code path}: half-space ("wide") or
+     * aperture tube. Interactions must use the same geometry as the server's contact clip.
+     */
+    public static boolean isWide(UUID shipId, String path) {
+        List<SessionPortal> list = path.indexOf('>') < 0 ? SESSIONS.get(shipId) : CHAINS.get(shipId);
+        if (list == null) return false;
+        SessionPortal entry = byPath(list, path);
+        return entry != null && entry.wide();
+    }
+
     /** True when no session, chain, retired or handoff image exists (cheap hot-path gate). */
     public static boolean isIdle() {
         return SESSIONS.isEmpty() && CHAINS.isEmpty() && RETIRED.isEmpty() && HANDOFF_VISUALS.isEmpty();
@@ -148,6 +159,7 @@ public final class IplStraddleSessionStore {
         SessionPortal next = new SessionPortal(portalId, portalNbtB64, true);
         if (!next.equals(HANDOFF_VISUALS.put(shipId, next))) {
             IplStraddleRenderCache.invalidateActivePasses();
+            ipl.sable.transit.IplProjectionTree.invalidate();
         }
     }
 
@@ -156,6 +168,7 @@ public final class IplStraddleSessionStore {
         if (HANDOFF_VISUALS.remove(shipId) != null) {
             discardUnreferencedSurrogates();
             IplStraddleRenderCache.invalidateActivePasses();
+            ipl.sable.transit.IplProjectionTree.invalidate();
         }
     }
 
@@ -170,6 +183,7 @@ public final class IplStraddleSessionStore {
         discardUnreferencedSurrogates();
         IplClientVisualTransitLatch.clear(shipId);
         IplStraddleRenderCache.invalidateActivePasses();
+        ipl.sable.transit.IplProjectionTree.invalidate();
     }
 
     public static void clear() {
@@ -187,6 +201,7 @@ public final class IplStraddleSessionStore {
         SURROGATE_PAYLOADS.clear();
         IplClientVisualTransitLatch.clearAll();
         IplStraddleRenderCache.invalidateActivePasses();
+        ipl.sable.transit.IplProjectionTree.invalidate();
     }
 
     /** Called only after all poses have been rebased into this exact chart. */
@@ -205,6 +220,7 @@ public final class IplStraddleSessionStore {
         }
         discardUnreferencedSurrogates();
         IplStraddleRenderCache.invalidateActivePasses();
+        ipl.sable.transit.IplProjectionTree.invalidate();
     }
 
     /** ALL resolvable session portals for this ship, session-start order (multi-straddle). */
@@ -483,11 +499,13 @@ public final class IplStraddleSessionStore {
                 String path = sep < 0 ? part : part.substring(0, sep);
                 String encoded = sep < 0 ? "" : part.substring(sep + 1);
                 boolean completed = false;
+                boolean wide = false;
                 if (!encoded.isEmpty()) {
                     try {
                         CompoundTag tag = TagParser.parseTag(new String(
                             Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8));
                         completed = tag.getBoolean("ipl_session_completed");
+                        wide = tag.getBoolean("ipl_session_wide");
                     } catch (Exception e) {
                         LOG.warn("[IPL-STRADDLE-SYNC] invalid session geometry for {}", shipId, e);
                         continue;
@@ -496,7 +514,7 @@ public final class IplStraddleSessionStore {
                 try {
                     int cut = path.lastIndexOf('>');
                     UUID portalId = UUID.fromString(cut < 0 ? path : path.substring(cut + 1));
-                    SessionPortal entry = new SessionPortal(portalId, encoded, completed, path);
+                    SessionPortal entry = new SessionPortal(portalId, encoded, completed, path, wide);
                     if (cut < 0) next.add(entry); else chains.add(entry);
                 } catch (IllegalArgumentException e) {
                     LOG.warn("[IPL-STRADDLE-SYNC] invalid session path {} for {}", path, shipId);
@@ -548,6 +566,7 @@ public final class IplStraddleSessionStore {
         // Straddle decisions are cached per frame; drop them so this snapshot
         // takes effect within the same client tick it arrives in.
         IplStraddleRenderCache.invalidateActivePasses();
+        ipl.sable.transit.IplProjectionTree.invalidate();
     }
 
     public static final class RemoteCallables {
@@ -556,9 +575,21 @@ public final class IplStraddleSessionStore {
          * Full per-ship snapshot: ';'-joined {@code path:base64Nbt} entries (path = root
          * portal id, or {@code root>child>...} for chained sessions), empty = no sessions.
          */
-        public static void snapshot(String shipUuid, String portalPayload, String completedTick, String coordinateFrame) {
+        public static void snapshot(String shipUuid, CompoundTag sessions, String completedTick, String coordinateFrame) {
             try {
                 UUID shipId = UUID.fromString(shipUuid);
+                // Компактный NBT-список -> прежний внутренний формат "path:geometry;..."
+                // (на клиенте у строки нет сетевого лимита).
+                StringBuilder joined = new StringBuilder();
+                if (sessions != null) {
+                    net.minecraft.nbt.ListTag list = sessions.getList("s", net.minecraft.nbt.Tag.TAG_COMPOUND);
+                    for (int i = 0; i < list.size(); i++) {
+                        CompoundTag e = list.getCompound(i);
+                        if (joined.length() > 0) joined.append(';');
+                        joined.append(e.getString("p")).append(':').append(e.getString("g"));
+                    }
+                }
+                String portalPayload = joined.toString();
                 // Broadcasts include untracked ships. Their track-start bootstrap sends
                 // the current frame/state; retaining every unknown loop epoch leaks memory.
                 if (IplClientProjections.findClientSub(shipId) == null) return;

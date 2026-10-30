@@ -123,4 +123,16 @@ public abstract class SableStartTrackingDedupeMixin {
         }
         // else: plot free -- let Sable's handler allocate normally.
     }
+
+    /**
+     * После того как Sable создал объект и заполнил его буфер интерполяции: если это
+     * преемник межизмеренческого перехода, клиент переносит в него историю призрака и
+     * выравнивает часы (см. {@code IplParentDimSync.onSuccessorTracked}).
+     */
+    @Inject(method = "handle", at = @At("RETURN"), remap = false)
+    private void ipl$seedTransitSuccessor(PacketContext context, CallbackInfo ci) {
+        Level level = context.level();
+        if (level == null || !level.isClientSide()) return;
+        ipl.sable.client.IplParentDimSync.onSuccessorTracked(level, this.subLevelID());
+    }
 }

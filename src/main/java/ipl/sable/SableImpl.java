@@ -102,6 +102,34 @@ final class SableImpl {
             ? owner : context;
     }
 
+    static boolean isProjectedBlockWithinReach(
+        net.minecraft.server.level.ServerPlayer player,
+        net.minecraft.resources.ResourceKey<Level> dimension, BlockPos pos, double distanceSquare
+    ) {
+        net.minecraft.server.level.ServerLevel owner = player.server.getLevel(dimension);
+        if (owner == null) return false;
+        dev.ryanhcode.sable.sublevel.ServerSubLevel sub = subLevelAtPlotPos(owner, pos);
+        if (sub == null || sub.getLevel() != owner) return false;
+        Vec3 center = Vec3.atCenterOf(pos);
+        Vec3 at = player.position();
+        boolean[] ok = {false};
+        // Every frame through which the ship exists in the player's level (its native frame
+        // when native there, plus every portal image into it, chains included).
+        ipl.sable.transit.IplProjectionTree.forEachFrameIn(sub, player.level(), node -> {
+            if (ok[0]) return;
+            Vec3 world = ipl.sable.transit.IplProjectionEntities.framePose(sub, node).transformPosition(center);
+            if (world.distanceToSqr(at) < distanceSquare) ok[0] = true;
+        });
+        return ok[0];
+    }
+
+    @Nullable
+    static net.minecraft.resources.ResourceKey<Level> clientPlotOwnerDimension(BlockPos pos) {
+        SubLevel sub = ipl.sable.client.IplClientProjections.findSubLevelAtPlot(Vec3.atCenterOf(pos));
+        Level level = sub == null ? null : sub.getLevel();
+        return level == null ? null : level.dimension();
+    }
+
     /** Whether {@code pos} lies in a live ship plot (own grid first, then other levels). */
     static boolean isPlotPos(net.minecraft.server.level.ServerLevel context, BlockPos pos) {
         return subLevelAtPlotPos(context, pos) != null;

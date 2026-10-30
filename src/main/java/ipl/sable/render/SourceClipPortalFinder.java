@@ -92,6 +92,25 @@ public final class SourceClipPortalFinder {
     }
 
     /**
+     * Вторая плоскость среза для ТЕКУЩЕЙ отрисовки {@code sub}.
+     *
+     * <p>Пока армирована проекция — это её {@code exclude} (вход в следующий портал цепочки
+     * или перенесённый выход предыдущего), иначе — плоскость второго корневого портала
+     * (корабль одновременно в двух порталах). Раньше каждый вызывающий решал это сам и
+     * для проекций вторая плоскость всегда была null, поэтому кусок проекции не обрезался
+     * на входе в следующий портал.
+     */
+    @Nullable
+    public static Plane secondPlaneFor(ClientSubLevel sub) {
+        if (sub == null) return null;
+        if (ipl.sable.client.IplStraddleRenderState.getPlaneFor(sub) != null) {
+            return ipl.sable.client.IplStraddleRenderState.getPlane2For(sub);
+        }
+        java.util.List<ClipDecision> all = findStraddlingPortalPlanes(sub);
+        return all.size() > 1 ? all.get(1).plane() : null;
+    }
+
+    /**
      * ALL current straddle decisions for this sub (multi-straddle), session-start
      * order. The source render's kept region is the INTERSECTION of every decision's
      * half-space; the shader takes {@code min} over two cut planes, so brackets feed

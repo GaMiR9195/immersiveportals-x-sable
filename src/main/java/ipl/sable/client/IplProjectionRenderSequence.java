@@ -66,8 +66,7 @@ public final class IplProjectionRenderSequence implements Iterable<ClientSubLeve
             disarm();
             if (index >= projections.size()) throw new NoSuchElementException();
             IplClientProjections.StraddleProjection projection = projections.get(index++);
-            IplStraddleRenderState.set(projection.sub(), projection.mappedPose(),
-                projection.destPlane(), projection.portal());
+            IplStraddleRenderState.set(projection);
             armed = true;
             return projection.sub();
         }

@@ -2,7 +2,7 @@ package ipl.sable.mixin;
 
 import dev.ryanhcode.sable.ActiveSableCompanion;
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import ipl.sable.transit.IplStraddlePoseMap;
+import ipl.sable.transit.IplProjectionTree;
 import net.minecraft.core.Position;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
@@ -15,16 +15,21 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Atlas pick fix: {@code projectOutOfSubLevel} maps plot-space points to world via
- * the ship's UNMAPPED pose — but a point on the THROUGH half of a straddling ship
- * physically exists at its portal-MAPPED position. Without this, a projection pick
- * hit measures its reach distance to the source-frame twin (often out of range or
- * plain wrong), vanilla's {@code filterHitResult} clamps it to MISS, and Jade/
- * interaction report whatever world block lies behind the apparition.
+ * Piece-aware {@code projectOutOfSubLevel}: Sable maps a plot point to world space with
+ * the ship's own (native) pose, but a point of a straddling ship physically lives in ONE
+ * piece -- the native piece, or the image of one portal session (chains included). The
+ * RETURN remap moves the native-pose result into the frame of the piece that owns it, as
+ * seen from the queried level ({@link IplProjectionTree#worldPointIn}).
  *
- * <p>Remapping here heals every consumer at once — pick reach, interaction
- * distance, Jade's ray, sound positions, rider eye positions — on BOTH sides
- * (this companion is common code; the session lookup branches client/server).
+ * <p>This single remap heals every distance consumer at once on BOTH sides: pick reach
+ * clamp ({@code GameRenderer.pick}/{@code filterHitResult}), interaction distance, Jade's
+ * ray, sound positions, rider eye positions, IP's cross-portal reach validation.
+ *
+ * <p>Русский комментарий: раньше решение "через какую половину" принималось по одной
+ * плоскости первого портала, а для чужих кораблей поза подменялась "первым отображением в
+ * уровень" (IplProjectionIntersectionMixin). Для нескольких порталов и цепочек это давало
+ * точку не того куска — отсюда "слишком далеко" и отказ взаимодействия после выхода из
+ * второго портала. Теперь кадр выбирает дерево проекций — та же геометрия, что и в физике.
  */
 @Pseudo
 @Mixin(value = ActiveSableCompanion.class, remap = false)
@@ -44,19 +49,16 @@ public abstract class IplStraddleProjectOutMixin {
         boolean plotB = ipl$isPlotPosition(level, b.x(), b.z());
         if (!plotA && !plotB) return;
 
-        // The runtime companion's overload delegation does not reliably route this
-        // pair through the (remapping) 3-arg projection - recompute both endpoints
-        // through it DIRECTLY and take the min: a through-half plot point measures
-        // to its MAPPED world position (where it physically is), never the ghost.
+        // The runtime companion's overload delegation does not reliably route this pair
+        // through the (remapping) 3-arg projection - recompute both endpoints through it
+        // DIRECTLY. The recomputed value is authoritative (the stock one may have measured
+        // a foreign ship's point in its own dimension's coordinates).
         ActiveSableCompanion self = (ActiveSableCompanion) (Object) this;
         Vector3d worldA = self.projectOutOfSubLevel(
             level, new Vector3d(a.x(), a.y(), a.z()), new Vector3d());
         Vector3d worldB = self.projectOutOfSubLevel(
             level, new Vector3d(b.x(), b.y(), b.z()), new Vector3d());
-        double remappedSq = worldA.distanceSquared(worldB);
-        if (remappedSq < cir.getReturnValue()) {
-            cir.setReturnValue(remappedSq);
-        }
+        cir.setReturnValue(worldA.distanceSquared(worldB));
     }
 
     @org.spongepowered.asm.mixin.Unique
@@ -75,14 +77,13 @@ public abstract class IplStraddleProjectOutMixin {
         remap = false,
         require = 0
     )
-    private void ipl$remapThroughHalf(
+    private void ipl$remapToPiece(
         Level level, Vector3dc pos, Vector3d dest, CallbackInfoReturnable<Vector3d> cir
     ) {
         SubLevel owner = ((ActiveSableCompanion) (Object) this).getContaining(level, pos);
         if (owner == null) return;
         Vector3d out = cir.getReturnValue();
-        Vec3 remapped = IplStraddlePoseMap.remapThroughHalfProjection(
-            owner, level, new Vec3(out.x, out.y, out.z));
+        Vec3 remapped = IplProjectionTree.worldPointIn(owner, level, new Vec3(out.x, out.y, out.z));
         if (remapped != null) {
             out.set(remapped.x, remapped.y, remapped.z);
         }
@@ -95,13 +96,12 @@ public abstract class IplStraddleProjectOutMixin {
         remap = false,
         require = 0
     )
-    private void ipl$remapThroughHalfVec(
+    private void ipl$remapToPieceVec(
         Level level, Position pos, CallbackInfoReturnable<Vec3> cir
     ) {
         SubLevel owner = ((ActiveSableCompanion) (Object) this).getContaining(level, pos);
         if (owner == null) return;
-        Vec3 remapped = IplStraddlePoseMap.remapThroughHalfProjection(
-            owner, level, cir.getReturnValue());
+        Vec3 remapped = IplProjectionTree.worldPointIn(owner, level, cir.getReturnValue());
         if (remapped != null) {
             cir.setReturnValue(remapped);
         }

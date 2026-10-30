@@ -43,7 +43,14 @@
     "IplFusedStepMixin",
     "IplPhysicsSystemFusionAccess",
     "IplRapierStepArmMixin",
-    "IplPortalVolumeCacheInvalidationMixin"
+    "IplPortalVolumeCacheInvalidationMixin",
+    "IplProjectionTerrainTicketMixin",
+    "IplClipContextAccessor",
+    "IplServerProjectionClipMixin",
+    "IplProjectionEntityGetterMixin",
+    "IplProjectionBlockContactMixin",
+    "IplProjectionProjectileHitMixin",
+    "IplProjectionPacketRoutingMixin"
   ],
   "client": [
     "client.VeilPacketContextLevelMixin",
@@ -57,6 +64,9 @@
     "client.SableVanillaSubLevelBERMixin",
     "client.IplFlywheelCompilationMixin",
     "client.IplFlywheelEmbeddedClipMixin",
+    "client.IplFlywheelEnvironmentStorageMixin",
+    "client.IplFlywheelVisualizationSupportMixin",
+    "client.IplRenderSectionGlobalsAccessor",
     "client.IplGlUseProgramProbeMixin",
     "client.IplProgramManagerProbeMixin",
     "client.IplShaderUniformProbeMixin",
@@ -65,6 +75,7 @@
     "client.IplClientSubLevelPoseOverrideMixin",
     "client.IplClientSubLevelRenderPoseAccessor",
     "client.IplSnapshotInterpolatorAccessor",
+    "client.IplInterpolationClockAccessor",
     "client.IplPendingHandoffSnapshotMixin",
     "client.IplClientTransitCleanupMixin",
     "client.IplGhostStopTrackingMixin",
@@ -77,7 +88,6 @@
     "client.IplPhysicsStaffClientHandlerControlMixin",
     "client.IplStaffPickMixin",
     "client.IplStaffMouseFrameMixin",
-    "client.IplClipContextAccessor",
     "client.IplProjectionAwareClipMixin",
     "client.IplStraddleOutlineMixin",
     "client.IplStaffRenderPoseMixin",
@@ -86,7 +96,9 @@
     "client.IplStaffItemAimMixin",
     "client.IplStaffFocusMixin",
     "client.IplStaffItemFocusMixin",
-    "client.IplClusterOutlineAnchorMixin"
+    "client.IplClusterOutlineAnchorMixin",
+    "client.IplRopeDataPacketRoutingMixin",
+    "client.IplRopeStoppedPacketRoutingMixin"
   ],
   "injectors": {
     "defaultRequire": 0

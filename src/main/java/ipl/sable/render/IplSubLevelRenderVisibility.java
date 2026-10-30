@@ -17,7 +17,11 @@ public final class IplSubLevelRenderVisibility {
         if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData chunks) {
             for (var section:chunks.allRenderSections())
                 if (!section.getCompiled().getRenderableBlockEntities().isEmpty()) return true;
-            return false;
+            // Глобальные BE (верёвки, лебёдки) лежат не в renderable-списках, а в
+            // RenderSection.globalBlockEntities; BE, визуализируемые Flywheel, из списков
+            // секций исключены вовсе. Без этой проверки проход BE саб-уровня с одной лишь
+            // верёвкой или шестернёй пропускался целиком.
+            return IplSubLevelBlockEntityPass.hasExtraBlockEntities(sub);
         }
         if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaSingleSubLevelRenderData single)
             return single.getRenderBlockEntity()!=null;

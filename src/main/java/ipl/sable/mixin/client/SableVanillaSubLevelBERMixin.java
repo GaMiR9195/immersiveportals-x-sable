@@ -6,10 +6,14 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.mixinhelpers.sublevel_render.vanilla.VanillaSubLevelBlockEntityRenderer;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import ipl.sable.client.IplStraddleRenderState;
+import ipl.sable.render.IplSubLevelBlockEntityPass;
 import ipl.sable.render.SourceClipPortalFinder;
 import ipl.sable.render.SubLevelBlockEntityRenderScope;
 import ipl.sable.render.SubLevelClipUniformPatcher;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.RenderBuffers;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
@@ -18,10 +22,15 @@ import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Mutable;
 import org.spongepowered.asm.mixin.Pseudo;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * Bracket each per-BE render call inside {@link VanillaSubLevelBlockEntityRenderer#renderSingleBE}
@@ -65,6 +74,38 @@ import org.spongepowered.asm.mixin.injection.At;
 @Pseudo
 @Mixin(value = VanillaSubLevelBlockEntityRenderer.class, remap = false)
 public abstract class SableVanillaSubLevelBERMixin {
+
+    /**
+     * Буферы, захваченные конструктором рендерера Sable. Sable создаёт его в
+     * {@code LevelRenderer.<init>} с ОСНОВНЫМИ буферами, а IP на время прохода портала
+     * подменяет {@code RenderBuffers} у Minecraft и у LevelRenderer на вторичные. Без
+     * переключения вершины BE из прохода портала оставались в основном буфере и сбрасывались
+     * уже во внешнем проходе — с матрицами внешней камеры. Это и были «кривые копии» шестерёнок
+     * и сундуков, «приклеенные к игроку со смещением».
+     */
+    @Shadow @Final @Mutable
+    private RenderBuffers renderBuffers;
+
+    @Inject(
+        method = "renderSingleBE(Lnet/minecraft/world/level/block/entity/BlockEntity;Lcom/mojang/blaze3d/vertex/PoseStack;FDDD)V",
+        at = @At("HEAD"),
+        cancellable = true,
+        remap = false,
+        require = 0
+    )
+    private void ipl$useCurrentBuffers(
+        BlockEntity be, PoseStack pose, float partialTick, double x, double y, double z, CallbackInfo ci
+    ) {
+        // Вызов из ванильного общего цикла для BE, которую маршрут IplSubLevelBlockEntityPass уже
+        // нарисовал (или которая принадлежит другому измерению) — пропускаем.
+        if (IplSubLevelBlockEntityPass.shouldSkipGlobalLoopCall(be)) {
+            ci.cancel();
+            return;
+        }
+        IplSubLevelBlockEntityPass.noteRendered(be);
+        RenderBuffers current = Minecraft.getInstance().renderBuffers();
+        if (current != null && current != this.renderBuffers) this.renderBuffers = current;
+    }
 
     @Unique
     private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-sable-be-bracket");
@@ -143,6 +184,30 @@ public abstract class SableVanillaSubLevelBERMixin {
             return;
         }
 
+        // Проекция: матрица куска уже в PoseStack. Внутри BER renderPose() должен вернуть
+        // НАСТОЯЩУЮ позу — верёвки Simulated переводят мировые точки в локальные через
+        // renderPose().transformPositionInverse(); с подменённой позой верёвка оказывалась в
+        // исходных мировых координатах внутри чужого измерения («копии верёвок вдали»).
+        boolean projected = IplStraddleRenderState.isActiveFor(sub);
+        if (projected) IplStraddleRenderState.suspendPose();
+        try {
+            ipl$renderBracketed(sub, dispatcher, be, partialTick, pose, source, original);
+        } finally {
+            if (projected) IplStraddleRenderState.resumePose();
+        }
+    }
+
+    @Unique
+    private static void ipl$renderBracketed(
+        ClientSubLevel sub,
+        BlockEntityRenderDispatcher dispatcher,
+        BlockEntity be,
+        float partialTick,
+        PoseStack pose,
+        MultiBufferSource source,
+        Operation<Void> original
+    ) {
+
         SourceClipPortalFinder.ClipDecision decision =
             SourceClipPortalFinder.findStraddlingPortalPlane(sub);
         if (decision == null) {
@@ -186,7 +251,11 @@ public abstract class SableVanillaSubLevelBERMixin {
         // below, which is the actual clip mechanism; only the fragile flush is gone.
         // The whole cog-clip approach is slated for a proper rethink next session.
 
-        SubLevelClipUniformPatcher.patchForSubLevel(sub, decision.plane());
+        // Запасной путь (BE отрисована вне области IplSubLevelBlockEntityPass): плоскости
+        // ставятся вокруг вызова, но вершины отложены до endBatch — поэтому основной путь
+        // теперь всегда идёт через SubLevelBlockEntityRenderScope.
+        SubLevelClipUniformPatcher.patchForSubLevel(
+            sub, decision.plane(), SourceClipPortalFinder.secondPlaneFor(sub));
         GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
         // Second sub-level cut owns gl_ClipDistance[2] (see SableSourceClipMixin).
         GL11.glEnable(GL30.GL_CLIP_DISTANCE2);

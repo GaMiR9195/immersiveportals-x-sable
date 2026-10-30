@@ -45,7 +45,8 @@ public class MixinBucketItem {
         );
         
         if (r != null) {
-            worldRef.set(r.world());
+            // Sable: a ship block hit (plot coordinates) belongs to the level owning the ship.
+            worldRef.set(ipl.sable.SableBridge.plotAwareLevel(r.world(), r.hitResult().getBlockPos()));
             return r.hitResult();
         }
         else {
