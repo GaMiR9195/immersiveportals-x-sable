@@ -57,7 +57,7 @@ public final class SubLevelClipUniformPatcher {
         Boolean.getBoolean("ipl.sable.clip.forceAll");
 
     static {
-        LOG.info("[IPL-CLIP-PATCH] static init: FORCE_CLIP_ALL={}", FORCE_CLIP_ALL);
+        LOG.debug("[IPL-CLIP-PATCH] static init: FORCE_CLIP_ALL={}", FORCE_CLIP_ALL);
     }
 
     /**

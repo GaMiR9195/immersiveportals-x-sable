@@ -60,7 +60,7 @@ public class IplFlywheelEmbeddedClipMixin {
     )
     private void ipl$onSetupDraw(GlProgram program, CallbackInfo ci) {
         if (IPL$LOGGED_FIRST_FIRE.compareAndSet(false, true)) {
-            IPL$LOG.info("[IPL-FLYWHEEL-EMBED-FIRED] FIRST-FIRE program={} class={}",
+            IPL$LOG.debug("[IPL-FLYWHEEL-EMBED-FIRED] FIRST-FIRE program={} class={}",
                 program, program != null ? program.getClass().getName() : "null");
         }
 

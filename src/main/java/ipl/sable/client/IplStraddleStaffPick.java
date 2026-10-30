@@ -25,7 +25,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Through-portal pick for straddling hosted sub-levels.
+ * Through-portal pick for straddling sub-levels.
  *
  * <p>Sable's raycast overlay transforms the ray into each intersecting sub-level's local
  * space via the level pose provider — which is unmapped for a ship straddling in from
@@ -193,14 +193,14 @@ public final class IplStraddleStaffPick {
         double nearestError = Double.MAX_VALUE;
         Portal imagePortal = null;
 
-        if (ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) == level) {
+        if (sub.getLevel() == level) {
             Vec3 candidate = sub.renderPose().transformPosition(hit.getLocation());
             nearest = candidate;
             nearestError = rayErrorSq(from, to, candidate);
         }
 
-        IplClientHostedLookup.StraddleProjection projection =
-            IplClientHostedLookup.getStraddleProjectionFor(sub);
+        IplClientProjections.StraddleProjection projection =
+            IplClientProjections.getStraddleProjectionFor(sub);
         if (projection != null && projection.portal().getDestDim() == level.dimension()) {
             Vec3 candidate = projection.mappedPose().transformPosition(hit.getLocation());
             double error = rayErrorSq(from, to, candidate);
@@ -379,7 +379,7 @@ public final class IplStraddleStaffPick {
         }
 
         if (visible.imagePortal() == null
-            && ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) == level) {
+            && sub.getLevel() == level) {
             // Plain native grab in the body's own world: stock behavior, no capture.
             PENDING_TARGETS.remove(sub.getUniqueId());
             DRAG_TARGETS.remove(sub.getUniqueId());
@@ -396,18 +396,11 @@ public final class IplStraddleStaffPick {
 
     @Nullable
     private static ClientSubLevel getHitSubLevel(net.minecraft.world.level.Level level, BlockHitResult hit) {
-        // Every hosted plot lives in the dedicated sublevels container. `level` is the visible
-        // source/destination world during portal recursion and has no plot ownership map; using
-        // it here lost the clicked plot anchor and made the constraint fall back to ship center.
-        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container =
-            IplClientHostedLookup.getHostingContainerOrNull();
-        if (container == null) return null;
-        net.minecraft.world.level.ChunkPos chunk = new net.minecraft.world.level.ChunkPos(
-            net.minecraft.core.BlockPos.containing(hit.getLocation())
-        );
-        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(chunk);
-        dev.ryanhcode.sable.sublevel.SubLevel sub = plot != null ? plot.getSubLevel() : null;
-        return sub instanceof ClientSubLevel clientSub ? clientSub : null;
+        // `level` is the visible source/destination world during portal recursion; the hit
+        // location is in PLOT coordinates, whose owner may be a sub-level of another client
+        // level (a projection). Resolve the plot across client levels.
+        ClientSubLevel sub = IplClientProjections.findSubLevelAtPlot(hit.getLocation());
+        return sub;
     }
 
     /**
@@ -504,8 +497,8 @@ public final class IplStraddleStaffPick {
      */
     @Nullable
     public static ProjectionHit clipProjections(ClientLevel level, ClipContext ctx) {
-        java.util.List<IplClientHostedLookup.StraddleProjection> projections =
-            IplClientHostedLookup.getStraddleProjectionsInto(level);
+        java.util.List<IplClientProjections.StraddleProjection> projections =
+            IplClientProjections.getStraddleProjectionsInto(level);
         if (projections.isEmpty()) return null;
 
         Vec3 from = ctx.getFrom();
@@ -518,7 +511,9 @@ public final class IplStraddleStaffPick {
         Portal bestPortal = null;
         double bestDistSq = Double.MAX_VALUE;
 
-        for (IplClientHostedLookup.StraddleProjection projection : projections) {
+        for (IplClientProjections.StraddleProjection projection : projections) {
+            // Picks map through ONE portal; images reached via a chain are view-only.
+            if (projection.isChained()) continue;
             Pose3dc mapped = projection.mappedPose();
 
             // Which half of the image physically exists is decided in PLOT SPACE by

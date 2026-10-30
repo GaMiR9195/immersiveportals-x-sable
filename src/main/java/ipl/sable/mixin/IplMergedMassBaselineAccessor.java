@@ -8,7 +8,7 @@ import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
 /**
- * Baseline access for {@link MergedMassTracker} — used by {@code SableRehomeOps} to SEED a
+ * Baseline access for {@link MergedMassTracker} — used by {@code IplShipFlip} to SEED a
  * rehomed twin's tracker from its source before the plot block copy.
  *
  * <p>{@code uploadData} keeps the world mapping invariant when the center of mass moves

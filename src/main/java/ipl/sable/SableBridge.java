@@ -43,7 +43,6 @@ public final class SableBridge {
         PRESENT = p;
         if (PRESENT) {
             LOG.info("[IPL-SABLE] Sable detected on classpath; sub-level-aware integration active.");
-            LOG.info("[IPL-SABLE] ======== FIX BUILD: ROUND 5 (2026-07-24) ========");
         } else {
             LOG.info("[IPL-SABLE] Sable not present; IP runs in upstream-equivalent mode.");
         }
@@ -273,8 +272,8 @@ public final class SableBridge {
     /**
      * Chunk-presence test that understands plot coordinates: vanilla
      * {@code hasChunkAt} for world positions; "does a live sub-level own this
-     * plot" for plot positions (the parent level's chunk map doesn't hold plot
-     * chunks — the hosting dimension does).
+     * plot" for plot positions (plot chunks are owned by the ship's container,
+     * not the level's regular chunk map).
      */
     public static boolean hasChunkAtFrameAware(
         net.minecraft.server.level.ServerLevel world, BlockPos pos
@@ -331,8 +330,8 @@ public final class SableBridge {
     }
 
     /**
-     * The level that AUTHORITATIVELY stores the block at {@code pos}: the plot-hosting
-     * dimension for plot-space positions, {@code context} otherwise. Breakable-portal
+     * The level that AUTHORITATIVELY stores the block at {@code pos}: the owning ship's
+     * level for plot-space positions, {@code context} otherwise. Breakable-portal
      * frame checks and placeholder writes go through this so a ship-borne portal's
      * plot-space shape is read/written where the chunks actually live, independent of
      * how much of the parent-level plot routing a given code path enjoys.
@@ -340,16 +339,11 @@ public final class SableBridge {
     public static Level plotAwareLevel(Level context, @Nullable BlockPos pos) {
         if (!PRESENT || pos == null || !(context instanceof net.minecraft.server.level.ServerLevel serverLevel)
             || !isPlotPos(serverLevel, pos)) return context;
-        Level hosting = SableImpl.hostingLevelOf(serverLevel);
-        return hosting != null ? hosting : context;
+        return SableImpl.plotOwnerLevel(serverLevel, pos);
     }
 
-    /** Plot identity belongs to the live hosting container, never a coordinate threshold. */
+    /** Plot identity belongs to a live container plot, never a coordinate threshold. */
     private static boolean isPlotPos(net.minecraft.server.level.ServerLevel context, BlockPos pos) {
-        var container = ipl.sable.dim.IplDimAgnostic.getHostingContainerFor(context);
-        if (container == null) return false;
-        int chunkX = pos.getX() >> 4;
-        int chunkZ = pos.getZ() >> 4;
-        return container.inBounds(chunkX, chunkZ) && container.getPlot(chunkX, chunkZ) != null;
+        return SableImpl.isPlotPos(context, pos);
     }
 }

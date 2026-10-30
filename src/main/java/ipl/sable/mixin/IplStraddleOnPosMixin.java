@@ -60,13 +60,7 @@ public abstract class IplStraddleOnPosMixin {
     )
     private BlockPos ipl$correctOnPosFrame(BlockPos original) {
         Entity self = (Entity) (Object) this;
-        dev.ryanhcode.sable.api.sublevel.SubLevelContainer container = ipl$hostingContainer(self);
-        if (container == null || !container.inBounds(original)) return original;
-
-        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot =
-            container.getPlot(original.getX() >> 4, original.getZ() >> 4);
-        if (plot == null) return original;
-        SubLevel owner = plot.getSubLevel();
+        SubLevel owner = ipl$plotOwner(self, original);
         if (owner == null) return original;
 
         IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.getCollisionMappingInto(
@@ -90,18 +84,15 @@ public abstract class IplStraddleOnPosMixin {
         return BlockPos.containing(localTrue.x, localTrue.y, localTrue.z);
     }
 
+    /** The ship owning plot block {@code pos} in ANY level (a projected ship lives in another one). */
     @org.spongepowered.asm.mixin.Unique
-    private static dev.ryanhcode.sable.api.sublevel.SubLevelContainer ipl$hostingContainer(Entity self) {
+    @org.jetbrains.annotations.Nullable
+    private static SubLevel ipl$plotOwner(Entity self, BlockPos pos) {
         if (self.level().isClientSide) {
-            return ipl.sable.client.IplClientHostedLookup.getHostingContainerOrNull();
+            return ipl.sable.client.IplClientProjections.findSubLevelAtPlot(
+                net.minecraft.world.phys.Vec3.atCenterOf(pos));
         }
-        if (self.level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-            net.minecraft.server.level.ServerLevel hosting =
-                ipl.sable.dim.SableSubLevelDimension.getSableSubLevelsOrNull(serverLevel.getServer());
-            return hosting == null ? null
-                : dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(
-                    (net.minecraft.world.level.Level) hosting);
-        }
-        return null;
+        return self.level() instanceof net.minecraft.server.level.ServerLevel serverLevel
+            ? ipl.sable.atlas.IplScenes.plotOwner(serverLevel, pos) : null;
     }
 }

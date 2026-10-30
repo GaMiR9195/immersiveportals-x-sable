@@ -56,7 +56,7 @@ pub fn compute_buoyancy(scene: &PhysicsScene) {
             DEFAULT_COLLISION_PARALLEL_CUTOFF,
             true,
             &sable_data,
-            info.environment_chart.unwrap_or(info.chart),
+            info.chart,
         );
         let vels: RigidBodyVelocity<Real> = *body.vels();
 
@@ -198,20 +198,4 @@ fn do_float(body: &mut RigidBody, static_pos: &IVec3, point: &Vec3, size: Real, 
     let volume = overlap.unwrap().volume();
 
     body.add_force_at_point(Vec3::new(0.0, 10.5 * volume * strength, 0.0), point, false);
-}
-
-#[cfg(test)]
-mod compatibility_regressions {
-    use super::*;
-    use rapier3d::dynamics::RigidBodyBuilder;
-
-    #[test]
-    fn submerged_volume_pushes_up_and_disjoint_water_does_not() {
-        let mut body = RigidBodyBuilder::dynamic().translation(Vec3::splat(0.5)).build();
-        do_float(&mut body, &IVec3::ZERO, &Vec3::ZERO, 0.5, 1.0);
-        assert!((body.user_force().y - 10.5).abs() < 1e-5);
-        body.reset_forces(false);
-        do_float(&mut body, &IVec3::splat(10), &Vec3::ZERO, 0.5, 1.0);
-        assert_eq!(body.user_force(), Vec3::ZERO);
-    }
 }

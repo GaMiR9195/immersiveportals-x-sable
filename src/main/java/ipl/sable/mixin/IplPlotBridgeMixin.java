@@ -2,8 +2,11 @@ package ipl.sable.mixin;
 
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
-import ipl.sable.dim.IplDimAgnostic;
+import ipl.sable.transit.IplAtlasStraddleSession;
+import ipl.sable.transit.IplStraddlePoseMap;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import org.spongepowered.asm.mixin.Mixin;
@@ -13,33 +16,36 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * THE PLOT BRIDGE — make the plot grid a universal address space readable from every
- * dimension.
+ * PROJECTION PLOT BRIDGE — lets a level READ the plot of a ship that lives in another
+ * dimension while that ship projects into it through a portal.
  *
- * <p>Sable's gameplay code (entity↔sub-level collision clipping, block-placement overlap
- * checks, {@code getContaining} lookups, raycasts) transforms positions into plot-grid
- * coordinates and then reads blocks/plots through the CURRENT level's container, because in
- * stock Sable a sub-level's chunks are embedded in the same level the interaction happens
- * in. Post-rehome the chunks live only in {@code ipl_sable:sublevels}, so those reads find
- * an empty grid slot: no collision, free block placement inside ships, broken lookups.
+ * <p>Sable's gameplay code (entity↔ship collision, raycasts, {@code getContaining}, block
+ * reads at plot coordinates) transforms positions into plot space and then reads through the
+ * CURRENT level's container. A ship straddling a cross-dimension portal is native to its own
+ * level; its far-side image is collided with and picked from the destination level, whose
+ * grid has no plot at those coordinates. On a {@code getPlot} miss inside the grid bounds,
+ * this mixin resolves the plot from the other levels — plot slots are allocated server-wide
+ * unique ({@code IplUnionPlotAllocationMixin}), so the owner is unambiguous — and returns it
+ * only while that owner has a portal image INTO this level.
  *
- * <p>Plot-slot allocation is globally coordinated by the hosting container, so a vacant
- * slot in a parent container can never shadow a DIFFERENT sub-level — bridging a failed
- * lookup to the hosting container is unambiguous. Both public chunk-coordinate
- * {@code getPlot} overloads are bridged; {@code getChunk}/{@code getChunkHolder}/
- * {@code getPlayersTracking}/{@code getContaining} all route through them, and Sable's
- * server/client chunk-cache mixins route vanilla {@code Level.getBlockState/setBlock} at
- * plot coords through {@code container.getChunk} — so parent-dim block reads of hosted
- * ships work everywhere. The private {@code getLocalPlot} used by the ALLOCATION guard is
- * deliberately NOT bridged (a parent allocating a fresh sub-level on a slot the hosting
- * grid occupies must not throw "Plot already exists"; rehome frees the slot a tick later).
+ * <p>Reads only: {@code IplForeignPlotWriteGuardMixin} rejects block writes at plot
+ * coordinates owned by another level, so placing/breaking through a cross-dimension image
+ * can never duplicate or desync blocks. By-UUID lookups are deliberately NOT bridged
+ * (container bookkeeping during a dimension change must not see the other instance).
  */
 @Pseudo
 @Mixin(value = SubLevelContainer.class, remap = false)
 public abstract class IplPlotBridgeMixin {
 
+    /** Re-entrancy guard: the owner search itself calls {@code getPlot} on other containers. */
+    @Unique
+    private static final ThreadLocal<boolean[]> IPL$BRIDGING = ThreadLocal.withInitial(() -> new boolean[1]);
+
     @Shadow
     public abstract Level getLevel();
+
+    @Shadow
+    public abstract boolean inBounds(int chunkX, int chunkZ);
 
     @ModifyReturnValue(
         method = "getPlot(II)Ldev/ryanhcode/sable/sublevel/plot/LevelPlot;",
@@ -47,11 +53,7 @@ public abstract class IplPlotBridgeMixin {
         require = 1
     )
     private LevelPlot ipl$bridgePlotByChunkXZ(LevelPlot original, int chunkX, int chunkZ) {
-        LevelPlot resolved = original != null ? original : ipl$hostingPlot(chunkX, chunkZ);
-        // Universal packet bridge: the first hosted-plot resolution inside a modded
-        // packet handler names the handler's ship and arms its world-frame context.
-        ipl.sable.dim.IplWorldFrameContext.notifyPlotResolved(resolved);
-        return resolved;
+        return original != null ? original : ipl$projectedPlot(chunkX, chunkZ);
     }
 
     @ModifyReturnValue(
@@ -60,28 +62,48 @@ public abstract class IplPlotBridgeMixin {
         require = 1
     )
     private LevelPlot ipl$bridgePlotByChunkPos(LevelPlot original, ChunkPos pos) {
-        LevelPlot resolved = original != null ? original : ipl$hostingPlot(pos.x, pos.z);
-        ipl.sable.dim.IplWorldFrameContext.notifyPlotResolved(resolved);
-        return resolved;
+        return original != null ? original : ipl$projectedPlot(pos.x, pos.z);
     }
 
     @Unique
-    private LevelPlot ipl$hostingPlot(int chunkX, int chunkZ) {
+    private LevelPlot ipl$projectedPlot(int chunkX, int chunkZ) {
+        if (!this.inBounds(chunkX, chunkZ)) return null; // ordinary world chunk: hot path
         Level self = this.getLevel();
-        if (self == null || IplDimAgnostic.isHostingLevel(self)) {
-            return null; // hosting container resolves its own plots; no recursion
+        if (self == null) return null;
+        boolean client = self.isClientSide;
+        if (client ? ipl.sable.client.IplStraddleSessionStore.isIdle() : IplAtlasStraddleSession.isIdle()) {
+            return null;
         }
-        SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(self);
-        if (hosting == null || hosting == (Object) this) return null;
-        return hosting.getPlot(chunkX, chunkZ);
+        boolean[] guard = IPL$BRIDGING.get();
+        if (guard[0]) return null;
+        guard[0] = true;
+        try {
+            Iterable<? extends Level> levels = client
+                ? ipl.sable.client.IplClientProjections.clientLevels()
+                : self instanceof ServerLevel server && server.getServer() != null
+                    ? server.getServer().getAllLevels() : java.util.List.<Level>of();
+            for (Level other : levels) {
+                if (other == self) continue;
+                SubLevelContainer container = SubLevelContainer.getContainer(other);
+                if (container == null || container == (Object) this) continue;
+                LevelPlot plot = container.getPlot(chunkX, chunkZ);
+                if (plot == null) continue;
+                SubLevel owner = plot.getSubLevel();
+                // Slots are unique: once the owner is found the answer is final.
+                return owner != null && !owner.isRemoved()
+                    && IplStraddlePoseMap.getMappingInto(owner, self) != null ? plot : null;
+            }
+            return null;
+        } finally {
+            guard[0] = false;
+        }
     }
 
     /**
-     * Removals route to the container that OWNS the sub-level: command paths call
-     * {@code requireSubLevelContainer(sourceLevel).removeSubLevel(hostedShip, ...)},
-     * but a hosted ship belongs to the hosting dimension's container — removing from
-     * the parent's container is a wrong-owner no-op that leaves the ship alive.
-     * Same-owner calls (rehome's own removals included) pass through untouched.
+     * Removals route to the container that OWNS the sub-level: command paths may call
+     * {@code getContainer(sourceLevel).removeSubLevel(ship, ...)} for a ship resolved
+     * elsewhere — removing from the wrong container is a no-op that leaves the ship alive.
+     * Same-owner calls pass through untouched.
      */
     @org.spongepowered.asm.mixin.injection.Inject(
         method = "removeSubLevel(Ldev/ryanhcode/sable/sublevel/SubLevel;"
@@ -91,7 +113,7 @@ public abstract class IplPlotBridgeMixin {
         require = 0
     )
     private void ipl$routeRemoveToOwningContainer(
-        dev.ryanhcode.sable.sublevel.SubLevel subLevel,
+        SubLevel subLevel,
         dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason reason,
         org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci
     ) {
@@ -101,82 +123,5 @@ public abstract class IplPlotBridgeMixin {
         if (owner == null || owner == (Object) this) return;
         owner.removeSubLevel(subLevel, reason);
         ci.cancel();
-    }
-
-    /**
-     * Public world membership is available outside tick/render/packet scopes too.
-     * Internal ownership consumers use IplOwnedSubLevels rather than this read view.
-     *
-     * <p>Server-side enumeration follows the frame of the caller (see
-     * {@link ipl.sable.dim.IplProcessingPass}):
-     * <ul>
-     *   <li>a parent world's OWN processing pass lists only what it owns — its hosted ships
-     *       are processed once, by the storage pass, never a second time here;</li>
-     *   <li>storage enumerated from inside one world's frame lists that world's ships;</li>
-     *   <li>storage's own processing pass lists every owned ship with that ship's world frame
-     *       armed while it is handled (container-scoped addon loops then probe the world the
-     *       ship flies through, not the empty storage void);</li>
-     *   <li>everything else is unchanged: world view for worlds, honest storage list.</li>
-     * </ul>
-     */
-    @ModifyReturnValue(method = "getAllSubLevels()Ljava/util/List;", at = @At("RETURN"), require = 1)
-    private java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> ipl$hostedWorldEnumeration(
-        java.util.List<dev.ryanhcode.sable.sublevel.SubLevel> original
-    ) {
-        Level self = this.getLevel();
-        if (self == null) return original;
-        boolean server = self instanceof net.minecraft.server.level.ServerLevel;
-        boolean ownPass = server && ipl.sable.dim.IplProcessingPass.isPassOf((SubLevelContainer) (Object) this);
-        if (IplDimAgnostic.isHostingLevel(self)) {
-            if (!server) return original;
-            net.minecraft.server.level.ServerLevel frame = ipl.sable.dim.IplWorldFrameContext.current();
-            if (frame != null && frame != self && !IplDimAgnostic.isHostingLevel(frame)
-                && !(ownPass && ipl.sable.dim.IplSubLevelReadViews.isElementFrame(frame))) {
-                return ipl.sable.dim.IplSubLevelReadViews.ofParent(original, frame);
-            }
-            return ownPass ? ipl.sable.dim.IplSubLevelReadViews.framed(original) : original;
-        }
-        if (ownPass) return original;
-        SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(self);
-        if (hosting == null || hosting == (Object) this) return original;
-        return ipl.sable.dim.IplSubLevelReadViews.inWorld(
-            self,original,ipl.sable.dim.IplOwnedSubLevels.owned(hosting));
-    }
-
-    /**
-     * By-UUID lookups are bridged too: tools resolve their target from the level they're
-     * used in (e.g. Simulated's physics staff does {@code getContainer(player.level())
-     * .getSubLevel(uuid)} and silently no-ops on null). Gated to hosted sub-levels whose
-     * {@code parentLevel} is this dimension — a tool in the nether must not resolve an
-     * overworld airship.
-     */
-    @ModifyReturnValue(
-        method = "getSubLevel(Ljava/util/UUID;)Ldev/ryanhcode/sable/sublevel/SubLevel;",
-        at = @At("RETURN"),
-        require = 1
-    )
-    private dev.ryanhcode.sable.sublevel.SubLevel ipl$bridgeSubLevelByUuid(
-        dev.ryanhcode.sable.sublevel.SubLevel original, java.util.UUID uuid
-    ) {
-        if (original != null) return original;
-        Level self = this.getLevel();
-        if (self == null || IplDimAgnostic.isHostingLevel(self)) return original;
-        SubLevelContainer hosting = IplDimAgnostic.getHostingContainerFor(self);
-        if (hosting == null || hosting == (Object) this) return original;
-
-        dev.ryanhcode.sable.sublevel.SubLevel hosted = hosting.getSubLevel(uuid);
-        if (hosted != null && !hosted.isRemoved()) {
-            if (IplDimAgnostic.getParentLevel(hosted) == self) {
-                return hosted;
-            }
-            // Also resolve ships STRADDLING INTO this dimension: their through-part is
-            // interactable here (the staff's drag packet resolves the target by UUID from
-            // the player's level — without this, dragging the through-part silently
-            // no-ops server-side while working fine from the parent side).
-            if (ipl.sable.transit.IplStraddlePoseMap.getMappingInto(hosted, self) != null) {
-                return hosted;
-            }
-        }
-        return original;
     }
 }

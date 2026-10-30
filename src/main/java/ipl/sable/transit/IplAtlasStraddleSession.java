@@ -1,89 +1,336 @@
 package ipl.sable.transit;
 
 import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
-import dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
-import ipl.sable.dim.IplDimAgnostic;
-import ipl.sable.dim.IplSceneOwnership;
-import ipl.sable.mixin.IplRapierPipelineAccess;
+import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.atlas.IplScenes;
+import ipl.sable.natives.IplRapierNatives;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
 
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 
 /**
- * Atlas straddle sessions (spec v3 §2.2-2.3): image colliders.
+ * Straddle sessions: lightweight far-side projections of a sub-level.
  *
- * <p>While a hosted ship straddles a portal, its REAL body gains an image collider in
- * the destination chart — extra geometry portal-prefixed by the full isometry
- * P = (R, t). The engine expresses the imaged side's state in the far frame, so
- * far-side contacts act on the one real body EXACTLY, in-solver: no clone body, no
- * servo, no feedback lag, no authority swap. Multi-straddle is just multiple images
- * on one body; a body never contacts its own image (engine same-parent filter).
+ * <p>The real body stays the single source of truth. While it straddles a portal, an
+ * IMAGE collider of the same rigid body is registered into the destination level's
+ * Atlas chart with the portal isometry as its prefix ({@code image pose = P x body
+ * pose}). Contacts on the real body beyond the portal plane and contacts on the image
+ * behind the exit plane are neutralized by clip regions, so the pair behaves like one
+ * body passing through the aperture. Forces on the image act on the real body.
  *
- * <p>This class owns the Atlas session registry (one per ship×portal), the image collider
-     * lifecycle, the half-open portal-plane clip regions (real set keeps the near half,
-     * image set the far half), and the mapping queries the entity/render/router layers
- * use. There is one real rigid body; destination presence is image geometry.
- *
- * <p>Scope: any scale-1 isometry pair.
+ * <p>Chains: when an image itself straddles another portal in its level, a child
+ * session is opened with the composite prefix ({@code P_child x P_parent}). The parent
+ * image gets an extra region hiding the part already beyond the child portal, and the
+ * child image inherits the parent's "not yet through" regions. Depth is capped by
+ * {@link #MAX_CHAIN_DEPTH}; nothing else limits chains.
  */
 public final class IplAtlasStraddleSession {
-
     private static final Logger LOG = LoggerFactory.getLogger("ipl-atlas-straddle");
-    /** Match detector admission laterally; clip regions remain a zero-thickness plane. */
     private static final double APERTURE_MARGIN = 0.0;
+    private static final double CLIP_SKIN = 1.0e-3;
+    /** Sane recursion cap for projection-of-projection chains. */
+    public static final int MAX_CHAIN_DEPTH = 8;
 
-    private static final Map<StraddleKey, Session> SESSIONS = new HashMap<>();
-
-    private static boolean loggedSkip = false;
+    private static final Map<StraddleKey, Session> SESSIONS = new LinkedHashMap<>();
+    private static boolean loggedScaledSkip;
 
     private IplAtlasStraddleSession() {}
 
     private static final class Session {
+        final StraddleKey key;
         final ServerSubLevel sub;
         final Portal portal;
-        final ServerLevel parent;
+        /** Level containing {@link #portal}: the body's level for roots, the parent's dest otherwise. */
+        final ServerLevel source;
         final ServerLevel dest;
-        /** Sable 2.0: scenes are native long handles held by each level's pipeline. */
-        final long parentScene;
+        final ServerLevel bodyLevel;
+        final long bodyScene;
         final long destScene;
         final int realId;
-        /** Full portal isometry source→dest (rotation-capable; scale gated at 1).
-         *  MUTABLE since M5: moving portals re-derive it per tick. */
+        IplStraddlePoseMap.StraddleMapping local;
         IplStraddlePoseMap.StraddleMapping mapping;
-        /** Crossing direction at the source plane (refreshed with the mapping). */
         Vec3 sourceToDest;
-        /** Portal origin at the last clip-region computation (M5 movement detection). */
-        Vec3 lastOrigin = Vec3.ZERO;
-        /** The REAL body's portal-plane clip region for this portal (14 doubles). */
-        double[] realClipRegion;
-        /** The image collider of the REAL body in the dest chart (atlas M2/M4). */
+        /** Region beyond this portal's plane, in the SOURCE level frame. */
+        double[] beyondRegion;
+        /** Region of the image behind this portal's exit, in the DEST frame. */
+        double[] notThroughRegion;
+        /** Parent chain's not-through regions mapped into this dest frame. */
+        List<double[]> inheritedRegions = List.of();
+        double[] lastImageRegions;
         long imageHandle = -1;
-        /** Predictive arming is not historical evidence of a physical aperture crossing. */
         boolean admitted;
-        /** Finite trailing-edge exit, retained while the rest of a rigid group catches up. */
         boolean completed;
 
-        Session(ServerSubLevel sub, Portal portal, ServerLevel parent, ServerLevel dest,
-                IplStraddlePoseMap.StraddleMapping mapping, Vec3 sourceToDest,
-                long parentScene, long destScene) {
+        Session(StraddleKey key, ServerSubLevel sub, Portal portal, ServerLevel source, ServerLevel dest,
+                long bodyScene, long destScene) {
+            this.key = key;
             this.sub = sub;
             this.portal = portal;
-            this.parent = parent;
+            this.source = source;
             this.dest = dest;
-            this.mapping = mapping;
-            this.sourceToDest = sourceToDest;
-            this.parentScene = parentScene;
+            this.bodyLevel = sub.getLevel();
+            this.bodyScene = bodyScene;
             this.destScene = destScene;
             this.realId = Rapier3D.getID(sub);
         }
     }
+
+    public static boolean isEnabled() {
+        return IplScenes.isEnabled();
+    }
+
+    // ------------------------------------------------------------------ lifecycle
+
+    /** Opens or refreshes the ROOT session of the real body with {@code portal}. */
+    public static void onStraddleTick(ServerSubLevel sub, Portal portal, Vec3 sourceToDest) {
+        if (!(sub.getLevel() instanceof ServerLevel level) || portal.level() != level) return;
+        ensure(new StraddleKey(sub.getUniqueId(), portal.getUUID()), null, sub, portal, sourceToDest, level);
+    }
+
+    /** Opens or refreshes a CHAINED session: the image of {@code parentKey} straddles {@code portal}. */
+    public static void onChainTick(StraddleKey parentKey, Portal portal, Vec3 sourceToDest) {
+        Session parent = SESSIONS.get(parentKey);
+        if (parent == null || parentKey.depth() >= MAX_CHAIN_DEPTH || portal.level() != parent.dest) return;
+        ensure(parentKey.child(portal.getUUID()), parent, parent.sub, portal, sourceToDest, parent.dest);
+    }
+
+    private static void ensure(StraddleKey key, @Nullable Session parent, ServerSubLevel sub,
+                               Portal portal, Vec3 sourceToDest, ServerLevel source) {
+        if (!isEnabled() || sub.isRemoved()) return;
+        if (IplShipPortalAnchor.isAnchorShip(portal, sub.getUniqueId())) return;
+        ServerLevel dest = source.getServer().getLevel(portal.getDestDim());
+        if (dest == null) return;
+        if (Math.abs(portal.getScaling() - 1.0) > 1e-9) {
+            if (!loggedScaledSkip) {
+                loggedScaledSkip = true;
+                LOG.info("[IPL-IMAGE] scaled portals are not supported for sub-level projections "
+                    + "(portal {}, logged once)", portal.getUUID());
+            }
+            return;
+        }
+        IplStraddlePoseMap.StraddleMapping local = IplStraddlePoseMap.StraddleMapping.of(portal);
+        IplStraddlePoseMap.StraddleMapping mapping = parent == null ? local : parent.mapping.then(local);
+        Session existing = SESSIONS.get(key);
+        if (existing != null) {
+            if (existing.dest != dest || existing.bodyLevel != sub.getLevel()
+                || IplScenes.sceneHandle(existing.bodyLevel) != existing.bodyScene
+                || IplScenes.sceneHandle(dest) != existing.destScene) {
+                clear(key, "frame-invalidated");
+            } else {
+                refresh(existing, parent, local, mapping, sourceToDest);
+                return;
+            }
+        }
+        long bodyScene = IplScenes.sceneHandle((ServerLevel) sub.getLevel());
+        long destScene = IplScenes.sceneHandle(dest);
+        if (bodyScene == 0 || destScene == 0) return;
+        Session session = new Session(key, sub, portal, source, dest, bodyScene, destScene);
+        session.local = local;
+        session.mapping = mapping;
+        session.sourceToDest = sourceToDest;
+        Vec3 shift = mapping.shift();
+        org.joml.Quaterniond rot = mapping.mapQuat(new org.joml.Quaterniond());
+        try {
+            session.imageHandle = IplRapierNatives.createImageCollider(
+                destScene, session.realId, shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
+        } catch (UnsatisfiedLinkError e) {
+            session.imageHandle = -1;
+        }
+        if (session.imageHandle < 0) {
+            LOG.warn("[IPL-IMAGE] image collider creation failed for ship {} portal {}",
+                sub.getUniqueId(), portal.getUUID());
+            return;
+        }
+        SESSIONS.put(key, session);
+        computeRegions(session, parent);
+        if (key.isRoot()) applyRealClipRegions(sub);
+        applyImageRegions(session);
+        if (parent != null) applyImageRegions(parent);
+        LOG.debug("[IPL-IMAGE] start {} depth={} dest={} imageHandle={}",
+            key.path(), key.depth(), dest.dimension().location(), session.imageHandle);
+    }
+
+    private static void refresh(Session s, @Nullable Session parent,
+                                IplStraddlePoseMap.StraddleMapping local,
+                                IplStraddlePoseMap.StraddleMapping mapping, Vec3 sourceToDest) {
+        if (s.sub.isRemoved()) return;
+        boolean moved = !mapping.sameAs(s.mapping);
+        s.local = local;
+        s.mapping = mapping;
+        s.sourceToDest = sourceToDest;
+        if (moved) {
+            Vec3 shift = mapping.shift();
+            org.joml.Quaterniond rot = mapping.mapQuat(new org.joml.Quaterniond());
+            IplRapierNatives.setImagePrefix(s.destScene, s.imageHandle,
+                shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
+        }
+        double[] oldBeyond = s.beyondRegion;
+        computeRegions(s, parent);
+        if (!java.util.Arrays.equals(oldBeyond, s.beyondRegion)) {
+            if (s.key.isRoot()) applyRealClipRegions(s.sub);
+            if (parent != null) applyImageRegions(parent);
+        }
+        applyImageRegions(s);
+    }
+
+    private static void computeRegions(Session s, @Nullable Session parent) {
+        Portal portal = s.portal;
+        double depth = clipDepthLimit(s);
+        double halfW = portal.getWidth() * 0.5 + APERTURE_MARGIN;
+        double halfH = portal.getHeight() * 0.5 + APERTURE_MARGIN;
+        Vec3 origin = portal.getOriginPos();
+        s.beyondRegion = region(origin, s.sourceToDest, portal.getAxisW(), portal.getAxisH(),
+            halfW, halfH, depth);
+        s.notThroughRegion = transform(region(origin, s.sourceToDest.scale(-1.0),
+            portal.getAxisW(), portal.getAxisH(), halfW, halfH, depth), s.local);
+        if (parent == null) {
+            s.inheritedRegions = List.of();
+        } else {
+            List<double[]> inherited = new ArrayList<>(parent.inheritedRegions.size() + 1);
+            inherited.add(transform(parent.notThroughRegion, s.local));
+            for (double[] r : parent.inheritedRegions) inherited.add(transform(r, s.local));
+            s.inheritedRegions = inherited;
+        }
+    }
+
+    /** Clip depth covers the whole body plus its distance from the portal plane. */
+    private static double clipDepthLimit(Session s) {
+        var box = s.sub.getPlot().getBoundingBox();
+        double dx = box.maxX() - box.minX() + 1.0;
+        double dy = box.maxY() - box.minY() + 1.0;
+        double dz = box.maxZ() - box.minZ() + 1.0;
+        double diagonal = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        Vec3 center = s.sub.logicalPose().transformPosition(new Vec3(
+            (box.minX() + box.maxX() + 1.0) * .5,
+            (box.minY() + box.maxY() + 1.0) * .5,
+            (box.minZ() + box.maxZ() + 1.0) * .5));
+        // Chained portals live in a projected frame: measure from the mapped centre.
+        Session parent = s.key.isRoot() ? null : SESSIONS.get(parentKeyOf(s.key));
+        if (parent != null) center = parent.mapping.mapPoint(center);
+        double normalDistance = Math.abs(center.subtract(s.portal.getOriginPos()).dot(s.portal.getNormal()));
+        return diagonal + normalDistance + APERTURE_MARGIN;
+    }
+
+    private static double[] region(Vec3 point, Vec3 normal, Vec3 axisW, Vec3 axisH,
+                                   double halfW, double halfH, double maxDepth) {
+        return new double[]{
+            point.x, point.y, point.z,
+            normal.x, normal.y, normal.z,
+            axisW.x, axisW.y, axisW.z, halfW,
+            axisH.x, axisH.y, axisH.z, halfH,
+            CLIP_SKIN, maxDepth
+        };
+    }
+
+    private static double[] transform(double[] r, IplStraddlePoseMap.StraddleMapping m) {
+        Vec3 p = m.mapPoint(new Vec3(r[0], r[1], r[2]));
+        Vec3 n = m.mapVec(new Vec3(r[3], r[4], r[5]));
+        Vec3 w = m.mapVec(new Vec3(r[6], r[7], r[8]));
+        Vec3 h = m.mapVec(new Vec3(r[10], r[11], r[12]));
+        return region(p, n, w, h, r[9], r[13], r[15]);
+    }
+
+    private static double[] flatten(List<double[]> regions) {
+        double[] flat = new double[regions.size() * 16];
+        for (int i = 0; i < regions.size(); i++) System.arraycopy(regions.get(i), 0, flat, i * 16, 16);
+        return flat;
+    }
+
+    /** Real body: union of the beyond-plane regions of all ROOT sessions. */
+    private static void applyRealClipRegions(ServerSubLevel ship) {
+        List<double[]> regions = new ArrayList<>(2);
+        long scene = 0;
+        int realId = -1;
+        for (Session s : SESSIONS.values()) {
+            if (s.sub != ship || !s.key.isRoot()) continue;
+            regions.add(s.beyondRegion);
+            scene = s.bodyScene;
+            realId = s.realId;
+        }
+        if (realId < 0) {
+            if (ship.isRemoved() || !(ship.getLevel() instanceof ServerLevel level)) return;
+            scene = IplScenes.sceneHandle(level);
+            realId = Rapier3D.getID(ship);
+            if (scene == 0) return;
+        }
+        IplRapierNatives.setClipRegions(scene, realId, flatten(regions));
+    }
+
+    /** Image: own not-through region + inherited ones + regions beyond each child portal. */
+    private static void applyImageRegions(Session s) {
+        if (s.imageHandle < 0) return;
+        List<double[]> regions = new ArrayList<>(2 + s.inheritedRegions.size());
+        regions.add(s.notThroughRegion);
+        regions.addAll(s.inheritedRegions);
+        String path = s.key.path();
+        for (Session child : SESSIONS.values()) {
+            if (child.sub == s.sub && child.key.via().equals(path)) regions.add(child.beyondRegion);
+        }
+        double[] flat = flatten(regions);
+        if (java.util.Arrays.equals(flat, s.lastImageRegions)) return;
+        s.lastImageRegions = flat;
+        IplRapierNatives.setImageClipRegions(s.destScene, s.realId, s.imageHandle, flat);
+    }
+
+    private static StraddleKey parentKeyOf(StraddleKey key) {
+        String via = key.via();
+        int split = via.lastIndexOf('>');
+        UUID portal = UUID.fromString(split < 0 ? via : via.substring(split + 1));
+        return new StraddleKey(key.subLevelUuid(), portal, split < 0 ? "" : via.substring(0, split));
+    }
+
+    /** Ends a session and every chained session below it. */
+    public static void clear(StraddleKey key, String reason) {
+        Session session = SESSIONS.remove(key);
+        if (session == null) return;
+        String prefix = key.path();
+        for (StraddleKey other : new ArrayList<>(SESSIONS.keySet())) {
+            if (other.subLevelUuid().equals(key.subLevelUuid())
+                && (other.via().equals(prefix) || other.via().startsWith(prefix + ">"))) {
+                clear(other, reason);
+            }
+        }
+        if (session.imageHandle >= 0 && IplScenes.sceneHandle(session.dest) == session.destScene) {
+            IplRapierNatives.removeImageCollider(session.destScene, session.realId, session.imageHandle);
+        }
+        if (!session.sub.isRemoved() && session.sub.getLevel() == session.bodyLevel
+            && IplScenes.sceneHandle(session.bodyLevel) == session.bodyScene) {
+            if (key.isRoot()) {
+                applyRealClipRegions(session.sub);
+            } else {
+                Session parent = SESSIONS.get(parentKeyOf(key));
+                if (parent != null) applyImageRegions(parent);
+            }
+        }
+        LOG.debug("[IPL-IMAGE] end {} reason={}", key.path(), reason);
+    }
+
+    /** Ends every session of a ship (flip, removal, move). */
+    public static void clearShip(UUID ship, String reason) {
+        for (StraddleKey key : sessionKeysFor(ship)) {
+            if (key.isRoot()) clear(key, reason);
+        }
+        for (StraddleKey key : sessionKeysFor(ship)) clear(key, reason);
+    }
+
+    public static void clearAll() {
+        SESSIONS.clear();
+        loggedScaledSkip = false;
+    }
+
+    // ------------------------------------------------------------------ state flags
 
     public static boolean isCompleted(StraddleKey key) {
         Session session = SESSIONS.get(key);
@@ -97,284 +344,10 @@ public final class IplAtlasStraddleSession {
 
     public static void markCompleted(StraddleKey key) {
         Session session = SESSIONS.get(key);
-        if (session != null) { session.admitted = true; session.completed = true; }
-    }
-
-    public static boolean isEnabled() {
-        return IplSceneOwnership.isEnabled();
-    }
-
-    /** Called each tick a hosted ship is STRADDLING (from the transit controller). */
-    public static void onStraddleTick(ServerSubLevel hosted, Portal portal, Vec3 sourceToDest) {
-        if (!isEnabled() || !IplDimAgnostic.isHosted(hosted)) return;
-        // Never open a session for a ship straddling its OWN anchored portal
-        // (defense in depth — the transit controller already skips the pair).
-        if (IplShipPortalAnchor.isAnchorShip(portal, hosted.getUniqueId())) return;
-        // The atlas natives ARE the physics — without them there is no straddle
-        // session at all (and the whole mod is inoperable anyway, see IplFusedStep).
-        if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return;
-
-        ServerLevel parent = IplDimAgnostic.getServerParentLevel(hosted);
-        if (parent == null) return;
-        ServerLevel dest = parent.getServer().getLevel(portal.getDestDim());
-        if (dest == null || IplDimAgnostic.isHostingLevel(dest)) return;
-
-        // Scale-1 gate only (spec §3: sub-level bodies traverse isometries). Any fixed
-        // rotation is fully supported by the image collider's portal-frame mapping.
-        if (Math.abs(portal.getScaling() - 1.0) > 1e-9) {
-            if (!loggedSkip) {
-                loggedSkip = true;
-                LOG.info("[IPL-IMAGE] portal {} has scale != 1; straddle sessions support "
-                    + "isometry pairs only — skipping (logged once)", portal.getUUID());
-            }
-            return;
+        if (session != null) {
+            session.admitted = true;
+            session.completed = true;
         }
-        IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.StraddleMapping.of(portal);
-
-        // Atlas keeps the real body in its honest hosting chart. Parent/destination charts
-        // contain only image colliders; native body lookup is world-global and therefore the
-        // image may be created through either chart view without moving third-party state.
-        if (IplSceneOwnership.getBodyHome(hosted) != hosted.getLevel()) return;
-
-        StraddleKey key = new StraddleKey(hosted.getUniqueId(), portal.getUUID());
-        Session existing = SESSIONS.get(key);
-        if (existing != null) {
-            if (existing.parent != parent || existing.dest != dest
-                || IplSceneOwnership.liveSceneHandle(parent) != existing.parentScene
-                || IplSceneOwnership.liveSceneHandle(dest) != existing.destScene) {
-                clear(key, "frame-invalidated");
-            } else {
-                refreshIfMoved(existing, portal, sourceToDest);
-                return;
-            }
-        }
-
-        RapierPhysicsPipeline parentPipeline = IplSceneOwnership.pipelineOf(parent);
-        RapierPhysicsPipeline destPipeline = IplSceneOwnership.pipelineOf(dest);
-        if (parentPipeline == null || destPipeline == null) return;
-        long parentScene = ((IplRapierPipelineAccess) parentPipeline).ipl$sceneHandle();
-        long destScene = ((IplRapierPipelineAccess) destPipeline).ipl$sceneHandle();
-
-        Session session = new Session(
-            hosted, portal, parent, dest, mapping, sourceToDest, parentScene, destScene);
-
-        // The image collider IS the physics of the straddle (spec v3 §2.2-2.3): extra
-        // geometry on the REAL body, portal-prefixed by the full isometry P = (R, t).
-        // Contacts on it act on the body exactly, in-solver. No session without it.
-        Vec3 shift = mapping.mapPoint(Vec3.ZERO);
-        org.joml.Quaterniond rot = mapping.mapQuat(new org.joml.Quaterniond());
-        session.imageHandle = ipl.sable.natives.IplRapierNatives.createImageCollider(
-            session.destScene, session.realId,
-            shift.x, shift.y, shift.z,
-            rot.x, rot.y, rot.z, rot.w);
-        if (session.imageHandle < 0) {
-            LOG.error("[IPL-IMAGE] image collider creation failed for ship {} portal {} — "
-                + "no straddle session (real body unavailable in Atlas world?)",
-                hosted.getUniqueId(), portal.getUUID());
-            return;
-        }
-        SESSIONS.put(key, session);
-
-        // Contact clipping, half-open finite-aperture seam:
-        //  - REAL body set: contacts past the source plane are dropped only inside the
-        //    laterally extended doorway; geometry beside the frame remains source-solid.
-        //  - IMAGE collider: complementary far-half contacts are dropped in the mapped
-        //    doorway, so only the through-part is physically present destination-side.
-        {
-            Vec3 origin = portal.getOriginPos();
-            double depthLimit = clipDepthLimit(hosted, portal);
-            session.lastOrigin = origin;
-            session.realClipRegion = clipRegion(
-                origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
-                portal.getWidth() * 0.5 + APERTURE_MARGIN,
-                portal.getHeight() * 0.5 + APERTURE_MARGIN,
-                depthLimit);
-            applyRealClipRegions(hosted, session.parentScene, session.realId);
-
-            double[] imageRegion = clipRegion(
-                mapping.mapPoint(origin),
-                mapping.mapVec(sourceToDest).scale(-1.0),
-                mapping.mapVec(portal.getAxisW()),
-                mapping.mapVec(portal.getAxisH()),
-                portal.getWidth() * 0.5 + APERTURE_MARGIN,
-                portal.getHeight() * 0.5 + APERTURE_MARGIN,
-                depthLimit);
-            ipl.sable.natives.IplRapierNatives.setImageClipRegions(
-                session.destScene, session.realId, session.imageHandle, imageRegion);
-        }
-
-        // IplPortalRimManager is currently disabled. There is NO physical containment
-        // rim here; session release must tolerate bounded solver penetration itself.
-        // The release skin does not enlarge these exact native clip rectangles.
-
-        LOG.info("[IPL-IMAGE] start uuid={} portal={} dest={} rotated={} imageHandle={} destScene={}",
-            hosted.getUniqueId(), portal.getUUID(), portal.getDestPos(),
-            !mapping.isIdentityRotation(), session.imageHandle, session.destScene);
-    }
-
-    /**
-     * Atlas M5 (spec v3 §2.8): moving portals. Re-derive the portal isometry each
-     * straddle tick; when the portal moved (isometry OR aperture geometry), push the
-     * fresh prefix to the image collider and rebuild both halves of the clip seam.
-     * Cheap when static (two pose comparisons). Per-TICK granularity: within a tick
-     * the isometry is frozen (kinematic-frame fiat, spec §2.8) — the frame-twist
-     * velocity term is the M5b follow-up.
-     */
-    private static void refreshIfMoved(Session s, Portal portal, Vec3 sourceToDest) {
-        if (s.sub.isRemoved()) return;
-        IplStraddlePoseMap.StraddleMapping fresh = IplStraddlePoseMap.StraddleMapping.of(portal);
-        Vec3 origin = portal.getOriginPos();
-
-        Vec3 newShift = fresh.mapPoint(Vec3.ZERO);
-        Vec3 oldShift = s.mapping.mapPoint(Vec3.ZERO);
-        org.joml.Quaterniond newRot = fresh.mapQuat(new org.joml.Quaterniond());
-        org.joml.Quaterniond oldRot = s.mapping.mapQuat(new org.joml.Quaterniond());
-        boolean isoMoved = oldShift.distanceToSqr(newShift) > 1.0e-10
-            || Math.abs(newRot.dot(oldRot)) < 1.0 - 1.0e-10;
-
-        s.mapping = fresh;
-        s.sourceToDest = sourceToDest;
-        s.lastOrigin = origin;
-        double depthLimit = clipDepthLimit(s.sub, portal);
-
-        if (isoMoved) {
-            ipl.sable.natives.IplRapierNatives.setImagePrefix(
-                s.destScene, s.imageHandle,
-                newShift.x, newShift.y, newShift.z,
-                newRot.x, newRot.y, newRot.z, newRot.w);
-        }
-
-        double[] freshReal = clipRegion(
-            origin, sourceToDest, portal.getAxisW(), portal.getAxisH(),
-            portal.getWidth() * 0.5 + APERTURE_MARGIN,
-            portal.getHeight() * 0.5 + APERTURE_MARGIN,
-            depthLimit);
-        boolean clipChanged = !java.util.Arrays.equals(s.realClipRegion, freshReal);
-        s.realClipRegion = freshReal;
-        if (clipChanged) applyRealClipRegions(s.sub, s.parentScene, s.realId);
-        double[] imageRegion = clipRegion(
-            fresh.mapPoint(origin),
-            fresh.mapVec(sourceToDest).scale(-1.0),
-            fresh.mapVec(portal.getAxisW()),
-            fresh.mapVec(portal.getAxisH()),
-            portal.getWidth() * 0.5 + APERTURE_MARGIN,
-            portal.getHeight() * 0.5 + APERTURE_MARGIN,
-            depthLimit);
-        if (clipChanged || isoMoved) ipl.sable.natives.IplRapierNatives.setImageClipRegions(
-            s.destScene, s.realId, s.imageHandle, imageRegion);
-    }
-
-    /**
-     * Tolerance on the NEAR side of the cut. A solver contact whose point lands a hair
-     * before the plane while the geometry it belongs to is already past it used to
-     * survive the cut -- that residue is what is still "felt" when walking into the
-     * doorway from the opposite side.
-     */
-    private static final double CLIP_SKIN = 1.0e-3;
-
-    /**
-     * How far past the plane the cutter reaches: the owning body's own diagonal plus the
-     * aperture margin. The native region used to be an UNBOUNDED half-space, so it could
-     * neutralize contacts arbitrarily far beyond the portal -- the source of the
-     * "microscopically affects other sub-levels" symptom. Bounding it turns the cutter
-     * into a closed box around exactly the volume that can be straddling: still Rapier's
-     * own contact pass, just scoped to this crossing instead of to all of space.
-     */
-    private static double clipDepthLimit(ServerSubLevel ship, Portal portal) {
-        var box = ship.getPlot().getBoundingBox();
-        double dx = box.maxX() - box.minX() + 1.0;
-        double dy = box.maxY() - box.minY() + 1.0;
-        double dz = box.maxZ() - box.minZ() + 1.0;
-        double diagonal = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        Vec3 center = ship.logicalPose().transformPosition(new Vec3(
-            (box.minX() + box.maxX() + 1.0) * .5,
-            (box.minY() + box.maxY() + 1.0) * .5,
-            (box.minZ() + box.maxZ() + 1.0) * .5));
-        double normalDistance = Math.abs(center.subtract(portal.getOriginPos()).dot(portal.getNormal()));
-        return diagonal + normalDistance + APERTURE_MARGIN;
-    }
-
-    private static double[] clipRegion(
-        Vec3 point, Vec3 normal, Vec3 axisW, Vec3 axisH, double halfW, double halfH,
-        double maxDepth
-    ) {
-        return new double[]{
-            point.x, point.y, point.z,
-            normal.x, normal.y, normal.z,
-            axisW.x, axisW.y, axisW.z, halfW,
-            axisH.x, axisH.y, axisH.z, halfH,
-            CLIP_SKIN, maxDepth
-        };
-    }
-
-    /**
-     * (Re)apply the union of all active sessions' portal-plane clip regions to a ship's REAL body —
-     * a ship can straddle several portals at once, and regions replace wholesale.
-     */
-    private static void applyRealClipRegions(ServerSubLevel ship, long parentScene, int realId) {
-        java.util.ArrayList<double[]> regions = new java.util.ArrayList<>(2);
-        for (Session s : SESSIONS.values()) {
-            if (s.sub == ship && s.realClipRegion != null) regions.add(s.realClipRegion);
-        }
-        double[] flat = new double[regions.size() * 16];
-        for (int i = 0; i < regions.size(); i++) {
-            System.arraycopy(regions.get(i), 0, flat, i * 16, 16);
-        }
-        ipl.sable.natives.IplRapierNatives.setClipRegions(parentScene, realId, flat);
-        if (LOG.isDebugEnabled()) for (double[] r : regions) {
-            LOG.debug("[IPL-IMAGE-CLIP] realId={} plane=({},{},{}) normal=({},{},{})",
-                realId,
-                String.format("%.1f", r[0]), String.format("%.1f", r[1]), String.format("%.1f", r[2]),
-                String.format("%.2f", r[3]), String.format("%.2f", r[4]), String.format("%.2f", r[5]));
-        }
-    }
-
-    /** Straddle ended (backed out, flipped, or left the zone): retire the image. */
-    public static void clear(StraddleKey key, String reason) {
-        Session session = SESSIONS.remove(key);
-        if (session == null) return;
-        if (IplSceneOwnership.liveSceneHandle(session.dest) == session.destScene) {
-            ipl.sable.natives.IplRapierNatives.removeImageCollider(
-                session.destScene, session.realId, session.imageHandle);
-        }
-        // Recompute the real body's clip regions from whatever sessions remain (usually
-        // none → cleared): the through-part becomes fully source-solid again.
-        if (session.realClipRegion != null && !session.sub.isRemoved()
-            && IplSceneOwnership.liveSceneHandle(session.parent) == session.parentScene) {
-            applyRealClipRegions(session.sub, session.parentScene, session.realId);
-        }
-        LOG.info("[IPL-IMAGE] end uuid={} imageHandle={} reason={}",
-            session.sub.getUniqueId(), session.imageHandle, reason);
-    }
-
-    /** Server stopping: drop all state without native despawns (scenes die with the JVM). */
-    public static void clearAll() {
-        SESSIONS.clear();
-        loggedSkip = false;
-    }
-
-    /** Whether any Atlas session is active for this ship (server-side straddle truth). */
-    public static boolean hasSession(UUID shipUuid) {
-        for (Session s : SESSIONS.values()) {
-            if (s.sub.getUniqueId().equals(shipUuid)) return true;
-        }
-        return false;
-    }
-
-    /**
-     * The active Atlas session's portal isometry mapping {@code sub}'s source frame into
-     * {@code destLevel}, or null. Feeds the frame mapping for entity collision /
-     * interaction on the through-part.
-     */
-    public static IplStraddlePoseMap.StraddleMapping getMappingInto(
-        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level destLevel
-    ) {
-        for (Session s : SESSIONS.values()) {
-            if (s.dest == destLevel && s.sub.getUniqueId().equals(sub.getUniqueId())) {
-                return s.mapping;
-            }
-        }
-        return null;
     }
 
     public static void markAdmitted(StraddleKey key) {
@@ -387,103 +360,127 @@ public final class IplAtlasStraddleSession {
         return session != null && session.admitted;
     }
 
+    // ------------------------------------------------------------------ queries
+
+    /** True when no straddle session exists at all (cheap hot-path gate). */
+    public static boolean isIdle() {
+        return SESSIONS.isEmpty();
+    }
+
+    public static boolean hasSession(UUID shipUuid) {
+        for (StraddleKey key : SESSIONS.keySet()) if (key.subLevelUuid().equals(shipUuid)) return true;
+        return false;
+    }
+
     public static boolean hasSessionKey(StraddleKey key) {
         return SESSIONS.containsKey(key);
     }
 
-    /** Snapshot of active session keys (declarative lifecycle reap sweep). */
-    public static java.util.List<StraddleKey> sessionKeys() {
-        return new java.util.ArrayList<>(SESSIONS.keySet());
+    public static List<StraddleKey> sessionKeys() {
+        return new ArrayList<>(SESSIONS.keySet());
     }
 
-    /** Snapshot all active portal sessions owned by one real body. */
-    public static java.util.List<StraddleKey> sessionKeysFor(UUID shipUuid) {
-        java.util.List<StraddleKey> keys = new java.util.ArrayList<>();
-        for (StraddleKey key : SESSIONS.keySet()) {
-            if (key.subLevelUuid().equals(shipUuid)) keys.add(key);
-        }
+    /** Keys of one ship, parents before children (insertion order). */
+    public static List<StraddleKey> sessionKeysFor(UUID shipUuid) {
+        List<StraddleKey> keys = new ArrayList<>();
+        for (StraddleKey key : SESSIONS.keySet()) if (key.subLevelUuid().equals(shipUuid)) keys.add(key);
         return keys;
     }
 
-    /** Portal of the active session mapping this ship INTO {@code level} (dest side). */
-    public static qouteall.imm_ptl.core.portal.Portal getSessionPortalInto(
-        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level
-    ) {
+    @Nullable
+    public static Portal sessionPortal(StraddleKey key) {
+        Session s = SESSIONS.get(key);
+        return s == null ? null : s.portal;
+    }
+
+    @Nullable
+    public static ServerLevel sessionDest(StraddleKey key) {
+        Session s = SESSIONS.get(key);
+        return s == null ? null : s.dest;
+    }
+
+    /** Composite mapping real-body world -> session destination world. */
+    @Nullable
+    public static IplStraddlePoseMap.StraddleMapping sessionMapping(StraddleKey key) {
+        Session s = SESSIONS.get(key);
+        return s == null ? null : s.mapping;
+    }
+
+    /** Session portals of a chain parent's destination, used to exclude the exit face. */
+    public static List<StraddleKey> childrenOf(StraddleKey key) {
+        String path = key.path();
+        List<StraddleKey> out = new ArrayList<>();
+        for (StraddleKey other : SESSIONS.keySet()) {
+            if (other.subLevelUuid().equals(key.subLevelUuid()) && other.via().equals(path)) out.add(other);
+        }
+        return out;
+    }
+
+    /** First projection of {@code sub} into {@code destLevel} (any chain depth). */
+    @Nullable
+    public static IplStraddlePoseMap.StraddleMapping getMappingInto(SubLevel sub, Level destLevel) {
         for (Session s : SESSIONS.values()) {
-            if (s.dest == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
-                return s.portal;
-            }
+            if (s.dest == destLevel && s.sub.getUniqueId().equals(sub.getUniqueId())) return s.mapping;
         }
         return null;
     }
 
-    /** Visit EVERY active session mapping this ship INTO {@code level} (multi-straddle). */
+    @Nullable
+    public static Portal getSessionPortalInto(SubLevel sub, Level level) {
+        for (Session s : SESSIONS.values()) {
+            if (s.dest == level && s.sub.getUniqueId().equals(sub.getUniqueId())) return s.portal;
+        }
+        return null;
+    }
+
+    /** Every projection of {@code sub} into {@code level}: (last portal, composite mapping). */
     public static void forEachSessionInto(
-        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level,
-        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal,
-            IplStraddlePoseMap.StraddleMapping> visitor
+        SubLevel sub, Level level, BiConsumer<Portal, IplStraddlePoseMap.StraddleMapping> visitor
     ) {
-        for (Session s : SESSIONS.values()) {
+        for (Session s : List.copyOf(SESSIONS.values())) {
             if (s.dest == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
                 visitor.accept(s.portal, s.mapping);
             }
         }
     }
 
-    /** Visit EVERY active session this ship is exiting FROM {@code level} (multi-straddle). */
+    /** ROOT sessions of the real body whose portal lives in {@code level}. */
     public static void forEachSessionFrom(
-        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level,
-        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal,
-            IplStraddlePoseMap.StraddleMapping> visitor
+        SubLevel sub, Level level, BiConsumer<Portal, IplStraddlePoseMap.StraddleMapping> visitor
     ) {
-        for (Session s : SESSIONS.values()) {
-            if (s.parent == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
+        for (Session s : List.copyOf(SESSIONS.values())) {
+            if (s.key.isRoot() && s.source == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
                 visitor.accept(s.portal, s.mapping);
             }
         }
     }
 
-    /** Portal of the active session this ship is exiting FROM {@code level} (source side). */
-    public static qouteall.imm_ptl.core.portal.Portal getSessionPortalFrom(
-        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level
-    ) {
+    @Nullable
+    public static Portal getSessionPortalFrom(SubLevel sub, Level level) {
         for (Session s : SESSIONS.values()) {
-            if (s.parent == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
+            if (s.key.isRoot() && s.source == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
                 return s.portal;
             }
         }
         return null;
     }
 
-    /** True when {@code position} is on the destination side of a same-dimension session. */
-    public static boolean isInMappedHalf(
-        dev.ryanhcode.sable.sublevel.SubLevel sub, net.minecraft.world.level.Level level, Vec3 position
-    ) {
+    public static boolean isInMappedHalf(SubLevel sub, Level level, Vec3 position) {
         for (Session s : SESSIONS.values()) {
-            if (s.dest == level && s.parent == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
-                // Mapped dest-plane test + proximity disambiguation (shared with the
-                // client branch — see IplStraddlePoseMap.isInMappedHalf for why both
-                // conditions are needed on rotated pairs).
-                return IplStraddlePoseMap.isInMappedHalf(
-                    s.mapping, s.portal, s.sub.boundingBox(), position);
+            if (s.key.isRoot() && s.dest == level && s.source == level
+                && s.sub.getUniqueId().equals(sub.getUniqueId())) {
+                return IplStraddlePoseMap.isInMappedHalf(s.mapping, s.portal, s.sub.boundingBox(), position);
             }
         }
         return false;
     }
 
-    /**
-     * Visit every active Atlas session whose DESTINATION is {@code destLevel}: the ship and
-     * the mapped image region. Used by Atlas chart ticket enrollment.
-     */
+    /** Every live projection into {@code destLevel}: (real sub-level, composite mapping). */
     public static void forEachSessionInto(
-        ServerLevel destLevel,
-        java.util.function.BiConsumer<ServerSubLevel, IplStraddlePoseMap.StraddleMapping> visitor
+        ServerLevel destLevel, BiConsumer<ServerSubLevel, IplStraddlePoseMap.StraddleMapping> visitor
     ) {
-        for (Session s : SESSIONS.values()) {
-            if (s.dest == destLevel && !s.sub.isRemoved()) {
-                visitor.accept(s.sub, s.mapping);
-            }
+        for (Session s : List.copyOf(SESSIONS.values())) {
+            if (s.dest == destLevel && !s.sub.isRemoved()) visitor.accept(s.sub, s.mapping);
         }
     }
-
 }

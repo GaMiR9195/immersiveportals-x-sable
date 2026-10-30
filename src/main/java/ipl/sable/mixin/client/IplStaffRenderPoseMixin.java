@@ -55,7 +55,7 @@ public abstract class IplStaffRenderPoseMixin {
         return IplStraddleStaffPick.mapStaffRenderPose(sub, original.call(sub, partialTick));
     }
 
-    /** The server stores staff sessions in the hosting dimension; resolve their owner in portal passes too. */
+    /** The beam owner may be a player of another client world (portal passes): resolve it there too. */
     @WrapOperation(
         method = "onRender",
         at = @At(

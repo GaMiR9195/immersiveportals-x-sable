@@ -118,7 +118,7 @@ public abstract class IplFlywheelCompilationMixin {
         // Absence means the mixin processor never installed us -- check class
         // target string, @Final on the shadow, @Pseudo, etc.
         if (IPL$LOGGED_APPLY.compareAndSet(false, true)) {
-            IPL$LOG.info("[IPL-FLYWHEEL-APPLY] IplFlywheelCompilationMixin is active");
+            IPL$LOG.debug("[IPL-FLYWHEEL-APPLY] IplFlywheelCompilationMixin is active");
         }
 
         StringBuilder src = this.fullSource;
@@ -157,7 +157,7 @@ public abstract class IplFlywheelCompilationMixin {
         // for every recompile.
         String key = original.substring(anchorIdx, Math.min(anchorIdx + 80, original.length()));
         if (IPL$LOGGED.putIfAbsent(key, Boolean.TRUE) == null) {
-            IPL$LOG.info("[IPL-FLYWHEEL-INJECT] injected clip writes into Flywheel vertex shader (variant key='{}')",
+            IPL$LOG.debug("[IPL-FLYWHEEL-INJECT] injected clip writes into Flywheel vertex shader (variant key='{}')",
                 key.replace('\n', ' ').trim());
         }
     }

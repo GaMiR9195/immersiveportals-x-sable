@@ -48,7 +48,7 @@ public final class SourceClipDiag {
         if (now - lastReportNanos >= 5_000_000_000L) {
             // Only emit if there was activity in this window; otherwise stay silent.
             if (vanillaCalls > 0 || sodiumCalls > 0) {
-                LOG.info("[IPL-CLIP] last 5s: vanilla calls={} installs={}, sodium calls={} installs={}",
+                LOG.debug("[IPL-CLIP] last 5s: vanilla calls={} installs={}, sodium calls={} installs={}",
                     vanillaCalls, vanillaInstalls, sodiumCalls, sodiumInstalls);
             }
             vanillaCalls = 0;

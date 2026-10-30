@@ -156,47 +156,7 @@ public abstract class SableCrossDimTrackingMixin {
         ipl$crossDimViewersBySubLevel.clear();
         ipl$crossDimViewerUnion.clear();
 
-        // The hosting container holds every sub-level in ipl_sable:sublevels
-        // and every viewer is by definition cross-dim. A sub-level's viewers are the players
-        // of its PARENT dim within Sable's tracking range of the (parent-coordinate) pose,
-        // plus any player viewing that parent-dim chunk through an IP portal. All downstream
-        // machinery in this mixin (server-wide player resolution, forced shouldLoad,
-        // bootstrap full-sync, redirected packet emission, forced TCP) then applies as-is.
-        if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
-            double range = dev.ryanhcode.sable.SableConfig.SUB_LEVEL_TRACKING_RANGE.getAsDouble();
-            double rangeSq = range * range;
-
-            for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
-                if (subLevel.isRemoved()) continue;
-
-                net.minecraft.server.level.ServerLevel parent =
-                    ipl.sable.dim.IplDimAgnostic.getServerParentLevel(subLevel);
-                if (parent == null) continue; // parent unresolved (pre-restore); not viewable yet
-
-                Vector3dc pos = subLevel.logicalPose().position();
-                Set<UUID> viewers = new HashSet<>();
-
-                for (ServerPlayer player : parent.players()) {
-                    if (pos.distanceSquared(player.getX(), player.getY(), player.getZ()) < rangeSq) {
-                        viewers.add(player.getGameProfile().getId());
-                    }
-                }
-
-                ChunkPos chunkPos = new ChunkPos(BlockPos.containing(pos.x(), pos.y(), pos.z()));
-                for (ServerPlayer viewer : ImmPtlChunkTracking.getPlayersViewingChunk(
-                    parent.dimension(), chunkPos.x, chunkPos.z, false)) {
-                    viewers.add(viewer.getGameProfile().getId());
-                }
-
-                if (!viewers.isEmpty()) {
-                    ipl$crossDimViewersBySubLevel.put(subLevel.getUniqueId(), viewers);
-                    ipl$crossDimViewerUnion.addAll(viewers);
-                }
-            }
-            return;
-        }
-
-        for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
+        for (SubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
 
             Vector3dc pos = subLevel.logicalPose().position();
@@ -205,7 +165,6 @@ public abstract class SableCrossDimTrackingMixin {
             List<ServerPlayer> viewers = ImmPtlChunkTracking.getPlayersViewingChunk(
                 level.dimension(), chunkPos.x, chunkPos.z, false
             );
-            if (viewers.isEmpty()) continue;
 
             Set<UUID> crossDim = null;
             for (ServerPlayer viewer : viewers) {
@@ -216,10 +175,40 @@ public abstract class SableCrossDimTrackingMixin {
                     ipl$crossDimViewerUnion.add(uuid);
                 }
             }
+            crossDim = ipl$addImageViewers(subLevel, pos, crossDim);
             if (crossDim != null) {
                 ipl$crossDimViewersBySubLevel.put(subLevel.getUniqueId(), crossDim);
             }
         }
+    }
+
+    /**
+     * Players of ANOTHER level standing near one of the ship's portal images (an active
+     * straddle session into their level) see the ship as a projection: they need its live
+     * state even when IP's portal chunk tracking doesn't cover the ship's own chunk.
+     */
+    @Unique
+    private Set<UUID> ipl$addImageViewers(SubLevel subLevel, Vector3dc pos, Set<UUID> crossDim) {
+        if (ipl.sable.transit.IplAtlasStraddleSession.isIdle()) return crossDim;
+        double range = dev.ryanhcode.sable.SableConfig.SUB_LEVEL_TRACKING_RANGE.getAsDouble();
+        double rangeSq = range * range;
+        net.minecraft.world.phys.Vec3 source = new net.minecraft.world.phys.Vec3(pos.x(), pos.y(), pos.z());
+        for (ipl.sable.transit.StraddleKey key
+                : ipl.sable.transit.IplAtlasStraddleSession.sessionKeysFor(subLevel.getUniqueId())) {
+            ServerLevel dest = ipl.sable.transit.IplAtlasStraddleSession.sessionDest(key);
+            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
+                ipl.sable.transit.IplAtlasStraddleSession.sessionMapping(key);
+            if (dest == null || dest == level || mapping == null) continue;
+            net.minecraft.world.phys.Vec3 image = mapping.mapPoint(source);
+            for (ServerPlayer player : dest.players()) {
+                if (image.distanceToSqr(player.position()) >= rangeSq) continue;
+                UUID uuid = player.getGameProfile().getId();
+                if (crossDim == null) crossDim = new HashSet<>();
+                crossDim.add(uuid);
+                ipl$crossDimViewerUnion.add(uuid);
+            }
+        }
+        return crossDim;
     }
 
     // ------------------------------------------------------------------------
@@ -310,7 +299,7 @@ public abstract class SableCrossDimTrackingMixin {
     @Inject(method = "sendBoundsUpdates", at = @At("HEAD"), require = 0)
     private void ipl$bootstrapCrossDimViewers(SubLevelContainer container, CallbackInfo ci) {
         if (ipl$crossDimViewersBySubLevel.isEmpty()) return;
-        for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
+        for (SubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
             ServerSubLevel serverSubLevel = (ServerSubLevel) subLevel;
             Set<UUID> crossDim = ipl$crossDimViewersBySubLevel.get(serverSubLevel.getUniqueId());
@@ -326,36 +315,12 @@ public abstract class SableCrossDimTrackingMixin {
                 // sendBoundsUpdates is being called from tick. But we may also be called
                 // outside that context (e.g. if sendBoundsUpdates is invoked elsewhere),
                 // so set it explicitly here -- nested same-value is a no-op.
-                if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
-                    // Diagnostic for the dim-agnostic bring-up: how many plot chunks does the
-                    // server actually bundle into this full sync?
-                    org.slf4j.LoggerFactory.getLogger("ipl-hosted-gather").debug(
-                        "[IPL-HOSTED-SYNC] full sync of {} to {}: {} loaded plot chunk(s) server-side",
-                        serverSubLevel.getUniqueId(), viewer.getGameProfile().getName(),
-                        serverSubLevel.getPlot().getLoadedChunks().size());
-                }
                 PacketRedirection.withForceRedirect(level, () -> sendFullSync(viewer, serverSubLevel, null));
 
-                // Hosted sub-levels: follow the full sync with the parent-dim stamp so the
-                // client knows which dimension to render this sub-level in. Sent after the
-                // bundled sync, so the client-side ClientSubLevel exists when it arrives.
-                if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
-                    net.minecraft.server.level.ServerLevel parent =
-                        ipl.sable.dim.IplDimAgnostic.getServerParentLevel(serverSubLevel);
-                    if (parent != null) {
-                        qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
-                            viewer,
-                            "ipl.sable.client.IplParentDimSync.RemoteCallables.setParent",
-                            serverSubLevel.getUniqueId().toString(),
-                            parent.dimension().location().toString(),
-                            Long.toString(ipl.sable.transit.IplStraddleSessionSync.frame(serverSubLevel.getUniqueId()))
-                        );
-                    }
-                    // Straddle parity is server state (see IplStraddleSessionSync); a viewer
-                    // starting to track mid-crossing needs the current session snapshot too.
-                    ipl.sable.transit.IplStraddleSessionSync.sendSnapshotTo(
-                        viewer, serverSubLevel.getUniqueId());
-                }
+                // Straddle parity is server state (see IplStraddleSessionSync); a viewer
+                // starting to track mid-crossing needs the current session snapshot too.
+                ipl.sable.transit.IplStraddleSessionSync.sendSnapshotTo(
+                    viewer, serverSubLevel.getUniqueId());
             }
         }
     }
@@ -408,18 +373,19 @@ public abstract class SableCrossDimTrackingMixin {
         require = 1
     )
     private boolean ipl$forceCrossDimToTCP(SableUDPServer server, ServerPlayer player, Operation<Boolean> original) {
-        if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level) || player.serverLevel() != level) {
+        if (player.serverLevel() != level) {
             return false;
         }
         return original.call(server, player);
     }
 
     // ------------------------------------------------------------------------
-    // 8. Stamp StopTracking packets with the hosting dim. sendRemoval
-    //    fires from tick's removal pass and from onSubLevelRemoved -- both outside the
-    //    bounds/movement redirect wraps -- and its packets must land in the client's
-    //    sublevels-dim container, not whatever dim the recipient currently displays.
-    //    Gated to the hosting container so legacy-dim behavior is untouched.
+    // 8. Stamp StopTracking packets with THIS level's dimension. sendRemoval fires
+    //    from tick's removal pass and from onSubLevelRemoved -- both outside the
+    //    bounds/movement redirect wraps. A cross-dim viewer (or a player whose ship
+    //    just changed dimension) must have it applied to this dimension's client
+    //    container, not whichever one the client currently displays. Harmless for
+    //    same-dimension recipients.
     // ------------------------------------------------------------------------
 
     @WrapOperation(
@@ -430,16 +396,12 @@ public abstract class SableCrossDimTrackingMixin {
         ),
         require = 1
     )
-    private void ipl$stampRemovalWithHostingDim(
+    private void ipl$stampRemovalWithDimension(
         SubLevelTrackingSystem self,
         foundry.veil.api.network.VeilPacketManager.PacketSink sink,
         ServerSubLevel subLevel,
         Operation<Void> original
     ) {
-        if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
-            PacketRedirection.withForceRedirect(level, () -> original.call(self, sink, subLevel));
-        } else {
-            original.call(self, sink, subLevel);
-        }
+        PacketRedirection.withForceRedirect(level, () -> original.call(self, sink, subLevel));
     }
 }

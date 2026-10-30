@@ -101,7 +101,7 @@ public abstract class IplPlungerClientTargetFixMixin {
         long now = System.currentTimeMillis();
         if (now - ipl$lastRestoreLogMs > 1000) {
             ipl$lastRestoreLogMs = now;
-            IPL$LOG.warn("[IPL-PLUNGER-TARGET] paired plunger id={} has {} partner "
+            IPL$LOG.debug("[IPL-PLUNGER-TARGET] paired plunger id={} has {} partner "
                 + "(id={}) client-side; restored TARGET_POS=({}, {}, {})",
                 self.getId(), other == null ? "no" : "a removed", otherId,
                 String.format("%.1f", saved.x), String.format("%.1f", saved.y),

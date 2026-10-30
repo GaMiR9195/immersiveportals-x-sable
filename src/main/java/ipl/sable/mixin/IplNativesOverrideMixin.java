@@ -14,58 +14,70 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 
 /**
- * Load the matching Atlas natives. Storage-chart bodies cannot safely fall back
- * to stock per-dimension physics: fail clearly instead of silently corrupting
- * joints, terrain sampling, and cross-chart ownership. ABI is checked before
- * the first scene is allocated. Both x86_64 Windows and Linux are supported.
+ * Load IPSable's locally-built Sable natives instead of the ones bundled in the sable jar
+ * (aperture contact clipping, image colliders and contact-impulse readout live in the Rust
+ * layer).
+ *
+ * <p>Sable re-extracts its bundled {@code .l4z} natives with {@code REPLACE_EXISTING} on
+ * every launch, so swapping the extracted file can't stick; and repacking the sable jar
+ * couples our deploy loop to theirs. Instead: this mod carries the patched library as a
+ * resource ({@code /natives_ipl/sable_rapier_<arch>_<os>.<ext>}, same naming as Sable:
+ * arch {@code x86_64|aarch64}, os/ext {@code windows.dll|linux.so|macos.dylib}), and this
+ * mixin — whose handler executes as merged {@code Rapier3D} code, i.e. the exact
+ * classloader whose natives the JVM resolves — extracts and {@code System.load}s it at the
+ * head of {@code loadLibrary}, cancelling the stock path.
+ *
+ * <p>Fail-open: a platform without a bundled library, an IO error or a link error logs once
+ * and falls through to Sable's stock natives (the portal features that need the patched
+ * engine then stay off). Kill switch: {@code -Dipl.sable.customNatives=false}.
  */
 @Pseudo
 @Mixin(value = Rapier3D.class, remap = false)
 public abstract class IplNativesOverrideMixin {
 
-    @Inject(method = "loadLibrary", at = @At("HEAD"), cancellable = true, remap = false, require = 1)
+    @Inject(method = "loadLibrary", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
     private static void ipl$loadCustomNatives(CallbackInfo ci) {
         if ("false".equalsIgnoreCase(System.getProperty("ipl.sable.customNatives", "true"))) {
-            throw new IllegalStateException("IPSable hosted storage requires the custom Atlas natives");
+            return;
         }
+        org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger("ipl-natives");
 
-        String arch = System.getProperty("os.arch", "");
+        String archProperty = System.getProperty("os.arch", "");
+        String arch = archProperty.equals("arm") || archProperty.startsWith("aarch64") ? "aarch64" : "x86_64";
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
-        if (!arch.equals("amd64") && !arch.equals("x86_64")) {
-            throw new IllegalStateException("IPSable Atlas natives do not support architecture: " + arch);
-        }
-        String library = os.contains("win") ? "sable_rapier_x86_64_windows.dll"
-            : os.contains("linux") ? "sable_rapier_x86_64_linux.so" : null;
-        if (library == null) throw new IllegalStateException("Unsupported IPSable native platform: " + os);
+        String suffix = os.contains("win") ? "windows.dll"
+            : os.contains("mac") || os.contains("darwin") ? "macos.dylib"
+            : "linux.so";
+        String fileName = "sable_rapier_" + arch + "_" + suffix;
 
         // Resource lookup notes: this handler executes as MERGED Rapier3D code (sable's
         // module), so the lookup must anchor on a real class in OUR module — and module
         // resource encapsulation can still null it, so fall back to the classloader view.
-        String resource = "/natives_ipl/" + library;
+        String resource = "/natives_ipl/" + fileName;
         try {
             InputStream in = ipl.sable.natives.IplRapierNatives.class.getResourceAsStream(resource);
             if (in == null) {
                 in = ipl.sable.natives.IplRapierNatives.class.getClassLoader()
-                    .getResourceAsStream("natives_ipl/" + library);
+                    .getResourceAsStream("natives_ipl/" + fileName);
             }
             if (in == null) {
-                throw new java.io.FileNotFoundException("Required Atlas library is missing: " + resource
-                    + "; build natives before processResources");
+                log.info("[IPL-NATIVES] no IPSable natives bundled for this platform ({}); "
+                    + "using sable's stock natives — portal collision features are disabled", fileName);
+                return;
             }
             try (InputStream stream = in) {
                 Path dir = Paths.get(".sable", "natives-ipl");
                 Files.createDirectories(dir);
-                Path dll = dir.resolve("ipl_abi2_" + library);
-                Files.copy(stream, dll, StandardCopyOption.REPLACE_EXISTING);
-                System.load(dll.toAbsolutePath().toString());
+                Path lib = dir.resolve(fileName.replace("sable_rapier_", "sable_rapier_ipl_"));
+                Files.copy(stream, lib, StandardCopyOption.REPLACE_EXISTING);
+                System.load(lib.toAbsolutePath().toString());
                 ipl.sable.natives.IplRapierNatives.markAvailable();
-                org.slf4j.LoggerFactory.getLogger("ipl-natives").info(
-                    "[IPL-NATIVES] loaded IPSable-built sable_rapier natives from {}", dll.toAbsolutePath());
+                log.info("[IPL-NATIVES] loaded IPSable-built sable_rapier natives from {}", lib.toAbsolutePath());
                 ci.cancel();
             }
         } catch (Throwable t) {
-            throw new IllegalStateException("IPSable cannot load the matching Atlas ABI 2 natives ("
-                + library + "). Stock fallback is unsafe for hosted sublevels.", t);
+            log.error("[IPL-NATIVES] failed to load custom natives — falling back to sable's bundled build", t);
+            // fall through: stock loadLibrary proceeds
         }
     }
 }

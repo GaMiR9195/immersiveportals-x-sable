@@ -12,9 +12,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class IplClientTransitCleanupMixin {
     @Inject(method = "onRemove", at = @At("HEAD"), remap = false, require = 1)
     private void ipl$forgetTransit(CallbackInfo ci) {
-        ClientSubLevel sub = (ClientSubLevel) (Object) this;
-        if (ipl.sable.dim.IplDimAgnostic.isHostingLevel(sub.getLevel())) {
-            IplParentDimSync.forget(sub.getUniqueId());
-        }
+        // A cross-dimension successor shares the UUID: per-body state survives its ghost.
+        IplParentDimSync.onClientSubRemoved((ClientSubLevel) (Object) this);
     }
 }

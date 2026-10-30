@@ -19,7 +19,7 @@ import java.util.UUID;
  * through a portal is geometrically indistinguishable from one 40% through the other
  * way — and the only holder of that history is the transit controller's straddle latch.
  * This class mirrors the latch to clients as a per-ship snapshot of active
- * {@code (ship, portal)} sessions. The client rebuilds the clip plane each frame from
+ * {@code (ship, chain path)} sessions. The client rebuilds the clip plane each frame from
  * the synced portal entity's CURRENT transform (so moving portals stay smooth) and
  * takes only the parity — which portal face, hence which half — from here.
  *
@@ -38,16 +38,14 @@ public final class IplStraddleSessionSync {
     private static final Logger LOG = LoggerFactory.getLogger("ipl-straddle-session-sync");
 
     /**
-     * Ship → active straddle-session portals (id → serialized portal NBT, base64), in
-     * session-start order. The portal is carried IN the snapshot for the same reason
-     * the handoff packet carries the portal transform: IP only syncs portal entities
-     * relevant to each client's camera, and a cross-dimension reverse session names a
-     * portal entity from the OTHER dimension — waiting for that entity to sync left a
-     * multi-tick hole where the client could resolve nothing (invisible ship, riders
-     * falling through). The client builds a detached surrogate from the NBT and
-     * upgrades to the live entity whenever it is present.
+     * Ship → active straddle sessions (chain path → serialized portal NBT, base64), in
+     * session-start order. A root session's path is its portal UUID; a chained session's
+     * path is {@code parentPath>portalUuid} (see {@link StraddleKey#path()}). The portal is
+     * carried IN the snapshot because IP only syncs portal entities relevant to each
+     * client's camera; the client builds a detached surrogate from the NBT and upgrades
+     * to the live entity whenever it is present.
      */
-    private static final Map<UUID, java.util.LinkedHashMap<UUID, String>> ACTIVE = new HashMap<>();
+    private static final Map<UUID, java.util.LinkedHashMap<String, String>> ACTIVE = new HashMap<>();
 
     /** A same-dimension loop changes chart too: a dimension id is not a frame id. */
     private static final Map<UUID, Long> FRAMES = new HashMap<>();
@@ -85,16 +83,20 @@ public final class IplStraddleSessionSync {
 
     private IplStraddleSessionSync() {}
 
-    /** The transit controller latched a new (ship, portal) straddle session. */
+    /** The transit controller latched a new root (ship, portal) straddle session. */
     public static void onSessionStart(MinecraftServer server, ServerSubLevel ship, Portal portal) {
-        UUID shipId = ship.getUniqueId();
-        java.util.LinkedHashMap<UUID, String> portals =
-            ACTIVE.computeIfAbsent(shipId, k -> new java.util.LinkedHashMap<>());
-        String encoded = encodePortal(portal,
-            IplAtlasStraddleSession.isCompleted(new StraddleKey(shipId, portal.getUUID())));
-        if (encoded.equals(portals.put(portal.getUUID(), encoded))) return;
+        onSessionStart(server, ship, new StraddleKey(ship.getUniqueId(), portal.getUUID()), portal);
+    }
 
-        LOG.debug("[IPL-STRADDLE-SYNC] start ship={} portal={}", shipId, portal.getUUID());
+    /** Root or chained session start/refresh; re-broadcasts only when the payload changed. */
+    public static void onSessionStart(MinecraftServer server, ServerSubLevel ship, StraddleKey key, Portal portal) {
+        UUID shipId = ship.getUniqueId();
+        java.util.LinkedHashMap<String, String> portals =
+            ACTIVE.computeIfAbsent(shipId, k -> new java.util.LinkedHashMap<>());
+        String encoded = encodePortal(portal, IplAtlasStraddleSession.isCompleted(key));
+        if (encoded.equals(portals.put(key.path(), encoded))) return;
+
+        LOG.debug("[IPL-STRADDLE-SYNC] start ship={} path={}", shipId, key.path());
         broadcast(server, shipId);
     }
 
@@ -121,28 +123,55 @@ public final class IplStraddleSessionSync {
 
     /** A latched session ended (backed out, left aperture, crossed, or reaped). */
     public static void onSessionEnd(MinecraftServer server, StraddleKey key, String reason) {
-        java.util.LinkedHashMap<UUID, String> portals = ACTIVE.get(key.subLevelUuid());
-        if (portals == null || portals.remove(key.portalUuid()) == null) return;
+        java.util.LinkedHashMap<String, String> portals = ACTIVE.get(key.subLevelUuid());
+        if (portals == null || portals.remove(key.path()) == null) return;
         if (portals.isEmpty()) ACTIVE.remove(key.subLevelUuid());
 
-        LOG.debug("[IPL-STRADDLE-SYNC] end ship={} portal={} ({})",
-            key.subLevelUuid(), key.portalUuid(), reason);
+        LOG.debug("[IPL-STRADDLE-SYNC] end ship={} path={} ({})", key.subLevelUuid(), key.path(), reason);
         broadcast(server, key.subLevelUuid());
     }
 
-    /**
-     * Every (ship, portal) pair the sync currently advertises — swept by the
-     * declarative reap alongside the physical session keys, so an advertised session
-     * whose backing spawn never materialized cannot outlive its geometry.
-     */
+    /** Drops every advertised session of one ship (flip, move, removal). */
+    public static void endAllFor(MinecraftServer server, UUID shipId, String reason) {
+        java.util.LinkedHashMap<String, String> portals = ACTIVE.remove(shipId);
+        if (portals == null || portals.isEmpty()) return;
+        LOG.debug("[IPL-STRADDLE-SYNC] end-all ship={} ({})", shipId, reason);
+        broadcast(server, shipId);
+    }
+
+    /** Declarative reap: advertised sessions of {@code shipId} not kept alive this tick. */
+    public static void retainOnly(MinecraftServer server, UUID shipId, java.util.Set<StraddleKey> seen) {
+        java.util.LinkedHashMap<String, String> portals = ACTIVE.get(shipId);
+        if (portals == null) return;
+        java.util.Set<String> keep = new java.util.HashSet<>();
+        for (StraddleKey key : seen) {
+            if (key.subLevelUuid().equals(shipId)) keep.add(key.path());
+        }
+        if (!portals.keySet().retainAll(keep)) return;
+        if (portals.isEmpty()) ACTIVE.remove(shipId);
+        broadcast(server, shipId);
+    }
+
+    /** Every (ship, chain path) the sync currently advertises. */
     public static java.util.List<StraddleKey> activeKeys() {
         java.util.List<StraddleKey> out = new java.util.ArrayList<>();
-        for (Map.Entry<UUID, java.util.LinkedHashMap<UUID, String>> entry : ACTIVE.entrySet()) {
-            for (UUID portalId : entry.getValue().keySet()) {
-                out.add(new StraddleKey(entry.getKey(), portalId));
+        for (Map.Entry<UUID, java.util.LinkedHashMap<String, String>> entry : ACTIVE.entrySet()) {
+            for (String path : entry.getValue().keySet()) {
+                StraddleKey key = parsePath(entry.getKey(), path);
+                if (key != null) out.add(key);
             }
         }
         return out;
+    }
+
+    private static StraddleKey parsePath(UUID shipId, String path) {
+        try {
+            int cut = path.lastIndexOf('>');
+            if (cut < 0) return new StraddleKey(shipId, UUID.fromString(path));
+            return new StraddleKey(shipId, UUID.fromString(path.substring(cut + 1)), path.substring(0, cut));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /** Track-start bootstrap: give one viewer the ship's current session snapshot. */
@@ -168,25 +197,31 @@ public final class IplStraddleSessionSync {
         qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
             player,
             "ipl.sable.client.IplStraddleSessionStore.RemoteCallables.snapshot",
-            shipId.toString(), encodedPortals, Integer.toString(completedTrackingTick(player.server)),
+            shipId.toString(), encodedPortals, Integer.toString(completedTrackingTick(player.server, shipId)),
             Long.toString(frame(shipId))
         );
     }
 
-    private static int completedTrackingTick(MinecraftServer server) {
-        var hosting = server.getLevel(ipl.sable.dim.SableSubLevelDimension.SUBLEVELS);
-        if (hosting == null) return Integer.MIN_VALUE;
-        dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer container =
-            dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(hosting);
-        return container == null ? Integer.MIN_VALUE
-            : container.trackingSystem().getInterpolationTick() - 1;
+    /** The last completed tracking tick of the container that currently owns the ship. */
+    private static int completedTrackingTick(MinecraftServer server, UUID shipId) {
+        dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer fallback = null;
+        for (net.minecraft.server.level.ServerLevel level : server.getAllLevels()) {
+            dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer container =
+                dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);
+            if (container == null) continue;
+            if (fallback == null) fallback = container;
+            if (container.getSubLevel(shipId) != null) {
+                return container.trackingSystem().getInterpolationTick() - 1;
+            }
+        }
+        return fallback == null ? Integer.MIN_VALUE : fallback.trackingSystem().getInterpolationTick() - 1;
     }
 
     private static String encode(UUID shipId) {
-        java.util.LinkedHashMap<UUID, String> portals = ACTIVE.get(shipId);
+        java.util.LinkedHashMap<String, String> portals = ACTIVE.get(shipId);
         if (portals == null || portals.isEmpty()) return "";
         StringBuilder sb = new StringBuilder();
-        for (Map.Entry<UUID, String> entry : portals.entrySet()) {
+        for (Map.Entry<String, String> entry : portals.entrySet()) {
             if (sb.length() > 0) sb.append(';');
             sb.append(entry.getKey()).append(':').append(entry.getValue());
         }

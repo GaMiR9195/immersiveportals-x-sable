@@ -5,7 +5,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import ipl.sable.client.IplClientHostedLookup;
+import ipl.sable.client.IplClientProjections;
 import ipl.sable.client.IplStraddleRenderState;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -66,8 +66,8 @@ public abstract class IplStraddleOutlineMixin {
                     return original.call(context, camera, target, deltaTracker,
                         poseStack, bufferSource);
                 }
-                for (IplClientHostedLookup.StraddleProjection proj :
-                        IplClientHostedLookup.getStraddleProjectionsInto(this.level)) {
+                for (IplClientProjections.StraddleProjection proj :
+                        IplClientProjections.getStraddleProjectionsInto(this.level)) {
                     if (proj.sub() == owner) {
                         IplStraddleRenderState.set(
                             proj.sub(), proj.mappedPose(), proj.destPlane(), proj.portal());

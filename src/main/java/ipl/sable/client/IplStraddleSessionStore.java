@@ -46,15 +46,20 @@ public final class IplStraddleSessionStore {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-straddle-session-store");
 
-    private record SessionPortal(UUID portalId, String portalNbtB64, boolean completed) {
-        SessionPortal(UUID id, String payload) { this(id, payload, false); }
+    /** {@code path} = chain path ({@code root} or {@code root>child>...}); roots use the portal id. */
+    private record SessionPortal(UUID portalId, String portalNbtB64, boolean completed, String path) {
+        SessionPortal(UUID id, String payload) { this(id, payload, false, id.toString()); }
+        SessionPortal(UUID id, String payload, boolean completed) { this(id, payload, completed, id.toString()); }
     }
     private record DeferredSnapshot(String payload, int endTick) {}
     /** Later chart's sessions cannot replace the delayed current chart's state. */
     private static final Map<UUID, java.util.NavigableMap<Long, DeferredSnapshot>> FUTURE = new java.util.HashMap<>();
 
-    /** Ship → active session portals (session-start order; empty never stored). */
+    /** Ship → active ROOT session portals (session-start order; empty never stored). */
     private static final ConcurrentMap<UUID, List<SessionPortal>> SESSIONS = new ConcurrentHashMap<>();
+
+    /** Ship → chained sessions (depth ≥ 2), each entry carrying its LAST portal. */
+    private static final ConcurrentMap<UUID, List<SessionPortal>> CHAINS = new ConcurrentHashMap<>();
 
     /**
      * Sessions the server has retired but the delayed render pose has not finished leaving.
@@ -83,7 +88,9 @@ public final class IplStraddleSessionStore {
     @Nullable
     public static Portal resolvePortal(ClientSubLevel sub) {
         if (sub == null) return null;
-        if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
+        Portal ghost = IplParentDimSync.ghostPortalFor(sub);
+        if (ghost != null) return ghost;
+        if (!(sub.getLevel() instanceof ClientLevel level)) {
             return null;
         }
         List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
@@ -99,6 +106,23 @@ public final class IplStraddleSessionStore {
 
     public static boolean hasSession(UUID shipId) {
         return SESSIONS.containsKey(shipId);
+    }
+
+    /** True when no session, chain, retired or handoff image exists (cheap hot-path gate). */
+    public static boolean isIdle() {
+        return SESSIONS.isEmpty() && CHAINS.isEmpty() && RETIRED.isEmpty() && HANDOFF_VISUALS.isEmpty();
+    }
+
+    /** Whether {@code shipId} may currently have any portal image. */
+    public static boolean mayStraddle(UUID shipId) {
+        return SESSIONS.containsKey(shipId) || CHAINS.containsKey(shipId)
+            || RETIRED.containsKey(shipId) || HANDOFF_VISUALS.containsKey(shipId);
+    }
+
+    /** The live portal entity {@code portalId} in {@code level}, or null. */
+    @Nullable
+    public static Portal findLivePortal(ClientLevel level, UUID portalId) {
+        return findPortal(level, portalId);
     }
 
     /**
@@ -139,6 +163,7 @@ public final class IplStraddleSessionStore {
     public static void clearAllVisualState(UUID shipId) {
         HANDOFF_VISUALS.remove(shipId);
         SESSIONS.remove(shipId);
+        CHAINS.remove(shipId);
         FUTURE.remove(shipId);
         RETIRED.remove(shipId);
         RETIRED_END_TICKS.remove(shipId);
@@ -153,6 +178,7 @@ public final class IplStraddleSessionStore {
         ids.addAll(HANDOFF_VISUALS.keySet());
         for (UUID id : ids) IplClientVisualTransitLatch.clear(id);
         SESSIONS.clear();
+        CHAINS.clear();
         FUTURE.clear();
         RETIRED.clear();
         RETIRED_END_TICKS.clear();
@@ -166,6 +192,7 @@ public final class IplStraddleSessionStore {
     /** Called only after all poses have been rebased into this exact chart. */
     public static void enterFrame(UUID id, long frame) {
         SESSIONS.remove(id);
+        CHAINS.remove(id);
         RETIRED.remove(id);
         RETIRED_END_TICKS.remove(id);
         HANDOFF_VISUALS.remove(id);
@@ -183,7 +210,9 @@ public final class IplStraddleSessionStore {
     /** ALL resolvable session portals for this ship, session-start order (multi-straddle). */
     public static List<Portal> resolveAllPortals(ClientSubLevel sub) {
         if (sub == null) return List.of();
-        if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
+        Portal ghost = IplParentDimSync.ghostPortalFor(sub);
+        if (ghost != null) return List.of(ghost);
+        if (!(sub.getLevel() instanceof ClientLevel level)) {
             return List.of();
         }
         List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
@@ -202,7 +231,9 @@ public final class IplStraddleSessionStore {
     @Nullable
     public static Portal resolveRenderPortal(ClientSubLevel sub) {
         if (sub == null) return null;
-        if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
+        Portal ghost = IplParentDimSync.ghostPortalFor(sub);
+        if (ghost != null) return ghost;
+        if (!(sub.getLevel() instanceof ClientLevel level)) {
             return null;
         }
         List<Portal> portals = resolveRenderPortals(sub, level);
@@ -212,10 +243,57 @@ public final class IplStraddleSessionStore {
     /** Render-only counterpart of {@link #resolveAllPortals}; never use for collision. */
     public static List<Portal> resolveAllRenderPortals(ClientSubLevel sub) {
         if (sub == null) return List.of();
-        if (!(ipl.sable.dim.IplDimAgnostic.getParentLevel(sub) instanceof ClientLevel level)) {
+        Portal ghost = IplParentDimSync.ghostPortalFor(sub);
+        if (ghost != null) return List.of(ghost);
+        if (!(sub.getLevel() instanceof ClientLevel level)) {
             return List.of();
         }
         return resolveRenderPortals(sub, level);
+    }
+
+    /**
+     * Chained sessions of {@code sub}, each resolved to its ordered portal path: the
+     * root portal in the ship's own level, every next portal in the previous portal's
+     * destination level (live entity, else snapshot surrogate). Unresolvable chains are
+     * skipped this frame.
+     */
+    public static List<List<Portal>> resolveChains(ClientSubLevel sub) {
+        if (sub == null) return List.of();
+        List<SessionPortal> chains = CHAINS.get(sub.getUniqueId());
+        if (chains == null || chains.isEmpty() || IplParentDimSync.isGhost(sub)) return List.of();
+        List<SessionPortal> roots = SESSIONS.get(sub.getUniqueId());
+        if (roots == null || !(sub.getLevel() instanceof ClientLevel level)) return List.of();
+        List<List<Portal>> out = new ArrayList<>(chains.size());
+        for (SessionPortal chain : chains) {
+            String[] ids = chain.path().split(">");
+            List<Portal> resolved = new ArrayList<>(ids.length);
+            ClientLevel at = level;
+            String prefix = null;
+            for (String id : ids) {
+                prefix = prefix == null ? id : prefix + ">" + id;
+                SessionPortal entry = byPath(prefix.indexOf('>') < 0 ? roots : chains, prefix);
+                Portal portal = entry == null || at == null ? null : resolveIn(at, entry);
+                if (portal == null) { resolved = null; break; }
+                resolved.add(portal);
+                at = IplClientProjections.clientLevel(portal.getDestDim());
+            }
+            if (resolved != null && resolved.size() >= 2) out.add(List.copyOf(resolved));
+        }
+        return out;
+    }
+
+    @Nullable
+    private static SessionPortal byPath(List<SessionPortal> entries, String path) {
+        for (SessionPortal entry : entries) {
+            if (entry.path().equals(path)) return entry;
+        }
+        return null;
+    }
+
+    @Nullable
+    private static Portal resolveIn(ClientLevel level, SessionPortal entry) {
+        Portal live = findPortal(level, entry.portalId());
+        return live != null ? live : surrogate(entry, level);
     }
 
     private static List<Portal> resolveRenderPortals(ClientSubLevel sub, ClientLevel level) {
@@ -332,6 +410,7 @@ public final class IplStraddleSessionStore {
     private static void discardUnreferencedSurrogates() {
         Set<UUID> referenced = new HashSet<>();
         collectReferencedPortals(SESSIONS, referenced);
+        collectReferencedPortals(CHAINS, referenced);
         collectReferencedPortals(RETIRED, referenced);
         for (SessionPortal portal : HANDOFF_VISUALS.values()) referenced.add(portal.portalId());
         SURROGATES.keySet().retainAll(referenced);
@@ -392,29 +471,35 @@ public final class IplStraddleSessionStore {
     private static void applySnapshot(UUID shipId, String portalPayload, int endTick) {
         List<SessionPortal> previous = SESSIONS.get(shipId);
         List<SessionPortal> parsed = List.of();
+        CHAINS.remove(shipId);
         if (portalPayload == null || portalPayload.isEmpty()) {
             SESSIONS.remove(shipId);
         } else {
             List<SessionPortal> next = new ArrayList<>(2);
+            List<SessionPortal> chains = new ArrayList<>(0);
             for (String part : portalPayload.split(";")) {
                 if (part.isEmpty()) continue;
                 int sep = part.indexOf(':');
-                if (sep < 0) {
-                    next.add(new SessionPortal(UUID.fromString(part), ""));
-                } else {
-                    String encoded = part.substring(sep + 1);
-                    boolean completed = false;
-                    if (!encoded.isEmpty()) {
-                        try {
-                            CompoundTag tag = TagParser.parseTag(new String(
-                                Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8));
-                            completed = tag.getBoolean("ipl_session_completed");
-                        } catch (Exception e) {
-                            LOG.warn("[IPL-STRADDLE-SYNC] invalid session geometry for {}", shipId, e);
-                            continue;
-                        }
+                String path = sep < 0 ? part : part.substring(0, sep);
+                String encoded = sep < 0 ? "" : part.substring(sep + 1);
+                boolean completed = false;
+                if (!encoded.isEmpty()) {
+                    try {
+                        CompoundTag tag = TagParser.parseTag(new String(
+                            Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8));
+                        completed = tag.getBoolean("ipl_session_completed");
+                    } catch (Exception e) {
+                        LOG.warn("[IPL-STRADDLE-SYNC] invalid session geometry for {}", shipId, e);
+                        continue;
                     }
-                    next.add(new SessionPortal(UUID.fromString(part.substring(0, sep)), encoded, completed));
+                }
+                try {
+                    int cut = path.lastIndexOf('>');
+                    UUID portalId = UUID.fromString(cut < 0 ? path : path.substring(cut + 1));
+                    SessionPortal entry = new SessionPortal(portalId, encoded, completed, path);
+                    if (cut < 0) next.add(entry); else chains.add(entry);
+                } catch (IllegalArgumentException e) {
+                    LOG.warn("[IPL-STRADDLE-SYNC] invalid session path {} for {}", path, shipId);
                 }
             }
             parsed = List.copyOf(next);
@@ -422,6 +507,7 @@ public final class IplStraddleSessionStore {
                 SESSIONS.remove(shipId);
             } else {
                 SESSIONS.put(shipId, parsed);
+                if (!chains.isEmpty()) CHAINS.put(shipId, List.copyOf(chains));
             }
         }
 
@@ -467,16 +553,15 @@ public final class IplStraddleSessionStore {
     public static final class RemoteCallables {
 
         /**
-         * Full per-ship snapshot: ';'-joined {@code portalUuid:base64Nbt} entries,
-         * empty = no sessions.
+         * Full per-ship snapshot: ';'-joined {@code path:base64Nbt} entries (path = root
+         * portal id, or {@code root>child>...} for chained sessions), empty = no sessions.
          */
         public static void snapshot(String shipUuid, String portalPayload, String completedTick, String coordinateFrame) {
             try {
                 UUID shipId = UUID.fromString(shipUuid);
-                var hosting = IplClientHostedLookup.getHostingContainerOrNull();
                 // Broadcasts include untracked ships. Their track-start bootstrap sends
                 // the current frame/state; retaining every unknown loop epoch leaks memory.
-                if (hosting == null || hosting.getSubLevel(shipId) == null) return;
+                if (IplClientProjections.findClientSub(shipId) == null) return;
                 int endTick = Integer.parseInt(completedTick);
                 long frame = Long.parseLong(coordinateFrame);
                 if (frame < IplParentDimSync.frame(shipId)) return;

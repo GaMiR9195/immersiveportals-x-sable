@@ -89,25 +89,34 @@ final class SableImpl {
         return containing.getLevel().dimension();
     }
 
-    @Nullable
-    static net.minecraft.server.level.ServerLevel hostingLevelOf(
-        net.minecraft.server.level.ServerLevel any
+    /**
+     * The level that owns the block at plot position {@code pos}: the owning ship's
+     * level (a projected ship's plot may be read from another dimension), else
+     * {@code context}.
+     */
+    static net.minecraft.server.level.ServerLevel plotOwnerLevel(
+        net.minecraft.server.level.ServerLevel context, BlockPos pos
     ) {
-        return ipl.sable.dim.SableSubLevelDimension.getSableSubLevelsOrNull(any.getServer());
+        dev.ryanhcode.sable.sublevel.ServerSubLevel sub = subLevelAtPlotPos(context, pos);
+        return sub != null && sub.getLevel() instanceof net.minecraft.server.level.ServerLevel owner
+            ? owner : context;
     }
 
-    /** The live ServerSubLevel owning the plot at {@code plotPos}, or null. */
+    /** Whether {@code pos} lies in a live ship plot (own grid first, then other levels). */
+    static boolean isPlotPos(net.minecraft.server.level.ServerLevel context, BlockPos pos) {
+        return subLevelAtPlotPos(context, pos) != null;
+    }
+
+    /**
+     * The live ServerSubLevel owning the plot at {@code plotPos}, or null. The context
+     * level's own grid wins; plot slots are allocated server-wide unique
+     * ({@code IplUnionPlotAllocationMixin}), so the cross-level fallback is unambiguous.
+     */
     @Nullable
     static dev.ryanhcode.sable.sublevel.ServerSubLevel subLevelAtPlotPos(
         net.minecraft.server.level.ServerLevel any, BlockPos plotPos
     ) {
-        SubLevelContainer hosting = ipl.sable.dim.IplDimAgnostic.getHostingContainerFor(any);
-        if (hosting == null) return null;
-        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot =
-            hosting.getPlot(plotPos.getX() >> 4, plotPos.getZ() >> 4);
-        SubLevel sub = plot != null ? plot.getSubLevel() : null;
-        return sub instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel serverSub
-            && !serverSub.isRemoved() ? serverSub : null;
+        return ipl.sable.atlas.IplScenes.plotOwner(any, plotPos);
     }
 
     static net.minecraft.server.level.ServerLevel effectivePortalGenLevel(
@@ -115,9 +124,7 @@ final class SableImpl {
     ) {
         dev.ryanhcode.sable.sublevel.ServerSubLevel sub = subLevelAtPlotPos(world, pos);
         if (sub == null) return world;
-        net.minecraft.server.level.ServerLevel parent =
-            ipl.sable.dim.IplDimAgnostic.getServerParentLevel(sub);
-        return parent != null ? parent : world;
+        return sub.getLevel() instanceof net.minecraft.server.level.ServerLevel parent ? parent : world;
     }
 
     @Nullable

@@ -11,7 +11,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.function.Supplier;
 
-/** Per-render-pass cache for hosted and mapped straddle lists. */
+/** Per-render-pass cache for straddle projection lists and clip decisions. */
 public final class IplStraddleRenderCache {
 
     private static final ThreadLocal<ArrayDeque<Pass>> PASSES =
@@ -19,8 +19,7 @@ public final class IplStraddleRenderCache {
 
     private static final class Pass {
         final ClientLevel level;
-        @Nullable List<ClientSubLevel> hosted;
-        @Nullable List<IplClientHostedLookup.StraddleProjection> projections;
+        @Nullable List<IplClientProjections.StraddleProjection> projections;
         final IdentityHashMap<ClientSubLevel, IdentityHashMap<Object, Boolean>> visibility = new IdentityHashMap<>();
         final IdentityHashMap<ClientSubLevel, List<SourceClipPortalFinder.ClipDecision>> allDecisions = new IdentityHashMap<>();
         final IdentityHashMap<ClientSubLevel, List<Portal>> renderPortals = new IdentityHashMap<>();
@@ -84,18 +83,9 @@ public final class IplStraddleRenderCache {
         if (passes.isEmpty()) PASSES.remove();
     }
 
-    public static List<ClientSubLevel> hosted(
-        @Nullable ClientLevel level, Supplier<List<ClientSubLevel>> supplier
-    ) {
-        Pass pass = current(level);
-        if (pass == null) return supplier.get();
-        if (pass.hosted == null) pass.hosted = supplier.get();
-        return pass.hosted;
-    }
-
-    public static List<IplClientHostedLookup.StraddleProjection> projections(
+    public static List<IplClientProjections.StraddleProjection> projections(
         @Nullable ClientLevel level,
-        Supplier<List<IplClientHostedLookup.StraddleProjection>> supplier
+        Supplier<List<IplClientProjections.StraddleProjection>> supplier
     ) {
         Pass pass = current(level);
         if (pass == null) return supplier.get();
@@ -185,7 +175,6 @@ public final class IplStraddleRenderCache {
      */
     public static void invalidateActivePasses() {
         for (Pass pass : PASSES.get()) {
-            pass.hosted = null;
             pass.projections = null;
             pass.renderPortals.clear();
             pass.visibility.clear();

@@ -1,28 +1,28 @@
 package ipl.sable.client;
 
+import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import ipl.sable.dim.SableSubLevelDimension;
-import ipl.sable.duck.IplSubLevelDuck;
-import ipl.sable.mixin.client.IplClientSubLevelRenderPoseAccessor;
+import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import ipl.sable.mixin.IplSubLevelPreviousPoseAccessor;
+import ipl.sable.mixin.client.IplClientSubLevelRenderPoseAccessor;
 import ipl.sable.mixin.client.IplSnapshotInterpolatorAccessor;
-import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
-import dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import qouteall.imm_ptl.core.ClientWorldLoader;
+import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -30,84 +30,85 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Client receiver for the hosted sub-level parent-dim stamp, invoked via IP's
- * {@code McRemoteProcedureCall} right after each full sync of a hosted sub-level
- * (see {@code SableCrossDimTrackingMixin}'s bootstrap).
+ * Client side of server transits in the native Sable model.
  *
- * <p>The client-side {@code ClientSubLevel} is allocated in the sublevels-dim container by
- * the redirected start-tracking packet; its duck {@code parentLevel} defaults to the hosting
- * level. This call points it at the actual parent {@code ClientLevel} so the renderer and
- * client-side collision know which dimension the airship appears in.
+ * <ul>
+ *   <li><b>Same-dimension flip</b> ({@code handoff} RPC): the body keeps its object and
+ *       level; only its coordinate chart jumps through the portal. Every buffered client
+ *       pose is rebased through the portal isometry once the delayed render stream has
+ *       caught up with the server's flip tick, so interpolation never crosses the seam.</li>
+ *   <li><b>Cross-dimension move</b> ({@code move} RPC, sent before Sable's stop-tracking
+ *       packet): the old client object becomes a short-lived GHOST that keeps rendering
+ *       through the crossing portal (source half + projection) until its successor in the
+ *       destination level has render geometry; the successor stays hidden meanwhile, so
+ *       the switch happens in one frame with neither a gap nor a double image.</li>
+ * </ul>
  */
 public final class IplParentDimSync {
 
-    private static final boolean DIAGNOSTICS = Boolean.getBoolean("ipl.portalDiagnostics");
-
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-parent-sync");
 
-    /** RPC delivery can precede the redirected full-sync that creates the client sub-level. */
+    private static final long GHOST_TIMEOUT_MS = 3000L;
+    private static final int GHOST_READY_TICKS = 3;
+
+    /** Same-dimension flips waiting for the delayed render stream, FIFO per body. */
     private static final Map<UUID, java.util.ArrayDeque<PendingHandoff>> PENDING_HANDOFFS = new HashMap<>();
 
-    /** Parent stamps that arrived before their client sub-level was created (retried per tick). */
-    private static final Map<UUID, PendingParentStamp> PENDING_PARENT_STAMPS = new HashMap<>();
-
-    private record PendingParentStamp(String parentDimId, long frame, long queuedAtMs) {}
-
     private static final Map<UUID, Long> FRAMES = new HashMap<>();
+
+    /** Body id → the old client object of a cross-dimension move. */
+    private static final Map<UUID, Ghost> GHOSTS = new HashMap<>();
+
+    /** Stop-tracking packets of ghosts removed before they arrived — swallowed silently. */
+    private static final Map<ResourceKey<Level>, Integer> EXPECTED_STOPS = new HashMap<>();
+
+    private record PendingHandoff(
+        String dimensionId, String portalTransform, String portalNbtB64,
+        int firstDestinationTick, long destinationFrame, String inverseGrabLink
+    ) {}
+
+    private static final class Ghost {
+        final ClientSubLevel sub;
+        final ResourceKey<Level> toDim;
+        final RemoteCallables.PortalMapping mapping;
+        @Nullable final Portal surrogate;
+        final long startMs;
+        int readyTicks;
+        boolean stopDeferred;
+
+        Ghost(ClientSubLevel sub, ResourceKey<Level> toDim, RemoteCallables.PortalMapping mapping,
+              @Nullable Portal surrogate, long startMs) {
+            this.sub = sub;
+            this.toDim = toDim;
+            this.mapping = mapping;
+            this.surrogate = surrogate;
+            this.startMs = startMs;
+        }
+    }
+
+    private IplParentDimSync() {}
+
     public static long frame(UUID id) { return FRAMES.getOrDefault(id, 0L); }
+
     private static void enterFrame(UUID id, long next) {
         long old = frame(id);
         FRAMES.put(id, next);
         if (old != next) IplStraddleSessionStore.enterFrame(id, next);
     }
 
-    private IplParentDimSync() {}
-
-    private record PendingHandoff(
-        String parentDimId, String portalTransform, String portalNbtB64,
-        int firstDestinationTick, long destinationFrame, String inverseGrabLink, boolean awaitingClientAllocation
-    ) {}
-
-    private static long ipl$lastDiagMs = 0;
-
-    /**
-     * Round-trip bring-up diagnostic: per hosted client ship, the exact links that can
-     * die independently — parent duck, render pose, session store, portal resolution.
-     * 5s cadence; remove after the declarative-straddle stack stabilizes.
-     */
-    public static void clientHeartbeat() {
-        if (!DIAGNOSTICS) return;
-        long now = System.currentTimeMillis();
-        if (now - ipl$lastDiagMs < 5000) return;
-        ipl$lastDiagMs = now;
-
-        SubLevelContainer container = IplClientHostedLookup.getHostingContainerOrNull();
-        if (container == null) return;
-        for (SubLevel sub : container.getAllSubLevels()) {
-            if (!(sub instanceof ClientSubLevel clientSub) || sub.isRemoved()) continue;
-            Level parent = ipl.sable.dim.IplDimAgnostic.getParentLevel(sub);
-            var pos = clientSub.renderPose().position();
-            LOG.info("[IPL-CLIENT-DIAG] ship={} parent={} pose=({},{},{}) portal={}",
-                sub.getUniqueId(),
-                parent == null ? "NULL" : parent.dimension().location(),
-                String.format("%.1f", pos.x()), String.format("%.1f", pos.y()),
-                String.format("%.1f", pos.z()),
-                IplStraddleSessionStore.debugPortalKind(clientSub));
-        }
-    }
-
-    /** Object lifetime, not portal lifetime. Called on removal and disconnect. */
+    /** Object lifetime, not portal lifetime. Called on final removal and disconnect. */
     public static void forget(UUID id) {
         PENDING_HANDOFFS.remove(id);
-        PENDING_PARENT_STAMPS.remove(id);
         FRAMES.remove(id);
+        GHOSTS.remove(id);
         IplStraddleSessionStore.clearAllVisualState(id);
     }
 
     public static void clear() {
         PENDING_HANDOFFS.clear();
-        PENDING_PARENT_STAMPS.clear();
         FRAMES.clear();
+        GHOSTS.clear();
+        EXPECTED_STOPS.clear();
         IplStraddleSessionStore.clear();
         IplGrabChainClient.clearAll();
         IplStraddleStaffPick.clearDragTargets();
@@ -122,8 +123,7 @@ public final class IplParentDimSync {
         UUID id, long chainFrame, java.util.List<ipl.sable.transit.IplGrabLink> authoritative
     ) {
         var queue = PENDING_HANDOFFS.get(id);
-        if (queue == null || queue.isEmpty() || queue.peekFirst().awaitingClientAllocation())
-            return authoritative;
+        if (queue == null || queue.isEmpty()) return authoritative;
         var result = authoritative;
         for (var it = queue.descendingIterator(); it.hasNext();) {
             var handoff = it.next();
@@ -134,7 +134,7 @@ public final class IplParentDimSync {
         return result;
     }
 
-    /** Retries handoffs that arrived before their client sub-level was created. */
+    /** Client tick tail: drains same-dimension handoffs, then advances transit ghosts. */
     public static void applyPendingHandoffs() {
         if (!PENDING_HANDOFFS.isEmpty()) {
             Iterator<Map.Entry<UUID, java.util.ArrayDeque<PendingHandoff>>> iterator =
@@ -143,22 +143,12 @@ public final class IplParentDimSync {
                 Map.Entry<UUID, java.util.ArrayDeque<PendingHandoff>> entry = iterator.next();
                 java.util.ArrayDeque<PendingHandoff> pending = entry.getValue();
                 try {
-                    // A fresh destination full-sync already carries destination-frame poses.
-                    // Wait for its parent stamp to consume this queue instead of mapping those
-                    // initial poses through the portal a second time.
-                    if (pending.peekFirst().awaitingClientAllocation()) continue;
-                    // A client can receive several ordered parent flips before the redirected
-                    // full-sync creates its hosted sub-level. Apply every transform in order:
-                    // keeping only the latest transform maps an original-frame pose through a
-                    // later portal and breaks portal chains/self-recursive portals.
+                    // Several ordered flips can queue before the delayed stream catches up;
+                    // apply every transform in order (portal chains, self-recursive portals).
                     while (!pending.isEmpty()) {
                         PendingHandoff next = pending.peekFirst();
                         RemoteCallables.beginHandoffVisual(entry.getKey(), next);
-                        if (!RemoteCallables.applyHandoffWhenVisuallyClear(
-                            entry.getKey(), next
-                        )) {
-                            break;
-                        }
+                        if (!RemoteCallables.applyHandoffWhenVisuallyClear(entry.getKey(), next, false)) break;
                         pending.removeFirst();
                     }
                     if (pending.isEmpty()) iterator.remove();
@@ -169,162 +159,264 @@ public final class IplParentDimSync {
                 }
             }
         }
-        // Parent stamps must run after handoffs. A stamp only changes ownership; applying it
-        // first would expose a source-frame delayed pose in its destination world for one tick.
-        applyPendingParentStamps();
+        tickGhosts();
     }
 
     /**
-     * While visual handoff waits for delayed source geometry to exit, incoming server snapshots
-     * are already in the destination frame. Express them back in the current client frame so
-     * Sable never interpolates a source pose directly toward a destination coordinate.
+     * While a same-dimension handoff waits for delayed source geometry to exit, incoming
+     * server snapshots are already in the destination chart. Express them back in the
+     * current client chart so Sable never interpolates across the seam.
      */
     public static Pose3dc mapPendingDestinationSnapshotBack(UUID subLevelId, int gameTick, Pose3dc snapshot) {
         java.util.ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.get(subLevelId);
-        if (pending == null || pending.isEmpty() || pending.peekFirst().awaitingClientAllocation()) {
-            return snapshot;
-        }
+        if (pending == null || pending.isEmpty()) return snapshot;
         Pose3d mapped = new Pose3d(snapshot);
         for (java.util.Iterator<PendingHandoff> it = pending.descendingIterator(); it.hasNext();) {
             PendingHandoff handoff = it.next();
-            // The packet preceding the RPC is still SOURCE-frame. Only packets at or
-            // after the captured tracking watermark belong to this destination chart.
+            // Only packets at or after the captured tracking watermark belong to the new chart.
             if (gameTick >= handoff.firstDestinationTick()) {
-                mapped = RemoteCallables.PortalMapping.decode(handoff.portalTransform())
-                    .mapPoseInverse(mapped);
+                mapped = RemoteCallables.PortalMapping.decode(handoff.portalTransform()).mapPoseInverse(mapped);
             }
         }
         return mapped;
     }
 
-    /** Retries parent stamps that raced their StartTracking allocation. */
-    private static void applyPendingParentStamps() {
-        if (PENDING_PARENT_STAMPS.isEmpty()) return;
+    // ------------------------------------------------------------------ transit ghosts
 
+    public static boolean hasGhosts() {
+        return !GHOSTS.isEmpty();
+    }
+
+    public static boolean isGhost(ClientSubLevel sub) {
+        if (GHOSTS.isEmpty() || sub == null) return false;
+        Ghost ghost = GHOSTS.get(sub.getUniqueId());
+        return ghost != null && ghost.sub == sub;
+    }
+
+    /** A moved body's new client object, hidden until the ghost hands over. */
+    public static boolean isSuppressedSuccessor(ClientSubLevel sub) {
+        if (GHOSTS.isEmpty() || sub == null) return false;
+        Ghost ghost = GHOSTS.get(sub.getUniqueId());
+        return ghost != null && ghost.sub != sub;
+    }
+
+    /** The crossing portal a ghost keeps rendering through (live entity preferred). */
+    @Nullable
+    public static Portal ghostPortalFor(ClientSubLevel sub) {
+        if (GHOSTS.isEmpty() || sub == null) return null;
+        Ghost ghost = GHOSTS.get(sub.getUniqueId());
+        if (ghost == null || ghost.sub != sub) return null;
+        if (sub.getLevel() instanceof ClientLevel level) {
+            Portal live = IplStraddleSessionStore.findLivePortal(level, ghost.mapping.portalId());
+            if (live != null) return live;
+        }
+        return ghost.surrogate;
+    }
+
+    /** A ghost follows its successor's live pose, mapped back through the crossing portal. */
+    @Nullable
+    public static Pose3dc ghostRenderPose(ClientSubLevel sub) {
+        if (GHOSTS.isEmpty() || sub == null) return null;
+        Ghost ghost = GHOSTS.get(sub.getUniqueId());
+        if (ghost == null || ghost.sub != sub) return null;
+        ClientSubLevel successor = IplClientProjections.findClientSub(sub.getUniqueId(), ghost.toDim);
+        if (successor == null || successor == sub) return null;
+        return ghost.mapping.mapPoseInverse(new Pose3d(successor.renderPose()));
+    }
+
+    /** Stop-tracking of a ghost: keep the object until its successor can be seen. */
+    public static boolean deferStopTracking(Level level, int chunkX, int chunkZ) {
+        if (GHOSTS.isEmpty() && EXPECTED_STOPS.isEmpty()) return false;
+        SubLevelContainer container = SubLevelContainer.getContainer(level);
+        if (container == null) return false;
+        SubLevel sub = container.getSubLevel(chunkX, chunkZ);
+        if (sub == null) {
+            Integer expected = EXPECTED_STOPS.get(level.dimension());
+            if (expected == null) return false;
+            if (expected <= 1) EXPECTED_STOPS.remove(level.dimension());
+            else EXPECTED_STOPS.put(level.dimension(), expected - 1);
+            return true;
+        }
+        if (!(sub instanceof ClientSubLevel client)) return false;
+        Ghost ghost = GHOSTS.get(client.getUniqueId());
+        if (ghost == null || ghost.sub != client) return false;
+        ghost.stopDeferred = true;
+        return true;
+    }
+
+    /** A start-tracking of {@code id} in a level that still holds its ghost replaces it. */
+    public static void onStartTracking(Level level, UUID id) {
+        Ghost ghost = GHOSTS.get(id);
+        if (ghost != null && ghost.sub.getLevel() == level) finalizeGhost(id, ghost);
+    }
+
+    /** {@code ClientSubLevel.onRemove}: forget per-body state only when no instance survives. */
+    public static void onClientSubRemoved(ClientSubLevel sub) {
+        UUID id = sub.getUniqueId();
+        Ghost ghost = GHOSTS.get(id);
+        if (ghost != null && ghost.sub == sub) {
+            GHOSTS.remove(id);
+            IplStraddleRenderCache.invalidateActivePasses();
+            return;
+        }
+        if (ghost != null || IplClientProjections.hasOtherInstance(id, sub)) return;
+        forget(id);
+    }
+
+    private static void tickGhosts() {
+        if (GHOSTS.isEmpty()) return;
         long now = System.currentTimeMillis();
-        Iterator<Map.Entry<UUID, PendingParentStamp>> iterator = PENDING_PARENT_STAMPS.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<UUID, PendingParentStamp> entry = iterator.next();
-            try {
-                if (PENDING_HANDOFFS.containsKey(entry.getKey())) continue;
-                if (now - entry.getValue().queuedAtMs() > 30_000) {
-                    IplStraddleSessionStore.clearAllVisualState(entry.getKey());
-                    iterator.remove(); // ship never materialized client-side — stop retrying
-                    continue;
-                }
-                SubLevel subLevel = RemoteCallables.findHostedSubLevel(
-                    entry.getKey().toString(), entry.getValue().parentDimId());
-                if (subLevel != null) {
-                    if (entry.getValue().frame() >= frame(entry.getKey())) {
-                        RemoteCallables.setParentInternal(subLevel, entry.getValue().parentDimId());
-                        enterFrame(entry.getKey(), entry.getValue().frame());
-                    }
-                    LOG.debug("[IPL-PARENT-SYNC] deferred parent stamp applied: {} parent={}",
-                        entry.getKey(), entry.getValue().parentDimId());
-                    iterator.remove();
-                }
-            } catch (Throwable t) {
-                iterator.remove();
-                LOG.error("[IPL-PARENT-SYNC] failed deferred parent stamp for {}", entry.getKey(), t);
+        for (Map.Entry<UUID, Ghost> entry : new java.util.ArrayList<>(GHOSTS.entrySet())) {
+            Ghost ghost = entry.getValue();
+            if (ghost.sub.isRemoved()) {
+                GHOSTS.remove(entry.getKey(), ghost);
+                continue;
             }
+            ClientSubLevel successor = IplClientProjections.findClientSub(entry.getKey(), ghost.toDim);
+            boolean ready = successor != null && successor != ghost.sub && hasGeometry(successor);
+            ghost.readyTicks = ready ? ghost.readyTicks + 1 : 0;
+            if (ghost.readyTicks >= GHOST_READY_TICKS || now - ghost.startMs > GHOST_TIMEOUT_MS) {
+                finalizeGhost(entry.getKey(), ghost);
+            }
+        }
+    }
+
+    private static boolean hasGeometry(ClientSubLevel sub) {
+        var data = sub.getRenderData();
+        if (data == null) return false;
+        if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData chunks) {
+            for (var section : chunks.allRenderSections()) {
+                for (net.minecraft.client.renderer.RenderType type : net.minecraft.client.renderer.RenderType.chunkBufferLayers()) {
+                    if (!section.getCompiled().isEmpty(type)) return true;
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
+    private static void finalizeGhost(UUID id, Ghost ghost) {
+        try {
+            if (!ghost.sub.isRemoved()) {
+                SubLevelContainer container = SubLevelContainer.getContainer(ghost.sub.getLevel());
+                if (container != null) {
+                    // Its stop-tracking is still in flight: swallow it when it arrives.
+                    if (!ghost.stopDeferred) EXPECTED_STOPS.merge(ghost.sub.getLevel().dimension(), 1, Integer::sum);
+                    container.removeSubLevel(ghost.sub, SubLevelRemovalReason.REMOVED);
+                }
+            }
+        } catch (Throwable t) {
+            LOG.error("[IPL-PARENT-SYNC] ghost removal failed for {}", id, t);
+        } finally {
+            GHOSTS.remove(id, ghost);
+            IplStraddleRenderCache.invalidateActivePasses();
         }
     }
 
     public static final class RemoteCallables {
 
-        public static void setParent(String subLevelUuid, String parentDimId, String coordinateFrame) {
-            try {
-                UUID subLevelId = UUID.fromString(subLevelUuid);
-                long stampFrame = Long.parseLong(coordinateFrame);
-                if (stampFrame < frame(subLevelId)) return;
-                SubLevel subLevel = findHostedSubLevel(subLevelUuid, parentDimId);
-                if (subLevel == null) {
-                    // The RPC raced the StartTracking allocation. Without a retry the ship
-                    // keeps a null client parent and the hosted render gather filters it out
-                    // FOREVER — "the ship exists (physics, collision) but is invisible".
-                    // Single-block ships (swivel tops, shattered blocks, rope connectors)
-                    // never emit further updates that could heal it, so they stayed gone.
-                    PENDING_PARENT_STAMPS.put(subLevelId,
-                        new PendingParentStamp(parentDimId, stampFrame, System.currentTimeMillis()));
-                    return;
-                }
-                if (discardPreAllocationHandoffs(subLevelId, parentDimId, stampFrame)) {
-                    // This client did not have a source-frame body when the handoff arrived.
-                    // Its just-created full sync is already in the final destination frame.
-                    setParentInternal(subLevel, parentDimId);
-                    enterFrame(subLevelId, stampFrame);
-                    IplStraddleSessionStore.clearHandoffVisual(subLevelId);
-                    PENDING_PARENT_STAMPS.remove(subLevelId);
-                    return;
-                }
-                if (PENDING_HANDOFFS.containsKey(subLevelId)) {
-                    // A parent stamp can race the full-sync that a queued handoff waits for.
-                    // Keep it behind the FIFO so ownership never becomes visible before its
-                    // delayed render timeline has been mapped into that frame.
-                    PENDING_PARENT_STAMPS.put(subLevelId,
-                        new PendingParentStamp(parentDimId, stampFrame, System.currentTimeMillis()));
-                    return;
-                }
-                setParentInternal(subLevel, parentDimId);
-                enterFrame(subLevelId, stampFrame);
-                PENDING_PARENT_STAMPS.remove(subLevelId);
-
-                LOG.debug("[IPL-PARENT-SYNC] sub-level {} parent={} (client)",
-                    subLevelUuid, parentDimId);
-            } catch (Throwable t) {
-                LOG.error("[IPL-PARENT-SYNC] failed to apply parent stamp for {}", subLevelUuid, t);
-            }
-        }
-
         /**
-         * Reliable, ordered frame boundary, captured AFTER the source tick's tracking
-         * observer. Tick < boundary is source; tick >= boundary is destination.
-         * Client interpolation remains delayed; no synthetic tick or pose is inserted.
+         * Same-dimension flip. Reliable, ordered frame boundary captured AFTER the source
+         * tick's tracking observer: tick < boundary is the old chart, tick >= boundary the
+         * new one. Client interpolation remains delayed; no synthetic pose is inserted.
          */
         public static void handoff(
-            String subLevelUuid, String parentDimId, String portalTransform,
+            String subLevelUuid, String dimensionId, String portalTransform,
             String portalNbtB64, String firstDestinationTick, String coordinateFrame, String inverseGrabLink
         ) {
             try {
                 UUID id = UUID.fromString(subLevelUuid);
                 long destinationFrame = Long.parseLong(coordinateFrame);
                 if (destinationFrame <= frame(id)) return;
-                boolean awaiting = !(findHostedSubLevel(subLevelUuid, parentDimId)
-                    instanceof ClientSubLevel);
-                var queue = PENDING_HANDOFFS.computeIfAbsent(id,
-                    ignored -> new java.util.ArrayDeque<>());
-                PendingHandoff next = new PendingHandoff(parentDimId, portalTransform,
-                    portalNbtB64, Integer.parseInt(firstDestinationTick), destinationFrame, inverseGrabLink, awaiting);
+                if (IplClientProjections.findClientSub(id, dimensionKey(dimensionId)) == null) {
+                    // Not tracked here: a later full sync is already in the new chart.
+                    enterFrame(id, destinationFrame);
+                    return;
+                }
+                var queue = PENDING_HANDOFFS.computeIfAbsent(id, ignored -> new java.util.ArrayDeque<>());
+                PendingHandoff next = new PendingHandoff(dimensionId, portalTransform, portalNbtB64,
+                    Integer.parseInt(firstDestinationTick), destinationFrame, inverseGrabLink);
                 queue.addLast(next);
-                if (queue.size() == 1 && !awaiting) beginHandoffVisual(id, next);
-                // Drain only at the client tick tail, after all source/destination packets
-                // in this network batch have been normalized and interpolation has ticked.
+                if (queue.size() == 1) beginHandoffVisual(id, next);
+                // Drained at the client tick tail (applyPendingHandoffs).
             } catch (RuntimeException t) {
                 LOG.error("[IPL-PARENT-SYNC] invalid handoff for {}", subLevelUuid, t);
             }
         }
 
-        private static boolean applyHandoffWhenVisuallyClear(UUID id, PendingHandoff handoff) {
-            SubLevel sub = findHostedSubLevel(id.toString(), handoff.parentDimId());
-            if (!(sub instanceof ClientSubLevel client)) return false;
+        /**
+         * Cross-dimension move, delivered before Sable's stop-tracking of the old object.
+         * The old object becomes a ghost; the successor arrives via start-tracking in the
+         * destination level and takes over once it has geometry.
+         */
+        public static void move(
+            String subLevelUuid, String fromDimensionId, String toDimensionId, String portalTransform,
+            String portalNbtB64, String coordinateFrame, String inverseGrabLink
+        ) {
+            try {
+                UUID id = UUID.fromString(subLevelUuid);
+                long destinationFrame = Long.parseLong(coordinateFrame);
+                if (destinationFrame <= frame(id)) return;
+                drainHandoffsNow(id);
+                Ghost previous = GHOSTS.get(id);
+                if (previous != null) finalizeGhost(id, previous);
+
+                ResourceKey<Level> from = dimensionKey(fromDimensionId);
+                ClientSubLevel old = IplClientProjections.findClientSub(id, from);
+                if (old != null && old.getLevel() instanceof ClientLevel fromLevel) {
+                    PortalMapping mapping = PortalMapping.decode(portalTransform);
+                    Portal surrogate = IplStraddleSessionStore.resolveHandoffPortal(
+                        mapping.portalId(), portalNbtB64, fromLevel);
+                    IplClientVisualTransitLatch.clear(id);
+                    GHOSTS.put(id, new Ghost(old, dimensionKey(toDimensionId), mapping, surrogate,
+                        System.currentTimeMillis()));
+                }
+                enterFrame(id, destinationFrame);
+                IplStraddleRenderCache.invalidateActivePasses();
+                LOG.debug("[IPL-PARENT-SYNC] move {} {} -> {} (ghost={})", id, fromDimensionId,
+                    toDimensionId, old != null);
+            } catch (RuntimeException t) {
+                LOG.error("[IPL-PARENT-SYNC] invalid move for {}", subLevelUuid, t);
+            }
+        }
+
+        /** Ordered channel: earlier same-dimension flips must land before a move. */
+        private static void drainHandoffsNow(UUID id) {
+            java.util.ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.remove(id);
+            if (pending == null) return;
+            for (PendingHandoff handoff : pending) {
+                try {
+                    applyHandoffWhenVisuallyClear(id, handoff, true);
+                } catch (Throwable t) {
+                    LOG.error("[IPL-PARENT-SYNC] forced handoff failed for {}", id, t);
+                }
+            }
+        }
+
+        private static boolean applyHandoffWhenVisuallyClear(UUID id, PendingHandoff handoff, boolean force) {
+            ClientSubLevel client = IplClientProjections.findClientSub(id, dimensionKey(handoff.dimensionId()));
+            if (client == null) {
+                enterFrame(id, Math.max(frame(id), handoff.destinationFrame()));
+                IplStraddleSessionStore.clearHandoffVisual(id);
+                return true;
+            }
             PortalMapping mapping = PortalMapping.decode(handoff.portalTransform());
             ClientSubLevelContainer container = ClientSubLevelContainer.getContainer(client.getLevel());
             if (container == null) return false;
             var clock = container.getInterpolation();
-            // Server completion is authority. A missing render sample/portal entity must
-            // NEVER veto it. lastInterpolationTick includes the older render endpoint.
+            // Server completion is authority. lastInterpolationTick includes the older endpoint.
             boolean reached = clock.lastInterpolationTick >= handoff.firstDestinationTick() - 1;
             // With a configured delay > 1.5, Sable's stopped clock can saturate before
             // the last snapshot. Permit the frame map there; preserve the delayed poses.
             boolean stoppedAtEnd = clock.isStopped()
                 && clock.getTickPointer() >= handoff.firstDestinationTick() - 1
                     + 1.5 - clock.getInterpolationDelay() - 1.0e-8;
-            if (!reached && !stoppedAtEnd && !mapping.hasFullyClearedSourcePlane(client)) return false;
+            if (!force && !reached && !stoppedAtEnd && !mapping.hasFullyClearedSourcePlane(client)) return false;
             if (handoff.destinationFrame() <= frame(id)) return true;
             if (handoff.destinationFrame() != frame(id) + 1L) {
                 throw new IllegalStateException("Missing coordinate-frame handoff for " + id);
             }
-            applyHandoff(id, handoff.parentDimId(), mapping);
+            applyHandoff(client, mapping);
             enterFrame(id, handoff.destinationFrame());
             IplStraddleSessionStore.clearHandoffVisual(id);
             IplStraddleSessionStore.releaseHandoffPortal();
@@ -334,26 +426,11 @@ public final class IplParentDimSync {
         /** Only the FIFO head receives a render tail; later recursive handoffs wait. */
         private static void beginHandoffVisual(UUID subLevelId, PendingHandoff handoff) {
             PortalMapping mapping = PortalMapping.decode(handoff.portalTransform());
-            IplStraddleSessionStore.beginHandoffVisual(
-                subLevelId, mapping.portalId(), handoff.portalNbtB64());
+            IplStraddleSessionStore.beginHandoffVisual(subLevelId, mapping.portalId(), handoff.portalNbtB64());
         }
 
-        private static boolean discardPreAllocationHandoffs(UUID subLevelId, String parentDimId, long stampFrame) {
-            java.util.ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.get(subLevelId);
-            if (pending == null || pending.isEmpty() || !pending.peekFirst().awaitingClientAllocation()) {
-                return false;
-            }
-            PendingHandoff last = pending.peekLast();
-            if (!last.parentDimId().equals(parentDimId) || stampFrame < last.destinationFrame()) return false;
-            PENDING_HANDOFFS.remove(subLevelId);
-            return true;
-        }
-
-        private static void applyHandoff(
-            UUID subLevelId, String parentDimId, PortalMapping mapping
-        ) {
-            SubLevel subLevel = findHostedSubLevel(subLevelId.toString(), parentDimId);
-            if (!(subLevel instanceof ClientSubLevel clientSubLevel)) return;
+        private static void applyHandoff(ClientSubLevel clientSubLevel, PortalMapping mapping) {
+            UUID subLevelId = clientSubLevel.getUniqueId();
             // Every buffered pose is normalized to the CURRENT visible chart on receipt.
             // Rebase that entire chart once, leaving timestamps, clock and stopped state
             // untouched. Clearing/reseeding at the newest tick freezes a delayed pointer.
@@ -389,28 +466,12 @@ public final class IplParentDimSync {
                     swept.maxZ = Math.max(swept.maxZ, corner.z);
                 }
             }
-
-            // Do not expose the new parent until every client pose is in destination
-            // space. A pass already in progress may otherwise render a stale source
-            // projection as well as the newly native destination sub-level.
-            setParentInternal(clientSubLevel, parentDimId);
             // The retired split only bridges server session-end to this exact mapped pose.
-            // Once the parent frame becomes visible, retaining its old portal would clip the
-            // native destination draw with a source-frame plane.
             IplStraddleSessionStore.clearRetiredForHandoff(subLevelId);
-            // Staff's motor/orientation follow server authority on its own RPC. Do not
-            // apply those transforms again when this delayed visual chart catches up.
-            // Straddle parity is server-synced state now (IplStraddleSessionStore); the
-            // "crossed" session-end snapshot precedes this handoff on the ordered channel,
-            // so there is no client-side latch left to clear here.
             IplStraddleRenderCache.invalidateActivePasses();
             // Rebuild Sable's cached render pose from the separately mapped endpoints.
-            // Portal isometry commutes with the interpolation, so exit motion continues
-            // exactly where its destination projection left it.
-            ((IplClientSubLevelRenderPoseAccessor) clientSubLevel)
-                .ipl$setLastRenderPosePartialTick(-1.0f);
-            LOG.debug("[IPL-PARENT-SYNC] handoff applied for {} -> parent {} pose=({},{},{})",
-                subLevelId, parentDimId,
+            ((IplClientSubLevelRenderPoseAccessor) clientSubLevel).ipl$setLastRenderPosePartialTick(-1.0f);
+            LOG.debug("[IPL-PARENT-SYNC] handoff applied for {} pose=({},{},{})", subLevelId,
                 String.format("%.1f", mappedLogicalPose.position().x()),
                 String.format("%.1f", mappedLogicalPose.position().y()),
                 String.format("%.1f", mappedLogicalPose.position().z()));
@@ -503,36 +564,8 @@ public final class IplParentDimSync {
             }
         }
 
-        private static ResourceKey<Level> parentKey(String parentDimId) {
-            return ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(parentDimId));
-        }
-
-        private static SubLevel findHostedSubLevel(String subLevelUuid, String parentDimId) {
-            ClientLevel hosting = ClientWorldLoader.getWorld(SableSubLevelDimension.SUBLEVELS);
-            SubLevelContainer container = SubLevelContainer.getContainer((Level) hosting);
-            if (container == null) {
-                LOG.warn("[IPL-PARENT-SYNC] sublevels client world has no container");
-                return null;
-            }
-
-            SubLevel subLevel = container.getSubLevel(UUID.fromString(subLevelUuid));
-            if (subLevel == null) {
-                LOG.warn("[IPL-PARENT-SYNC] no hosted sub-level {} (parent {})",
-                    subLevelUuid, parentDimId);
-            }
-            return subLevel;
-        }
-
-        static void setParentInternal(SubLevel subLevel, String parentDimId) {
-            ClientLevel hosting = ClientWorldLoader.getWorld(SableSubLevelDimension.SUBLEVELS);
-            ResourceKey<Level> parentKey = parentKey(parentDimId);
-            ClientLevel parent = ClientWorldLoader.getWorld(parentKey);
-
-            IplSubLevelDuck duck = (IplSubLevelDuck) subLevel;
-            duck.ipl$setParentLevel(parent);
-            duck.ipl$setHostingLevel(hosting);
-            // Flywheel visuals follow the parent on the next frame of each world's
-            // manager (IplHostedFlywheelSceneMixin); nothing to re-home here.
+        static ResourceKey<Level> dimensionKey(String dimensionId) {
+            return ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(dimensionId));
         }
     }
 }

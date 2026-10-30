@@ -1,1 +1,0 @@
-package net.minecraft.core; public record BlockPos(int x,int y,int z) { public BlockPos below(){return new BlockPos(x,y-1,z);} public int getX(){return x;} public int getY(){return y;} public int getZ(){return z;} }

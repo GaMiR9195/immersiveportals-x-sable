@@ -20,13 +20,12 @@ import java.util.function.Consumer;
  * {@code LevelPlot} via a mixin on the VANILLA {@code ClientChunkCache}. IP's secondary
  * client worlds use {@code ImmPtlClientChunkMap}, a subclass that OVERRIDES
  * {@code replaceWithPacketData}/{@code getChunk}/{@code drop} — so Sable's routing never
- * runs there, and a hosted sub-level's chunks would land in IP's flat chunk map while its
- * plot stayed empty (invisible ship, dim-agnostic bring-up bug A). {@code ImmPtlClientChunkMap}
- * calls into this helper to restore the routing, mirroring Sable's
- * {@code ClientChunkCacheMixin} logic.
+ * runs there, and the chunks of a ship living in a dimension the player only sees through a
+ * portal would land in IP's flat chunk map while its plot stayed empty (invisible ship).
+ * {@code ImmPtlClientChunkMap} calls into this helper to restore the routing, mirroring
+ * Sable's {@code ClientChunkCacheMixin} logic.
  *
- * <p>Kept in a separate class so the IP core class only references Sable types behind the
- * dim-agnostic gate.
+ * <p>Kept in a separate class so the IP core class only references Sable types here.
  */
 public final class IplPlotChunkRouting {
 
@@ -55,6 +54,14 @@ public final class IplPlotChunkRouting {
 
         ChunkPos chunkPos = new ChunkPos(x, z);
         LevelChunk chunk = container.getChunk(chunkPos);
+        if (chunk != null && chunk.getLevel() != level) {
+            // Resolved through the projection plot bridge: another level's ship owns these
+            // coordinates. Never overwrite, unload or re-register it from here; absorb the
+            // (unexpected) packet into a detached chunk instead.
+            LevelChunk detached = new LevelChunk(level, chunkPos);
+            detached.replaceWithPacketData(buf, nbt, consumer);
+            return detached;
+        }
 
         boolean valid = chunk != null && chunk.getPos().x == x && chunk.getPos().z == z;
         if (!valid) {

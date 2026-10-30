@@ -11,9 +11,9 @@ import org.spongepowered.asm.mixin.injection.At;
 /**
  * Guard the section-compiled occlusion notification against an uninitialized graph.
  *
- * <p>IP's secondary-world renderers (the {@code ipl_sable:sublevels} hosting dimension
- * and other non-active client worlds) receive section lifecycle traffic BEFORE their
- * first render pass: on (re)join, a hosted sub-level's finalize packet triggers
+ * <p>IP's secondary-world renderers (non-active client worlds seen through portals) receive
+ * section lifecycle traffic BEFORE their first render pass: on (re)join, a sub-level's
+ * finalize packet triggers
  * {@code ClientSubLevel.updateRenderData}, whose {@code close()} of the previous render
  * data finalizes sections — and {@code SectionOcclusionGraph.onSectionCompiled}
  * dereferences update state that only exists after the renderer's first occlusion

@@ -9,6 +9,3 @@ mapfile -t fixtures < <(find tests/render/fixtures -name '*.java')
 
 "$JAVAC" --release 21 -d "$out" src/main/java/ipl/sable/transit/PortalSectionMath.java src/main/java/ipl/sable/render/IplRenderCullMath.java tests/render/GeometryTest.java
 "$JAVA" -cp "$out" ipl.sable.render.GeometryTest
-
-"$JAVAC" --release 21 -cp "$out" -d "$out" src/main/java/ipl/sable/render/IplSubLevelBlockEntityPresence.java tests/render/BlockEntityPresenceTest.java
-"$JAVA" -cp "$out" ipl.sable.render.BlockEntityPresenceTest

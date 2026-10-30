@@ -1,1 +1,0 @@
-package net.minecraft.world.phys; public record AABB(double minX,double minY,double minZ,double maxX,double maxY,double maxZ){public AABB move(Vec3 p){return new AABB(minX+p.x(),minY+p.y(),minZ+p.z(),maxX+p.x(),maxY+p.y(),maxZ+p.z());}}

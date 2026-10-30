@@ -4,7 +4,6 @@ import dev.ryanhcode.sable.mixinterface.clip_overwrite.LevelPoseProviderExtensio
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import ipl.sable.client.IplStraddleStaffPick;
-import ipl.sable.dim.IplDimAgnostic;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.ClipContext;
@@ -16,7 +15,7 @@ import org.spongepowered.asm.mixin.Mixin;
 
 /**
  * Projection-aware raycasting: vanilla {@code clip} on the client also hits the
- * THROUGH-PORTAL part of straddling hosted sub-levels.
+ * THROUGH-PORTAL part of straddling sub-levels.
  *
  * <p>Sable's raycast overlay (mixed into {@code BlockGetter.clip}) transforms rays into
  * each intersecting sub-level's local space using the level pose provider — unmapped for a

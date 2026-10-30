@@ -1,12 +1,60 @@
-# 0.6.0 — hosted API ownership boundary
-
-Public parent-world sublevel enumeration is unscoped; internal physics/render/storage ownership remains explicit. Removed the PYM-specific clip scope hook. Corrected position-specific storage height gates, actual Flywheel visual liveness, global-only BER pass gating, retained entity identity/bounds migration, KinematicContraption enrollment and entity section lifecycle. See `060NOTES.MD` for file-level details, verification and unresolved cases.
-
 # Changelog
 
 All notable changes to this project will be documented in this file, per sometimes.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project tries to adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.6.0]
+
+Rewrite of the foundation: the `ipl_sable:sublevels` hosting dimension is gone. Sub-levels
+live natively in exactly one level (stock Sable model); portals are handled by Atlas
+projections. See `README060NEW.md`.
+
+### Changed
+
+- Straddling no longer clones or synchronizes bodies. The far side is a **projection**: an
+  image collider of the SAME rigid body registered in the destination level's Atlas chart
+  (`image pose = portal isometry × body pose`), plus the same render data drawn at the
+  mapped pose. One body, one source of truth; forces on the image act on the real body.
+- Sessions are keyed by the portal path (`StraddleKey`). Chains (an image straddling
+  another portal) open child sessions with composite isometries, depth ≤ 8. Multi-portal
+  straddling works with no extra limits.
+- Chained straddle detection reuses the existing swept trail mapped through the session
+  isometry instead of running a second sweep per image; flips re-process the body in the
+  same tick so infinite portal loops stay seamless.
+- Attachment gate: non-Free constraints to the world, joints outside the rigid group and
+  ropes keep the session open instead of flipping; jointed groups never change dimension
+  (they keep working through the projection).
+- Flip: same-dimension = pose teleport of the live body + client interpolation rebase
+  (`handoff`); cross-dimension = native move into the destination level, keeping the same
+  global plot slot when free, with a client "ghost" until the successor is compiled
+  (3 s timeout).
+- Plot allocation uses the union of all levels' plots, so plot-local coordinates stay
+  unique across dimensions. Plot reads fall back to a foreign level's plot only when its
+  owner is projected into the querying level; writes into a foreign level's plot are
+  rejected (no dupes from projected edits).
+- Physics staff, picks and outlines route to the owner level of the projected sub-level.
+- Cross-dimension tracking: players near a projection in another level receive the
+  sub-level (TCP, dimension-stamped removal packets).
+- Custom natives: loader picks `sable_rapier_<x86_64|aarch64>_<windows.dll|linux.so|macos.dylib>`
+  like stock Sable, falls back to stock natives (single INFO line) when missing; kill switch
+  `-Dipl.sable.customNatives=false`. New `natives/build-linux.sh` (Linux/macOS); any
+  `sable_rapier_*` library at the project root is bundled into the jar.
+- Much less console spam: per-event logs moved to DEBUG.
+
+### Removed
+
+- `ipl_sable:sublevels` dimension, its datapack, hosting/clone/pin/UUID-bridge code and
+  ~70 related classes/mixins.
+
+### Known limitations
+
+- Worlds saved with ships inside `ipl_sable:sublevels` are NOT migrated: disassemble or
+  remove such ships with 0.5.x before upgrading.
+- Block edits on a cross-dimension projection are blocked (same-dimension edits work);
+  chained images are view-only for picks/staff.
+- Self-collision through a portal is not implemented (image and body are the same Rapier
+  body; Rapier filters same-body pairs).
 
 ## [0.5.3]
 

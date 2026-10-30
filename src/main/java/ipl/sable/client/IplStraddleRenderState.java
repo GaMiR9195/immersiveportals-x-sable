@@ -7,7 +7,7 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.my_util.Plane;
 
 /**
- * Render-thread state for drawing a straddling hosted sub-level's DEST-SIDE projection.
+ * Render-thread state for drawing a straddling sub-level's DEST-SIDE projection.
  *
  * <p>While set, the sub-level renders with the portal-mapped pose
  * ({@code IplClientSubLevelPoseOverrideMixin}) and the legacy source-clip bracket

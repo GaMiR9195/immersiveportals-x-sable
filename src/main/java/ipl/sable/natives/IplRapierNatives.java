@@ -6,9 +6,9 @@ package ipl.sable.natives;
  * {@code IplNativesOverrideMixin} and {@code natives/build-windows.ps1}), namespaced under
  * this class so sable's own JNI ABI stays untouched.
  *
- * <p>Callers MUST check {@link #isAvailable()} before scene access. The loader
- * requires the matching ABI 2 library on supported x86_64 Windows/Linux hosts;
- * it refuses an unsafe stock fallback if extraction or ABI validation fails.
+ * <p>Callers MUST check {@link #isAvailable()} first: when the custom natives failed to
+ * load (non-Windows platform, kill switch, extraction error) these methods throw
+ * {@link UnsatisfiedLinkError}.
  */
 public final class IplRapierNatives {
 
@@ -18,14 +18,8 @@ public final class IplRapierNatives {
 
     /** Set by {@code IplNativesOverrideMixin} once the IPSable-built DLL is loaded. */
     public static void markAvailable() {
-        if (compatibilityAbi() != 2) {
-            throw new LinkageError("IPSable requires compatibility native ABI 2; rebuild the bundled natives");
-        }
         available = true;
     }
-
-    /** Prevent loading an older Atlas library that lacks environment/substep fixes. */
-    public static native int compatibilityAbi();
 
     public static boolean isAvailable() {
         return available;
@@ -87,14 +81,6 @@ public final class IplRapierNatives {
     public static native boolean setParentFrame(long sceneHandle, int bodyId, int frameId);
 
     /**
-     * Select fluid/terrain sampling independently of the body's storage chart.
-     * Both handles must be live views of the same Atlas world; zero clears the
-     * override. This is NOT a portal-image selector or a body migration.
-     */
-    public static native boolean setEnvironmentChart(
-        long sceneHandle, int bodyId, long environmentSceneHandle);
-
-    /**
      * Sable bodies in {@code bodyId}'s joint component. {@code rigidOnly} restricts the
      * walk to joints whose both endpoints are ship bodies AND at least one angular
      * axis is locked (the current native definition of a rigid assembly: bearings,
@@ -138,7 +124,7 @@ public final class IplRapierNatives {
      * Dormancy switch: {@code dormant=true} makes the body Fixed (no integration, no
      * gravity, immovable — still a valid joint/rope anchor) with velocities zeroed;
      * {@code false} restores Dynamic. Idempotent — safe to re-apply every tick. Used
-     * for hosted ships whose parent-pointer chunks are unloaded.
+     * for ships whose chunks are unloaded.
      */
     public static native void setBodyDormant(long sceneHandle, int bodyId, boolean dormant);
 

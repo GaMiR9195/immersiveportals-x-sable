@@ -90,7 +90,7 @@ public abstract class SableVanillaSubLevelBERMixin {
         if (prev != null && prev == progAfter) return;
         if (IPL$POST_DRAW_LOGGED.size() > 30) return;
         IPL$POST_DRAW_LOGGED.put(beClass, progAfter);
-        IPL$LOG.info("[IPL-BE-POST-DRAW] class={} progBefore={} progAfter={}",
+        IPL$LOG.debug("[IPL-BE-POST-DRAW] class={} progBefore={} progAfter={}",
             beClass, progBefore, progAfter);
     }
 
@@ -123,14 +123,14 @@ public abstract class SableVanillaSubLevelBERMixin {
         // SableVanillaSubLevelBlockEntityRenderer.renderSingleBE is even on
         // the cog's call path.
         if (IPL$LOGGED_FIRED.compareAndSet(false, true)) {
-            IPL$LOG.info("[IPL-BE-BRACKET-FIRED] FIRST-FIRE be={} class={}",
+            IPL$LOG.debug("[IPL-BE-BRACKET-FIRED] FIRST-FIRE be={} class={}",
                 be.getBlockPos(), be.getClass().getSimpleName());
         } else {
             long now = System.nanoTime();
             long last = IPL$LAST_LOG_NS.get();
             if (now - last > 5_000_000_000L) {
                 IPL$LAST_LOG_NS.set(now);
-                IPL$LOG.info("[IPL-BE-BRACKET-FIRED] (rate-limited) be={} class={}",
+                IPL$LOG.debug("[IPL-BE-BRACKET-FIRED] (rate-limited) be={} class={}",
                     be.getBlockPos(), be.getClass().getSimpleName());
             }
         }

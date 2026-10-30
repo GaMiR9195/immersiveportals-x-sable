@@ -1,1 +1,0 @@
-package com.simibubi.create.content.redstone.link; import net.minecraft.core.BlockPos; public interface IRedstoneLinkable { boolean isAlive(); BlockPos getLocation(); String getNetworkKey(); }

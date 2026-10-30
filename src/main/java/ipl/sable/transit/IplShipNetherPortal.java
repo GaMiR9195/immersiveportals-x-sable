@@ -41,26 +41,14 @@ public final class IplShipNetherPortal {
 
     private IplShipNetherPortal() {}
 
-    private record Pending(
-        net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dim,
-        BlockPos anchor,
-        BoundingBox3ic bounds
-    ) {}
-
-    /** Ship UUID → capture waiting for the rehome. Server thread only. */
-    private static final java.util.Map<java.util.UUID, Pending> PENDING = new java.util.HashMap<>();
-
-    public static void clearPending() {
-        PENDING.clear();
-    }
+    /** Kept for API stability; assembly capture is immediate in the native model. */
+    public static void clearPending() {}
 
     /**
-     * Post-{@code assembleBlocks}: QUEUE the portal capture. A fresh assembly still
-     * lives in the parent level's embedded plot; SableRehomeOps moves it to the
-     * hosting dimension — INTO A DIFFERENT PLOT SLOT — a tick later. Capturing now
-     * would bake pre-rehome plot coordinates into the anchor, the shape translation
-     * and the placeholder writes (~2048 blocks off after the move: vanishing frames,
-     * integrity breaks). Capture runs from the rehome-complete hook instead.
+     * Post-{@code assembleBlocks}: capture the portals the assembly swallowed. The
+     * ship's plot lives in its own level's container and keeps its slot, so the plot
+     * coordinates computed here stay valid (a cross-dimension move releases the
+     * anchors instead, see {@link IplShipPortalAnchor#tickAll}).
      */
     public static void queueAssemblyCapture(
         ServerLevel level, BlockPos anchor, BoundingBox3ic bounds, ServerSubLevel ship
@@ -69,23 +57,7 @@ public final class IplShipNetherPortal {
         // Nested assembly (glue box on another ship's deck) hands us plot-space
         // coords; ship-on-ship portal capture is out of scope.
         if (Math.abs(anchor.getX()) >= 1_000_000 || Math.abs(anchor.getZ()) >= 1_000_000) return;
-
-        if (ipl.sable.dim.IplDimAgnostic.isHosted(ship)) {
-            captureNow(level, anchor, bounds, ship);
-            return;
-        }
-        PENDING.put(ship.getUniqueId(), new Pending(level.dimension(), anchor, bounds));
-    }
-
-    /**
-     * Rehome finished: the hosted twin owns its FINAL plot slot; plot coordinates
-     * computed from here on stay valid. Consumes the pending capture, if any.
-     */
-    public static void onRehomeComplete(ServerSubLevel hosted, ServerLevel parentLevel) {
-        Pending pending = PENDING.remove(hosted.getUniqueId());
-        if (pending == null) return;
-        if (parentLevel == null || parentLevel.dimension() != pending.dim()) return;
-        captureNow(parentLevel, pending.anchor(), pending.bounds(), hosted);
+        captureNow(level, anchor, bounds, ship);
     }
 
     /**
@@ -119,14 +91,14 @@ public final class IplShipNetherPortal {
             if (isClusterAnchored(portal)) continue;
 
             // The portal entity's world pose is STALE by however far the ship
-            // fell/drifted between assembly and this (post-rehome) capture — but the
+            // fell/drifted between assembly and this capture — but the
             // assembly transform is a pure translation, so the aperture's plot
             // position is exact: worldOrigin + delta. anchorToShipAtPlot also snaps
             // the entity onto the ship's current pose.
             net.minecraft.world.phys.Vec3 plotOrigin = portal.getOriginPos()
                 .add(delta.getX(), delta.getY(), delta.getZ());
             String result = IplShipPortalAnchor.anchorToShipAtPlot(portal, ship, plotOrigin);
-            LOG.info("[IPL-SHIP-PORTAL] assembly captured portal {}: {}",
+            LOG.debug("[IPL-SHIP-PORTAL] assembly captured portal {}: {}",
                 portal.getUUID(), result);
         }
     }
@@ -154,7 +126,7 @@ public final class IplShipNetherPortal {
             Portal flipped = PortalExtension.get(portal).flippedPortal;
             if (flipped != null) restoreShape(flipped, plotAnchor, worldGoal, angle, rotation);
             IplShipPortalAnchor.unanchor(portal);
-            LOG.info("[IPL-SHIP-PORTAL] disassembly released portal {} (shapes restored to world)",
+            LOG.debug("[IPL-SHIP-PORTAL] disassembly released portal {} (shapes restored to world)",
                 portalId);
         }
     }
@@ -213,12 +185,10 @@ public final class IplShipNetherPortal {
     private static void reconcilePlaceholders(
         ServerLevel parent, BlockPortalShape worldShape, BlockPortalShape plotShape
     ) {
-        ServerLevel hosting =
-            ipl.sable.dim.SableSubLevelDimension.getSableSubLevelsOrNull(parent.getServer());
-        if (hosting == null) return;
+        // Native model: the ship's plot chunks belong to the same level as the world.
         for (BlockPos plotPos : plotShape.area) {
-            if (hosting.getBlockState(plotPos).getBlock() != PortalPlaceholderBlock.instance) {
-                hosting.setBlockAndUpdate(plotPos,
+            if (parent.getBlockState(plotPos).getBlock() != PortalPlaceholderBlock.instance) {
+                parent.setBlockAndUpdate(plotPos,
                     PortalPlaceholderBlock.instance.defaultBlockState()
                         .setValue(PortalPlaceholderBlock.AXIS, plotShape.axis));
             }

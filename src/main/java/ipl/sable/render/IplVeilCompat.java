@@ -63,7 +63,7 @@ public final class IplVeilCompat {
 
             if (INSTANCE == null) {
                 INSTANCE = new IplVeilShaderPreProcessor();
-                LOG.info("Created IplVeilShaderPreProcessor singleton");
+                LOG.debug("Created IplVeilShaderPreProcessor singleton");
             }
 
             // addPreprocessorFirst so we run before any Veil-side dynamic-buffer

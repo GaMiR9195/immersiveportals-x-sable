@@ -1,1 +1,0 @@
-package net.minecraft.world.level; public class Level { public final boolean isClientSide; public final boolean storage; public Level(boolean client, boolean storage){this.isClientSide=client;this.storage=storage;} }

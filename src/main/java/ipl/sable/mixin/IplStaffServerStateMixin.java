@@ -23,6 +23,24 @@ import java.util.UUID;
 public abstract class IplStaffServerStateMixin {
 
     @Shadow(remap = false) private ServerLevel level;
+    /**
+     * The handler of the body's level may serve a player standing in another dimension
+     * (grab through a portal); resolve the player server-wide instead of dropping the session.
+     */
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+        method = "tick",
+        at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"),
+        require = 0
+    )
+    private net.minecraft.world.entity.player.Player ipl$serverWidePlayer(
+        ServerLevel level, UUID id,
+        com.llamalad7.mixinextras.injector.wrapoperation.Operation<net.minecraft.world.entity.player.Player> original
+    ) {
+        net.minecraft.world.entity.player.Player player = original.call(level, id);
+        return player != null || level.getServer() == null ? player : level.getServer().getPlayerList().getPlayer(id);
+    }
+
     @Inject(method = "drag", at = @At("HEAD"), require = 0)
     private void ipl$beginFrame(
         UUID playerId, UUID subId, Vector3dc playerRelativeGoal, Vector3dc localAnchor,

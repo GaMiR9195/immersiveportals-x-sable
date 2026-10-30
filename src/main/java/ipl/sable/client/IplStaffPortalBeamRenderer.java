@@ -199,8 +199,8 @@ public final class IplStaffPortalBeamRenderer {
         return null;
     }
 
-    /** Beam anchors are plot coordinates, so resolve through hosting container, never main world. */
+    /** Beam anchors are plot coordinates: resolve the owning sub-level across client levels. */
     public static ClientSubLevel findHostedSubLevel(Vec3 localAnchor) {
-        return IplClientHostedLookup.findHostedSubLevel(localAnchor);
+        return IplClientProjections.findSubLevelAtPlot(localAnchor);
     }
 }

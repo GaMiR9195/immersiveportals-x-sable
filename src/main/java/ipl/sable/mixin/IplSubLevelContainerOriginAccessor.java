@@ -5,7 +5,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
-/** Plot-grid origin access for same-slot rehome (see {@code SableRehomeOps}). */
+/** Plot-grid origin access for same-slot cross-dimension moves (see {@code IplShipFlip}). */
 @Pseudo
 @Mixin(value = SubLevelContainer.class, remap = false)
 public interface IplSubLevelContainerOriginAccessor {

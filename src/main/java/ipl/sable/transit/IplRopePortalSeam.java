@@ -8,8 +8,6 @@ import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
 import dev.ryanhcode.sable.physics.impl.rapier.rope.RapierRopeHandle;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
-import ipl.sable.dim.IplDimAgnostic;
-import ipl.sable.dim.IplSceneOwnership;
 import ipl.sable.mixin.IplRopeObjectAccess;
 import ipl.sable.natives.IplRapierNatives;
 import net.minecraft.server.MinecraftServer;
@@ -92,7 +90,7 @@ public final class IplRopePortalSeam {
     public static void onShipTransit(ServerSubLevel ship, Portal portal) {
         if (!ENABLED || !IplRapierNatives.isAvailable()) return;
         try {
-            long scene = IplSceneOwnership.liveSceneHandle((ServerLevel) ship.getLevel());
+            long scene = ipl.sable.atlas.IplScenes.sceneHandle((ServerLevel) ship.getLevel());
             if (scene == 0) return;
             long[] ends = IplRapierNatives.ropesAttachedToSableBody(
                 scene, Rapier3D.getID(ship));
@@ -121,7 +119,7 @@ public final class IplRopePortalSeam {
                     PREFIXES.remove(key);
                     IplRapierNatives.setRopePortalPrefix(scene, ropeId, end, false,
                         0, 0, 0, 0, 0, 0, 1);
-                    LOG.info("[IPL-ROPE-SEAM] rope {} end {} unwound to identity", ropeId, end);
+                    LOG.debug("[IPL-ROPE-SEAM] rope {} end {} unwound to identity", ropeId, end);
                     continue;
                 }
                 PREFIXES.put(key, next);
@@ -133,7 +131,7 @@ public final class IplRopePortalSeam {
                 // remap particles through the common mapping, restamp to the ships'
                 // chart, clear both prefixes.
                 Prefix other = PREFIXES.get(key ^ 1L);
-                LOG.info("[IPL-ROPE-SEAM] rope {} end {} seamed through portal {} [{}] "
+                LOG.debug("[IPL-ROPE-SEAM] rope {} end {} seamed through portal {} [{}] "
                     + "other={}", ropeId, end, portal.getUUID(), next.describe(),
                     other == null ? "absent" : (next.nearlyEquals(other) ? "match" : "MISMATCH"));
                 if (other != null && !next.nearlyEquals(other)) {
@@ -144,8 +142,7 @@ public final class IplRopePortalSeam {
                 if (other != null && next.nearlyEquals(other)) {
                     Quaterniond chainRot = next.rot.conjugate(new Quaterniond());
                     Vector3d chainT = chainRot.transform(new Vector3d(next.trans)).negate();
-                    ServerLevel parent = IplDimAgnostic.getServerParentLevel(ship);
-                    long destScene = IplSceneOwnership.liveSceneHandle(parent);
+                    long destScene = ipl.sable.atlas.IplScenes.sceneHandle((ServerLevel) ship.getLevel());
                     IplRapierNatives.remapRope(scene, ropeId,
                         chainT.x, chainT.y, chainT.z,
                         chainRot.x, chainRot.y, chainRot.z, chainRot.w,
@@ -156,7 +153,7 @@ public final class IplRopePortalSeam {
                         0, 0, 0, 0, 0, 0, 1);
                     PREFIXES.remove(key);
                     PREFIXES.remove(key ^ 1L);
-                    LOG.info("[IPL-ROPE-SEAM] rope {} re-unified — chain remapped through "
+                    LOG.debug("[IPL-ROPE-SEAM] rope {} re-unified — chain remapped through "
                         + "the portal", ropeId);
                 }
             }
@@ -166,15 +163,18 @@ public final class IplRopePortalSeam {
         }
     }
 
-    /** Break monitor + seam-state prune. Called once per hosting-container tick. */
-    public static void tick(ServerSubLevelContainer hostingContainer) {
+    /**
+     * Break monitor + seam-state prune for one container. Dormant in 0.6.0: an attached
+     * rope blocks the transit ({@link IplAttachmentGate}), so no seam is ever opened.
+     */
+    public static void tick(ServerSubLevelContainer container) {
         if (!ENABLED || !IplRapierNatives.isAvailable()) return;
-        SubLevelPhysicsSystem hostingSystem = hostingContainer.physicsSystem();
+        SubLevelPhysicsSystem hostingSystem = container.physicsSystem();
         ServerLevel hostingLevel = hostingSystem.getLevel();
         if (hostingLevel == null || (hostingLevel.getGameTime() % 20) != 0) return;
 
         try {
-            long scene = IplSceneOwnership.liveSceneHandle(hostingLevel);
+            long scene = ipl.sable.atlas.IplScenes.sceneHandle(hostingLevel);
             if (scene == 0) return;
 
             long[] split = IplRapierNatives.overstretchedRopes(scene, BREAK_STRETCH);
@@ -184,8 +184,8 @@ public final class IplRopePortalSeam {
             MinecraftServer server = hostingLevel.getServer();
             java.util.Set<Long> liveRopeIds = new java.util.HashSet<>();
             for (ServerLevel level : server.getAllLevels()) {
-                var container = SubLevelContainer.getContainer(level);
-                if (!(container instanceof ServerSubLevelContainer serverContainer)) continue;
+                var levelContainer = SubLevelContainer.getContainer(level);
+                if (!(levelContainer instanceof ServerSubLevelContainer serverContainer)) continue;
                 SubLevelPhysicsSystem system = serverContainer.physicsSystem();
                 java.util.List<RopePhysicsObject> toBreak = new java.util.ArrayList<>(0);
                 for (ArbitraryPhysicsObject obj : system.getArbitraryObjects()) {
@@ -203,7 +203,7 @@ public final class IplRopePortalSeam {
                 for (RopePhysicsObject rope : toBreak) {
                     long id = ((RapierRopeHandle) ((IplRopeObjectAccess) rope).ipl$handle())
                         .handle();
-                    LOG.info("[IPL-ROPE-SEAM] rope {} overstretched — breaking", id);
+                    LOG.debug("[IPL-ROPE-SEAM] rope {} overstretched — breaking", id);
                     system.removeObject(rope);
                     PREFIXES.remove(id << 1);
                     PREFIXES.remove((id << 1) | 1L);
@@ -214,7 +214,7 @@ public final class IplRopePortalSeam {
             final long sceneF = scene;
             PREFIXES.keySet().removeIf(key -> {
                 if (liveRopeIds.contains(key >>> 1)) return false;
-                LOG.info("[IPL-ROPE-SEAM] pruning seam state for dead rope {} end {}",
+                LOG.debug("[IPL-ROPE-SEAM] pruning seam state for dead rope {} end {}",
                     key >>> 1, (key & 1) != 0);
                 IplRapierNatives.setRopePortalPrefix(sceneF, key >>> 1, (key & 1) != 0,
                     false, 0, 0, 0, 0, 0, 0, 1);

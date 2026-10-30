@@ -3,7 +3,6 @@ package ipl.sable.transit;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import ipl.sable.dim.IplDimAgnostic;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -12,7 +11,7 @@ import org.jetbrains.annotations.Nullable;
 import qouteall.q_misc_util.my_util.DQuaternion;
 
 /**
- * Frame mapping for straddling hosted sub-levels: from a given context dimension, a ship
+ * Frame mapping for straddling sub-levels: from a given context dimension, a ship
  * straddling INTO that dimension has a portal-mapped pose.
  *
  * <p>Server side the isometry comes from the active Atlas image session;
@@ -132,6 +131,36 @@ public final class IplStraddlePoseMap {
             return identityRotation;
         }
 
+        /** {@code next ∘ this}: apply this mapping first, then {@code next}. */
+        public StraddleMapping then(StraddleMapping next) {
+            Vec3 shifted = next.mapPoint(dest);
+            org.joml.Quaterniond composed = new org.joml.Quaterniond(next.rot).mul(rot);
+            return new StraddleMapping(origin, shifted, composed,
+                identityRotation && next.identityRotation);
+        }
+
+        /** Translation of the rigid map {@code x -> shift + rot x}. */
+        public Vec3 shift() {
+            return mapPoint(Vec3.ZERO);
+        }
+
+        /** Approximate equality used to detect moved portals / cache keys. */
+        public boolean sameAs(@org.jetbrains.annotations.Nullable StraddleMapping other) {
+            if (other == null) return false;
+            return shift().distanceToSqr(other.shift()) < 1.0e-12
+                && Math.abs(Math.abs(rot.dot(other.rot)) - 1.0) < 1.0e-12;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof StraddleMapping m && m.origin.equals(origin)
+                && m.dest.equals(dest) && m.rot.equals(rot);
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(origin, dest, rot.x, rot.y, rot.z, rot.w);
+        }
     }
 
     /**
@@ -144,8 +173,7 @@ public final class IplStraddlePoseMap {
         @Nullable SubLevel sub, @Nullable Level contextLevel
     ) {
         if (sub == null || contextLevel == null) return null;
-        if (!IplDimAgnostic.isHosted(sub)) return null;
-        if (IplDimAgnostic.getParentLevel(sub) == contextLevel) return null; // native frame
+        if (sub.getLevel() == contextLevel) return null; // native frame
         return getStraddleDestinationMapping(sub, contextLevel);
     }
 
@@ -156,9 +184,8 @@ public final class IplStraddlePoseMap {
      */
     public static boolean isStraddling(@Nullable SubLevel sub, @Nullable Level contextLevel) {
         if (sub == null || contextLevel == null) return false;
-        if (!IplDimAgnostic.isHosted(sub)) return false;
         if (contextLevel.isClientSide()) {
-            return ipl.sable.client.IplClientHostedLookup.isClientStraddling(sub);
+            return ipl.sable.client.IplClientProjections.isClientStraddling(sub);
         }
         return IplAtlasStraddleSession.hasSession(sub.getUniqueId());
     }
@@ -173,9 +200,9 @@ public final class IplStraddlePoseMap {
         SubLevel sub, Level ctx,
         java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal, StraddleMapping> visitor
     ) {
-        if (sub == null || ctx == null || !IplDimAgnostic.isHosted(sub)) return;
+        if (sub == null || ctx == null) return;
         if (ctx.isClientSide()) {
-            ipl.sable.client.IplClientHostedLookup.forEachClientStraddleInto(sub, ctx, visitor);
+            ipl.sable.client.IplClientProjections.forEachClientStraddleInto(sub, ctx, visitor);
             return;
         }
         IplAtlasStraddleSession.forEachSessionInto(sub, ctx, visitor);
@@ -213,9 +240,9 @@ public final class IplStraddlePoseMap {
         SubLevel sub, Level ctx,
         java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal, StraddleMapping> visitor
     ) {
-        if (sub == null || ctx == null || !IplDimAgnostic.isHosted(sub)) return;
+        if (sub == null || ctx == null) return;
         if (ctx.isClientSide()) {
-            ipl.sable.client.IplClientHostedLookup.forEachClientStraddleFrom(sub, ctx, visitor);
+            ipl.sable.client.IplClientProjections.forEachClientStraddleFrom(sub, ctx, visitor);
             return;
         }
         IplAtlasStraddleSession.forEachSessionFrom(sub, ctx, visitor);
@@ -230,10 +257,10 @@ public final class IplStraddlePoseMap {
      */
     @Nullable
     public static StraddleFrame chooseCollisionFrame(SubLevel sub, Level ctx, Vec3 position) {
-        if (sub == null || ctx == null || !IplDimAgnostic.isHosted(sub)) return null;
+        if (sub == null || ctx == null) return null;
 
         dev.ryanhcode.sable.companion.math.BoundingBox3dc shipBox = sub.boundingBox();
-        boolean nativeHere = IplDimAgnostic.getParentLevel(sub) == ctx;
+        boolean nativeHere = sub.getLevel() == ctx;
 
         double nativeDist = Double.MAX_VALUE;
         if (nativeHere) {
@@ -297,10 +324,10 @@ public final class IplStraddlePoseMap {
     public static StraddleMapping getStraddleDestinationMapping(
         @Nullable SubLevel sub, @Nullable Level contextLevel
     ) {
-        if (sub == null || contextLevel == null || !IplDimAgnostic.isHosted(sub)) return null;
+        if (sub == null || contextLevel == null) return null;
         if (contextLevel.isClientSide()) {
             // Client-only class; loaded lazily when this branch executes.
-            return ipl.sable.client.IplClientHostedLookup.getClientStraddleMappingInto(sub, contextLevel);
+            return ipl.sable.client.IplClientProjections.getClientStraddleMappingInto(sub, contextLevel);
         }
         return IplAtlasStraddleSession.getMappingInto(sub, contextLevel);
     }
@@ -330,7 +357,6 @@ public final class IplStraddlePoseMap {
         @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
     ) {
         if (sub == null || contextLevel == null || entityBounds == null) return null;
-        if (!IplDimAgnostic.isHosted(sub)) return null;
         StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
         if (frame != null) {
             if (frame.portal() == null) return null;
@@ -368,7 +394,6 @@ public final class IplStraddlePoseMap {
         @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
     ) {
         if (sub == null || contextLevel == null || entityBounds == null) return null;
-        if (!IplDimAgnostic.isHosted(sub)) return null;
         StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
         if (frame != null) {
             if (frame.portal() == null) return null;
@@ -377,7 +402,7 @@ public final class IplStraddlePoseMap {
                 frame.mapping().mapPoint(frame.portal().getOriginPos()),
                 frame.mapping().mapVec(frame.portal().getNormal().scale(-1.0))));
         }
-        if (IplDimAgnostic.getParentLevel(sub) != contextLevel) return null;
+        if (sub.getLevel() != contextLevel) return null;
         Pose3dc pose = leadPose(sub);
         java.util.List<LocalHalfSpace> parts = new java.util.ArrayList<>(2);
         forEachStraddleFrom(sub, contextLevel, (portal, mapping) -> {
@@ -515,8 +540,8 @@ public final class IplStraddlePoseMap {
     public static java.util.function.Predicate<BlockPos> getSourceHalfKeepFilter(
         @Nullable SubLevel sub, @Nullable Level contextLevel, double planeMargin
     ) {
-        if (sub == null || contextLevel == null || !IplDimAgnostic.isHosted(sub)) return null;
-        if (IplDimAgnostic.getParentLevel(sub) != contextLevel) return null;
+        if (sub == null || contextLevel == null) return null;
+        if (sub.getLevel() != contextLevel) return null;
 
         // Source side keeps +portal normal (crossing direction is -normal, the same
         // convention as isInMappedHalf and the transit controller's parity rule).

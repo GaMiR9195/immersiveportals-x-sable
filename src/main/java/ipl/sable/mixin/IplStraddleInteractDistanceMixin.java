@@ -2,7 +2,6 @@ package ipl.sable.mixin;
 
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import ipl.sable.dim.IplDimAgnostic;
 import ipl.sable.transit.IplStraddlePoseMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.player.Player;

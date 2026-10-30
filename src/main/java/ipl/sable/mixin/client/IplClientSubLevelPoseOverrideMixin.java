@@ -9,7 +9,7 @@ import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * While a straddling hosted sub-level's DEST-SIDE projection is being drawn
+ * While a straddling sub-level's DEST-SIDE projection is being drawn
  * ({@link IplStraddleRenderState} active for it), every render-pose read returns the
  * portal-mapped pose — placing the same compiled plot geometry on the far side of the
  * portal. Both overloads are overridden: the no-arg variant has a cached fast-path that
@@ -23,13 +23,17 @@ public abstract class IplClientSubLevelPoseOverrideMixin {
         at = @At("RETURN"), require = 0)
     private Pose3dc ipl$overrideRenderPoseNoArg(Pose3dc original) {
         Pose3dc override = IplStraddleRenderState.getPoseFor(this);
-        return override != null ? override : original;
+        if (override != null) return override;
+        Pose3dc ghost = ipl.sable.client.IplParentDimSync.ghostRenderPose((ClientSubLevel) (Object) this);
+        return ghost != null ? ghost : original;
     }
 
     @ModifyReturnValue(method = "renderPose(F)Ldev/ryanhcode/sable/companion/math/Pose3dc;",
         at = @At("RETURN"), require = 0)
     private Pose3dc ipl$overrideRenderPoseFloat(Pose3dc original, float partialTick) {
         Pose3dc override = IplStraddleRenderState.getPoseFor(this);
-        return override != null ? override : original;
+        if (override != null) return override;
+        Pose3dc ghost = ipl.sable.client.IplParentDimSync.ghostRenderPose((ClientSubLevel) (Object) this);
+        return ghost != null ? ghost : original;
     }
 }

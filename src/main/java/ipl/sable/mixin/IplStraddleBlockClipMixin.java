@@ -20,7 +20,7 @@ import java.util.NoSuchElementException;
 import java.util.function.Predicate;
 
 /**
- * Portal-plane clip for ENTITY-vs-ship collision on straddling hosted sub-levels — the
+ * Portal-plane clip for ENTITY-vs-ship collision on straddling sub-levels — the
  * gameplay-collision counterpart of the native solver contact clip (spec §2.5).
  *
  * <p>{@code SubLevelEntityCollision.collide} SATs the entity's OBB against every ship

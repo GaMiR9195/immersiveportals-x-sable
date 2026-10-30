@@ -1,1 +1,0 @@
-package ipl.sable.dim; import dev.ryanhcode.sable.api.sublevel.SubLevelContainer; import dev.ryanhcode.sable.sublevel.SubLevel; import java.util.List; public final class IplOwnedSubLevels { private IplOwnedSubLevels(){} public static List<SubLevel> owned(SubLevelContainer c){return c==null?List.of():c.getAllSubLevels();} }

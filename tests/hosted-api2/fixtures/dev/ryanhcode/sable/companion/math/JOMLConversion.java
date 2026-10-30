@@ -1,1 +1,0 @@
-package dev.ryanhcode.sable.companion.math; public class JOMLConversion { public static final org.joml.Vector3d ZERO=new org.joml.Vector3d(); }

@@ -13,10 +13,20 @@ public final class IplSubLevelRenderVisibility {
     private IplSubLevelRenderVisibility() {}
 
     public static boolean hasBlockEntities(ClientSubLevel sub) {
-        return IplSubLevelBlockEntityPresence.hasBlockEntities(sub);
+        var data=sub.getRenderData();
+        if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData chunks) {
+            for (var section:chunks.allRenderSections())
+                if (!section.getCompiled().getRenderableBlockEntities().isEmpty()) return true;
+            return false;
+        }
+        if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaSingleSubLevelRenderData single)
+            return single.getRenderBlockEntity()!=null;
+        return true; // A custom backend can have its own BE storage.
     }
 
     public static boolean visible(ClientSubLevel sub, Pose3dc pose) {
+        // A moved body's successor stays hidden until its transit ghost hands over.
+        if (ipl.sable.client.IplParentDimSync.isSuppressedSuccessor(sub)) return false;
         // The main-view frustum is not the light-view frustum. Shadow rendering can
         // reuse this pass and pose; never read/write its camera visibility cache.
         if (qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface.invoker.isRenderingShadowMap())

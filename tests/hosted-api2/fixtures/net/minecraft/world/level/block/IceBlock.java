@@ -1,1 +1,0 @@
-package net.minecraft.world.level.block; public class IceBlock extends Block {public static net.minecraft.world.level.block.state.BlockState meltsInto(){return new net.minecraft.world.level.block.state.BlockState(new Block(),false,false);}}

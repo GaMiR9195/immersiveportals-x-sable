@@ -1,7 +1,6 @@
 package ipl.sable.mixin;
 
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import ipl.sable.dim.IplDimAgnostic;
 import ipl.sable.transit.IplShipNetherPortal;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -34,8 +33,7 @@ public abstract class IplDisassemblyPortalRestoreMixin {
         Level level, SubLevel subLevel, BlockPos subLevelAnchor, BlockPos goal,
         Rotation rotation, boolean playSound, CallbackInfo ci
     ) {
-        ServerLevel parent = IplDimAgnostic.getServerParentLevel(subLevel);
-        if (parent != null) {
+        if (subLevel.getLevel() instanceof ServerLevel parent) {
             IplShipNetherPortal.restoreOnDisassembly(parent, subLevel, subLevelAnchor, goal, rotation);
         }
     }

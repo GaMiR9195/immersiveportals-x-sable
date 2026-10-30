@@ -40,8 +40,8 @@ public abstract class IplStraddleProjectOutMixin {
     private void ipl$frameAwareDistance(
         Level level, Position a, Position b, CallbackInfoReturnable<Double> cir
     ) {
-        boolean plotA = ipl$isHostedPlotPosition(level, a.x(), a.z());
-        boolean plotB = ipl$isHostedPlotPosition(level, b.x(), b.z());
+        boolean plotA = ipl$isPlotPosition(level, a.x(), a.z());
+        boolean plotB = ipl$isPlotPosition(level, b.x(), b.z());
         if (!plotA && !plotB) return;
 
         // The runtime companion's overload delegation does not reliably route this
@@ -60,9 +60,9 @@ public abstract class IplStraddleProjectOutMixin {
     }
 
     @org.spongepowered.asm.mixin.Unique
-    private static boolean ipl$isHostedPlotPosition(Level level, double x, double z) {
+    private static boolean ipl$isPlotPosition(Level level, double x, double z) {
         if (!(level instanceof net.minecraft.server.level.ServerLevel serverLevel)) return true;
-        var hosting = ipl.sable.dim.IplDimAgnostic.getHostingContainerFor(serverLevel);
+        var hosting = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(serverLevel);
         if (hosting == null) return false;
         int chunkX = net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(x));
         int chunkZ = net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(z));

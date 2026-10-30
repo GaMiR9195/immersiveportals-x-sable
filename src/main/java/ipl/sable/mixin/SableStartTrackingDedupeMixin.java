@@ -87,6 +87,8 @@ public abstract class SableStartTrackingDedupeMixin {
         if (container == null) return;
 
         UUID uuid = this.subLevelID();
+        // A transit ghost of this body still held in this level yields to the new object.
+        if (level.isClientSide()) ipl.sable.client.IplParentDimSync.onStartTracking(level, uuid);
 
         // (1) Same-UUID re-track: already tracking → skip re-allocation. The server's
         // re-emit doesn't carry novel state we need to apply -- pose/bounds updates

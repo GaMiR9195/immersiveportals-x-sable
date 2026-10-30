@@ -2,8 +2,6 @@ package ipl.sable.transit;
 
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler;
-import ipl.sable.dim.IplDimAgnostic;
-import ipl.sable.dim.SableSubLevelDimension;
 import ipl.sable.duck.IplStaffDragSessionControl;
 import ipl.sable.mixin.IplStaffServerHandlerAccessorMixin;
 import net.minecraft.resources.ResourceKey;
@@ -140,7 +138,7 @@ public final class IplGrabChain {
             session.ipl$reframePlayerGoal(portal, previousEyePosition);
         }
 
-        LOG.info("[IPL-GRAB-CHAIN] player {} crossed portal {} ({} -> {}), depth={}",
+        LOG.debug("[IPL-GRAB-CHAIN] player {} crossed portal {} ({} -> {}), depth={}",
             player.getUUID(), portal.getUUID(),
             portal.level().dimension().location(), portal.getDestDim().location(),
             frame.chain.size());
@@ -204,8 +202,7 @@ public final class IplGrabChain {
         Frame frame = FRAMES.get(player.getUUID());
         if (frame == null || !frame.subId.equals(sub.getUniqueId())) return goal;
 
-        ServerLevel parent = IplDimAgnostic.getServerParentLevel(sub);
-        if (parent == null) return goal;
+        if (!(sub.getLevel() instanceof ServerLevel parent)) return goal;
 
         if (frame.chain.isEmpty()) {
             if (!player.level().dimension().equals(parent.dimension())) {
@@ -277,8 +274,9 @@ public final class IplGrabChain {
                 var missed = IplStraddleSessionSync.hopsAfter(subId, Long.parseLong(sourceFrame));
                 if (missed == null) {
                     // Never guess a transform or bind an old visual pick to a new body.
-                    ServerLevel hosting = SableSubLevelDimension.getSableSubLevelsOrNull(player.server);
-                    if (hosting != null) PhysicsStaffServerHandler.get(hosting).stopDragging(player.getUUID());
+                    for (ServerLevel any : player.server.getAllLevels()) {
+                        PhysicsStaffServerHandler.get(any).stopDragging(player.getUUID());
+                    }
                     qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(player,
                         "ipl.sable.client.IplGrabChainClient.RemoteCallables.rejectSeed", subUuid, frame.seedId);
                     LOG.warn("[IPL-GRAB-CHAIN] expired pick frame {} for {}", sourceFrame, subId);
@@ -294,7 +292,7 @@ public final class IplGrabChain {
                         subUuid, Long.toString(frame.revision), hop.link().encode(), Long.toString(hop.frame()), frame.seedId);
                 }
                 FRAMES.put(player.getUUID(), frame);
-                LOG.info("[IPL-GRAB-CHAIN] seeded chain for player {} sub {} depth={}",
+                LOG.debug("[IPL-GRAB-CHAIN] seeded chain for player {} sub {} depth={}",
                     player.getUUID(), subId, frame.chain.size());
                 broadcast(player.server, player.getUUID());
             } catch (RuntimeException e) {
@@ -368,12 +366,14 @@ public final class IplGrabChain {
 
     @Nullable
     private static IplStaffDragSessionControl liveSession(MinecraftServer server, UUID playerId) {
-        ServerLevel hosting = SableSubLevelDimension.getSableSubLevelsOrNull(server);
-        if (hosting == null) return null;
-        PhysicsStaffServerHandler handler = PhysicsStaffServerHandler.get(hosting);
-        Object session = ((IplStaffServerHandlerAccessorMixin) (Object) handler)
-            .ipl$getDraggingSessions().get(playerId);
-        return session instanceof IplStaffDragSessionControl control ? control : null;
+        // Drag sessions live in the handler of the level that owns the grabbed body.
+        for (ServerLevel level : server.getAllLevels()) {
+            PhysicsStaffServerHandler handler = PhysicsStaffServerHandler.get(level);
+            Object session = ((IplStaffServerHandlerAccessorMixin) (Object) handler)
+                .ipl$getDraggingSessions().get(playerId);
+            if (session instanceof IplStaffDragSessionControl control) return control;
+        }
+        return null;
     }
 
     /** Keep the newest links: they describe the frame the body is actually in right now. */

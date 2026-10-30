@@ -1,7 +1,6 @@
 package ipl.sable.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
-import ipl.sable.dim.IplDimAgnostic;
 import ipl.sable.transit.IplGrabLink;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.resources.ResourceKey;
@@ -209,7 +208,7 @@ public final class IplStaffBeamRoutes {
         UUID owner, Level staffLevel, Vec3 staffStart,
         ClientSubLevel sub, Vec3 localAnchor, float partialTick
     ) {
-        Level parent = IplDimAgnostic.getParentLevel(sub);
+        Level parent = sub.getLevel();
         if (parent == null) return null;
         Vec3 nativeAnchor = sub.renderPose(partialTick).transformPosition(localAnchor);
 

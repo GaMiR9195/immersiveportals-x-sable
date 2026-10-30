@@ -71,7 +71,7 @@ public final class IplShipPortalAnchor {
     /**
      * Anchors restored from the world SavedData whose ship hasn't resolved yet →
      * remaining grace ticks. Boot ordering: restore runs on the first server tick,
-     * typically before portal chunks load AND before Sable's hosting container
+     * typically before portal chunks load AND before Sable's containers
      * finishes restoring its sub-levels — releasing on the first failed lookup would
      * silently drop every persisted anchor. While pending, the anchor neither drives
      * nor releases; on first resolve the carrier side effects and client sync apply.
@@ -152,7 +152,7 @@ public final class IplShipPortalAnchor {
                     getQuat(t, "lo"),
                     getQuat(t, "dl")));
                 RESTORE_PENDING.put(portalId, RESTORE_GRACE_TICKS);
-                LOG.info("[IPL-SHIP-PORTAL] restored anchor for portal {} (ship {}, pending resolve)",
+                LOG.debug("[IPL-SHIP-PORTAL] restored anchor for portal {} (ship {}, pending resolve)",
                     portalId, t.getUUID("shipId"));
             } catch (Throwable th) {
                 LOG.error("[IPL-SHIP-PORTAL] bad persisted anchor entry {}", i, th);
@@ -314,7 +314,7 @@ public final class IplShipPortalAnchor {
         // carrier faces now, including a completely stationary ship.
         followCarrierRims(portal);
         syncToClients(level.getServer(), portal.getUUID());
-        LOG.info("[IPL-SHIP-PORTAL] anchored portal {} to ship {} at plot ({}, {}, {})",
+        LOG.debug("[IPL-SHIP-PORTAL] anchored portal {} to ship {} at plot ({}, {}, {})",
             portal.getUUID(), ship.getUniqueId(),
             String.format("%.2f", localPos.x), String.format("%.2f", localPos.y),
             String.format("%.2f", localPos.z));
@@ -434,7 +434,7 @@ public final class IplShipPortalAnchor {
             Entity entity = level.getEntity(entry.getKey());
             if (entity == null) continue; // unloaded — keep the anchor, skip this tick
             if (!(entity instanceof Portal portal) || portal.isRemoved()) {
-                LOG.info("[IPL-SHIP-PORTAL] portal {} gone — anchor dropped", entry.getKey());
+                LOG.debug("[IPL-SHIP-PORTAL] portal {} gone — anchor dropped", entry.getKey());
                 syncClearToClients(server, entry.getKey());
                 it.remove();
                 markDirty(server);
@@ -449,8 +449,20 @@ public final class IplShipPortalAnchor {
                     continue; // restored anchor, ship still loading — wait, don't drive
                 }
                 RESTORE_PENDING.remove(entry.getKey());
-                LOG.info("[IPL-SHIP-PORTAL] ship {} gone — portal {} released",
+                LOG.debug("[IPL-SHIP-PORTAL] ship {} gone — portal {} released",
                     a.shipId(), entry.getKey());
+                applyCarrierSideEffects(portal, null, false);
+                syncClearToClients(server, entry.getKey());
+                it.remove();
+                markDirty(server);
+                continue;
+            }
+            if (ship.getLevel().dimension() != a.portalDim()) {
+                // The carrier moved to another dimension through a portal; its
+                // pose is in that dimension's chart now. The portal stays behind.
+                LOG.debug("[IPL-SHIP-PORTAL] ship {} changed dimension — portal {} released",
+                    a.shipId(), entry.getKey());
+                RESTORE_PENDING.remove(entry.getKey());
                 applyCarrierSideEffects(portal, null, false);
                 syncClearToClients(server, entry.getKey());
                 it.remove();
@@ -463,7 +475,7 @@ public final class IplShipPortalAnchor {
                 // aren't available during entity NBT read at boot).
                 applyCarrierSideEffects(portal, ship, true);
                 syncToClients(server, entry.getKey());
-                LOG.info("[IPL-SHIP-PORTAL] restored anchor {} resolved to ship {}",
+                LOG.debug("[IPL-SHIP-PORTAL] restored anchor {} resolved to ship {}",
                     entry.getKey(), a.shipId());
             }
 
@@ -575,38 +587,26 @@ public final class IplShipPortalAnchor {
         }
     }
 
-    /**
-     * Find the ship nearest {@code pos} whose EFFECTIVE PARENT is {@code level}.
-     * Hosted ships' gameplay state lives in the HOSTING dimension's container (the
-     * dim-agnostic architecture), so scanning only the portal's own level finds
-     * nothing — the same disease as Sable's nearby-sub-level commands. Enumerate
-     * every container and filter by parent instead.
-     */
+    /** Find the ship of {@code level} nearest {@code pos} (AABB surface distance). */
     private static ServerSubLevel findShipAt(ServerLevel level, Vec3 pos, double margin) {
         ServerSubLevel best = null;
         double bestDist = margin * margin;
-        for (ServerLevel any : level.getServer().getAllLevels()) {
-            ServerSubLevelContainer container = SubLevelContainer.getContainer(any);
-            if (container == null) continue;
-            for (ServerSubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
-                if (sub.isRemoved()) continue;
-                ServerLevel parent = ipl.sable.dim.IplDimAgnostic.isHosted(sub)
-                    ? ipl.sable.dim.IplDimAgnostic.getServerParentLevel(sub)
-                    : (sub.getLevel() instanceof ServerLevel sl ? sl : null);
-                if (parent != level) continue;
-                var bb = sub.boundingBox();
-                // Distance from the origin to the closest point of the ship's AABB
-                // (zero when inside): a portal hovering just above a large deck is
-                // near the SURFACE while being far from the center.
-                double dx = Math.max(0.0, Math.max(bb.minX() - pos.x, pos.x - bb.maxX()));
-                double dy = Math.max(0.0, Math.max(bb.minY() - pos.y, pos.y - bb.maxY()));
-                double dz = Math.max(0.0, Math.max(bb.minZ() - pos.z, pos.z - bb.maxZ()));
-                double d = dx * dx + dy * dy + dz * dz;
-                if (d == 0.0) return sub;
-                if (d < bestDist) {
-                    bestDist = d;
-                    best = sub;
-                }
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+        if (container == null) return null;
+        for (ServerSubLevel sub : container.getAllSubLevels()) {
+            if (sub.isRemoved()) continue;
+            var bb = sub.boundingBox();
+            // Distance from the origin to the closest point of the ship's AABB
+            // (zero when inside): a portal hovering just above a large deck is
+            // near the SURFACE while being far from the center.
+            double dx = Math.max(0.0, Math.max(bb.minX() - pos.x, pos.x - bb.maxX()));
+            double dy = Math.max(0.0, Math.max(bb.minY() - pos.y, pos.y - bb.maxY()));
+            double dz = Math.max(0.0, Math.max(bb.minZ() - pos.z, pos.z - bb.maxZ()));
+            double d = dx * dx + dy * dy + dz * dz;
+            if (d == 0.0) return sub;
+            if (d < bestDist) {
+                bestDist = d;
+                best = sub;
             }
         }
         return best;
@@ -616,7 +616,7 @@ public final class IplShipPortalAnchor {
         for (ServerLevel level : server.getAllLevels()) {
             ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
             if (container == null) continue;
-            for (ServerSubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
+            for (ServerSubLevel sub : container.getAllSubLevels()) {
                 if (sub.getUniqueId().equals(shipId)) return sub;
             }
         }

@@ -3,7 +3,6 @@ package ipl.sable.transit;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import ipl.sable.dim.IplDimAgnostic;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.AABB;
@@ -14,25 +13,37 @@ import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
-/** Server-authoritative finite-aperture transit orchestration.
- * Phases: snapshot all bodies -> derive sessions/candidates -> reap stale sessions
- * -> chronological group commits -> evaluate mapped residual, at most 16 rounds.
- * Predictive seam arming never proves physical entry. Rigid mates wait until all
- * occupied volumes clear the entrance in the same chart before any body is moved.
+/**
+ * Portal transit for Sable sub-levels in the native model (each sub-level lives in its
+ * own level). Runs at the TAIL of every level's sub-level container tick and handles the
+ * ships of that level:
+ *
+ * <ol>
+ *   <li>capture the swept trail (once per server tick per ship);</li>
+ *   <li>per nearby portal: approach / straddle / crossed classification of the swept
+ *       volume; straddling opens a projection session;</li>
+ *   <li>chained sessions: the same classification run on the projection side (the
+ *       trail mapped through the session isometry) against portals of the
+ *       destination level;</li>
+ *   <li>a finished crossing flips the real body to the far side, unless the
+ *       {@link IplAttachmentGate} says it is attached; flipped bodies are re-processed
+ *       immediately so chains continue seamlessly (infinite portal loops included).</li>
+ * </ol>
  */
 public final class SableTransitController {
-
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-transit");
 
     private static final double PORTAL_QUERY_INFLATION = 4.0;
-
     private static final double APERTURE_MARGIN = 0.0;
     private static final int ACTOR_RESYNC_INTERVAL = 100;
+    /** Flips per ship per tick (portal loops at extreme speed); history is kept beyond it. */
+    private static final int MAX_TRANSITS_PER_TICK = 16;
+
     public static final double DEFAULT_EARLY_OPEN_SEGMENTS = 1.0;
     private static volatile double earlyOpenSegments = DEFAULT_EARLY_OPEN_SEGMENTS;
 
@@ -46,27 +57,13 @@ public final class SableTransitController {
         return earlyOpenSegments;
     }
 
-    private static long hostedTransitTick;
-    private static final int MAX_TRANSITS_PER_TICK = 16;
+    private static int lastServerTick = Integer.MIN_VALUE;
+    private static long transitTick;
 
     private SableTransitController() {}
 
     public static void onServerStopping(MinecraftServer server) {
-        SableRehomeOps.clearPendingHandoffs();
-
-        try {
-            ServerLevel hosting =
-                ipl.sable.dim.SableSubLevelDimension.getSableSubLevelsOrNull(server);
-            if (hosting != null) {
-                var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer
-                    .getContainer((net.minecraft.world.level.Level) hosting);
-                LOG.info("[IPL-SHUTDOWN] hosting dim post-drain: loadedChunks={} liveSubLevels={}",
-                    hosting.getChunkSource().getLoadedChunksCount(),
-                    container == null ? -1 : ipl.sable.dim.IplOwnedSubLevels.owned(container).size());
-            }
-        } catch (Throwable t) {
-            LOG.warn("[IPL-SHUTDOWN] post-drain diagnostic failed", t);
-        }
+        IplShipFlip.clearPending();
         IplGrabChain.clearAll();
         IplStraddleSessionSync.clearAll();
         IplPortalRimManager.clearAll();
@@ -75,368 +72,369 @@ public final class SableTransitController {
         PortalCrossingDetector.clearTrails();
         IplShipPortalAnchor.clearAll();
         IplShipNetherPortal.clearPending();
-        SableRehomeOps.resetBootRestore();
-        ipl.sable.dim.IplSceneOwnership.clearAll();
+        IplAttachmentGate.clearAll();
+        lastServerTick = Integer.MIN_VALUE;
+    }
+
+    /** Once per server tick, at the first container tick of the tick. */
+    private static void beginServerTick(MinecraftServer server) {
+        int tick = server.getTickCount();
+        if (tick == lastServerTick) return;
+        lastServerTick = tick;
+        PortalCrossingDetector.pruneTrails();
+        IplPortalVolumeCache.prune();
+        PortalCrossingDetector.beginTrailTick();
+        IplPortalVolumeCache.beginTick();
+        IplEnteringVolumeVisualization.beginTick();
+        transitTick++;
+        // Sessions of bodies that disappeared (unloaded, removed, merged).
+        for (StraddleKey key : IplAtlasStraddleSession.sessionKeys()) {
+            if (!IplAtlasStraddleSession.hasSessionKey(key)) continue;
+            Portal portal = IplAtlasStraddleSession.sessionPortal(key);
+            if (portal == null || portal.isRemoved() || !shipAlive(server, key.subLevelUuid())) {
+                endSession(server, key, "stale");
+            }
+        }
+    }
+
+    private static boolean shipAlive(MinecraftServer server, UUID uuid) {
+        for (ServerLevel level : server.getAllLevels()) {
+            ServerSubLevelContainer container =
+                dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);
+            if (container != null && container.getSubLevel(uuid) instanceof ServerSubLevel sub && !sub.isRemoved()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static void onContainerTick(ServerSubLevelContainer container) {
-        onContainerTick(container, 0);
+        if (!(container.getLevel() instanceof ServerLevel level)) return;
+        MinecraftServer server = level.getServer();
+        level.getProfiler().push("ipl_sable_transit");
+        try {
+            beginServerTick(server);
+            IplPortalRimManager.tick(level);
+            List<ServerSubLevel> ships = new ArrayList<>();
+            for (SubLevel sub : container.getAllSubLevels()) {
+                if (sub instanceof ServerSubLevel body && !body.isRemoved()) ships.add(body);
+            }
+            if (ships.isEmpty() && IplAtlasStraddleSession.sessionKeys().isEmpty()) return;
+            for (ServerSubLevel ship : ships) {
+                IplPortalVolumeCache.touch(ship);
+                IplEnteringVolumeVisualization.captureTick(ship, level);
+                PortalCrossingDetector.captureTrail(ship);
+                ipl$settleExit(level, ship);
+            }
+            Set<StraddleKey> seen = new HashSet<>();
+            Set<UUID> movedRiders = new HashSet<>();
+            List<ServerSubLevel> pending = ships;
+            for (int round = 0; round < MAX_TRANSITS_PER_TICK && !pending.isEmpty(); round++) {
+                List<TransitCandidate> candidates = new ArrayList<>();
+                for (ServerSubLevel ship : pending) {
+                    if (!ship.isRemoved()) processShip(ship, round == 0, seen, candidates);
+                }
+                pending = executeCandidates(server, candidates, movedRiders);
+                if (round == MAX_TRANSITS_PER_TICK - 1 && !pending.isEmpty() && transitTick % 100 == 0) {
+                    LOG.warn("[IPL-TRANSIT] residual crossing budget {} reached; history retained",
+                        MAX_TRANSITS_PER_TICK);
+                }
+            }
+            // Reap sessions of this level's ships that no evaluation kept alive this tick.
+            for (ServerSubLevel ship : ships) {
+                if (ship.isRemoved() || ship.getLevel() != level) continue;
+                for (StraddleKey key : IplAtlasStraddleSession.sessionKeysFor(ship.getUniqueId())) {
+                    if (!seen.contains(key) && IplAtlasStraddleSession.hasSessionKey(key)) {
+                        endSession(server, key, "reaped");
+                    }
+                }
+                IplStraddleSessionSync.retainOnly(server, ship.getUniqueId(), seen);
+            }
+            IplEnteringVolumeVisualization.flush(server);
+            IplShipFlip.flushHandoffs(server);
+        } finally {
+            level.getProfiler().pop();
+        }
     }
 
-    private static void onContainerTick(ServerSubLevelContainer container, int round) {
-        boolean continuation = round > 0;
-        ServerLevel level = (ServerLevel) container.getLevel();
-        if (level == null) return;
-        level.getProfiler().push("ipl_sable_transit");
-        if (!continuation && IplDimAgnostic.isHostingLevel(level)) {
-            IplEnteringVolumeVisualization.beginTick();
-            PortalCrossingDetector.beginTrailTick();
-            IplPortalVolumeCache.beginTick();
-        }
-
-        if (!continuation) IplPortalRimManager.tick(level);
-
-        if (!continuation && ipl.sable.dim.IplSceneOwnership.isEnabled()
-            && ipl.sable.dim.IplDimAgnostic.isHostingLevel(level)) {
-            ipl.sable.dim.IplSceneOwnership.reconcile(container);
-        }
-
-        java.util.Set<StraddleKey> seenHostedKeys = new java.util.HashSet<>();
-
-        if (!continuation) {
-            for (SubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
-                if (!(sub instanceof ServerSubLevel body) || body.isRemoved()
-                    || !IplDimAgnostic.isHosted(body)) continue;
-                ServerLevel parent = IplDimAgnostic.getServerParentLevel(body);
-                if (parent == null) continue;
-                IplPortalVolumeCache.touch(body);
-                IplEnteringVolumeVisualization.captureTick(body, parent);
-                PortalCrossingDetector.captureTrail(body);
-                ipl$settleExit(level, body);
+    /** Ends a session, its chained descendants, and their client mirrors. */
+    static void endSession(MinecraftServer server, StraddleKey key, String reason) {
+        String prefix = key.path();
+        for (StraddleKey other : IplAtlasStraddleSession.sessionKeysFor(key.subLevelUuid())) {
+            if (other.equals(key) || other.via().equals(prefix) || other.via().startsWith(prefix + ">")) {
+                IplStraddleSessionSync.onSessionEnd(server, other, reason);
             }
         }
+        IplStraddleSessionSync.onSessionEnd(server, key, reason);
+        IplAtlasStraddleSession.clear(key, reason);
+    }
 
-        List<TransitCandidate> candidates = null;
-        for (SubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
-            if (!(subLevel instanceof ServerSubLevel airship)) continue;
-            if (airship.isRemoved()) continue;
+    private static List<Portal> portalsNear(ServerLevel level, AABB swept) {
+        AABB query = swept.inflate(PORTAL_QUERY_INFLATION);
+        List<Portal> nearby = new ArrayList<>(level.getEntitiesOfClass(Portal.class, query, Portal::isTeleportable));
+        Vec3 center = query.getCenter();
+        double reach = 0.5 * Math.sqrt(query.getXsize() * query.getXsize()
+            + query.getYsize() * query.getYsize() + query.getZsize() * query.getZsize());
+        for (Portal global : qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage.getGlobalPortals(level)) {
+            if (global.isTeleportable() && global.getDistanceToNearestPointInPortal(center) <= reach) {
+                nearby.add(global);
+            }
+        }
+        return nearby;
+    }
 
-            boolean hosted = IplDimAgnostic.isHosted(airship);
-            if (!hosted) {
+    private static boolean usablePortal(MinecraftServer server, Portal portal, ServerLevel level) {
+        return Math.abs(portal.getScaling() - 1.0) <= 1e-9 && portal.level() == level
+            && !portal.isRemoved() && server.getLevel(portal.getDestDim()) != null;
+    }
+
+    private static void processShip(ServerSubLevel airship, boolean firstRound,
+                                     Set<StraddleKey> seen, List<TransitCandidate> candidates) {
+        ServerLevel level = airship.getLevel();
+        MinecraftServer server = level.getServer();
+        if (firstRound && transitTick % ACTOR_RESYNC_INTERVAL == 0) {
+            int rebound = SableTransitOps.resyncStaleActors(airship);
+            if (rebound > 0) {
+                LOG.debug("[IPL-TRANSIT] rebound {} stale physics actor(s) for {}", rebound, airship.getUniqueId());
+            }
+        }
+        IplPortalVolumeCache.touch(airship);
+        List<Portal> nearby = portalsNear(level, PortalCrossingDetector.sweptBounds(airship));
+        IplAtlasStraddleSession.forEachSessionFrom(airship, level, (sessionPortal, mapping) -> {
+            if (sessionPortal.isRemoved()) return;
+            for (Portal candidate : nearby) if (candidate.getUUID().equals(sessionPortal.getUUID())) return;
+            nearby.add(sessionPortal);
+        });
+        nearby.sort(Comparator.comparing(portal -> portal.getUUID().toString()));
+        Set<UUID> resolvedDoorways = new HashSet<>();
+        for (Portal portal : nearby) {
+            if (resolvedDoorways.contains(portal.getUUID())) continue;
+            if (!ipl$isCanonicalEntranceFace(airship.getUniqueId(), portal, nearby)) continue;
+            if (!usablePortal(server, portal, level)) continue;
+            if (IplShipPortalAnchor.isAnchorShip(portal, airship.getUniqueId())) continue;
+            UUID portalUuid = portal.getUUID();
+            StraddleKey key = new StraddleKey(airship.getUniqueId(), portalUuid);
+            boolean haveSession = IplAtlasStraddleSession.hasSessionKey(key);
+            Vec3 normal = portal.getNormal().scale(-1.0);
+            PortalCrossingDetector.CrossingState state =
+                PortalCrossingDetector.evaluate(airship, portal, normal, APERTURE_MARGIN);
+            boolean physicalEntry = state.provesPhysicalEntry();
+            if (haveSession && physicalEntry) IplAtlasStraddleSession.markAdmitted(key);
+            boolean admitted = physicalEntry || haveSession && IplAtlasStraddleSession.isAdmitted(key);
+            boolean finiteCompletion = state.phase() != PortalCrossingDetector.CrossingPhase.APPROACHING
+                && (haveSession || state.sweptIntersectsPortalAperture())
+                && PortalCrossingDetector.completesThroughAperture(airship, portal,
+                    admitted ? PortalCrossingDetector.SESSION_RELEASE_MARGIN : 0.0);
+            boolean hasSource = haveSession && PortalCrossingDetector.hasSourceGeometry(airship, portal);
+            if (hasSource) IplAtlasStraddleSession.revokeCompletion(key);
+            if (haveSession && finiteCompletion) IplAtlasStraddleSession.markCompleted(key);
+            double lookahead = earlyOpenSegments;
+            boolean predictedEntry = lookahead > 0.0
+                && state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
+                && PortalCrossingDetector.willEnterAperture(airship, portal, normal, APERTURE_MARGIN, lookahead);
+            boolean straddlingAperture = (state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
+                && ((admitted
+                        ? PortalCrossingDetector.retainsAdmittedSession(airship, portal)
+                        : state.currentIntersectsPortalAperture())
+                    || haveSession && !hasSource && IplAtlasStraddleSession.isCompleted(key)))
+                || predictedEntry;
+            if (straddlingAperture) {
+                Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
+                if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession, predictedEntry)) continue;
+                boolean twinHasSession = twin != null && ipl$hasAnySession(airship.getUniqueId(), twin);
+                if (!haveSession && twinHasSession) continue;
+                if (haveSession && twinHasSession) {
+                    LOG.debug("[IPL-TRANSIT] dual-parity sessions for {} — dropping face {}",
+                        airship.getUniqueId(), portalUuid);
+                    endSession(server, key, "dual-parity-heal");
+                    continue;
+                }
+                IplEnteringVolumeVisualization.clearBuffer(airship);
+                keepRootSession(server, airship, portal, normal, key, seen, physicalEntry, finiteCompletion);
                 continue;
             }
-            if (!continuation && hostedTransitTick % ACTOR_RESYNC_INTERVAL == 0) {
-                int rebound = SableTransitOps.resyncStaleActors(airship);
-                if (rebound > 0) {
-                    LOG.info("[IPL-TRANSIT] rebound {} stale physics actor(s) to live block "
-                        + "entities for uuid={}", rebound, airship.getUniqueId());
+            boolean startedSourceSide = state.startedBeforePortalPlane()
+                || PortalCrossingDetector.hasBufferedExit(airship);
+            boolean completedOwnedCrossing = IplAtlasStraddleSession.isCompleted(key)
+                || finiteCompletion && ((haveSession && IplAtlasStraddleSession.isAdmitted(key))
+                    || startedSourceSide && state.sweptIntersectsPortalAperture()
+                        && state.sweptTowardDestination());
+            if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED && completedOwnedCrossing) {
+                Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
+                if (!haveSession && twin != null && ipl$hasAnySession(airship.getUniqueId(), twin)) continue;
+                if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession, false)) continue;
+                if (haveSession) {
+                    IplAtlasStraddleSession.markCompleted(key);
+                    seen.add(key);
                 }
-            }
-            IplPortalVolumeCache.touch(airship);
-
-            ServerLevel portalQueryLevel = IplDimAgnostic.getServerParentLevel(airship);
-            if (portalQueryLevel == null) continue;
-
-            AABB airshipAabb = PortalCrossingDetector.sweptBounds(airship)
-                .inflate(PORTAL_QUERY_INFLATION);
-            List<Portal> nearby = new ArrayList<>(portalQueryLevel.getEntitiesOfClass(
-                Portal.class,
-                airshipAabb,
-                Portal::isTeleportable
-            ));
-
-            Vec3 shipCenter = airshipAabb.getCenter();
-            double reach = 0.5 * Math.sqrt(
-                airshipAabb.getXsize() * airshipAabb.getXsize()
-                    + airshipAabb.getYsize() * airshipAabb.getYsize()
-                    + airshipAabb.getZsize() * airshipAabb.getZsize());
-            for (Portal globalPortal :
-                qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage
-                    .getGlobalPortals(portalQueryLevel)) {
-                if (globalPortal.isTeleportable()
-                    && globalPortal.getDistanceToNearestPointInPortal(shipCenter) <= reach) {
-                    nearby.add(globalPortal);
-                }
-            }
-
-            IplAtlasStraddleSession.forEachSessionFrom(airship, portalQueryLevel, (sessionPortal, mapping) -> {
-                if (sessionPortal.isRemoved()) return;
-                for (Portal candidate : nearby) {
-                    if (candidate.getUUID().equals(sessionPortal.getUUID())) return;
-                }
-                nearby.add(sessionPortal);
-            });
-
-            nearby.sort(Comparator.comparing(portal -> portal.getUUID().toString()));
-            java.util.Set<UUID> resolvedDoorways = new java.util.HashSet<>();
-
-            for (Portal portal : nearby) {
-                if (resolvedDoorways.contains(portal.getUUID())) continue;
-                if (!ipl$isCanonicalEntranceFace(airship.getUniqueId(), portal, nearby)) continue;
-                if (Math.abs(portal.getScaling() - 1.0) > 1e-9
-                    || portal.level() != portalQueryLevel
-                    || level.getServer().getLevel(portal.getDestDim()) == null
-                    || IplDimAgnostic.isHostingLevel(level.getServer().getLevel(portal.getDestDim()))) continue;
-
-                UUID portalUuid = portal.getUUID();
-
-                if (IplShipPortalAnchor.isAnchorShip(portal, airship.getUniqueId())) {
+                if (!haveSession
+                    && (PortalCrossingDetector.entryWithinExitSlab(airship, state.entryTime())
+                        || PortalCrossingDetector.withinExitClearance(airship, portal)
+                        || (twin != null && PortalCrossingDetector.withinExitClearance(airship, twin)))) {
                     continue;
                 }
-                StraddleKey key = new StraddleKey(
-                    airship.getUniqueId(), portalUuid
-                );
-                boolean haveSession = IplAtlasStraddleSession.hasSessionKey(key);
-
-                Vec3 normal = portal.getNormal().scale(-1.0);
-                PortalCrossingDetector.CrossingState state = PortalCrossingDetector.evaluate(
-                    airship, portal, normal, APERTURE_MARGIN);
-
-                // A predictive session becomes authoritative only after the real sweep hits.
-                boolean physicalEntry = state.provesPhysicalEntry();
-                if (haveSession && physicalEntry) IplAtlasStraddleSession.markAdmitted(key);
-                boolean admitted = physicalEntry || haveSession && IplAtlasStraddleSession.isAdmitted(key);
-                boolean finiteCompletion = state.phase() != PortalCrossingDetector.CrossingPhase.APPROACHING
-                    && (haveSession || state.sweptIntersectsPortalAperture())
-                    && PortalCrossingDetector.completesThroughAperture(airship, portal,
-                        admitted ? PortalCrossingDetector.SESSION_RELEASE_MARGIN : 0.0);
-                boolean hasSource = haveSession && PortalCrossingDetector.hasSourceGeometry(airship, portal);
-                if (hasSource) {
-                    IplAtlasStraddleSession.revokeCompletion(key);
-                }
-                if (haveSession && finiteCompletion) IplAtlasStraddleSession.markCompleted(key);
-
-                double lookahead = earlyOpenSegments;
-                boolean predictedEntry = lookahead > 0.0
-                    && state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
-                    && PortalCrossingDetector.willEnterAperture(
-                        airship, portal, normal, APERTURE_MARGIN, lookahead);
-                boolean straddlingAperture = (state.phase()
-                    == PortalCrossingDetector.CrossingPhase.STRADDLING
-                    && ((admitted
-                            ? PortalCrossingDetector.retainsAdmittedSession(airship, portal)
-                            : state.currentIntersectsPortalAperture())
-                        || haveSession && !hasSource && IplAtlasStraddleSession.isCompleted(key)))
-                    || predictedEntry;
-
-                if (straddlingAperture) {
-                    Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
-
-                    if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession, predictedEntry)) {
-                        continue;
-                    }
-
-                    boolean twinHasSession = twin != null
-                        && ipl$hasAnySession(airship.getUniqueId(), twin);
-                    if (!haveSession && twinHasSession) {
-                        continue;
-                    }
-                    if (haveSession && twinHasSession) {
-
-                        LOG.warn("[IPL-TRANSIT] dual-parity sessions on coincident "
-                            + "faces for uuid={} — clearing duplicate face {}",
-                            airship.getUniqueId(), portalUuid);
-                        IplAtlasStraddleSession.clear(key, "dual-parity-heal");
-                        IplStraddleSessionSync.onSessionEnd(
-                            level.getServer(), key, "dual-parity-heal");
-                        continue;
-                    }
-                    IplEnteringVolumeVisualization.clearBuffer(airship);
-
-                    IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
-                    if (IplAtlasStraddleSession.hasSessionKey(key)) {
-                        if (physicalEntry) IplAtlasStraddleSession.markAdmitted(key);
-                        // Zero-plane exit can precede the 0.1 phase hysteresis by a tick.
-                        if (finiteCompletion) IplAtlasStraddleSession.markCompleted(key);
-                        seenHostedKeys.add(key);
-                        IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
-                    }
+                List<ServerSubLevel> mates = ipl$rigidGroupMates(airship);
+                if (mates == null) continue; // a failed joint walk is NOT a solo body
+                boolean blocked = !ipl$groupReady(airship, mates, portal)
+                    || IplAttachmentGate.flipBlocker(airship, mates,
+                        IplShipFlip.isCrossDimension(airship, portal)) != null;
+                if (blocked) {
+                    // Attached or not ready: the far side keeps living on the projection.
+                    keepRootSession(server, airship, portal, normal, key, seen, false, true);
                     continue;
                 }
-
-                boolean startedSourceSide = state.startedBeforePortalPlane()
-                    || PortalCrossingDetector.hasBufferedExit(airship);
-                boolean completedOwnedCrossing = IplAtlasStraddleSession.isCompleted(key)
-                    || finiteCompletion && ((haveSession && IplAtlasStraddleSession.isAdmitted(key))
-                        || startedSourceSide && state.sweptIntersectsPortalAperture()
-                            && state.sweptTowardDestination());
-                if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
-                    && completedOwnedCrossing) {
-
-                    Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
-                    if (!haveSession && twin != null
-                        && ipl$hasAnySession(airship.getUniqueId(), twin)) {
-
-                        continue;
-                    }
-                    if (!ipl$ownsCoincidentFace(portal, twin, state, haveSession, false)) {
-                        continue;
-                    }
-
-                    if (haveSession) {
-                        IplAtlasStraddleSession.markCompleted(key);
-                        seenHostedKeys.add(key);
-                    }
-
-                    if (!haveSession
-                        && (PortalCrossingDetector.entryWithinExitSlab(airship, state.entryTime())
-                            || PortalCrossingDetector.withinExitClearance(airship, portal)
-                            || (twin != null
-                                && PortalCrossingDetector.withinExitClearance(airship, twin)))) {
-                        continue;
-                    }
-                    List<ServerSubLevel> mates = ipl$rigidGroupMates(airship);
-                    if (mates == null) continue; // Failed joint walk is NOT a solo body.
-                    if (!ipl$groupReady(airship, mates, portal)) {
-                        // Keep the leading member's destination image until its mates clear.
-
-                        IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
-                        if (IplAtlasStraddleSession.hasSessionKey(key)) {
-                            IplAtlasStraddleSession.markCompleted(key);
-                            seenHostedKeys.add(key);
-                            IplStraddleSessionSync.onSessionStart(level.getServer(), airship, portal);
-                        }
-                        continue;
-                    }
-                    double completion = PortalCrossingDetector.completionTime(airship, portal);
-                    for (ServerSubLevel mate : mates) {
-                        completion = Math.max(completion,
-                            PortalCrossingDetector.completionTime(mate, portal));
-                    }
-                    if (candidates == null) candidates = new ArrayList<>(1);
-                    candidates.add(new TransitCandidate(
-                        airship, portal, mates, state.entryTime(), completion));
-
-                } else {
-                    String reason = state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
-                        ? "backed-out" : "left-aperture";
-                    if (haveSession) {
-
-                        if (PortalCrossingDetector.touchesPortalVirtually(airship, portal)) {
-                            seenHostedKeys.add(key);
-                            IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
-                            continue;
-                        }
-                        IplAtlasStraddleSession.clear(key, reason);
-                        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, reason);
-                        // Retiring a source-side session consumes THIS doorway only.
-                        // Its coincident back face may not reuse the withdrawing segment;
-                        // unrelated portals must still see that segment in this tick.
-                        for (Portal face : nearby) {
-                            if (ipl$sameRectangle(portal, face)) resolvedDoorways.add(face.getUUID());
-                        }
-                        IplEnteringVolumeVisualization.replaceBuffer(airship);
-
-                        continue;
-                    }
-
-                    IplStraddleSessionSync.onSessionEnd(level.getServer(), key, reason);
+                double completion = PortalCrossingDetector.completionTime(airship, portal);
+                for (ServerSubLevel mate : mates) {
+                    completion = Math.max(completion, PortalCrossingDetector.completionTime(mate, portal));
                 }
-
-            }
-
-        }
-
-        if (IplDimAgnostic.isHostingLevel(level)) {
-            java.util.Set<StraddleKey> live = new java.util.HashSet<>(
-                IplAtlasStraddleSession.sessionKeys());
-
-            live.addAll(IplStraddleSessionSync.activeKeys());
-            for (StraddleKey k : live) {
-                if (!seenHostedKeys.contains(k)) {
-                    IplAtlasStraddleSession.clear(k, "reaped");
-                    IplStraddleSessionSync.onSessionEnd(level.getServer(), k, "reaped");
+                candidates.add(new TransitCandidate(airship, portal, mates, state.entryTime(), completion));
+            } else {
+                String reason = state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING
+                    ? "backed-out" : "left-aperture";
+                if (haveSession) {
+                    if (PortalCrossingDetector.touchesPortalVirtually(airship, portal)) {
+                        keepRootSession(server, airship, portal, normal, key, seen, false, false);
+                        continue;
+                    }
+                    endSession(server, key, reason);
+                    for (Portal face : nearby) {
+                        if (ipl$sameRectangle(portal, face)) resolvedDoorways.add(face.getUUID());
+                    }
+                    IplEnteringVolumeVisualization.replaceBuffer(airship);
                 }
             }
-            if (!continuation) {
-                PortalCrossingDetector.pruneTrails();
-                IplPortalVolumeCache.prune();
-                hostedTransitTick++;
-            }
         }
+        processChains(airship, seen);
+    }
 
-        if (candidates == null) {
-            if (!continuation && IplDimAgnostic.isHostingLevel(level)) {
-                IplEnteringVolumeVisualization.flush(level.getServer());
-                SableRehomeOps.flushParentHandoffs(level.getServer());
+    private static void keepRootSession(MinecraftServer server, ServerSubLevel airship, Portal portal, Vec3 normal,
+                                        StraddleKey key, Set<StraddleKey> seen,
+                                        boolean physicalEntry, boolean completed) {
+        IplAtlasStraddleSession.onStraddleTick(airship, portal, normal);
+        if (!IplAtlasStraddleSession.hasSessionKey(key)) return;
+        if (physicalEntry) IplAtlasStraddleSession.markAdmitted(key);
+        if (completed) IplAtlasStraddleSession.markCompleted(key);
+        seen.add(key);
+        IplStraddleSessionSync.onSessionStart(server, airship, key, portal);
+    }
+
+    /**
+     * Entry detection on the projection side: every live session's image is evaluated
+     * against the portals of its destination level, through the session isometry.
+     */
+    private static void processChains(ServerSubLevel airship, Set<StraddleKey> seen) {
+        MinecraftServer server = airship.getLevel().getServer();
+        for (int depth = 1; depth < IplAtlasStraddleSession.MAX_CHAIN_DEPTH; depth++) {
+            boolean any = false;
+            for (StraddleKey parentKey : IplAtlasStraddleSession.sessionKeysFor(airship.getUniqueId())) {
+                if (parentKey.depth() != depth || !seen.contains(parentKey)) continue;
+                any = true;
+                Portal parentPortal = IplAtlasStraddleSession.sessionPortal(parentKey);
+                ServerLevel dest = IplAtlasStraddleSession.sessionDest(parentKey);
+                IplStraddlePoseMap.StraddleMapping mapping = IplAtlasStraddleSession.sessionMapping(parentKey);
+                if (parentPortal == null || dest == null || mapping == null) continue;
+                List<Portal> nearby = PortalCrossingDetector.inMappedView(mapping,
+                    () -> portalsNear(dest, PortalCrossingDetector.sweptBounds(airship)));
+                for (StraddleKey child : IplAtlasStraddleSession.childrenOf(parentKey)) {
+                    Portal existing = IplAtlasStraddleSession.sessionPortal(child);
+                    if (existing != null && !nearby.contains(existing)) nearby.add(existing);
+                }
+                nearby.sort(Comparator.comparing(portal -> portal.getUUID().toString()));
+                for (Portal portal : nearby) {
+                    if (!usablePortal(server, portal, dest) || ipl$isExitFace(parentPortal, portal)
+                        || IplShipPortalAnchor.isAnchorShip(portal, airship.getUniqueId())) continue;
+                    StraddleKey childKey = parentKey.child(portal.getUUID());
+                    boolean haveChild = IplAtlasStraddleSession.hasSessionKey(childKey);
+                    Vec3 normal = portal.getNormal().scale(-1.0);
+                    boolean keep = PortalCrossingDetector.inMappedView(mapping, () -> {
+                        var state = PortalCrossingDetector.evaluate(airship, portal, normal, APERTURE_MARGIN);
+                        if (state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING) {
+                            return earlyOpenSegments > 0.0 && PortalCrossingDetector.willEnterAperture(
+                                airship, portal, normal, APERTURE_MARGIN, earlyOpenSegments);
+                        }
+                        if (haveChild) {
+                            return state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
+                                || PortalCrossingDetector.retainsAdmittedSession(airship, portal)
+                                || state.currentIntersectsPortalAperture();
+                        }
+                        return state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING
+                            && state.currentIntersectsPortalAperture()
+                            && state.startedBeforePortalPlane()
+                            && state.sweptEntryDirection() != PortalCrossingDetector.SweepDirection.TOWARD_SOURCE;
+                    });
+                    if (keep) {
+                        IplAtlasStraddleSession.onChainTick(parentKey, portal, normal);
+                        if (IplAtlasStraddleSession.hasSessionKey(childKey)) {
+                            seen.add(childKey);
+                            IplStraddleSessionSync.onSessionStart(server, airship, childKey, portal);
+                        }
+                    } else if (haveChild) {
+                        endSession(server, childKey, "chain-left");
+                    }
+                }
             }
-            level.getProfiler().pop();
-            return;
+            if (!any) break;
         }
+    }
 
-        // Select physical travel order, not entity iteration order or portal UUID.
+    /** The reverse face at a portal's exit (where the image comes out) is never a new entrance. */
+    private static boolean ipl$isExitFace(Portal entered, Portal candidate) {
+        if (candidate.getUUID().equals(entered.getUUID())) return true;
+        if (!candidate.level().dimension().equals(entered.getDestDim())) return false;
+        if (candidate.getOriginPos().distanceToSqr(entered.getDestPos()) > 1.0e-6) return false;
+        Vec3 exitNormal = entered.transformLocalVec(entered.getNormal());
+        return Math.abs(candidate.getNormal().dot(exitNormal)) > 0.9999;
+    }
+
+    private static List<ServerSubLevel> executeCandidates(MinecraftServer server, List<TransitCandidate> candidates,
+                                                          Set<UUID> movedRiders) {
+        if (candidates.isEmpty()) return List.of();
         candidates.sort(Comparator
             .comparingDouble((TransitCandidate c) -> Double.isFinite(c.entryTime()) ? c.entryTime() : 0.0)
             .thenComparing(c -> c.portal().getUUID().toString())
             .thenComparing(c -> c.airship().getUniqueId().toString()));
-        java.util.Set<UUID> flippedThisTick = new java.util.HashSet<>();
-        java.util.Set<UUID> movedRiders = new java.util.HashSet<>();
+        Set<UUID> flipped = new HashSet<>();
+        List<ServerSubLevel> continuing = new ArrayList<>();
         for (TransitCandidate c : candidates) {
-            UUID uuid = c.airship.getUniqueId();
-
-            if (flippedThisTick.contains(uuid)
-                || c.mates().stream().anyMatch(m -> flippedThisTick.contains(m.getUniqueId()))) continue;
+            UUID uuid = c.airship().getUniqueId();
+            if (flipped.contains(uuid) || c.mates().stream().anyMatch(m -> flipped.contains(m.getUniqueId()))) continue;
             if (!ipl$groupReady(c.airship(), c.mates(), c.portal())
-                || !SableRehomeOps.canExecuteHostedTransit(c.airship(), c.portal())
-                || c.mates().stream().anyMatch(m -> !SableRehomeOps.canExecuteHostedTransit(m, c.portal()))) continue;
-            try {
-                boolean flipped = SableRehomeOps.executeHostedTransit(c.airship, c.portal, movedRiders);
-                if (flipped) {
-                    flippedThisTick.add(uuid);
-
-                    IplEnteringVolumeVisualization.clearBuffer(c.airship);
-                    PortalCrossingDetector.rebaseTrailThroughPortal(
-                        c.airship, c.portal, c.completionTime());
-
-                    IplGrabChain.onBodyTransit(level.getServer(), c.airship.getUniqueId(), c.portal);
-
-                    IplRopePortalSeam.onShipTransit(c.airship, c.portal);
-
-                    for (ServerSubLevel mate : c.mates()) {
-                        UUID mateId = mate.getUniqueId();
-                        if (mate.isRemoved() || !flippedThisTick.add(mateId)) continue;
-                        boolean mateFlipped = SableRehomeOps.executeHostedTransit(mate, c.portal, movedRiders);
-                        if (!mateFlipped) {
-                            flippedThisTick.remove(mateId);
-                            throw new IllegalStateException("Joint member declined after successful preflight: " + mateId);
-                        }
-                        PortalCrossingDetector.rebaseTrailThroughPortal(
-                            mate, c.portal, c.completionTime());
-                        IplGrabChain.onBodyTransit(level.getServer(), mateId, c.portal);
-                        IplRopePortalSeam.onShipTransit(mate, c.portal);
-                    }
-
-                    ipl$settleExit(level, c.airship);
-                    for (ServerSubLevel mate : c.mates()) {
-                        if (!mate.isRemoved()) ipl$settleExit(level, mate);
-                    }
+                || !IplShipFlip.canFlip(c.airship(), c.portal())
+                || c.mates().stream().anyMatch(m -> !IplShipFlip.canFlip(m, c.portal()))) continue;
+            ServerSubLevel live = IplShipFlip.flip(c.airship(), c.portal(), movedRiders);
+            if (live == null) continue;
+            flipped.add(uuid);
+            afterFlip(server, live, c.portal(), c.completionTime());
+            continuing.add(live);
+            for (ServerSubLevel mate : c.mates()) {
+                if (mate.isRemoved() || !flipped.add(mate.getUniqueId())) continue;
+                ServerSubLevel liveMate = IplShipFlip.flip(mate, c.portal(), movedRiders);
+                if (liveMate == null) {
+                    LOG.error("[IPL-TRANSIT] joint member {} declined after preflight", mate.getUniqueId());
+                    continue;
                 }
-            } catch (Throwable t) {
-
-                throw new IllegalStateException("Portal joint-group commit failed for " + uuid, t);
+                afterFlip(server, liveMate, c.portal(), c.completionTime());
+                continuing.add(liveMate);
             }
         }
-        // No new physics step or clock advancement while consuming this residual.
-        if (!flippedThisTick.isEmpty() && round + 1 < MAX_TRANSITS_PER_TICK) {
+        for (ServerSubLevel body : continuing) {
+            if (!body.isRemoved()) ipl$settleExit(body.getLevel(), body);
+        }
+        return continuing;
+    }
 
-            onContainerTick(container, round + 1);
-        } else if (!flippedThisTick.isEmpty() && hostedTransitTick % 100 == 0) {
-            LOG.warn("[IPL-TRANSIT] residual crossing budget {} reached; retaining history", MAX_TRANSITS_PER_TICK);
-        }
-        if (!continuation && IplDimAgnostic.isHostingLevel(level)) {
-            IplEnteringVolumeVisualization.flush(level.getServer());
-            SableRehomeOps.flushParentHandoffs(level.getServer());
-        }
-        level.getProfiler().pop();
+    private static void afterFlip(MinecraftServer server, ServerSubLevel body, Portal portal, double completion) {
+        IplEnteringVolumeVisualization.clearBuffer(body);
+        PortalCrossingDetector.rebaseTrailThroughPortal(body, portal, completion);
+        IplGrabChain.onBodyTransit(server, body.getUniqueId(), portal);
+        IplRopePortalSeam.onShipTransit(body, portal);
     }
 
     private static boolean ipl$groupReady(ServerSubLevel body, List<ServerSubLevel> mates, Portal portal) {
-        ServerLevel parent = IplDimAgnostic.getServerParentLevel(body);
-        if (parent == null || portal.level() != parent || portal.isRemoved()) return false;
+        if (portal.level() != body.getLevel() || portal.isRemoved()) return false;
         Vec3 normal = portal.getNormal().scale(-1.0);
         for (ServerSubLevel member : mates) {
-            if (member.isRemoved() || !IplDimAgnostic.isHosted(member)
-                || IplDimAgnostic.getServerParentLevel(member) != parent
+            if (member.isRemoved() || member.getLevel() != body.getLevel()
                 || IplShipPortalAnchor.isAnchorShip(portal, member.getUniqueId())) return false;
             var state = PortalCrossingDetector.evaluate(member, portal, normal, APERTURE_MARGIN);
             if (state.phase() != PortalCrossingDetector.CrossingPhase.CROSSED) return false;
@@ -450,27 +448,25 @@ public final class SableTransitController {
             == PortalCrossingDetector.CrossingPhase.CROSSED;
     }
 
-    private static java.util.List<ServerSubLevel> ipl$rigidGroupMates(ServerSubLevel body) {
-        if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return null;
+    /** Bodies rigidly jointed to {@code body} (they cross together); null if the walk failed. */
+    private static List<ServerSubLevel> ipl$rigidGroupMates(ServerSubLevel body) {
+        if (!ipl.sable.natives.IplRapierNatives.isAvailable()) return List.of();
         try {
-            long scene = ipl.sable.dim.IplSceneOwnership
-                .liveSceneHandle((ServerLevel) body.getLevel());
+            long scene = ipl.sable.atlas.IplScenes.sceneHandle(body.getLevel());
             if (scene == 0) return null;
             int[] ids = ipl.sable.natives.IplRapierNatives.connectedSableBodyIds(
                 scene, dev.ryanhcode.sable.physics.impl.rapier.Rapier3D.getID(body), true);
             if (ids.length == 0) return null;
-            if (ids.length == 1) return ids[0] == body.getRuntimeId() ? java.util.List.of() : null;
-
-            var hosting = dev.ryanhcode.sable.api.sublevel.SubLevelContainer
-                .getContainer(body.getLevel());
-            if (hosting == null) return null;
             int selfId = body.getRuntimeId();
-            java.util.List<ServerSubLevel> mates = new java.util.ArrayList<>(ids.length - 1);
+            if (ids.length == 1) return ids[0] == selfId ? List.of() : null;
+            var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(body.getLevel());
+            if (container == null) return null;
+            List<ServerSubLevel> mates = new ArrayList<>(ids.length - 1);
             for (int id : ids) {
                 if (id == selfId) continue;
-                for (var sub : ipl.sable.dim.IplOwnedSubLevels.owned(hosting)) {
-                    if (sub.getRuntimeId() == id && !sub.isRemoved()) {
-                        mates.add(sub);
+                for (var sub : container.getAllSubLevels()) {
+                    if (sub.getRuntimeId() == id && !sub.isRemoved() && sub instanceof ServerSubLevel server) {
+                        mates.add(server);
                         break;
                     }
                 }
@@ -479,8 +475,7 @@ public final class SableTransitController {
             mates.sort(Comparator.comparing(m -> m.getUniqueId().toString()));
             return mates;
         } catch (Throwable t) {
-            LOG.warn("[IPL-TRANSIT] rigid-group walk failed for uuid={}",
-                body.getUniqueId(), t);
+            LOG.debug("[IPL-TRANSIT] rigid-group walk failed for {}", body.getUniqueId(), t);
             return null;
         }
     }
@@ -523,11 +518,7 @@ public final class SableTransitController {
     private static void ipl$settleExit(ServerLevel level, ServerSubLevel body) {
         UUID exited = PortalCrossingDetector.settleExit(body);
         if (exited == null) return;
-        StraddleKey key = new StraddleKey(body.getUniqueId(), exited);
-        if (IplAtlasStraddleSession.hasSessionKey(key)) {
-            IplAtlasStraddleSession.clear(key, "exit-cleared");
-        }
-        IplStraddleSessionSync.onSessionEnd(level.getServer(), key, "exit-cleared");
+        endSession(level.getServer(), new StraddleKey(body.getUniqueId(), exited), "exit-cleared");
 
         IplEnteringVolumeVisualization.replaceBuffer(body);
     }

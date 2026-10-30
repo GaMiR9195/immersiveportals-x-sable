@@ -88,7 +88,7 @@ public class IplVeilShaderPreProcessor implements ShaderPreProcessor {
             key = stripped;
         } else {
             if (SEEN.putIfAbsent(full + "/" + typeName + "/skip", Boolean.TRUE) == null) {
-                LOG.info("[IPL-VEIL-PREPROCESS] name='{}' type={} -- not in affectedShaders, skip", full, typeName);
+                LOG.debug("[IPL-VEIL-PREPROCESS] name='{}' type={} -- not in affectedShaders, skip", full, typeName);
             }
             return;
         }
@@ -138,7 +138,7 @@ public class IplVeilShaderPreProcessor implements ShaderPreProcessor {
         tree.getBody().addAll(replacement.getBody());
 
         if (SEEN.putIfAbsent(key + "/" + type, Boolean.TRUE) == null) {
-            LOG.info("[IPL-VEIL-PREPROCESS] name='{}' type={} -- injected IP clip transformation", key, type);
+            LOG.debug("[IPL-VEIL-PREPROCESS] name='{}' type={} -- injected IP clip transformation", key, type);
         }
     }
 

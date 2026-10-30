@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * Entity collision against the THROUGH-PORTAL portion of a straddling hosted sub-level.
+ * Entity collision against the THROUGH-PORTAL portion of a straddling sub-level.
  *
  * <p>{@code SubLevelEntityCollision.collide} gathers candidates via
  * {@code Sable.HELPER.getAllIntersecting} (which now includes foreign straddlers with

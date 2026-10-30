@@ -1,6 +1,11 @@
-# v0.5.3
-1) Creative Physics Staff stability was improved, more polished visuals (fixed smooth constraint teleport).
-2) New jar naming format
+# v0.6.0
+1) New foundation: the `ipl_sable:sublevels` hosting dimension is gone. Ships live natively in one level
+   (stock Sable model); the far side of a portal is an Atlas **projection** of the same body.
+2) Multi-portal / chained straddling, attachment gate, seamless same-dim flips and cross-dim moves.
+3) Linux/macOS natives build script, multi-platform natives loader, much less console spam.
+
+Full description of the 0.6.0 model: `README060NEW.md`. Old worlds with ships stored in
+`ipl_sable:sublevels` are not migrated (see README060NEW.md → Upgrade).
 
 # Immersive Portals × Sable Compatibility Fork
 Version: NeoForge 1.21.1; Targets: Sable 2.0.3+ · Create Aeronautics 1.3.0+ · Create 6.0.10
@@ -21,26 +26,24 @@ Upstream IP (NeoForge): https://github.com/iPortalTeam/ImmersivePortalsModForNeo
 Sable: https://github.com/ryanhcode/sable
 
 # What’s the trick?
-Sable normally “hides” each sub-level by shoving its blocks far away inside a dimension.
-IP is like “cool, I’m rendering/simulating multiple dimensions anyway.”
+Sable keeps each sub-level’s blocks in a far-away “plot” of the level the ship lives in.
+Since 0.6.0 the fork keeps exactly that native model and adds **projections**:
 
-So this fork basically says:
-- sub-level blocks live ONCE in a dedicated hosting dimension: `ipl_sable:sublevels`
-- “parent dimension” is just metadata (where the ship *belongs* / which physics scene owns it)
+- All dimensions share ONE Rapier world (“Atlas”); every level is a chart of it.
+- A straddling ship gets an *image collider* of the SAME rigid body in the destination chart,
+  placed at `portal isometry × body pose`. No clone, no sync: one body, one source of truth.
+  Contacts beyond the portal plane are clipped away (requires patched natives; see below).
+- Rendering: the same render data is drawn again at the mapped pose, clipped at the portal plane.
+- Chains: an image that straddles another portal opens a child projection (depth ≤ 8).
+- Transit: once fully through, the body flips (same dim: pose teleport; other dim: native move
+  into that level). Attached ships (world constraints, joints, ropes) keep the session open instead.
+- Interaction: targeting/outlines/break/place/redstone/BE logic and the physics staff work on the
+  projected part.
 
-Then we glue the rest together:
-- Rendering: straddling ships draw in both dimensions, clipped cleanly at the portal plane.
-- Physics: each dimension gets its own Rapier scene. A straddling ship gets a clone body on the other side,
-  pinned every substep, and the solver’s corrections get copied back.
-  Also: contacts get clipped at the portal aperture (requires patched natives; see below).
-- Transit: crossing the plane flips the ship’s parent + remaps pose through the portal. No block copying.
-- Interaction: targeting/outlines/break/place/redstone/BE logic and cross-portal manipulation work on ship blocks.
-  Also the physics staff can grab/drag through the mess.
-
-Deep nerd notes live in: `REFACTOR_SPEC.md`
+Deep nerd notes live in: `README060NEW.md` (the `docs/` specs describe the removed 0.5.x model).
 
 # What works
-- Hosted sub-levels save/load correctly in any dimension.
+- Sub-levels save/load natively in any dimension (stock Sable storage).
 - Portal straddle rendering (including portals-in-portals).
 - Straddle physics: the “through” part collides with the destination world like it actually exists there.
   Standing/walking/riding on the through-part behaves like it should (including friction).
@@ -58,8 +61,12 @@ Deep nerd notes live in: `REFACTOR_SPEC.md`
 NeoForge 1.21.1, JDK 21: `./gradlew jarJar` → jar in `build/libs/`
 
 Patched physics natives live under `natives/` (Sable Rust workspace fork + aperture clipping extension + atlas approach).
-Windows x86_64 build script: `natives/build-windows.ps1`
-If you don’t build natives, mod still runs — you just lose aperture contact clipping.
+- Windows x86_64: `natives/build-windows.ps1`
+- Linux / macOS (x86_64 or aarch64, built on that machine): `natives/build-linux.sh`
+- Universal jar: put every `sable_rapier_<arch>_<os>` library at the project root, then build the jar.
+
+If you don’t build natives, the mod still runs on stock Sable natives — portal collision
+(projections, aperture clipping) is then disabled.
 
 # About Immersive Portals (upstream)
 Immersive Portals does see-through portals, portals-in-portals, seamless teleportation, and non-euclidean weirdness.

@@ -131,7 +131,7 @@ public abstract class SableSubLevelBlockEntityClipMixin {
         Long last = id == null ? null : IPL$LAST_LOG_NS.get(id);
         if (last == null || now - last > 5_000_000_000L) {
             if (id != null) IPL$LAST_LOG_NS.put(id, now);
-            IPL$DIAG.info("[IPL-COLL-BRACKET-FIRED] sub={}", id);
+            IPL$DIAG.debug("[IPL-COLL-BRACKET-FIRED] sub={}", id);
         }
 
         SourceClipPortalFinder.ClipDecision decision =

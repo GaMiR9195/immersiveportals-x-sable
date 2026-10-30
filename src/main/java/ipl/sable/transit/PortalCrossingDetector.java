@@ -32,6 +32,33 @@ public final class PortalCrossingDetector {
     private static final Map<UUID, ExitLatch> EXIT_LATCHES = new HashMap<>();
     private static long trailTick;
 
+    /**
+     * Mapped view: while set, every trail read returns the body's trail as seen through
+     * this rigid mapping (the projection side of a session). The real trail is never
+     * modified; exit latches/anchors are real-side state and are ignored in the view.
+     */
+    @org.jetbrains.annotations.Nullable
+    private static IplStraddlePoseMap.StraddleMapping mappedView;
+    private record MappedTrailKey(UUID body, IplStraddlePoseMap.StraddleMapping mapping) {}
+    private static final Map<MappedTrailKey, Trail> MAPPED_TRAILS = new HashMap<>();
+
+    /** Runs {@code action} with every trail query mapped through {@code mapping}. */
+    public static <T> T inMappedView(
+        IplStraddlePoseMap.StraddleMapping mapping, java.util.function.Supplier<T> action
+    ) {
+        IplStraddlePoseMap.StraddleMapping previous = mappedView;
+        mappedView = mapping;
+        try {
+            return action.get();
+        } finally {
+            mappedView = previous;
+        }
+    }
+
+    private static void invalidateMapped(UUID body) {
+        if (!MAPPED_TRAILS.isEmpty()) MAPPED_TRAILS.keySet().removeIf(k -> k.body().equals(body));
+    }
+
     private PortalCrossingDetector() {}
 
     public enum CrossingPhase { APPROACHING, STRADDLING, CROSSED }
@@ -57,10 +84,12 @@ public final class PortalCrossingDetector {
     }
 
     public static void beginTrailTick() {
+        MAPPED_TRAILS.clear();
         trailTick++;
     }
 
     private static ExitLatch liveExitLatch(ServerSubLevel airship) {
+        if (mappedView != null) return null;
         return airship == null ? null : EXIT_LATCHES.get(airship.getUniqueId());
     }
 
@@ -156,10 +185,12 @@ public final class PortalCrossingDetector {
             trail.end.set(airship.logicalPose());
         }
         trail.evaluations.clear();
+        invalidateMapped(airship.getUniqueId());
         trail.lastSeenTick = trailTick;
     }
 
     public static void forgetTrail(ServerSubLevel airship) {
+        invalidateMapped(airship.getUniqueId());
         TRAILS.remove(airship.getUniqueId());
         EXIT_LATCHES.remove(airship.getUniqueId());
         EXIT_ANCHORS.remove(airship.getUniqueId());
@@ -186,6 +217,7 @@ public final class PortalCrossingDetector {
 
         trail.rebasedThisTick = true;
         trail.evaluations.clear();
+        invalidateMapped(airship.getUniqueId());
         trail.lastSeenTick = trailTick;
     }
 
@@ -220,6 +252,7 @@ public final class PortalCrossingDetector {
         trail.rebasedThisTick = true;
         trail.seededFromExit = true;
         trail.evaluations.clear();
+        invalidateMapped(airship.getUniqueId());
         trail.lastSeenTick = trailTick;
     }
 
@@ -255,6 +288,7 @@ public final class PortalCrossingDetector {
         trail.end.set(airship.logicalPose());
         trail.rebasedThisTick = true;
         trail.evaluations.clear();
+        invalidateMapped(airship.getUniqueId());
         trail.lastSeenTick = trailTick;
     }
 
@@ -341,6 +375,7 @@ public final class PortalCrossingDetector {
     }
 
     public static void clearTrails() {
+        MAPPED_TRAILS.clear();
         TRAILS.clear();
         EXIT_LATCHES.clear();
         EXIT_ANCHORS.clear();
@@ -360,6 +395,7 @@ public final class PortalCrossingDetector {
     }
 
     public static boolean hasBufferedExit(ServerSubLevel airship) {
+        if (mappedView != null) return false;
         UUID id = airship.getUniqueId();
         if (EXIT_ANCHORS.containsKey(id)) return true;
 
@@ -590,7 +626,7 @@ public final class PortalCrossingDetector {
 
             Double.isFinite(recent.towardTime()) ? recent.towardTime() : Double.NaN);
         trail.evaluations.put(key, result);
-        IplEnteringVolumeVisualization.record(airship, portal, result);
+        if (mappedView == null) IplEnteringVolumeVisualization.record(airship, portal, result);
         return result;
     }
 
@@ -606,6 +642,17 @@ public final class PortalCrossingDetector {
     }
 
     private static Trail trail(ServerSubLevel airship) {
+        if (mappedView != null) {
+            IplStraddlePoseMap.StraddleMapping view = mappedView;
+            return MAPPED_TRAILS.computeIfAbsent(new MappedTrailKey(airship.getUniqueId(), view), k -> {
+                Trail real = realTrail(airship);
+                return new Trail(view.mapPose(real.start), view.mapPose(real.end));
+            });
+        }
+        return realTrail(airship);
+    }
+
+    private static Trail realTrail(ServerSubLevel airship) {
         Trail trail = TRAILS.get(airship.getUniqueId());
         if (trail != null) return trail;
         return new Trail(new Pose3d(airship.lastPose()),

@@ -1,1 +1,0 @@
-package ipl.sable.dim; public class IplParentPlotEntityTicking {public static void update(net.minecraft.world.entity.Entity e,double x,double z){}public static void reconcilePlots(net.minecraft.server.MinecraftServer s){}public static void clear(){}}

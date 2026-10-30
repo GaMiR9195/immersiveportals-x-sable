@@ -1,7 +1,0 @@
-src/main/java/ipl/sable/client/IplClientFlywheelReroute.java
-src/main/java/ipl/sable/client/IplHostedEntityVisuals.java
-src/main/java/ipl/sable/mixin/IplBalloonEnvironmentScopeMixin.java
-src/main/java/ipl/sable/mixin/IplHostedClientEntityLookupMixin.java
-src/main/java/ipl/sable/mixin/IplSubLevelSelectorBridgeMixin.java
-src/main/java/ipl/sable/mixin/client/IplHostedFlywheelVisualRerouteMixin.java
-src/main/java/ipl/sable/mixin/client/IplHostedVisualRemovalMixin.java

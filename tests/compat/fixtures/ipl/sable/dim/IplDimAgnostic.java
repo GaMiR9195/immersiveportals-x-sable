@@ -1,1 +1,0 @@
-package ipl.sable.dim; import net.minecraft.world.level.Level; import dev.ryanhcode.sable.sublevel.SubLevel; public class IplDimAgnostic { public static boolean isHostingLevel(Level l){return l!=null&&l.storage;} public static Level getParentLevel(SubLevel s){return s.parent;} }

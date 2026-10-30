@@ -20,7 +20,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * place. A kick through an unsynced pose is never right on the client: skip it and let the
  * server's authoritative kick (if any) sync the position down a tick later.
  *
- * <p>Trigger discipline: a hosted ship genuinely posed at the exact world origin with no
+ * <p>Trigger discipline: a ship genuinely posed at the exact world origin with no
  * rotation offset does not occur in practice, and even then the cost of skipping is one
  * tick of the entity staying put client-side.
  */
@@ -48,7 +48,7 @@ public abstract class IplClientKickPoseGuardMixin {
         boolean entityInPlotSpace =
             entity.getX() * entity.getX() + entity.getZ() * entity.getZ() > 1.0e12;
         if (poseUnsynced && entityInPlotSpace) {
-            IPL$LOG.warn("[IPL-KICK-GUARD] skipped client kick through unsynced pose: "
+            IPL$LOG.debug("[IPL-KICK-GUARD] skipped client kick through unsynced pose: "
                 + "entity={} id={} at=({}, {}, {}) sub={}",
                 entity.getType().getDescriptionId(), entity.getId(),
                 String.format("%.1f", entity.getX()), String.format("%.1f", entity.getY()),

@@ -105,14 +105,12 @@ public final class IplFusedStep {
         double dt = 1.0 / 20.0 / substeps;
 
         for (Entry e : systems) {
-            for (ServerSubLevel sub : ipl.sable.dim.IplOwnedSubLevels.owned(e.container())) {
-                if (!sub.isRemoved() && ipl.sable.dim.IplDimAgnostic.isHosted(sub)) {
+            for (ServerSubLevel sub : e.container().getAllSubLevels()) {
+                if (!sub.isRemoved()) {
                     ipl.sable.transit.PortalCrossingDetector.seedPhysicsStart(sub);
                 }
             }
-            // Each dimension's phases are that container's processing pass: addon
-            // listeners enumerating it see each ship once, in its own world frame.
-            ipl.sable.dim.IplProcessingPass.runPhysics(e.container(), () -> e.sys().getPipeline().prePhysicsTicks());
+            e.sys().getPipeline().prePhysicsTicks();
         }
 
         for (int s = 0; s < substeps; s++) {
@@ -131,8 +129,7 @@ public final class IplFusedStep {
             for (int i = 0; i < systems.size(); i++) {
                 Entry e = systems.get(i);
                 boolean last = i == systems.size() - 1;
-                // The native step steps every chart at once: it is no container's pass.
-                runGuarded(e, false, () -> {
+                runGuarded(e, () -> {
                     STEP_ARMED = last;
                     try {
                         e.sys().getPipeline().physicsTick(dt);
@@ -163,20 +160,20 @@ public final class IplFusedStep {
         SubLevelPhysicsSystem.currentlySteppingSystem = sys;
         ServerSubLevelContainer container = e.container();
 
-        for (ServerSubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
+        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
             subLevel.prePhysicsTickBegin();
         }
-        for (ServerSubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
+        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
             subLevel.updateMergedMassData((float) sys.getPartialPhysicsTick());
         }
-        for (ServerSubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
+        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
             subLevel.prePhysicsTick(sys, sys.getPhysicsHandle(subLevel), dt);
         }
         SableEventPublishPlatform.INSTANCE.prePhysicsTick(sys, dt);
-        for (ServerSubLevel subLevel : ipl.sable.dim.IplOwnedSubLevels.owned(container)) {
+        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
             subLevel.applyQueuedForces(sys, sys.getPhysicsHandle(subLevel), dt);
         }
@@ -201,17 +198,9 @@ public final class IplFusedStep {
 
     /** Mirror stock's crash-report framing, naming the dimension whose phases failed. */
     private static void runGuarded(Entry e, Runnable phases) {
-        runGuarded(e, true, phases);
-    }
-
-    private static void runGuarded(Entry e, boolean containerPass, Runnable phases) {
         SubLevelPhysicsSystem.currentlySteppingSystem = e.sys();
         try {
-            if (containerPass) {
-                ipl.sable.dim.IplProcessingPass.runPhysics(e.container(), phases);
-            } else {
-                ipl.sable.dim.IplProcessingPass.runOutside(phases);
-            }
+            phases.run();
         } catch (Exception ex) {
             CrashReport crashReport = CrashReport.forThrowable(ex, "Sable ticking physics (IPL fused step)");
             CrashReportCategory category = crashReport.addCategory("Current physics state");

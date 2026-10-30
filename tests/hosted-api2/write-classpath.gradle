@@ -1,5 +1,0 @@
-allprojects { afterEvaluate { p ->
-    if (p == rootProject) tasks.register('writeHostedApi2Classpath') { doLast {
-        new File(rootProject.buildDir, 'hosted-api2-classpath.txt').text = configurations.compileClasspath.asPath
-    } }
-} }

@@ -109,7 +109,7 @@ public final class SableTransitOps {
             return false;
         }
 
-        LOG.info("[IPL-TRANSIT] firing  uuid={}  {} -> {}  destPlot=({},{})  destPos=({},{},{})",
+        LOG.debug("[IPL-TRANSIT] firing  uuid={}  {} -> {}  destPlot=({},{})  destPos=({},{},{})",
             uuid,
             source.getLevel().dimension().location(),
             destLevel.dimension().location(),
@@ -136,7 +136,7 @@ public final class SableTransitOps {
         //    state, and Aero's per-block-position state (balloons etc.) on dest.
         int blocksCopied = copyPlotBlocks(source.getPlot(), dest.getPlot(),
             source.getLevel(), destLevel);
-        LOG.info("[IPL-TRANSIT] copied {} blocks  uuid={}", blocksCopied, uuid);
+        LOG.debug("[IPL-TRANSIT] copied {} blocks  uuid={}", blocksCopied, uuid);
 
         // 5b. Transfer velocity. Rotate source-dim world velocity vectors through the
         //     portal's rotation to get dest-dim world velocities, then apply via the
@@ -153,7 +153,7 @@ public final class SableTransitOps {
         //    brief "falling through a vanished airship" frame.
         int ridersTeleported = teleportRiders(source, portal, destLevel);
         if (ridersTeleported > 0) {
-            LOG.info("[IPL-TRANSIT] teleported {} rider(s)  uuid={}", ridersTeleported, uuid);
+            LOG.debug("[IPL-TRANSIT] teleported {} rider(s)  uuid={}", ridersTeleported, uuid);
         }
 
         // 7. Remove source. This fires SubLevelObserver.onSubLevelRemoved synchronously;
@@ -172,7 +172,7 @@ public final class SableTransitOps {
             return false;
         }
 
-        LOG.info("[IPL-TRANSIT] complete  uuid={}", uuid);
+        LOG.debug("[IPL-TRANSIT] complete  uuid={}", uuid);
         return true;
     }
 
@@ -369,10 +369,6 @@ public final class SableTransitOps {
         ServerLevelPlot src, ServerLevelPlot dst,
         ServerLevel srcLevel, ServerLevel dstLevel
     ) {
-        // Set this BEFORE allocating destination chunks: LevelPlot builds their
-        // biome palettes from this field. Rehome otherwise silently resets a
-        // non-plains ship to the hosting dimension's default biome.
-        dst.setBiome(((ipl.sable.mixin.IplPlotBiomeAccessor) src).ipl$getBiome());
         int blocksCopied = 0;
         int blocksSkippedOutOfYRange = 0;
 

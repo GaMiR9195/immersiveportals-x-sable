@@ -29,12 +29,4 @@ public interface IplRapierPipelineAccess {
     @Accessor(value = "scene", remap = false)
     dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsScene ipl$scene();
 
-    /** Bodies this pipeline created native rigid bodies for (keyed by runtime id). */
-    @Accessor(value = "activeSubLevels", remap = false)
-    it.unimi.dsi.fastutil.ints.Int2ObjectMap<dev.ryanhcode.sable.sublevel.ServerSubLevel> ipl$activeSubLevels();
-
-    /** Kinematic contraptions this pipeline holds native colliders for. */
-    @Accessor(value = "activeContraptions", remap = false)
-    it.unimi.dsi.fastutil.objects.Object2ObjectMap<dev.ryanhcode.sable.api.sublevel.KinematicContraption, ?> ipl$activeContraptions();
-
 }
