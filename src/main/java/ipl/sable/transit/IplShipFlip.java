@@ -144,10 +144,17 @@ public final class IplShipFlip {
         // Сдвиг часов трекинга: метки обоих уровней для ТЕКУЩЕГО серверного тика.
         int serverTick = server.getTickCount();
         int clockOffset = 0;
+        boolean destinationStepsThisTick = false;
         if (destContainer.trackingSystem() instanceof IplTrackingStamp dstStamp
             && sourceContainer.trackingSystem() instanceof IplTrackingStamp srcStamp) {
             clockOffset = dstStamp.ipl$stampFor(serverTick) - srcStamp.ipl$stampFor(serverTick);
+            destinationStepsThisTick = !dstStamp.ipl$hasTicked(serverTick);
         }
+        // Уровень назначения в этом серверном тике ещё не тикал (Верхний мир -> Незер: Незер тикает
+        // позже), и его физика сдвинет новое тело ещё раз. Тогда за один тик корабль сделал бы два
+        // шага: рывок вперёд у клиентов, пассажиры отстают от корпуса. Поэтому тело ставится на позу
+        // ДО шага этого тика, и шаг назначения приводит его туда, где оно было в источнике.
+        Pose3d start = destinationStepsThisTick ? new Pose3d(previous) : pose;
         PhysicsPipeline sourcePipeline = sourceContainer.physicsSystem().getPipeline();
         Vector3d linear = sourcePipeline.getLinearVelocity(ship, new Vector3d());
         Vector3d angular = sourcePipeline.getAngularVelocity(ship, new Vector3d());
@@ -162,7 +169,7 @@ public final class IplShipFlip {
 
         ServerSubLevel moved;
         try {
-            moved = (ServerSubLevel) destContainer.allocateSubLevel(uuid, slot[0], slot[1], pose);
+            moved = (ServerSubLevel) destContainer.allocateSubLevel(uuid, slot[0], slot[1], start);
         } catch (Throwable t) {
             LOG.error("[IPL-MOVE] allocation in {} failed for {}", destination.dimension().location(), uuid, t);
             return null;

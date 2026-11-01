@@ -204,8 +204,8 @@ public final class IplProjectionRaycast {
     /**
      * Clip one frame: the ray restricted to that piece's region. {@code node == null} is
      * the native piece (holes = root tubes); otherwise the keep interval of the node minus
-     * its children's tubes. Blocks are read from the ship's OWN level (the plot owner), so
-     * no cross-level bridging is involved.
+     * its children's tubes and the space it yields to higher-priority siblings. Blocks are
+     * read from the ship's OWN level (the plot owner), so no cross-level bridging is involved.
      */
     @Nullable
     private static FrameHit clipFrame(ClipContext template, Vec3 from, Vec3 dir, double length, SubLevel sub,
@@ -228,6 +228,9 @@ public final class IplProjectionRaycast {
             for (IplProjectionTree.Node child : node.children) {
                 double[] iv = child.beyondInterval(from, dir);
                 if (iv != null && iv[1] >= keepFrom && iv[0] <= keepTo) holes.add(iv);
+            }
+            for (double[] iv : tree.yieldedIntervals(node, from, dir)) {
+                if (iv[1] >= keepFrom && iv[0] <= keepTo) holes.add(iv);
             }
         }
         Pose3dc pose = node == null ? realPose : node.mapping.mapPose(realPose);

@@ -23,7 +23,7 @@ import java.util.UUID;
     },
     remap = false
 )
-public abstract class IplPhysicsStaffHandlerRoutingMixin {
+public abstract class IplStaffPacketRoutingMixin {
 
     @Unique
     private static java.lang.reflect.Field ipl$actionSubField;

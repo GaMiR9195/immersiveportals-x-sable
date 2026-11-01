@@ -12,4 +12,7 @@ public interface IplTrackingStamp {
 
     /** Метка, которой этот уровень штампует (или проштампует) снимки серверного тика {@code serverTick}. */
     int ipl$stampFor(int serverTick);
+
+    /** Контейнер этого уровня уже оттикал (физика + трекинг) в серверном тике {@code serverTick}. */
+    boolean ipl$hasTicked(int serverTick);
 }

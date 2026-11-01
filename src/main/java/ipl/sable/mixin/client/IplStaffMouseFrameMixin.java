@@ -36,7 +36,7 @@ public abstract class IplStaffMouseFrameMixin {
         Minecraft minecraft = Minecraft.getInstance();
         PhysicsStaffClientHandler handler = SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
 
-        if (!((IplPhysicsStaffClientHandlerStateAccessorMixin) (Object) handler)
+        if (!((IplStaffClientHandlerAccessor) (Object) handler)
             .ipl$isRotating()) {
             return new InteractCallback.Result(false);
         }

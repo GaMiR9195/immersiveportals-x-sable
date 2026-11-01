@@ -1,19 +1,28 @@
 package ipl.sable.mixin;
 
-import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Local;
+import dev.ryanhcode.sable.SableConfig;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
 import dev.ryanhcode.sable.network.udp.SableUDPServer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelTrackingSystem;
-import net.minecraft.core.BlockPos;
+import foundry.veil.api.network.VeilPacketManager;
+import io.netty.channel.local.LocalAddress;
+import ipl.sable.transit.IplAtlasStraddleSession;
+import ipl.sable.transit.IplStraddlePoseMap;
+import ipl.sable.transit.IplStraddleSessionSync;
+import ipl.sable.transit.IplTrackingStamp;
+import ipl.sable.transit.StraddleKey;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3dc;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -30,97 +39,43 @@ import qouteall.imm_ptl.core.network.PacketRedirection;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
 /**
- * Cross-dim sub-level tracking, second attempt.
+ * Sub-level tracking that follows what Immersive Portals actually streams to each player.
  *
- * <p>Goal: when a player views a sub-level (airship) in dimension A through a portal from
- * dimension B, they should keep receiving live bounds/movement updates so the sub-level
- * doesn't appear frozen. The prior attempt (commit a2844ca, reverted in d37c1cd) made the
- * airship invisible because it missed a hook site -- this version corrects that.
+ * <p>Sable decides who tracks a sub-level by plain distance to players of the SAME level.
+ * With portals that is wrong in both directions: a player in another level who sees the ship
+ * through a portal (or stands next to one of its portal images) gets nothing, and the
+ * distance between a ship in one level and a player in another is meaningless. A player that
+ * lost tracking and regains it later gets a full re-sync, which is exactly the visible
+ * "something reloads" when following a ship into its new dimension.
  *
- * <p><b>What the diagnostic mixin proved about Sable's per-tick flow:</b>
- * <ol>
- *   <li>On dim transition, source-dim's {@code tick()} fires the
- *       "{@code player == null} from {@link ServerLevel#getPlayerByUUID}, still online
- *       elsewhere" branch (line 197-204 in Sable's source). It emits a
- *       {@code sendRemoval} via {@code VeilPacketManager.player(serverWidePlayer)} and
- *       removes the UUID from {@code tracking}. The {@code StopTracking} packet then races
- *       the client-side dim switch and lands in the wrong client container.</li>
- *   <li>On dim re-entry, the player returns to {@code level.players()}, the
- *       "add players who SHOULD be tracking but aren't" branch fires, and
- *       {@code sendFullSync} re-bootstraps. Our
- *       {@link SableStartTrackingDedupeMixin} cancels the redundant allocation on the
- *       client side so the stale state is preserved.</li>
- *   <li>While the player is in the destination dim, source-dim's {@code tick} continues
- *       running but with the player absent from {@code tracking}, so no bounds/movement
- *       updates are emitted. Airship is visible (via the stale client state) but frozen.</li>
- *   <li>There's also a small race window where movement packets emitted right before the
- *       server-side teleport completes arrive at the client after the client-side dim
- *       switch and land in the wrong container -- seen as
- *       "Received a sub-level movement packet for a non-existent sub-level" errors.</li>
- * </ol>
- *
- * <p><b>What this mixin does:</b>
- * <ol>
- *   <li>{@code tick HEAD}: query {@link ImmPtlChunkTracking} per sub-level for cross-dim
- *       viewers (players in another dim whose IP chunk-tracking covers the sub-level's
- *       chunk via a portal view). Cache the per-sub-level set and the union.</li>
- *   <li>{@code @WrapOperation} on {@code ServerLevel.getPlayerByUUID} in <b>both</b>
- *       {@code tick} <b>and</b> {@code sendMovementUpdates}: for cross-dim viewers, return
- *       the player from the server-wide list. In {@code tick} this suppresses the removal
- *       path. In {@code sendMovementUpdates} this prevents the silent
- *       {@code if (player == null) continue} that would skip movement-update generation --
- *       <b>the missed site that caused invisibility in the previous attempt</b>.</li>
- *   <li>{@code @ModifyReturnValue} on {@code shouldLoad}: force {@code true} for cross-dim
- *       viewers, so the removal path's distance check doesn't trigger.</li>
- *   <li>{@code @Inject(HEAD)} on {@code sendBoundsUpdates}: bootstrap path. For cross-dim
- *       viewers detected in step 1 but not yet in {@code tracking}, add them and emit one
- *       {@code sendFullSync} so their client allocates the sub-level in the source-dim
- *       {@link dev.ryanhcode.sable.api.sublevel.SubLevelContainer}. Inert for the common
- *       case (player tracked before crossing -> retained via {@code @WrapOperation} ->
- *       already in tracking when this runs).</li>
- *   <li>{@code @Redirect} on the {@code sendBoundsUpdates} and {@code sendMovementUpdates}
- *       calls in {@code tick}: wrap each in {@code PacketRedirection.withForceRedirect(
- *       sourceLevel, ...)}. Packets emitted under this thread-local get tagged with
- *       source-dim; IP's client-side unwrap dispatches them under
- *       {@code ClientWorldLoader.withSwitchedWorldFailSoft(sourceDim)}, so they land in
- *       the source-dim {@code ClientSubLevelContainer} regardless of which dim the client
- *       is currently displaying.</li>
- *   <li>{@code @WrapOperation} on {@code SableUDPServer.isConnectedTo} in
- *       {@code sendMovementUpdates}: force {@code false} for cross-dim recipients so
- *       movement updates fall through to TCP. Sable's UDP path bypasses
- *       {@code Connection.send} and therefore IP's outgoing-packet wrap; sending UDP to a
- *       cross-dim recipient would result in the packet landing in the wrong client
- *       container. Same-dim recipients keep using UDP.</li>
- * </ol>
- *
- * <p><b>What's different from the previous attempt:</b>
+ * <p>Rules applied here, once per tick:
  * <ul>
- *   <li>Added the second {@code @WrapOperation} on {@code getPlayerByUUID} in
- *       {@code sendMovementUpdates}. Without it, cross-dim viewers stayed in
- *       {@code tracking} (so bounds updates reached them via the server-wide sink) but
- *       movement updates skipped them silently. Combined with stale bounds + no pose
- *       updates, the client renderer bailed out -> invisible.</li>
- *   <li>Moved the bootstrap {@code @Inject} from "{@code INVOKE sendBoundsUpdates} in
- *       {@code tick}" (which collided with the {@code @Redirect} at the same instruction --
- *       undefined ordering) to {@code @Inject(HEAD)} on the {@code sendBoundsUpdates}
- *       method itself. Clean separation.</li>
+ *   <li><b>Viewers.</b> A player views a sub-level if IP has loaded any chunk under the
+ *       ship's world bounds to them (from any level, through any portal) or if they stand
+ *       near one of its portal images. Same-level players keep Sable's range on top of that;
+ *       players of other levels track only by view.</li>
+ *   <li><b>Remote viewers stay tracked.</b> Sable resolves trackers with
+ *       {@link ServerLevel#getPlayerByUUID}, which only sees its own level; for remote
+ *       viewers the server-wide player is returned instead, so neither the removal pass nor
+ *       movement/bounds updates skip them. New remote viewers are bootstrapped with a full
+ *       sync.</li>
+ *   <li><b>Packets land in this level's client container.</b> Full-sync, bounds, movement
+ *       and removal packets are tagged with this dimension ({@link PacketRedirection});
+ *       movement goes over TCP for remote viewers and for a singleplayer host, because
+ *       Sable's UDP path bypasses that tagging.</li>
  * </ul>
  *
- * <p>{@code SableStartTrackingDedupeMixin} remains essential: when a previously-tracked
- * player returns from cross-dim view, source-dim {@code tick}'s natural "add who should be
- * tracking" branch will fire a second {@code sendFullSync} (because they re-entered
- * {@code level.players()}). Without the dedupe, the client would crash on "Plot already
- * exists" since we never lost the client-side allocation.
+ * <p>{@code SableStartTrackingDedupeMixin} still guards the client against a repeated
+ * start-tracking for a sub-level it already holds.
  */
 @Pseudo
 @Mixin(value = SubLevelTrackingSystem.class, remap = false)
-public abstract class SableCrossDimTrackingMixin implements ipl.sable.transit.IplTrackingStamp {
+public abstract class SableCrossDimTrackingMixin implements IplTrackingStamp {
 
     @Shadow @Final private ServerLevel level;
 
@@ -146,6 +101,11 @@ public abstract class SableCrossDimTrackingMixin implements ipl.sable.transit.Ip
         return ipl$stampServerTick == serverTick ? interpolationTick - 1 : interpolationTick;
     }
 
+    @Override
+    public boolean ipl$hasTicked(int serverTick) {
+        return ipl$stampServerTick == serverTick;
+    }
+
     @Shadow
     private void sendFullSync(ServerPlayer player, ServerSubLevel subLevel, CustomPacketPayload extraPacket) {
         throw new AssertionError();
@@ -161,198 +121,199 @@ public abstract class SableCrossDimTrackingMixin implements ipl.sable.transit.Ip
         throw new AssertionError();
     }
 
-    /** Per-tick: for each sub-level UUID, the set of cross-dim viewer UUIDs. */
+    /** Chunks per axis searched for viewers; bounds wider than this are searched around the center. */
     @Unique
-    private final Map<UUID, Set<UUID>> ipl$crossDimViewersBySubLevel = new HashMap<>();
+    private static final int IPL_MAX_VIEW_SPAN = 16;
 
-    /** Per-tick union across all sub-levels. Used by hooks that don't have sub-level context. */
+    /** Per tick: sub-level UUID -> players viewing it (any level). */
     @Unique
-    private final Set<UUID> ipl$crossDimViewerUnion = new HashSet<>();
+    private final Map<UUID, Set<UUID>> ipl$viewersBySubLevel = new HashMap<>();
+
+    /** Per tick: viewers that stand in ANOTHER level, over all sub-levels of this one. */
+    @Unique
+    private final Set<UUID> ipl$remoteViewers = new HashSet<>();
 
     // ------------------------------------------------------------------------
-    // 1. Compute cross-dim viewer sets at tick HEAD
+    // Viewers, computed once at tick HEAD
     // ------------------------------------------------------------------------
 
     @Inject(method = "tick", at = @At("HEAD"))
-    private void ipl$collectCrossDimViewers(SubLevelContainer container, CallbackInfo ci) {
-        ipl$crossDimViewersBySubLevel.clear();
-        ipl$crossDimViewerUnion.clear();
+    private void ipl$collectViewers(SubLevelContainer container, CallbackInfo ci) {
+        ipl$viewersBySubLevel.clear();
+        ipl$remoteViewers.clear();
 
         for (SubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
+            Set<UUID> viewers = ipl$addChunkViewers(subLevel, null);
+            viewers = ipl$addImageViewers(subLevel, viewers);
+            if (viewers != null) ipl$viewersBySubLevel.put(subLevel.getUniqueId(), viewers);
+        }
+    }
 
-            Vector3dc pos = subLevel.logicalPose().position();
-            ChunkPos chunkPos = new ChunkPos(BlockPos.containing(pos.x(), pos.y(), pos.z()));
+    /** Players IP streams any chunk under the ship's world bounds to, from whatever level they are in. */
+    @Unique
+    private Set<UUID> ipl$addChunkViewers(SubLevel subLevel, Set<UUID> viewers) {
+        Vector3dc center = subLevel.logicalPose().position();
+        BoundingBox3dc bounds = subLevel.boundingBox();
+        int centerX = Mth.floor(center.x()) >> 4;
+        int centerZ = Mth.floor(center.z()) >> 4;
+        int half = IPL_MAX_VIEW_SPAN / 2;
+        // The pose center is always included, so a not-yet-computed box still finds the ship.
+        int minX = Math.max(Math.min(Mth.floor(bounds.minX()) >> 4, centerX), centerX - half);
+        int maxX = Math.min(Math.max(Mth.floor(bounds.maxX()) >> 4, centerX), centerX + half);
+        int minZ = Math.max(Math.min(Mth.floor(bounds.minZ()) >> 4, centerZ), centerZ - half);
+        int maxZ = Math.min(Math.max(Mth.floor(bounds.maxZ()) >> 4, centerZ), centerZ + half);
 
-            List<ServerPlayer> viewers = ImmPtlChunkTracking.getPlayersViewingChunk(
-                level.dimension(), chunkPos.x, chunkPos.z, false
-            );
-
-            Set<UUID> crossDim = null;
-            for (ServerPlayer viewer : viewers) {
-                if (viewer.serverLevel() != level) {
-                    UUID uuid = viewer.getGameProfile().getId();
-                    if (crossDim == null) crossDim = new HashSet<>();
-                    crossDim.add(uuid);
-                    ipl$crossDimViewerUnion.add(uuid);
+        for (int x = minX; x <= maxX; x++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                var records = ImmPtlChunkTracking.getWatchRecordForChunk(level.dimension(), x, z);
+                if (records == null) continue;
+                for (ImmPtlChunkTracking.PlayerWatchRecord record : records.values()) {
+                    if (record.isLoadedToPlayer) viewers = ipl$addViewer(viewers, record.player);
                 }
             }
-            crossDim = ipl$addImageViewers(subLevel, pos, crossDim);
-            if (crossDim != null) {
-                ipl$crossDimViewersBySubLevel.put(subLevel.getUniqueId(), crossDim);
-            }
         }
+        return viewers;
     }
 
     /**
      * Players of ANOTHER level standing near one of the ship's portal images (an active
      * straddle session into their level) see the ship as a projection: they need its live
-     * state even when IP's portal chunk tracking doesn't cover the ship's own chunk.
+     * state even when IP's portal chunk tracking doesn't cover the ship's own chunks.
      */
     @Unique
-    private Set<UUID> ipl$addImageViewers(SubLevel subLevel, Vector3dc pos, Set<UUID> crossDim) {
-        if (ipl.sable.transit.IplAtlasStraddleSession.isIdle()) return crossDim;
-        double range = dev.ryanhcode.sable.SableConfig.SUB_LEVEL_TRACKING_RANGE.getAsDouble();
+    private Set<UUID> ipl$addImageViewers(SubLevel subLevel, Set<UUID> viewers) {
+        if (IplAtlasStraddleSession.isIdle()) return viewers;
+        double range = SableConfig.SUB_LEVEL_TRACKING_RANGE.getAsDouble();
         double rangeSq = range * range;
-        net.minecraft.world.phys.Vec3 source = new net.minecraft.world.phys.Vec3(pos.x(), pos.y(), pos.z());
-        for (ipl.sable.transit.StraddleKey key
-                : ipl.sable.transit.IplAtlasStraddleSession.sessionKeysFor(subLevel.getUniqueId())) {
-            ServerLevel dest = ipl.sable.transit.IplAtlasStraddleSession.sessionDest(key);
-            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping =
-                ipl.sable.transit.IplAtlasStraddleSession.sessionMapping(key);
+        Vector3dc pos = subLevel.logicalPose().position();
+        Vec3 source = new Vec3(pos.x(), pos.y(), pos.z());
+        for (StraddleKey key : IplAtlasStraddleSession.sessionKeysFor(subLevel.getUniqueId())) {
+            ServerLevel dest = IplAtlasStraddleSession.sessionDest(key);
+            IplStraddlePoseMap.StraddleMapping mapping = IplAtlasStraddleSession.sessionMapping(key);
             if (dest == null || dest == level || mapping == null) continue;
-            net.minecraft.world.phys.Vec3 image = mapping.mapPoint(source);
+            Vec3 image = mapping.mapPoint(source);
             for (ServerPlayer player : dest.players()) {
-                if (image.distanceToSqr(player.position()) >= rangeSq) continue;
-                UUID uuid = player.getGameProfile().getId();
-                if (crossDim == null) crossDim = new HashSet<>();
-                crossDim.add(uuid);
-                ipl$crossDimViewerUnion.add(uuid);
+                if (image.distanceToSqr(player.position()) < rangeSq) viewers = ipl$addViewer(viewers, player);
             }
         }
-        return crossDim;
+        return viewers;
+    }
+
+    @Unique
+    private Set<UUID> ipl$addViewer(Set<UUID> viewers, ServerPlayer player) {
+        if (viewers == null) viewers = new HashSet<>();
+        viewers.add(player.getUUID());
+        if (player.serverLevel() != level) ipl$remoteViewers.add(player.getUUID());
+        return viewers;
+    }
+
+    @Unique
+    private boolean ipl$views(SubLevel subLevel, Player player) {
+        Set<UUID> viewers = ipl$viewersBySubLevel.get(subLevel.getUniqueId());
+        return viewers != null && viewers.contains(player.getUUID());
     }
 
     // ------------------------------------------------------------------------
-    // 2. Suppress removal for cross-dim viewers in tick()'s null-player check
+    // Resolve remote viewers. Sable looks trackers up in this level only: in tick a miss
+    // means "left the level" (removal), in sendMovementUpdates it silently skips them.
+    // ------------------------------------------------------------------------
+
+    @WrapOperation(
+        method = {"tick", "sendMovementUpdates"},
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"
+        ),
+        require = 2
+    )
+    private Player ipl$resolveRemoteViewer(ServerLevel lvl, UUID uuid, Operation<Player> original) {
+        Player player = original.call(lvl, uuid);
+        if (player == null && ipl$remoteViewers.contains(uuid)) {
+            return lvl.getServer().getPlayerList().getPlayer(uuid);
+        }
+        return player;
+    }
+
+    // ------------------------------------------------------------------------
+    // Load decision per sub-level: a view always counts; Sable's range only within the
+    // level (it compares coordinates of two different levels otherwise).
     // ------------------------------------------------------------------------
 
     @WrapOperation(
         method = "tick",
         at = @At(
             value = "INVOKE",
-            // NB: bytecode return descriptor is Lnet/minecraft/world/entity/player/Player;
-            // (the class lives in the `player` subpackage, not entity directly). Got this
-            // wrong on the first pass which caused require=0 to silently no-op the wrap.
-            // Tightened to require=1 to make any future descriptor drift fail loudly.
-            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"
+            target = "Ldev/ryanhcode/sable/sublevel/system/SubLevelTrackingSystem;shouldLoad(Lnet/minecraft/world/entity/player/Player;Lorg/joml/Vector3dc;)Z"
         ),
         require = 1
     )
-    private Player ipl$resolveCrossDimInTick(ServerLevel lvl, UUID uuid, Operation<Player> original) {
-        Player p = original.call(lvl, uuid);
-        if (p != null) return p;
-        if (ipl$crossDimViewerUnion.contains(uuid)) {
-            return lvl.getServer().getPlayerList().getPlayer(uuid);
-        }
-        return null;
+    private boolean ipl$shouldLoadByView(
+        SubLevelTrackingSystem self, Player player, Vector3dc position,
+        Operation<Boolean> original, @Local ServerSubLevel subLevel
+    ) {
+        boolean views = ipl$views(subLevel, player);
+        if (player.level() != level) return views;
+        return views || original.call(self, player, position);
     }
 
     // ------------------------------------------------------------------------
-    // 3. ALSO resolve cross-dim players in sendMovementUpdates -- this was the
-    //    missed site that caused the invisibility regression in the prior attempt.
-    //    Without this, movement updates iterate `tracking`, hit `getPlayerByUUID
-    //    -> null` for cross-dim viewers, and `continue` past them -> no packets.
+    // Bootstrap remote viewers that are not tracking yet (Sable only adds players of this
+    // level). HEAD of sendBoundsUpdates: right after tick's add/remove passes, inside the
+    // dimension-tagging wrap below.
     // ------------------------------------------------------------------------
 
-    @WrapOperation(
-        method = "sendMovementUpdates",
-        at = @At(
-            value = "INVOKE",
-            // Same descriptor fix as above: return type is .../entity/player/Player not .../entity/Player.
-            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"
-        ),
-        require = 1
-    )
-    private Player ipl$resolveCrossDimInMovement(ServerLevel lvl, UUID uuid, Operation<Player> original) {
-        Player p = original.call(lvl, uuid);
-        if (p != null) return p;
-        if (ipl$crossDimViewerUnion.contains(uuid)) {
-            return lvl.getServer().getPlayerList().getPlayer(uuid);
-        }
-        return null;
-    }
-
-    // ------------------------------------------------------------------------
-    // 4. Force shouldLoad=true for cross-dim viewers (their literal world-coord
-    //    position is far from the source-dim sub-level, so vanilla distance check
-    //    would say "out of range" and trigger the removal path).
-    // ------------------------------------------------------------------------
-
-    @ModifyReturnValue(
-        method = "shouldLoad",
-        at = @At("RETURN"),
-        remap = false
-    )
-    private boolean ipl$forceShouldLoadForCrossDim(boolean original, Player player, Vector3dc entityPosition) {
-        if (original) return true;
-        if (player instanceof ServerPlayer sp && sp.serverLevel() != level) {
-            if (ipl$crossDimViewerUnion.contains(sp.getGameProfile().getId())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // ------------------------------------------------------------------------
-    // 5. Bootstrap: for any cross-dim viewer NOT yet in tracking (e.g. someone
-    //    who walked up to a portal in the dest dim without having tracked the
-    //    source-dim sub-level before), add them to tracking + emit a wrapped
-    //    sendFullSync. Inert when the viewer was already tracking before
-    //    crossing (which is the common case -- they're retained via @WrapOperation
-    //    above, so they're already in tracking when this runs).
-    //
-    //    Anchored at HEAD of sendBoundsUpdates rather than at the invoke site in
-    //    tick(), to avoid colliding with the @Redirect on the same instruction.
-    //    sendBoundsUpdates is the first packet-emitting call in tick after the
-    //    addition/removal passes, so HEAD here is the right bootstrap window.
-    // ------------------------------------------------------------------------
-
-    @Inject(method = "sendBoundsUpdates", at = @At("HEAD"), require = 0)
-    private void ipl$bootstrapCrossDimViewers(SubLevelContainer container, CallbackInfo ci) {
-        if (ipl$crossDimViewersBySubLevel.isEmpty()) return;
+    @Inject(method = "sendBoundsUpdates", at = @At("HEAD"), require = 1)
+    private void ipl$bootstrapRemoteViewers(SubLevelContainer container, CallbackInfo ci) {
+        if (ipl$remoteViewers.isEmpty()) return;
         for (SubLevel subLevel : container.getAllSubLevels()) {
             if (subLevel.isRemoved()) continue;
-            ServerSubLevel serverSubLevel = (ServerSubLevel) subLevel;
-            Set<UUID> crossDim = ipl$crossDimViewersBySubLevel.get(serverSubLevel.getUniqueId());
-            if (crossDim == null || crossDim.isEmpty()) continue;
+            Set<UUID> viewers = ipl$viewersBySubLevel.get(subLevel.getUniqueId());
+            if (viewers == null) continue;
 
+            ServerSubLevel serverSubLevel = (ServerSubLevel) subLevel;
             Collection<UUID> tracking = serverSubLevel.getTrackingPlayers();
-            for (UUID uuid : crossDim) {
-                if (tracking.contains(uuid)) continue;
+            for (UUID uuid : viewers) {
+                if (!ipl$remoteViewers.contains(uuid) || tracking.contains(uuid)) continue;
                 ServerPlayer viewer = level.getServer().getPlayerList().getPlayer(uuid);
                 if (viewer == null) continue;
                 tracking.add(uuid);
-                // We're already inside the @Redirect's withForceRedirect wrap when
-                // sendBoundsUpdates is being called from tick. But we may also be called
-                // outside that context (e.g. if sendBoundsUpdates is invoked elsewhere),
-                // so set it explicitly here -- nested same-value is a no-op.
                 PacketRedirection.withForceRedirect(level, () -> sendFullSync(viewer, serverSubLevel, null));
-
                 // Straddle parity is server state (see IplStraddleSessionSync); a viewer
                 // starting to track mid-crossing needs the current session snapshot too.
-                ipl.sable.transit.IplStraddleSessionSync.sendSnapshotTo(
-                    viewer, serverSubLevel.getUniqueId());
+                IplStraddleSessionSync.sendSnapshotTo(viewer, serverSubLevel.getUniqueId());
             }
         }
     }
 
+    /**
+     * Bounds changes go to every tracker. Sable's {@code playerSink()} resolves trackers in
+     * this level only, so a remote viewer kept the old plot bounds: blocks added meanwhile
+     * stayed outside its render grid until a re-sync.
+     */
+    @WrapOperation(
+        method = "sendBoundsUpdates",
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/sublevel/ServerSubLevel;playerSink()Lfoundry/veil/api/network/VeilPacketManager$PacketSink;"
+        ),
+        require = 1
+    )
+    private VeilPacketManager.PacketSink ipl$boundsToAllTrackers(
+        ServerSubLevel subLevel, Operation<VeilPacketManager.PacketSink> original
+    ) {
+        return packet -> {
+            for (UUID uuid : subLevel.getTrackingPlayers()) {
+                ServerPlayer player = level.getServer().getPlayerList().getPlayer(uuid);
+                if (player != null) player.connection.send(packet);
+            }
+        };
+    }
+
     // ------------------------------------------------------------------------
-    // 6. Wrap sendBoundsUpdates + sendMovementUpdates calls in tick() in
-    //    PacketRedirection.withForceRedirect. This tags emitted packets with the
-    //    source dim's ResourceKey; IP's client-side unwrap dispatches them under
-    //    ClientWorldLoader.withSwitchedWorldFailSoft so they land in the
-    //    source-dim ClientSubLevelContainer regardless of the client's active dim.
+    // Dimension tagging: bounds/movement packets emitted from tick carry this level's
+    // dimension, so IP's client unwrap applies them to this level's container whatever
+    // dimension the client currently displays.
     // ------------------------------------------------------------------------
 
     @Redirect(
@@ -378,14 +339,36 @@ public abstract class SableCrossDimTrackingMixin implements ipl.sable.transit.Ip
     }
 
     // ------------------------------------------------------------------------
-    // 7. Force TCP for cross-dim recipients in sendMovementUpdates. Sable's UDP
-    //    fast-path bypasses Connection.send and therefore IP's outgoing-packet
-    //    wrap; the client would receive an unwrapped packet and route it to its
-    //    currently-active container (wrong dim). TCP fallback goes through
-    //    Connection.send and gets wrapped by IP under the active
-    //    withForceRedirect from @Redirect above.
+    // Full syncs Sable sends from tick (new sub-levels, players entering range) carry the
+    // dimension too: untagged, the client applies them to whatever level it displays at
+    // that moment, which is the wrong one while a player is switching dimensions.
     // ------------------------------------------------------------------------
 
+    @WrapOperation(
+        method = "tick",
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/sublevel/system/SubLevelTrackingSystem;sendFullSync(Lnet/minecraft/server/level/ServerPlayer;Ldev/ryanhcode/sable/sublevel/ServerSubLevel;Lnet/minecraft/network/protocol/common/custom/CustomPacketPayload;)V"
+        ),
+        require = 2
+    )
+    private void ipl$tagFullSync(
+        SubLevelTrackingSystem self, ServerPlayer player, ServerSubLevel subLevel, CustomPacketPayload extraPacket,
+        Operation<Void> original
+    ) {
+        PacketRedirection.withForceRedirect(level, () -> original.call(self, player, subLevel, extraPacket));
+    }
+
+    // ------------------------------------------------------------------------
+    // TCP instead of Sable's UDP path, which bypasses Connection.send and with it the
+    // dimension tagging above, so the client would apply the update to the wrong container.
+    // ------------------------------------------------------------------------
+
+    /**
+     * Remote viewers always go over TCP. So does the host of a singleplayer world: there Sable's
+     * "UDP" is only a local queue that the client drains later on whatever level it displays
+     * then, so it gains nothing and loses the dimension tag.
+     */
     @WrapOperation(
         method = "sendMovementUpdates",
         at = @At(
@@ -394,20 +377,16 @@ public abstract class SableCrossDimTrackingMixin implements ipl.sable.transit.Ip
         ),
         require = 1
     )
-    private boolean ipl$forceCrossDimToTCP(SableUDPServer server, ServerPlayer player, Operation<Boolean> original) {
-        if (player.serverLevel() != level) {
+    private boolean ipl$forceTaggedTCP(SableUDPServer server, ServerPlayer player, Operation<Boolean> original) {
+        if (player.serverLevel() != level || player.connection.getRemoteAddress() instanceof LocalAddress) {
             return false;
         }
         return original.call(server, player);
     }
 
     // ------------------------------------------------------------------------
-    // 8. Stamp StopTracking packets with THIS level's dimension. sendRemoval fires
-    //    from tick's removal pass and from onSubLevelRemoved -- both outside the
-    //    bounds/movement redirect wraps. A cross-dim viewer (or a player whose ship
-    //    just changed dimension) must have it applied to this dimension's client
-    //    container, not whichever one the client currently displays. Harmless for
-    //    same-dimension recipients.
+    // Stop-tracking packets carry this level's dimension as well: sendRemoval fires from
+    // tick's removal pass and from onSubLevelRemoved, both outside the wraps above.
     // ------------------------------------------------------------------------
 
     @WrapOperation(
@@ -420,7 +399,7 @@ public abstract class SableCrossDimTrackingMixin implements ipl.sable.transit.Ip
     )
     private void ipl$stampRemovalWithDimension(
         SubLevelTrackingSystem self,
-        foundry.veil.api.network.VeilPacketManager.PacketSink sink,
+        VeilPacketManager.PacketSink sink,
         ServerSubLevel subLevel,
         Operation<Void> original
     ) {

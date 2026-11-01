@@ -103,8 +103,8 @@ public abstract class IplStaffBeamMixin {
 
     private Vec3 ipl$nodeOffset(int index, float partialTick) {
         if (index <= 0 || index >= this.nodes.size()) return Vec3.ZERO;
-        IplPhysicsStaffBeamNodeAccessorMixin node =
-            (IplPhysicsStaffBeamNodeAccessorMixin) this.nodes.get(index);
+        IplStaffBeamNodeAccessor node =
+            (IplStaffBeamNodeAccessor) this.nodes.get(index);
         return node.ipl$getPreviousPosition().lerp(node.ipl$getPosition(), partialTick);
     }
 }

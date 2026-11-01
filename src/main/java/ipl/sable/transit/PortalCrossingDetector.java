@@ -119,9 +119,7 @@ public final class PortalCrossingDetector {
             boolean accept;
             if (childPath == null) {
                 // Root test of portal P: native piece, or a piece whose path starts at P.
-                IplProjectionTree.Node root = piece;
-                while (root != null && root.parent != null) root = root.parent;
-                accept = root == null || root.portal.getUUID().equals(scope.portal());
+                accept = piece == null || piece.root().portal.getUUID().equals(scope.portal());
             } else {
                 accept = piece != null && (piece.path.equals(scope.parentPath())
                     || piece.path.equals(childPath) || piece.path.startsWith(childPath + ">"));
@@ -131,6 +129,53 @@ public final class PortalCrossingDetector {
         List<BlockPos> result = out.size() == all.size() ? all : List.copyOf(out);
         SCOPED_BLOCKS.put(key, result);
         return result;
+    }
+
+    /**
+     * Whether no material of {@code body} is held by the projection piece of ANOTHER root
+     * portal. A flip re-bases the whole body through {@code portal}; with part of it projected
+     * through a different portal (several portals straddled at once) that part would be carried
+     * to the wrong place, so the body stays stitched until that piece has emptied. Material
+     * inside {@code portal}'s own region counts as through it even where an adjacent sibling has
+     * the priority (shared lateral margin). Native material is judged by the crossing test.
+     */
+    public static boolean noMaterialBeyondOtherPortals(ServerSubLevel body, Portal portal) {
+        IplProjectionTree tree = IplProjectionTree.of(body);
+        IplProjectionTree.Node own = null;
+        boolean others = false;
+        for (IplProjectionTree.Node root : tree.roots()) {
+            if (root.portal.getUUID().equals(portal.getUUID())) own = root;
+            else others = true;
+        }
+        if (!others) return true;
+        Frame frame = new Frame(realTrail(body).end);
+        for (BlockPos block : IplPortalVolumeCache.blocks(body)) {
+            Vec3 real = new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block));
+            IplProjectionTree.Node piece = tree.pieceAt(real);
+            if (piece == null || piece.root() == own) continue;
+            if (own != null && own.beyondContains(real)) continue;
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Whether the piece of session {@code path} -- its own piece or any piece chained below
+     * it -- holds material of {@code body}. Such a session must not end: its material would
+     * fall back into the source frame (the piece "vanishes" from the destination and reappears
+     * behind the portal).
+     */
+    public static boolean pieceHoldsMaterial(ServerSubLevel body, String path) {
+        IplProjectionTree tree = IplProjectionTree.of(body);
+        if (tree.isEmpty()) return false;
+        Frame frame = new Frame(realTrail(body).end);
+        String below = path + ">";
+        for (BlockPos block : IplPortalVolumeCache.blocks(body)) {
+            IplProjectionTree.Node piece = tree.pieceAt(
+                new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block)));
+            if (piece != null && (piece.path.equals(path) || piece.path.startsWith(below))) return true;
+        }
+        return false;
     }
 
     private static void invalidateMapped(UUID body) {

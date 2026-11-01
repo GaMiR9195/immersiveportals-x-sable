@@ -367,7 +367,8 @@ public final class IplStraddlePoseMap {
      * Plot-local block keep-filter for entity-vs-ship collision while the ship straddles
      * a portal, or null when no clipping applies. Selects the frame the collision code
      * uses for this entity ({@link #chooseCollisionFrame}, the same choice the pose wraps
-     * use, so filter and pose can never disagree) and keeps exactly that piece's blocks.
+     * use, so filter and pose can never disagree) and keeps exactly that piece's blocks:
+     * the frame's half-space cuts, minus space yielded to a higher-priority sibling.
      */
     @Nullable
     public static java.util.function.Predicate<BlockPos> getBlockCollisionKeepFilter(
@@ -379,7 +380,13 @@ public final class IplStraddlePoseMap {
         StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
         IplProjectionTree.Node node = frame == null ? null : frame.node();
         if (node == null && sub.getLevel() != contextLevel) return null;
-        return cutFilter(leadPose(sub), frameCuts(tree, node), SEAM_SUPPORT_MARGIN);
+        Pose3dc pose = leadPose(sub);
+        java.util.function.Predicate<BlockPos> cut = cutFilter(pose, frameCuts(tree, node), SEAM_SUPPORT_MARGIN);
+        if (node == null || !tree.yieldsAnything(node)) return cut;
+        // Space contested by several portals belongs to one piece only (sibling priority).
+        java.util.function.Predicate<BlockPos> owned =
+            pos -> !tree.yieldsAt(node, pose.transformPosition(Vec3.atCenterOf(pos)));
+        return cut == null ? owned : cut.and(owned);
     }
 
     /**

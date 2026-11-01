@@ -4,9 +4,8 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItem;
-import ipl.sable.mixin.client.IplPhysicsStaffBeamAccessorMixin;
-import ipl.sable.mixin.client.IplPhysicsStaffBeamInvokerMixin;
-import ipl.sable.mixin.client.IplPhysicsStaffClientHandlerAccessorMixin;
+import ipl.sable.mixin.client.IplStaffBeamAccessor;
+import ipl.sable.mixin.client.IplStaffClientHandlerAccessor;
 import net.createmod.catnip.animation.AnimationTickHolder;
 import net.createmod.catnip.render.SuperRenderTypeBuffer;
 import net.minecraft.client.Camera;
@@ -67,7 +66,7 @@ public final class IplStaffPortalBeamRenderer {
 
         PhysicsStaffClientHandler handler =
             dev.simulated_team.simulated.SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
-        Object2ObjectMap<UUID, Object> beams = ((IplPhysicsStaffClientHandlerAccessorMixin) (Object) handler)
+        Object2ObjectMap<UUID, Object> beams = ((IplStaffClientHandlerAccessor) (Object) handler)
             .ipl$getBeams();
         if (beams.isEmpty()) {
             clear();
@@ -89,8 +88,8 @@ public final class IplStaffPortalBeamRenderer {
             Player owner = findPlayer(entry.getKey());
             if (owner == null) continue;
 
-            IplPhysicsStaffBeamAccessorMixin access =
-                (IplPhysicsStaffBeamAccessorMixin) (Object) beam;
+            IplStaffBeamAccessor access =
+                (IplStaffBeamAccessor) (Object) beam;
             Vec3 localAnchor = access.ipl$getPreviousEnd().lerp(access.ipl$getEnd(), partialTick);
             ClientSubLevel sub = findHostedSubLevel(localAnchor);
             if (sub == null) continue;
@@ -170,7 +169,7 @@ public final class IplStaffPortalBeamRenderer {
         PHYSICAL_BEAM_PASS.set(true);
         ACTIVE_RUN.set(run);
         try {
-            ((IplPhysicsStaffBeamInvokerMixin) (Object) beam).ipl$render(
+            ((IplStaffBeamAccessor) (Object) beam).ipl$render(
                 run.vertices().get(0).point(),
                 run.vertices().get(run.vertices().size() - 1).point(),
                 poseStack, buffer, camera, partialTick

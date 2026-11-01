@@ -115,7 +115,7 @@ public final class IplAtlasStraddleSession {
         boolean completed;
         /** Controller verdict: physical entry proven and every section fits (or fully through). */
         boolean wideRequested;
-        /** Effective region shape: {@link #wideRequested} and no sibling session. */
+        /** Effective region shape: {@link #wideRequested} and no sibling already holding a wide region. */
         boolean wide;
 
         Session(StraddleKey key, ServerSubLevel sub, Portal portal, ServerLevel source, ServerLevel dest,
@@ -214,7 +214,7 @@ public final class IplAtlasStraddleSession {
         }
         SESSIONS.put(key, session);
         IplProjectionTree.invalidate();
-        // Новая сессия может сделать соседей "не единственными" (wide -> трубка): пересчёт
+        // Новая сессия меняет пространство, которое соседи уступают по приоритету: пересчёт
         // всех областей тела, а не только своей.
         rebuildShip(sub);
         LOG.debug("[IPL-IMAGE] start {} depth={} dest={} imageHandle={}",
@@ -242,6 +242,10 @@ public final class IplAtlasStraddleSession {
         if (!java.util.Arrays.equals(oldBeyond, s.beyondRegion)) {
             if (s.key.isRoot()) applyRealClipRegions(s.sub);
             if (parent != null) applyImageRegions(parent);
+            // Siblings (and their chains) yield to this region or are yielded to by it.
+            for (Session other : List.copyOf(SESSIONS.values())) {
+                if (other != s && other.sub == s.sub && other.key.depth() >= s.key.depth()) applyImageRegions(other);
+            }
         }
         applyImageRegions(s);
     }
@@ -269,19 +273,59 @@ public final class IplAtlasStraddleSession {
         return n;
     }
 
-    /** No other session competes for the same space: other roots of the body / other children of the parent. */
-    private static boolean soleSibling(Session s) {
+    /**
+     * Sessions competing for the same source-frame space: other roots of the same body, or
+     * other children of the same parent.
+     */
+    private static boolean isSibling(Session a, Session b) {
+        return a != b && a.sub == b.sub && a.key.via().equals(b.key.via());
+    }
+
+    /**
+     * SIBLING PRIORITY (mirrors {@link IplProjectionTree}'s build order): space claimed by
+     * several siblings belongs to the aperture tubes before the wide region, then to the
+     * lower path. Images exclude the space they yield; the real body's exclusion is the union
+     * of all root regions and needs no priority.
+     *
+     * <p>Русский комментарий: раньше широкая область схлопывалась в трубку, как только у тела
+     * появлялась вторая сессия («единственный сосед»), и всё, что прошло портал, но лежит вне
+     * трубки, мгновенно возвращалось в исходный мир — куски пропадали при открытии/закрытии
+     * соседних сессий. Теперь форма области от соседей не зависит: спорное пространство
+     * просто отдаётся по фиксированному приоритету, одинаково в физике, дереве и рейкастах.
+     */
+    static boolean outranks(Session a, Session b) {
+        if (a.wide != b.wide) return !a.wide;
+        return a.key.path().compareTo(b.key.path()) < 0;
+    }
+
+    /** A sibling group holds at most one wide region; whoever got it keeps it while it asks for it. */
+    private static boolean siblingHoldsWide(Session s) {
         for (Session other : SESSIONS.values()) {
-            if (other == s || other.sub != s.sub) continue;
-            if (other.key.via().equals(s.key.via())) return false;
+            if (isSibling(other, s) && other.wide) return true;
         }
-        return true;
+        return false;
+    }
+
+    /**
+     * Regions (in {@code s}'s SOURCE frame) that {@code s}'s image yields to higher-priority
+     * siblings of {@code s} and of every ancestor (ancestors' yields carried forward).
+     */
+    private static List<double[]> yieldedRegions(Session s) {
+        List<double[]> out = new ArrayList<>(2);
+        Session parent = s.key.isRoot() ? null : SESSIONS.get(parentKeyOf(s.key));
+        if (parent != null) {
+            for (double[] r : yieldedRegions(parent)) out.add(transform(r, parent.local));
+        }
+        for (Session other : SESSIONS.values()) {
+            if (isSibling(other, s) && outranks(other, s) && other.beyondRegion != null) out.add(other.beyondRegion);
+        }
+        return out;
     }
 
     private static void computeRegions(Session s, @Nullable Session parent) {
         Portal portal = s.portal;
         double depth = clipDepthLimit(s);
-        s.wide = s.wideRequested && soleSibling(s);
+        s.wide = s.wideRequested && !siblingHoldsWide(s);
         double halfW = s.wide ? WIDE_EXTENT : portal.getWidth() * 0.5 + LATERAL_MARGIN;
         double halfH = s.wide ? WIDE_EXTENT : portal.getHeight() * 0.5 + LATERAL_MARGIN;
         Vec3 origin = portal.getOriginPos();
@@ -398,7 +442,8 @@ public final class IplAtlasStraddleSession {
     /**
      * Image regions. ABI 2: KEEP = this image's tube intersection (what actually went
      * through every portal of its path), EXCLUDE = the parts that already went on through
-     * a child portal (owned by the child image). Legacy natives only understand
+     * a child portal (owned by the child image) and the space yielded to higher-priority
+     * siblings along the path ({@link #outranks}). Legacy natives only understand
      * exclusions: own not-through region + inherited ones + child beyond regions -- which
      * leaves everything OUTSIDE the aperture tubes colliding (full copies with several
      * portals), hence the probe.
@@ -417,6 +462,7 @@ public final class IplAtlasStraddleSession {
         for (Session child : SESSIONS.values()) {
             if (child.sub == s.sub && child.key.via().equals(path)) regions.add(child.beyondRegion);
         }
+        for (double[] yielded : yieldedRegions(s)) regions.add(transform(yielded, s.local));
         double[] flat = v2 ? flatten(regions) : flattenLegacy(regions);
         if (java.util.Arrays.equals(flat, s.lastImageRegions)) return;
         s.lastImageRegions = flat;
@@ -452,7 +498,7 @@ public final class IplAtlasStraddleSession {
         if (!session.sub.isRemoved() && session.sub.getLevel() == session.bodyLevel
             && IplScenes.sceneHandle(session.bodyLevel) == session.bodyScene) {
             if (key.isRoot()) applyRealClipRegions(session.sub);
-            // Оставшийся сосед мог стать единственным (трубка -> полупространство).
+            // Уступленное соседям пространство изменилось (и широкая область могла освободиться).
             if (hasSession(key.subLevelUuid())) rebuildShip(session.sub);
             else if (!key.isRoot()) {
                 Session parent = SESSIONS.get(parentKeyOf(key));

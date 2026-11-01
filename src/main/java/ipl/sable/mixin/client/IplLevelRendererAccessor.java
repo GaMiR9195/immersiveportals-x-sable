@@ -5,9 +5,9 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
-/** Exposes exact LevelRenderer world for Veil's active stage callback. */
+/** The world a {@link LevelRenderer} draws: render-stage callbacks run for every IP world renderer. */
 @Mixin(LevelRenderer.class)
-public interface IplStaffPortalBeamPassMixin {
+public interface IplLevelRendererAccessor {
 
     @Accessor("level")
     ClientLevel ipl$getLevel();

@@ -36,6 +36,15 @@ import java.util.Map;
  * so interaction, collision images and physics always agree on where a block physically
  * is. Built from server sessions or from the client session mirror; cached per thread and
  * tick, invalidated whenever a session set changes.
+ *
+ * <p>SIBLING PRIORITY. Sibling sessions (several roots of one body, several children of one
+ * node) can claim the same space: adjacent apertures share their lateral margin, and a wide
+ * (half-space) region contains every tube next to it. Contested space goes to the sibling
+ * that comes first in {@link #build}'s order -- aperture tubes before the wide region, then
+ * path order -- and the physics regions apply the same order
+ * ({@code IplAtlasStraddleSession.outranks}). A wide region therefore keeps everything
+ * outside its siblings' tubes when a sibling opens, instead of collapsing to a tube and
+ * dropping its lateral material back into the source world.
  */
 public final class IplProjectionTree {
 
@@ -138,20 +147,11 @@ public final class IplProjectionTree {
             return t[0] <= t[1];
         }
 
-        /**
-         * Membership of a point given in this node's DESTINATION frame: it went through
-         * every portal of the path (all ancestor tubes) and through none of the children.
-         */
-        public boolean regionContains(Vec3 wDest) {
-            for (Node child : children) {
-                if (child.beyondContains(wDest)) return false;
-            }
-            Vec3 w = wDest;
-            for (Node n = this; n != null; n = n.parent) {
-                w = n.local.unmapPoint(w);
-                if (!n.beyondContains(w)) return false;
-            }
-            return true;
+        /** The root session of this node's path. */
+        public Node root() {
+            Node n = this;
+            while (n.parent != null) n = n.parent;
+            return n;
         }
 
         /**
@@ -211,9 +211,8 @@ public final class IplProjectionTree {
 
     /**
      * The piece a REAL-frame world point (body's own level, real pose) belongs to: null for
-     * the native piece, otherwise the deepest node it went through. Overlapping root tubes
-     * (two adjacent portals) resolve to the first session, like the physics images
-     * (each of which keeps its own tube) would both claim it.
+     * the native piece, otherwise the deepest node it went through. Contested space between
+     * siblings resolves by sibling priority (list order).
      */
     @Nullable
     public Node pieceAt(Vec3 realWorld) {
@@ -234,6 +233,57 @@ public final class IplProjectionTree {
     public boolean nativeContains(Vec3 realWorld) {
         for (Node root : roots) if (root.beyondContains(realWorld)) return false;
         return true;
+    }
+
+    /** Siblings of {@code node} in priority order (itself included). */
+    private List<Node> siblingsOf(Node node) {
+        return node.parent == null ? roots : node.parent.children;
+    }
+
+    /** Whether {@code node} or an ancestor has a higher-priority sibling (anything to yield to). */
+    public boolean yieldsAnything(Node node) {
+        for (Node a = node; a != null; a = a.parent) {
+            if (siblingsOf(a).get(0) != a) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Whether a REAL-frame point inside {@code node}'s regions is nevertheless owned by a
+     * higher-priority sibling of {@code node} or of one of its ancestors.
+     */
+    public boolean yieldsAt(Node node, Vec3 realWorld) {
+        for (Node a = node; a != null; a = a.parent) {
+            Vec3 source = a.parent == null ? realWorld : a.parent.mapping.mapPoint(realWorld);
+            for (Node sibling : siblingsOf(a)) {
+                if (sibling == a) break;
+                if (sibling.beyondContains(source)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Ray intervals ({@code from}/{@code dir} in {@code node}'s DESTINATION frame) of the
+     * space {@code node} yields to higher-priority siblings along its path (see
+     * {@link #yieldsAt}); the raycast treats them as holes.
+     */
+    public List<double[]> yieldedIntervals(Node node, Vec3 from, Vec3 dir) {
+        List<double[]> out = null;
+        Vec3 f = from;
+        Vec3 d = dir;
+        for (Node a = node; a != null; a = a.parent) {
+            f = a.local.unmapPoint(f);
+            d = a.local.unmapVec(d);
+            for (Node sibling : siblingsOf(a)) {
+                if (sibling == a) break;
+                double[] iv = sibling.beyondInterval(f, d);
+                if (iv == null) continue;
+                if (out == null) out = new ArrayList<>(2);
+                out.add(iv);
+            }
+        }
+        return out == null ? List.of() : out;
     }
 
     // ------------------------------------------------------------------ building
@@ -260,9 +310,12 @@ public final class IplProjectionTree {
             (box.minY() + box.maxY() + 1.0) * .5,
             (box.minZ() + box.maxZ() + 1.0) * .5));
         // Parents strictly before children, whatever order the session map iterated in
-        // (a re-opened parent must not orphan its still-live chain for a tick).
+        // (a re-opened parent must not orphan its still-live chain for a tick); siblings in
+        // priority order (see the class comment), identical on server and client.
         List<Entry> ordered = new ArrayList<>(entries);
-        ordered.sort(java.util.Comparator.comparingInt(e -> pathDepth(e.path())));
+        ordered.sort(java.util.Comparator.<Entry>comparingInt(e -> pathDepth(e.path()))
+            .thenComparing(Entry::wide)
+            .thenComparing(Entry::path));
         for (Entry e : ordered) {
             if (byPath.containsKey(e.path()) || e.portal() == null) continue;
             if (Math.abs(e.portal().getScaling() - 1.0) > 1e-9) continue;

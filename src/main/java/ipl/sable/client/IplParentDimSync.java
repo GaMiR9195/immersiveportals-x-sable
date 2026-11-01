@@ -346,7 +346,10 @@ public final class IplParentDimSync {
             double expectedNewest = src.ipl$getMostRecentTick() + offset;
             boolean dstLive = dst.ipl$getReceivedFirstUpdate() && !dstClock.isStopped()
                 && dst.ipl$getMostRecentTick() >= expectedNewest - 2.0;
-            if (!dstLive || Math.abs(dst.ipl$getInterpolationTick() - expected) > 1.0) {
+            // Русский: часы назначения, по которым не едет никто, кроме преемника, выставляются точно,
+            // иначе остаток расхождения (до тика) виден как скачок позы при смене призрака.
+            boolean shared = to.getAllSubLevels().size() > 1;
+            if (!dstLive || !shared || Math.abs(dst.ipl$getInterpolationTick() - expected) > 1.0) {
                 dst.ipl$setInterpolationTick(expected);
                 dst.ipl$setMostRecentTick(Math.max(dst.ipl$getMostRecentTick(), expectedNewest));
                 dst.ipl$setEstimatedServerTickSpeed(src.ipl$getEstimatedServerTickSpeed());
@@ -466,16 +469,32 @@ public final class IplParentDimSync {
         }
     }
 
+    /**
+     * Русский: преемник показывается, только когда собраны ВСЕ его секции (и ни одна не ждёт
+     * пересборки). Раньше хватало одной непустой: призрак убирался, пока остальные секции ещё
+     * строились, и корабль на глазах у игрока «догружался» кусками. Пустые секции Minecraft помечает EMPTY, так что ожидание конечно; если
+     * уровень назначения вообще не рисуется, призрак всё равно уходит по {@link #GHOST_TIMEOUT_MS}.
+     */
     private static boolean hasGeometry(ClientSubLevel sub) {
         var data = sub.getRenderData();
         if (data == null) return false;
         if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData chunks) {
+            boolean anyGeometry = false;
             for (var section : chunks.allRenderSections()) {
+                var compiled = section.getCompiled();
+                if (compiled == net.minecraft.client.renderer.chunk.SectionRenderDispatcher.CompiledSection.UNCOMPILED
+                    || section.isDirty()) {
+                    return false;
+                }
+                if (anyGeometry) continue;
                 for (net.minecraft.client.renderer.RenderType type : net.minecraft.client.renderer.RenderType.chunkBufferLayers()) {
-                    if (!section.getCompiled().isEmpty(type)) return true;
+                    if (!compiled.isEmpty(type)) {
+                        anyGeometry = true;
+                        break;
+                    }
                 }
             }
-            return false;
+            return anyGeometry;
         }
         return true;
     }
