@@ -1,7 +1,7 @@
 package ipl.sable.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
-import ipl.sable.render.SourceClipPortalFinder;
+import ipl.sable.render.IplClipPortalFinder;
 import net.minecraft.client.multiplayer.ClientLevel;
 import qouteall.imm_ptl.core.portal.Portal;
 import java.util.List;
@@ -13,7 +13,7 @@ public final class RenderCacheTest {
         ClientLevel source = new ClientLevel(), dest = new ClientLevel();
         ClientSubLevel ship = new ClientSubLevel();
         Portal portal = new Portal();
-        var decision = new SourceClipPortalFinder.ClipDecision();
+        var decision = new IplClipPortalFinder.ClipDecision();
         Object sourcePose=new Object(),mappedPose=new Object();
         long before = IplStraddleRenderCache.frameId();
         check(IplStraddleRenderCache.portalCandidates(source) == null, "no out-of-pass cache");

@@ -138,7 +138,7 @@ final class SableImpl {
     /**
      * The live ServerSubLevel owning the plot at {@code plotPos}, or null. The context
      * level's own grid wins; plot slots are allocated server-wide unique
-     * ({@code IplUnionPlotAllocationMixin}), so the cross-level fallback is unambiguous.
+     * ({@code SubLevelContainerMixin}), so the cross-level fallback is unambiguous.
      */
     @Nullable
     static dev.ryanhcode.sable.sublevel.ServerSubLevel subLevelAtPlotPos(

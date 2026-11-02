@@ -26,7 +26,7 @@ collider, and a contact-readout JNI path exists (used for impact sounds/particle
 | 2.6 | Authority swap | **EXISTING (bridge)** | `executeHostedTransit` (SableRehomeOps.java:327-408) is structurally the swap: pose/velocity remap, riders, parent flip. Becomes a two-scene op (demote/promote instead of teleport); the arrival rebake (lines 383-385, 416-449) retires with phantom terrain. | days |
 | 2.7 | Friction / traction | **RAY ROUTING, not contact mapping** | Sable: Rapier-native material friction via the hooks (hooks.rs:104-106); no custom pass. Simulated/Offroad: **zero contact enumeration exists anywhere** — wheels raycast (`level.clip` ×3 downward, WheelMountBlockEntity.java:346-401) and read block-property friction off the hit (lines 203/323). The §2.7 fix is therefore the same routing predicate as §2.8 applied to clip rays + the friction lookup following the ray's resolved level. Force application is already single-authority (`applyForcesAndReset`, line 234) — clone-compatible as-is. | folds into §2.8 pass |
 | 2.8 | Actor world routing | **EXTEND EXISTING ROUTER** + **3 BYPASSES** | BE-tick seam covers Simulated's own BEs (ad hoc `this.level.*`, no funnel — fine, we own the Level). Bypasses outside the BE-tick window: (1) `RockCuttingWheelActor.tick` — true MovementBehaviour on a ControlledContraptionEntity riding the ship, position resolution at RockCuttingWheelActor.java:121-124 in entity tick; (2) `MultiMiningServerManager.BlockBreakingData.tick` — destroyBlock/popResource from the **level tick event** (MultiMiningServerManager.java:164-215), level hard-bound at registration; (3) `PropellerBearingContraptionEntity` — unfiltered contraption actors on blades. Each needs context established at its own seam (entity tick / manager tick). | days |
-| 2.9 | Entity collision layer | **REUSE AS-IS** | Pose-map mixins confirmed (IplStraddleCollisionPoseMixin etc.); `IplStraddlePoseMap.getOffsetInto`'s server truth must repoint from terrain-clone sessions to the new clone registry, and `mapped()` gains rotation for 90° portals. | hours-days |
+| 2.9 | Entity collision layer | **REUSE AS-IS** | Pose-map mixins confirmed (SubLevelEntityCollisionMixin etc.); `IplStraddlePoseMap.getOffsetInto`'s server truth must repoint from terrain-clone sessions to the new clone registry, and `mapped()` gains rotation for 90° portals. | hours-days |
 
 ## Surprises worth knowing
 
@@ -70,7 +70,7 @@ indirection — repoint it at a dimension→scene map and most per-body call sit
 for free). Full list in the IPSable audit: SableRehomeOps:297,347;
 IplStraddleTerrainClone:146,155 (replaced); IplHostedTerrainChangeForwardMixin:58,89
 (retired); IplHostedTicketManagerMixin:78,107,134 (replaced);
-IplHostedIntersectionMixin:159-162 (extend); SableTransitOps:298 (legacy, inert).
+IplHostedIntersectionMixin:159-162 (extend); IplTransitOps:298 (legacy, inert).
 Caveat: `IplLevelAcceleratorOverrideMixin`'s no-override cross-profile branch
 (lines 80-82) serves the plot-bridge entity-collision read path, NOT the terrain feed
 — keep or relocate it when retiring the class.

@@ -8,9 +8,9 @@ import dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
-import ipl.sable.mixin.IplSubLevelPreviousPoseAccessor;
-import ipl.sable.mixin.client.IplClientSubLevelRenderPoseAccessor;
-import ipl.sable.mixin.client.IplSnapshotInterpolatorAccessor;
+import ipl.sable.mixin.SubLevelAccessor;
+import ipl.sable.mixin.client.ClientSubLevelAccessor;
+import ipl.sable.mixin.client.SnapshotInterpolatorAccessor;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
@@ -307,8 +307,8 @@ public final class IplParentDimSync {
         if (from == null || to == null) return;
         var srcClock = from.getInterpolation();
         var dstClock = to.getInterpolation();
-        var src = (ipl.sable.mixin.client.IplInterpolationClockAccessor) srcClock;
-        var dst = (ipl.sable.mixin.client.IplInterpolationClockAccessor) dstClock;
+        var src = (ipl.sable.mixin.client.InterpolationClockAccessor) srcClock;
+        var dst = (ipl.sable.mixin.client.InterpolationClockAccessor) dstClock;
         int offset = ghost.clockOffset;
 
         net.minecraft.world.level.ChunkPos a = ghost.sub.getPlot().getChunkMin();
@@ -370,11 +370,11 @@ public final class IplParentDimSync {
         synchronized (interpolator.buffer) {
             if (!interpolator.buffer.isEmpty()) {
                 interpolator.getSampleAt(dstClock.getTickPointer(),
-                    ((IplSnapshotInterpolatorAccessor) interpolator).ipl$getRunningSnapshot());
+                    ((SnapshotInterpolatorAccessor) interpolator).ipl$getRunningSnapshot());
             }
         }
         successor.forceUpdateBounds();
-        ((IplClientSubLevelRenderPoseAccessor) successor).ipl$setLastRenderPosePartialTick(-1.0f);
+        ((ClientSubLevelAccessor) successor).ipl$setLastRenderPosePartialTick(-1.0f);
     }
 
     /** {@code ClientSubLevel.onRemove}: forget per-body state only when no instance survives. */
@@ -383,6 +383,7 @@ public final class IplParentDimSync {
         Ghost ghost = GHOSTS.get(id);
         if (ghost != null && ghost.sub == sub) {
             GHOSTS.remove(id);
+            IplStraddleSessionStore.clearGhostTails(id);
             IplStraddleRenderCache.invalidateActivePasses();
             return;
         }
@@ -396,7 +397,7 @@ public final class IplParentDimSync {
         for (Map.Entry<UUID, Ghost> entry : new java.util.ArrayList<>(GHOSTS.entrySet())) {
             Ghost ghost = entry.getValue();
             if (ghost.sub.isRemoved()) {
-                GHOSTS.remove(entry.getKey(), ghost);
+                if (GHOSTS.remove(entry.getKey(), ghost)) IplStraddleSessionStore.clearGhostTails(entry.getKey());
                 continue;
             }
             if (!ghost.seeded) {
@@ -512,7 +513,7 @@ public final class IplParentDimSync {
         } catch (Throwable t) {
             LOG.error("[IPL-PARENT-SYNC] ghost removal failed for {}", id, t);
         } finally {
-            GHOSTS.remove(id, ghost);
+            if (GHOSTS.remove(id, ghost)) IplStraddleSessionStore.clearGhostTails(id);
             IplStraddleRenderCache.invalidateActivePasses();
         }
     }
@@ -574,6 +575,9 @@ public final class IplParentDimSync {
                     IplClientVisualTransitLatch.clear(id);
                     GHOSTS.put(id, new Ghost(old, dimensionKey(toDimensionId), mapping, surrogate,
                         System.currentTimeMillis(), Integer.parseInt(clockOffset)));
+                    // Русский комментарий (почему): смена кадра ниже стирает цепочки старого
+                    // кадра; призрак дорисовывает их, пока не придёт первый снимок преемника.
+                    IplStraddleSessionStore.captureGhostTails(id, mapping.portalId());
                 }
                 enterFrame(id, destinationFrame);
                 IplStraddleRenderCache.invalidateActivePasses();
@@ -648,10 +652,10 @@ public final class IplParentDimSync {
                     interpolator.buffer.set(i, new SubLevelSnapshotInterpolator.Snapshot(
                         old.gameTick(), mapping.mapPose(new Pose3d(old.pose()))));
                 }
-                Pose3d running = ((IplSnapshotInterpolatorAccessor) interpolator).ipl$getRunningSnapshot();
+                Pose3d running = ((SnapshotInterpolatorAccessor) interpolator).ipl$getRunningSnapshot();
                 running.set(mapping.mapPose(new Pose3d(running)));
             }
-            ((IplSubLevelPreviousPoseAccessor) clientSubLevel).ipl$getPreviousPose().set(mappedLastPose);
+            ((SubLevelAccessor) clientSubLevel).ipl$getPreviousPose().set(mappedLastPose);
             clientSubLevel.logicalPose().set(mappedLogicalPose);
             clientSubLevel.forceUpdateBounds();
             var bounds = clientSubLevel.getPlot().getBoundingBox();
@@ -674,7 +678,7 @@ public final class IplParentDimSync {
             IplStraddleSessionStore.clearRetiredForHandoff(subLevelId);
             IplStraddleRenderCache.invalidateActivePasses();
             // Rebuild Sable's cached render pose from the separately mapped endpoints.
-            ((IplClientSubLevelRenderPoseAccessor) clientSubLevel).ipl$setLastRenderPosePartialTick(-1.0f);
+            ((ClientSubLevelAccessor) clientSubLevel).ipl$setLastRenderPosePartialTick(-1.0f);
             LOG.debug("[IPL-PARENT-SYNC] handoff applied for {} pose=({},{},{})", subLevelId,
                 String.format("%.1f", mappedLogicalPose.position().x()),
                 String.format("%.1f", mappedLogicalPose.position().y()),

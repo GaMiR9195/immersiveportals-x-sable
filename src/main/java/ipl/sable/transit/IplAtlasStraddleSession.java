@@ -67,15 +67,23 @@ public final class IplAtlasStraddleSession {
      * полупространства пересекались бы.
      */
     private static final double WIDE_EXTENT = 1.0e6;
-    /** Sane recursion cap for projection-of-projection chains. */
-    public static final int MAX_CHAIN_DEPTH = 8;
+    /**
+     * Recursion guard for projection-of-projection chains.
+     *
+     * <p>Русский комментарий (почему 16, а не 8): в ряду порталов со сдвигом на блок длинный
+     * корабль честно стоит в стольких порталах, сколько блоков в нём помещается между ними;
+     * при 8 кусок за восьмым порталом не нарезался вовсе и торчал сквозь грань. Фантомные
+     * сессии теперь отсекает область куска, так что предел — только защита от разгона.
+     */
+    public static final int MAX_CHAIN_DEPTH = 16;
     /**
      * Жёсткий предел сессий на одно тело. Цепочки однонаправленных порталов подряд
      * раньше плодили фантомные сессии комбинаторно (каждая — образ в Rapier и запись в
      * снапшоте), что и роняло соединение. Нормальный проход через N порталов — это
-     * N сессий; 24 с запасом покрывает реальные сценарии.
+     * N сессий; после ограничения тестов областью куска фантомов нет, и 64 — лишь
+     * страховка (≈30 КБ снапшота), а не рабочий предел нарезки.
      */
-    public static final int MAX_SESSIONS_PER_SHIP = 24;
+    public static final int MAX_SESSIONS_PER_SHIP = 64;
 
     private static final Map<StraddleKey, Session> SESSIONS = new LinkedHashMap<>();
     private static boolean loggedScaledSkip;
@@ -283,19 +291,49 @@ public final class IplAtlasStraddleSession {
 
     /**
      * SIBLING PRIORITY (mirrors {@link IplProjectionTree}'s build order): space claimed by
-     * several siblings belongs to the aperture tubes before the wide region, then to the
-     * lower path. Images exclude the space they yield; the real body's exclusion is the union
-     * of all root regions and needs no priority.
+     * several siblings belongs first to the UPSTREAM portal (the other one stands beyond its
+     * plane, see {@link PortalOrder}), then to the aperture tubes before the wide region, then
+     * to the lower path. Images exclude the space they yield; the real body's exclusion is the
+     * union of all root regions and needs no priority.
      *
      * <p>Русский комментарий: раньше широкая область схлопывалась в трубку, как только у тела
      * появлялась вторая сессия («единственный сосед»), и всё, что прошло портал, но лежит вне
      * трубки, мгновенно возвращалось в исходный мир — куски пропадали при открытии/закрытии
      * соседних сессий. Теперь форма области от соседей не зависит: спорное пространство
      * просто отдаётся по фиксированному приоритету, одинаково в физике, дереве и рейкастах.
+     * Первым в приоритете стоит геометрия: без него трубка портала, стоящего ЗА плоскостью
+     * другого (ряд {@code ->|  |}), перебивала широкую область переднего и забирала его кусок —
+     * образ этого куска толкал тело из чужого мира, а клиент рисовал его в чужом портале.
      */
     static boolean outranks(Session a, Session b) {
+        int ra = upstreamRank(a);
+        int rb = upstreamRank(b);
+        if (ra != rb) return ra < rb;
         if (a.wide != b.wide) return !a.wide;
         return a.key.path().compareTo(b.key.path()) < 0;
+    }
+
+    /** How many siblings {@code s} lies strictly downstream of (same rule as the tree's build order). */
+    private static int upstreamRank(Session s) {
+        int rank = 0;
+        for (Session other : SESSIONS.values()) {
+            if (isSibling(other, s) && PortalOrder.strictlyDownstreamOf(s.portal, s.wide, other.portal, other.wide)) rank++;
+        }
+        return rank;
+    }
+
+    /**
+     * Whether a session {@code key} through {@code portal} would stand strictly downstream of a
+     * live sibling session: the only material that can reach it went through that sibling first,
+     * so a PREDICTED entry there is a phantom (the native trail does not know the material is gone).
+     */
+    public static boolean downstreamOfSibling(StraddleKey key, Portal portal) {
+        for (Session s : SESSIONS.values()) {
+            if (!s.key.subLevelUuid().equals(key.subLevelUuid()) || !s.key.via().equals(key.via())
+                || s.portal.getUUID().equals(portal.getUUID())) continue;
+            if (PortalOrder.strictlyDownstreamOf(portal, false, s.portal, s.wide)) return true;
+        }
+        return false;
     }
 
     /** A sibling group holds at most one wide region; whoever got it keeps it while it asks for it. */

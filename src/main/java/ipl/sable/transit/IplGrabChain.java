@@ -3,7 +3,7 @@ package ipl.sable.transit;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler;
 import ipl.sable.duck.IplStaffDragSessionControl;
-import ipl.sable.mixin.IplStaffServerHandlerAccessorMixin;
+import ipl.sable.mixin.StaffServerHandlerAccessor;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -42,7 +42,7 @@ import java.util.UUID;
  *       exact portal — same-dimension hops included) prepends the portal's INVERSE link
  *       and rotates the stored player-relative cursor vector, so the folded goal is
  *       continuous through the hop by construction.</li>
- *   <li><b>Body transit</b> (from {@code SableTransitController} after a successful
+ *   <li><b>Body transit</b> (from {@code IplTransitController} after a successful
  *       parent flip) appends the crossed portal FORWARD and reframes the held
  *       orientation through the portal rotation — same-dimension transits included.</li>
  * </ul>
@@ -369,7 +369,7 @@ public final class IplGrabChain {
         // Drag sessions live in the handler of the level that owns the grabbed body.
         for (ServerLevel level : server.getAllLevels()) {
             PhysicsStaffServerHandler handler = PhysicsStaffServerHandler.get(level);
-            Object session = ((IplStaffServerHandlerAccessorMixin) (Object) handler)
+            Object session = ((StaffServerHandlerAccessor) (Object) handler)
                 .ipl$getDraggingSessions().get(playerId);
             if (session instanceof IplStaffDragSessionControl control) return control;
         }

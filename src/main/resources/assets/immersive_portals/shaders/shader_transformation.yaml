@@ -4,13 +4,13 @@ configs:
       For vanilla terrain rendering. Slot 1 (ipl_subLevelClipEquation) added
       so cogs and other sub-level block entities -- which bind these vanilla
       rendertype shaders via vanilla BlockEntityRenderer inside
-      SableSubLevelBlockEntityClipMixin's bracket -- get clipped on the
+      RenderDispatcherBlockEntityClipMixin's bracket -- get clipped on the
       sub-level plane. Without slot-1 here, the bracket enables
       GL_CLIP_DISTANCE1 but the vertex shader never writes it, leaving the
       rasterizer reading undefined and letting cog meshes leak.
       Sable's vanilla chunk path leaves `Position + ChunkOffset` in rotated
       plot-local, camera-relative space; its model-view transform applies the
-      sub-level rotation afterward. `SubLevelClipUniformPatcher` therefore
+      sub-level rotation afterward. `IplClipUniformPatcher` therefore
       uploads the matching inverse-rotated normal for this shader family.
       NOTE: previous attempt to add Sable's 'terrain_solid' etc. shaders here
       caused an Iris shader compile error: "undefined variable Position".
@@ -58,7 +58,7 @@ configs:
       -11.126332)` with `ipl_subLevelClipEquation = <ABSENT>`).
       Same eye-space math pattern as the existing slot-0 write so we don't
       change the working slot-0 behavior. The slot-1 uniform is harmless
-      for non-sub-level draws because `IplGlUseProgramProbeMixin` only
+      for non-sub-level draws because `GlStateManagerMixin` only
       enables `GL_CLIP_DISTANCE1` when a sub-level bracket is active --
       otherwise the rasterizer ignores `gl_ClipDistance[1]` writes
       regardless of what's in the uniform.
@@ -158,7 +158,7 @@ configs:
       position transform and the equation transform. Caller must upload
       `activeClipPlaneAfterModelView` for these shaders -- handled by
       adding `block_entity_diffuse` to `EntityShaderNames.IS_ENTITY_STYLE`
-      so `IplGlUseProgramProbeMixin` picks the eye-space form at upload.
+      so `GlStateManagerMixin` picks the eye-space form at upload.
 
       Discovered via RenderDoc capture of the leaky chest: clicking "Debug"
       on the chest's fragment shader (EID 4412) revealed the source header

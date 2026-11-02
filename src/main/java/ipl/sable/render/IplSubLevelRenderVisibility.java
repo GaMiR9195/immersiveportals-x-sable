@@ -62,7 +62,7 @@ public final class IplSubLevelRenderVisibility {
         // Both the source and the mapped instance have their OWN pose and kept half.
         var plane=ipl.sable.client.IplStraddleRenderState.getPlaneFor(sub);
         if (plane!=null) return !outside(bounds,plane.normal(),plane.pos());
-        for (var decision:SourceClipPortalFinder.findStraddlingPortalPlanes(sub))
+        for (var decision:IplClipPortalFinder.findStraddlingPortalPlanes(sub))
             if (outside(bounds,decision.plane().normal(),decision.plane().pos())) return false;
         return true;
     }

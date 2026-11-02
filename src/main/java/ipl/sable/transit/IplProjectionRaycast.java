@@ -6,7 +6,7 @@ import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension;
 import dev.ryanhcode.sable.mixinterface.clip_overwrite.LevelPoseProviderExtension;
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import ipl.sable.mixin.IplClipContextAccessor;
+import ipl.sable.mixin.ClipContextAccessor;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
@@ -235,7 +235,7 @@ public final class IplProjectionRaycast {
         }
         Pose3dc pose = node == null ? realPose : node.mapping.mapPose(realPose);
         Level blocks = sub.getLevel();
-        IplClipContextAccessor access = (IplClipContextAccessor) template;
+        ClipContextAccessor access = (ClipContextAccessor) template;
         double t = keepFrom;
         for (int i = 0; i < MAX_SKIPS; i++) {
             t = skipHoles(holes, t);

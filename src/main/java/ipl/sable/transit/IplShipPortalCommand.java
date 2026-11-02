@@ -60,8 +60,8 @@ public final class IplShipPortalCommand {
             .then(Commands.literal("early_open_segments")
                 .executes(context -> {
                     context.getSource().sendSuccess(() -> Component.literal(
-                        "early_open_segments = " + SableTransitController.getEarlyOpenSegments()
-                            + " (default " + SableTransitController.DEFAULT_EARLY_OPEN_SEGMENTS
+                        "early_open_segments = " + IplTransitController.getEarlyOpenSegments()
+                            + " (default " + IplTransitController.DEFAULT_EARLY_OPEN_SEGMENTS
                             + "): how many physics segments of the body's own motion are"
                             + " extrapolated forward to open the portal seam BEFORE contact."
                             + " 0 = off, higher = opens earlier for faster bodies"),
@@ -71,16 +71,16 @@ public final class IplShipPortalCommand {
                 .then(Commands.argument("value", DoubleArgumentType.doubleArg(0.0, 16.0))
                     .suggests((context, builder) -> {
                         java.util.LinkedHashMap<String, String> opts = new java.util.LinkedHashMap<>();
-                        opts.put(String.valueOf(SableTransitController.DEFAULT_EARLY_OPEN_SEGMENTS),
-                            "default " + SableTransitController.DEFAULT_EARLY_OPEN_SEGMENTS);
-                        opts.putIfAbsent(String.valueOf(SableTransitController.getEarlyOpenSegments()),
-                            "current " + SableTransitController.getEarlyOpenSegments());
+                        opts.put(String.valueOf(IplTransitController.DEFAULT_EARLY_OPEN_SEGMENTS),
+                            "default " + IplTransitController.DEFAULT_EARLY_OPEN_SEGMENTS);
+                        opts.putIfAbsent(String.valueOf(IplTransitController.getEarlyOpenSegments()),
+                            "current " + IplTransitController.getEarlyOpenSegments());
                         opts.putIfAbsent("0.0", "off (no predictive seam opening)");
                         opts.forEach((v, tip) -> builder.suggest(v, Component.literal(tip)));
                         return builder.buildFuture();
                     })
                     .executes(context -> {
-                        double applied = SableTransitController.setEarlyOpenSegments(
+                        double applied = IplTransitController.setEarlyOpenSegments(
                             DoubleArgumentType.getDouble(context, "value"));
                         context.getSource().sendSuccess(() -> Component.literal(
                             "early_open_segments = " + applied), true);

@@ -173,12 +173,12 @@ IP's [`MyRenderHelper.java:421`](../ImmersivePortals-Sable/src/main/java/qouteal
 
 | File (IP-Sable) | Reason |
 |---|---|
-| `src/main/java/ipl/sable/render/SubLevelClipUniformPatcher.java` | Slot-1 unused once sub-levels live in own dim |
+| `src/main/java/ipl/sable/render/IplClipUniformPatcher.java` | Slot-1 unused once sub-levels live in own dim |
 | `src/main/java/ipl/sable/mixin/client/IplShaderClipMirrorMixin.java` | ↑ |
 | `src/main/java/ipl/sable/mixin/client/IplFrontClippingStateMirrorMixin.java` | ↑ |
-| `src/main/java/ipl/sable/mixin/client/SableSubLevelBlockEntityClipMixin.java` | Replaced by per-camera-dim visible region |
-| `src/main/java/ipl/sable/render/SourceClipPortalFinder.java` | No "source clip portal" concept post-refactor |
-| `src/main/java/ipl/sable/mixin/client/SableSourceClipMixin.java` | ↑ |
+| `src/main/java/ipl/sable/mixin/client/RenderDispatcherBlockEntityClipMixin.java` | Replaced by per-camera-dim visible region |
+| `src/main/java/ipl/sable/render/IplClipPortalFinder.java` | No "source clip portal" concept post-refactor |
+| `src/main/java/ipl/sable/mixin/client/ChunkedRenderDataMixin.java` | ↑ |
 | `src/main/java/ipl/sable/mixin/client/SableSourceClipSodiumMixin.java` | ↑ |
 | `src/main/java/ipl/sable/duck/IplSubLevelClipShader.java` | Slot-1 uniform duck-typing |
 
@@ -187,17 +187,17 @@ IP's [`MyRenderHelper.java:421`](../ImmersivePortals-Sable/src/main/java/qouteal
 | File (IP-Sable) | Change |
 |---|---|
 | `src/main/resources/assets/immersive_portals/shaders/shader_transformation.yaml` | Remove `ipl_subLevelClipEquation` declarations and `gl_ClipDistance[1]` writes from every entry. Keep `iportal_ClippingEquation` / `gl_ClipDistance[0]` |
-| `src/main/java/ipl/sable/mixin/client/IplShaderInstanceClipMixin.java` | Delete entirely (only registered slot-1 Uniform) |
-| `src/main/java/ipl/sable/mixin/client/IplGlUseProgramProbeMixin.java` lines 229-243 | Delete slot-1 write block. Keep slot-0 write |
+| `src/main/java/ipl/sable/mixin/client/ShaderInstanceMixin.java` | Delete entirely (only registered slot-1 Uniform) |
+| `src/main/java/ipl/sable/mixin/client/GlStateManagerMixin.java` lines 229-243 | Delete slot-1 write block. Keep slot-0 write |
 | `src/main/resources/ipl_sable.mixins.json` | Remove the listed deleted mixin entries |
 
 ### 11.3 Keep (slot-0 stays load-bearing for transit)
 
 - IP-side: `MixinRenderSystem_Clipping`, `FrontClipping`, `ViewAreaRenderer`, `ShaderCodeTransformation`
 - IP-side helpers: `IplClipEquationCache`, `EntityShaderNames`
-- Veil/Flywheel: `IplVeilCompat`, `IplVeilShaderPreProcessor`, `IplFlywheelCompilationMixin`
-- Probes: `IplProgramRegistry`, `IplShaderUniformProbeMixin` (delete-after-stabilization candidate)
-- Slot-0 half of `IplGlUseProgramProbeMixin`
+- Veil/Flywheel: `IplVeilCompat`, `IplVeilShaderPreProcessor`, `FlywheelCompilationMixin`
+- Probes: `IplProgramRegistry`, `ShaderInstanceMixin` (delete-after-stabilization candidate)
+- Slot-0 half of `GlStateManagerMixin`
 
 ## 12. Phased plan
 
@@ -386,7 +386,7 @@ Master kill-switch: `-Dipl.sable.dimAgnostic=false` reverts to the legacy mirror
 4. **Client block-change predictions live on the player's level**, while hosted
    confirmations arrive under the sublevels level — bridged via
    `IplPredictionBridgeMixin`, else breaks roll back visually.
-5. **The plot grid is a universal address space** (`IplPlotBridgeMixin`): chunk-coordinate
+5. **The plot grid is a universal address space** (`SubLevelContainerMixin`): chunk-coordinate
    plot lookups from ANY dimension fall through to the hosting container (allocation
    guard exempted). This single bridge powers parent-dim block reads, collision clipping,
    placement checks, by-UUID tool lookups, and `getContaining`.
@@ -425,13 +425,13 @@ Master kill-switch: `-Dipl.sable.dimAgnostic=false` reverts to the legacy mirror
 
 | Piece | Artifact | Notes |
 |---|---|---|
-| Rehome sweep (phase 2) | `ipl/sable/transit/SableRehomeOps.sweep` — driven per container tick from `SableSubLevelTransitMixin`, before the transit controller | Assembly/load paths untouched (fixes the v1 `assembleBlocks` blocker). One rehome per container tick: allocate same-UUID twin in `ipl_sable:sublevels` at identical pose → `copyPlotBlocks` (proven 3-pass) → relocate plot-resident entities → transfer velocity verbatim → remove parent original. Parent persisted in sub-level `user_data` (`ipl_parent_dim`); restored by the sweep on world load. Split sub-levels inherit parent from their split source (best-effort; see 20.4). |
+| Rehome sweep (phase 2) | `ipl/sable/transit/SableRehomeOps.sweep` — driven per container tick from `ServerSubLevelContainerMixin`, before the transit controller | Assembly/load paths untouched (fixes the v1 `assembleBlocks` blocker). One rehome per container tick: allocate same-UUID twin in `ipl_sable:sublevels` at identical pose → `copyPlotBlocks` (proven 3-pass) → relocate plot-resident entities → transfer velocity verbatim → remove parent original. Parent persisted in sub-level `user_data` (`ipl_parent_dim`); restored by the sweep on world load. Split sub-levels inherit parent from their split source (best-effort; see 20.4). |
 | Gate + helpers | `ipl/sable/dim/IplDimAgnostic` | `isEnabled` / `isHostingLevel` / `isHosted` / `getParentLevel` / `getServerParentLevel` |
-| Tracking (phase 2b) | extensions in `SableCrossDimTrackingMixin` | Hosting container's viewers = parent-dim players within Sable tracking range + IP portal viewers of the parent pose-chunk. All existing cross-dim machinery (server-wide player resolution, forced `shouldLoad`, bootstrap full-sync, forced TCP) applies unchanged. `sendRemoval` wrapped in `withForceRedirect(hosting)`. Parent-dim stamp RPC (`McRemoteProcedureCall` → `ipl.sable.client.IplParentDimSync`) sent after each hosted full sync. |
+| Tracking (phase 2b) | extensions in `TrackingSystemMixin` | Hosting container's viewers = parent-dim players within Sable tracking range + IP portal viewers of the parent pose-chunk. All existing cross-dim machinery (server-wide player resolution, forced `shouldLoad`, bootstrap full-sync, forced TCP) applies unchanged. `sendRemoval` wrapped in `withForceRedirect(hosting)`. Parent-dim stamp RPC (`McRemoteProcedureCall` → `ipl.sable.client.IplParentDimSync`) sent after each hosted full sync. |
 | Packet stamping (phase 3) | `IplHostingLevelTickRedirectMixin` (whole hosting `ServerLevel.tick` under `withForceRedirect`) + `IplPlotChunkSendStampMixin` (plot-expansion chunk send, which runs in C2S handling between ticks) | Every packet the hosting dim emits is dim-stamped; IP's client unwrap lands them in the client's sublevels containers. The client sublevels `ClientLevel` is created lazily by IP on the first redirected packet. |
 | Unload + terrain (phases 3/5) | `IplHostedTicketManagerMixin` | (a) hosting dim is always "loaded enough" → hosted ships never `moveToUnloaded`, no ticket thrash; (b) inside the per-sub-level ticket loop, terrain chunk sections are read from the PARENT dim (section index recomputed against the parent's height profile) and fed into the HOSTING pipeline — ship pose and terrain share the parent frame, so Rapier collision is consistent without the v1 global scene unification. |
 | Spatial queries (phase 5) | `IplHostedIntersectionMixin` on `ActiveSableCompanion` | `getAllIntersecting(level, bounds)` splices in hosted sub-levels with `parentLevel == level` (both sides; client resolves via non-creating `IplClientHostedLookup`). Also fixes `getVelocity(level, subLevel, …)` to resolve the physics handle from the sub-level's own (hosting) container. |
-| Transit (phase 6) | `SableRehomeOps.executeHostedTransit` + hosted dispatch in `SableTransitController` | Portal query against the PARENT dim; explicit straddle latch replaces "mirror exists"; CROSSED → pose remap (`computeMappedPose`), velocity rotation, rider teleport from parent, `parentLevel` flip, forced re-track (StopTracking to all, re-bootstrap next tick). No block copy, no container move. Mirrors fully disabled in dim-agnostic mode. |
+| Transit (phase 6) | `SableRehomeOps.executeHostedTransit` + hosted dispatch in `IplTransitController` | Portal query against the PARENT dim; explicit straddle latch replaces "mirror exists"; CROSSED → pose remap (`computeMappedPose`), velocity rotation, rider teleport from parent, `parentLevel` flip, forced re-track (StopTracking to all, re-bootstrap next tick). No block copy, no container move. Mirrors fully disabled in dim-agnostic mode. |
 
 ### 20.2 Client side
 

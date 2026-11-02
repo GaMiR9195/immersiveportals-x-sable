@@ -85,7 +85,7 @@ public final class IplShipFlip {
         PhysicsPipeline pipeline = container.physicsSystem().getPipeline();
         UUID uuid = ship.getUniqueId();
         Pose3d mappedPrevious = IplStraddlePoseMap.StraddleMapping.of(portal).mapPose(ship.lastPose());
-        Pose3d mappedPose = SableTransitOps.computeMappedPose(new Pose3d(ship.logicalPose()), portal);
+        Pose3d mappedPose = IplTransitOps.computeMappedPose(new Pose3d(ship.logicalPose()), portal);
         Vector3d linear = pipeline.getLinearVelocity(ship, new Vector3d());
         Vector3d angular = pipeline.getAngularVelocity(ship, new Vector3d());
         Vec3 mappedLin = portal.transformLocalVec(new Vec3(linear.x, linear.y, linear.z));
@@ -94,7 +94,7 @@ public final class IplShipFlip {
         pipeline.teleport(ship, mappedPose.position(), mappedPose.orientation());
         ship.logicalPose().set(mappedPose);
         ship.updateLastPose();
-        ((ipl.sable.mixin.IplSubLevelPreviousPoseAccessor) ship).ipl$getPreviousPose().set(mappedPrevious);
+        ((ipl.sable.mixin.SubLevelAccessor) ship).ipl$getPreviousPose().set(mappedPrevious);
         pipeline.resetVelocity(ship);
         pipeline.addLinearAndAngularVelocity(ship,
             new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
@@ -119,7 +119,7 @@ public final class IplShipFlip {
         ServerSubLevelContainer sourceContainer = SubLevelContainer.getContainer(sourceLevel);
         ServerSubLevelContainer destContainer = SubLevelContainer.getContainer(destination);
         int[] slot = sameSlot(ship, destContainer);
-        if (slot == null) slot = SableTransitOps.findFirstEmptyPlotForMirror(destContainer);
+        if (slot == null) slot = IplTransitOps.findFirstEmptyPlotForMirror(destContainer);
         if (slot == null) {
             LOG.warn("[IPL-MOVE] destination {} plot grid full; {} stays projected",
                 destination.dimension().location(), ship.getUniqueId());
@@ -127,11 +127,11 @@ public final class IplShipFlip {
         }
         ChunkPos srcMin = ship.getPlot().getChunkMin();
         int logPlot = destContainer.getLogPlotSize();
-        var origin = (ipl.sable.mixin.IplSubLevelContainerOriginAccessor) destContainer;
+        var origin = (ipl.sable.mixin.SubLevelContainerAccessor) destContainer;
         double slotDeltaX = (double) (((slot[0] + origin.ipl$originX()) << logPlot) - srcMin.x) * 16.0;
         double slotDeltaZ = (double) (((slot[1] + origin.ipl$originZ()) << logPlot) - srcMin.z) * 16.0;
         UUID uuid = ship.getUniqueId();
-        Pose3d pose = SableTransitOps.computeMappedPose(new Pose3d(ship.logicalPose()), portal);
+        Pose3d pose = IplTransitOps.computeMappedPose(new Pose3d(ship.logicalPose()), portal);
         // Предыдущая поза тоже переносится через портал: иначе у нового объекта lastPose == pose,
         // первый снимок клиента «стоит на месте», а Sable не сдвигает стоящих на корпусе сущностей
         // в этом тике — и то и другое выглядит как подвисание на выходе из портала.
@@ -175,11 +175,11 @@ public final class IplShipFlip {
             return null;
         }
         try {
-            ((ipl.sable.mixin.IplSubLevelPreviousPoseAccessor) moved).ipl$getPreviousPose().set(previous);
+            ((ipl.sable.mixin.SubLevelAccessor) moved).ipl$getPreviousPose().set(previous);
             if (ship.getName() != null) moved.setName(ship.getName());
             if (ship.getUserDataTag() != null) moved.setUserDataTag(ship.getUserDataTag().copy());
             seedMassBaseline(ship, moved, slotDeltaX, slotDeltaZ);
-            SableTransitOps.copyPlotBlocksPublic(ship.getPlot(), moved.getPlot(), sourceLevel, destination);
+            IplTransitOps.copyPlotBlocksPublic(ship.getPlot(), moved.getPlot(), sourceLevel, destination);
             relocatePlotEntities(ship, moved, sourceLevel, destination);
             if (mappedLin.lengthSqr() > 1e-12 || mappedAng.lengthSqr() > 1e-12) {
                 destContainer.physicsSystem().getPipeline().addLinearAndAngularVelocity(moved,
@@ -205,7 +205,7 @@ public final class IplShipFlip {
     private static int @Nullable [] sameSlot(ServerSubLevel ship, ServerSubLevelContainer dest) {
         ChunkPos center = ship.getPlot().getCenterChunk();
         int logPlot = dest.getLogPlotSize();
-        var origin = (ipl.sable.mixin.IplSubLevelContainerOriginAccessor) dest;
+        var origin = (ipl.sable.mixin.SubLevelContainerAccessor) dest;
         int localX = (center.x >> logPlot) - origin.ipl$originX();
         int localZ = (center.z >> logPlot) - origin.ipl$originZ();
         int side = 1 << dest.getLogSideLength();
@@ -215,10 +215,11 @@ public final class IplShipFlip {
     }
 
     private static void endSessions(MinecraftServer server, UUID uuid, String reason) {
-        for (StraddleKey key : IplAtlasStraddleSession.sessionKeysFor(uuid)) {
-            IplStraddleSessionSync.onSessionEnd(server, key, reason);
-        }
         IplAtlasStraddleSession.clearShip(uuid, reason);
+        // Русский комментарий (почему): раньше конец каждой сессии рассылался отдельным снимком
+        // (N снимков убывающего размера на флип в ряду порталов) — лишний трафик и промежуточные
+        // состояния у клиента вроде "цепочка без корня". Один пустой снимок старого кадра
+        // эквивалентен: клиент переводит все исчезнувшие сессии в хвосты с одним тиком конца.
         IplStraddleSessionSync.endAllFor(server, uuid, reason);
     }
 
@@ -226,7 +227,7 @@ public final class IplShipFlip {
         try {
             if (!(source.getMassTracker() instanceof dev.ryanhcode.sable.api.physics.mass.MergedMassTracker src)
                 || !(target.getMassTracker() instanceof dev.ryanhcode.sable.api.physics.mass.MergedMassTracker dst)
-                || !((Object) dst instanceof ipl.sable.mixin.IplMergedMassBaselineAccessor access)) return;
+                || !((Object) dst instanceof ipl.sable.mixin.MergedMassTrackerAccessor access)) return;
             org.joml.Vector3dc com = src.getCenterOfMass();
             if (com == null) return;
             access.ipl$setLastCenterOfMass(new Vector3d(com).add(dx, 0.0, dz));

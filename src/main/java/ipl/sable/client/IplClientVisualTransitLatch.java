@@ -81,7 +81,7 @@ final class IplClientVisualTransitLatch {
             }
         }
 
-        Portal candidate = findEnteringPortal(sub, level, previousRenderPose);
+        Portal candidate = findEnteringPortal(sub, level, previousRenderPose, resolved);
         if (candidate == null || !isVisible(sub, candidate)) return resolved;
 
         PREDICTIONS.put(shipId, new Prediction(
@@ -213,7 +213,7 @@ final class IplClientVisualTransitLatch {
 
     /** Exact current visual OBB sweep against one finite aperture, not center/tick sampling. */
     private static Portal findEnteringPortal(
-        ClientSubLevel sub, ClientLevel level, Pose3dc previousRenderPose
+        ClientSubLevel sub, ClientLevel level, Pose3dc previousRenderPose, List<Portal> current
     ) {
         // A confirmed visible split already establishes parity. Still run prediction
         // for other apertures (multi-straddle), but never rescan all world entities.
@@ -222,7 +222,8 @@ final class IplClientVisualTransitLatch {
         for (Portal portal : portals) {
             if (portal.isRemoved() || !portal.isTeleportable()
                 || Math.abs(portal.getScaling() - 1.0) > EPSILON
-                || !isCanonicalEntranceFace(portal, portals)) continue;
+                || !isCanonicalEntranceFace(portal, portals)
+                || behindCurrentSplit(sub, portal, current)) continue;
 
             Projection to = project(sub, sub.renderPose(), portal);
             Projection from = project(sub,
@@ -237,6 +238,27 @@ final class IplClientVisualTransitLatch {
             }
         }
         return best == null ? null : best.portal();
+    }
+
+    /**
+     * Whether {@code candidate} stands beyond the plane of a portal the ship is already split by.
+     *
+     * <p>Русский комментарий (почему): предсказание смотрит на коробку плота в РОДНЫХ координатах.
+     * В ряду {@code ->|  |} передняя часть корабля уже ушла в левый портал (наверх), но её родные
+     * координаты через пару блоков пересекают правый портал — предсказание включало его, и на
+     * {@link #CONFIRMATION_GRACE_TICKS} тиков в нижнем портале рисовался кусок корабля: «мелкий
+     * край на маленькое время», привязанный ко времени, а не к длине. До портала за плоскостью
+     * уже идущего разреза материал доходит только через этот разрез, поэтому такой портал не
+     * предсказывается вовсе; если сервер всё же откроет там сессию, её проекция всё равно
+     * уступит переднему порталу (см. {@code PortalOrder}).
+     */
+    private static boolean behindCurrentSplit(ClientSubLevel sub, Portal candidate, List<Portal> current) {
+        for (Portal split : current) {
+            if (split.getUUID().equals(candidate.getUUID())) continue;
+            boolean wide = IplStraddleSessionStore.isWide(sub.getUniqueId(), split.getUUID().toString());
+            if (ipl.sable.transit.PortalOrder.strictlyDownstreamOf(candidate, false, split, wide)) return true;
+        }
+        return false;
     }
 
     /** Source→destination OBB sweep intersects this portal's finite rectangle. */

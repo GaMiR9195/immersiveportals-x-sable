@@ -5,7 +5,7 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.platform.SableEventPublishPlatform;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
-import ipl.sable.mixin.IplPhysicsSystemFusionAccess;
+import ipl.sable.mixin.PhysicsSystemAccessor;
 import net.minecraft.CrashReport;
 import net.minecraft.CrashReportCategory;
 import net.minecraft.ReportedException;
@@ -118,7 +118,7 @@ public final class IplFusedStep {
             for (Entry e : systems) {
                 // Stock semantics: currentSubstep is the loop variable, set BEFORE the
                 // pre-phases (getPartialPhysicsTick feeds updateMergedMassData).
-                ((IplPhysicsSystemFusionAccess) e.sys()).ipl$setCurrentSubstep(substep);
+                ((PhysicsSystemAccessor) e.sys()).ipl$setCurrentSubstep(substep);
                 runGuarded(e, () -> preSubstepPhases(e, dt));
             }
 
@@ -146,7 +146,7 @@ public final class IplFusedStep {
         }
 
         for (Entry e : systems) {
-            ((IplPhysicsSystemFusionAccess) e.sys()).ipl$setCurrentSubstep(substeps);
+            ((PhysicsSystemAccessor) e.sys()).ipl$setCurrentSubstep(substeps);
             runGuarded(e, () -> e.sys().getPipeline().postPhysicsTicks());
         }
 
@@ -182,7 +182,7 @@ public final class IplFusedStep {
     private static void postSubstepPhases(Entry e, double dt) {
         SubLevelPhysicsSystem sys = e.sys();
         SubLevelPhysicsSystem.currentlySteppingSystem = sys;
-        IplPhysicsSystemFusionAccess access = (IplPhysicsSystemFusionAccess) sys;
+        PhysicsSystemAccessor access = (PhysicsSystemAccessor) sys;
 
         e.container().processSubLevelRemovals();
         access.ipl$updateAllPoses(e.container());

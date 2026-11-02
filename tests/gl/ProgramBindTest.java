@@ -11,14 +11,14 @@ public final class ProgramBindTest {
   IplProgramRegistry.register(1,"rendertype_solid");IplProgramRegistry.register(2,"entity");
   pair(1,5,6);int q=GL20.queries;pair(1,5,6);check(q==GL20.queries,"location cache hit");
   pair(2,3,4);pair(3,1,2);
-  SubLevelClipUniformPatcher.second=false;pair(1,5,0);
+  IplClipUniformPatcher.second=false;pair(1,5,0);
   check(GL41.writes.get(1).d()==1,"missing second is neutral");
   ShaderInstance shader=new ShaderInstance();shader.id=2;IplProgramBindHook.prepareShader(shader);
   check(shader.a.value[0]==3&&shader.b.value[3]==1,"Java uniforms synchronized before apply");
-  SubLevelClipUniformPatcher.active=false;pair(2,0,0);
+  IplClipUniformPatcher.active=false;pair(2,0,0);
   IplProgramBindHook.prepareShader(shader);check(shader.a.value[3]==1&&shader.a.value[0]==0,"Java uniform reset outside bracket");
   GL41.writes.clear();IplProgramBindHook.onBind(1);check(GL41.writes.isEmpty(),"no portal or sub bracket no work");
-  SubLevelClipUniformPatcher.active=true;SubLevelClipUniformPatcher.second=true;
+  IplClipUniformPatcher.active=true;IplClipUniformPatcher.second=true;
   GL41.writes.clear();IplProgramBindHook.onBind(1);check(GL41.writes.size()==2,"128 registered programs do not cause broadcast");
   GL41.writes.clear();FrontClipping.isClippingEnabled=true;IplProgramBindHook.onBind(2);
   check(GL41.writes.size()==3,"portal plus two independent sub cuts");check(GL41.writes.get(0).a()==21,"portal uses eye space");FrontClipping.isClippingEnabled=false;

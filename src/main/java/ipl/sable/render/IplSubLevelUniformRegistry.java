@@ -10,7 +10,7 @@ import java.util.function.BiConsumer;
  * location for each.
  *
  * <p><b>Why this exists:</b> The original slot-1 propagation path
- * (write at {@code SubLevelClipUniformPatcher.patchForSubLevel} +
+ * (write at {@code IplClipUniformPatcher.patchForSubLevel} +
  * piggyback {@code _glUseProgram} HEAD writes for subsequent shader
  * binds) doesn't cover programs that were bound BEFORE a sub-level
  * bracket started. In GL, {@code glUseProgram} only fires when the
@@ -27,10 +27,10 @@ import java.util.function.BiConsumer;
  * program — had {@code slot-1 = (0,0,0,1)} because the patcher's
  * upload only touched whatever shader was bound at the moment it ran.
  *
- * <p><b>How it's wired:</b> {@code IplGlUseProgramProbeMixin}
+ * <p><b>How it's wired:</b> {@code GlStateManagerMixin}
  * populates this registry on first {@code _glUseProgram} per program
  * (the same caching path it already does for {@code IPL$LOC_CACHE}).
- * {@code SubLevelClipUniformPatcher.patchForSubLevel} iterates the
+ * {@code IplClipUniformPatcher.patchForSubLevel} iterates the
  * registry and writes the new equation to every entry via
  * {@code glProgramUniform4f}, which targets a program regardless of
  * whether it's the currently-bound program. {@code clearAndUpload}

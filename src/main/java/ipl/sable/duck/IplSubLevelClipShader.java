@@ -5,7 +5,7 @@ import org.jetbrains.annotations.Nullable;
 
 /**
  * Duck interface implemented on every {@link net.minecraft.client.renderer.ShaderInstance}
- * via {@link ipl.sable.mixin.client.IplShaderInstanceClipMixin}. Exposes a getter for
+ * via {@link ipl.sable.mixin.client.ShaderInstanceMixin}. Exposes a getter for
  * our independent per-sub-level clip-plane uniform.
  *
  * <p>Why a separate uniform from IP's {@code ip_clippingEquation}: IP's slot drives

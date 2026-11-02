@@ -3,7 +3,7 @@ package ipl.sable.natives;
 /**
  * IPSable's extensions to the sable_rapier native surface (portal-physics spec phase 4).
  * The symbols live in the SAME DLL as Sable's natives (our local build — see
- * {@code IplNativesOverrideMixin} and {@code natives/build-windows.ps1}), namespaced under
+ * {@code Rapier3DMixin} and {@code natives/build-windows.ps1}), namespaced under
  * this class so sable's own JNI ABI stays untouched.
  *
  * <p>Callers MUST check {@link #isAvailable()} first: when the custom natives failed to
@@ -16,7 +16,7 @@ public final class IplRapierNatives {
 
     private IplRapierNatives() {}
 
-    /** Set by {@code IplNativesOverrideMixin} once the IPSable-built DLL is loaded. */
+    /** Set by {@code Rapier3DMixin} once the IPSable-built DLL is loaded. */
     public static void markAvailable() {
         available = true;
     }

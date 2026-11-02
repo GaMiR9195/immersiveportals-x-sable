@@ -193,7 +193,7 @@ Two tiers fall out:
   is a change of coordinates, discontinuity-free by construction.
 - `executeHostedTransit` (SableRehomeOps) keeps its gameplay half (parent flip,
   riders, tracking); its physics half shrinks to the recompose. Majority-rehome and
-  the declarative session machinery in `SableTransitController` survive as the thing
+  the declarative session machinery in `IplTransitController` survive as the thing
   that decides WHEN; the swap hysteresis exists only to pick the anchor chart, and no
   longer has dynamics consequences if it thrashes.
 

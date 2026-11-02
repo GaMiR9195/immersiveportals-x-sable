@@ -4,8 +4,8 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItem;
-import ipl.sable.mixin.client.IplStaffBeamAccessor;
-import ipl.sable.mixin.client.IplStaffClientHandlerAccessor;
+import ipl.sable.mixin.client.StaffBeamAccessor;
+import ipl.sable.mixin.client.StaffClientHandlerAccessor;
 import net.createmod.catnip.animation.AnimationTickHolder;
 import net.createmod.catnip.render.SuperRenderTypeBuffer;
 import net.minecraft.client.Camera;
@@ -66,7 +66,7 @@ public final class IplStaffPortalBeamRenderer {
 
         PhysicsStaffClientHandler handler =
             dev.simulated_team.simulated.SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
-        Object2ObjectMap<UUID, Object> beams = ((IplStaffClientHandlerAccessor) (Object) handler)
+        Object2ObjectMap<UUID, Object> beams = ((StaffClientHandlerAccessor) (Object) handler)
             .ipl$getBeams();
         if (beams.isEmpty()) {
             clear();
@@ -88,8 +88,8 @@ public final class IplStaffPortalBeamRenderer {
             Player owner = findPlayer(entry.getKey());
             if (owner == null) continue;
 
-            IplStaffBeamAccessor access =
-                (IplStaffBeamAccessor) (Object) beam;
+            StaffBeamAccessor access =
+                (StaffBeamAccessor) (Object) beam;
             Vec3 localAnchor = access.ipl$getPreviousEnd().lerp(access.ipl$getEnd(), partialTick);
             ClientSubLevel sub = findHostedSubLevel(localAnchor);
             if (sub == null) continue;
@@ -169,7 +169,7 @@ public final class IplStaffPortalBeamRenderer {
         PHYSICAL_BEAM_PASS.set(true);
         ACTIVE_RUN.set(run);
         try {
-            ((IplStaffBeamAccessor) (Object) beam).ipl$render(
+            ((StaffBeamAccessor) (Object) beam).ipl$render(
                 run.vertices().get(0).point(),
                 run.vertices().get(run.vertices().size() - 1).point(),
                 poseStack, buffer, camera, partialTick

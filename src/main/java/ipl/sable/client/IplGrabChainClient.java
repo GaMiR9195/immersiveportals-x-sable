@@ -162,7 +162,7 @@ public final class IplGrabChainClient {
             var handler = SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
             var session = handler.getDragSession();
             if (session != null && session.dragSubLevel().getUniqueId().toString().equals(subUuid)) {
-                ((ipl.sable.mixin.client.IplStaffClientHandlerAccessor) (Object) handler)
+                ((ipl.sable.mixin.client.StaffClientHandlerAccessor) (Object) handler)
                     .ipl$stopDragging();
             }
         }

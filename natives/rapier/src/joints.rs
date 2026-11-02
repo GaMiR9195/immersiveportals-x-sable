@@ -48,7 +48,22 @@ impl SableJointSet {
 
 }
 
+/// Prepass (`Rapier3D.tick`): each Atlas chart view refreshes only its own joints.
 pub fn tick(scene: &PhysicsScene) {
+    refresh(scene, Some(scene.chart));
+}
+
+/// World step (`Rapier3D.step`): under Atlas only the LAST chart view is armed and steps
+/// the one shared world, so here every chart's joints must be refreshed. The Simulated
+/// staff recreates its joint before every substep with zero anchors (`addFreeConstraint`);
+/// the grab point is written only by this refresh. With the chart filter, joints of bodies
+/// outside the armed chart stayed anchored at the centre of mass: the staff rotated the
+/// body around its centre instead of the grabbed point in every dimension except the last.
+pub fn tick_all(scene: &PhysicsScene) {
+    refresh(scene, None);
+}
+
+fn refresh(scene: &PhysicsScene, only_chart: Option<crate::scene::ChartId>) {
     let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
@@ -64,17 +79,17 @@ pub fn tick(scene: &PhysicsScene) {
 
     // update every joint
     for (_handle, joint) in sable_data.joint_set.joints.iter() {
-        // Atlas: each view maintains only its own chart's joints. A staff joint has
-        // the static world on one side, so id_a is None and id_b selects its body
-        // chart. Without this filter every chart re-updated every held staff joint
-        // before every fused substep, making drag cost grow with loaded dimensions.
-        let joint_chart = joint
-            .id_a
-            .or(joint.id_b)
-            .and_then(|id| sable_data.level_colliders.get(&id))
-            .map(|info| info.chart);
-        if joint_chart.is_some() && joint_chart != Some(scene.chart) {
-            continue;
+        // Prepass filter: a staff joint has the static world on one side, so id_a is None
+        // and id_b selects its body chart. The step pass (only_chart = None) visits all.
+        if let Some(chart) = only_chart {
+            let joint_chart = joint
+                .id_a
+                .or(joint.id_b)
+                .and_then(|id| sable_data.level_colliders.get(&id))
+                .map(|info| info.chart);
+            if joint_chart.is_some() && joint_chart != Some(chart) {
+                continue;
+            }
         }
         let Some(impulse_joint) = sim.impulse_joint_set.get_mut(joint.handle, false) else {
             continue;

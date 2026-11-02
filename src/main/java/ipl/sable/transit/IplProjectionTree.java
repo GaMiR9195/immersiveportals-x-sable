@@ -38,13 +38,16 @@ import java.util.Map;
  * tick, invalidated whenever a session set changes.
  *
  * <p>SIBLING PRIORITY. Sibling sessions (several roots of one body, several children of one
- * node) can claim the same space: adjacent apertures share their lateral margin, and a wide
- * (half-space) region contains every tube next to it. Contested space goes to the sibling
- * that comes first in {@link #build}'s order -- aperture tubes before the wide region, then
- * path order -- and the physics regions apply the same order
- * ({@code IplAtlasStraddleSession.outranks}). A wide region therefore keeps everything
- * outside its siblings' tubes when a sibling opens, instead of collapsing to a tube and
- * dropping its lateral material back into the source world.
+ * node) can claim the same space: adjacent apertures share their lateral margin, a wide
+ * (half-space) region contains every tube next to it, and a portal standing beyond another
+ * one's plane lies inside that one's region. Contested space goes to the sibling that comes
+ * first in {@link #build}'s order -- UPSTREAM portals before the ones beyond their plane
+ * ({@link PortalOrder}), then aperture tubes before the wide region, then path order -- and
+ * the physics regions apply the same order ({@code IplAtlasStraddleSession.outranks}). A wide
+ * region therefore keeps everything outside its siblings' tubes when a sibling opens, instead
+ * of collapsing to a tube and dropping its lateral material back into the source world, and
+ * material that went through a portal is never claimed by a portal further along its old
+ * (native) path.
  */
 public final class IplProjectionTree {
 
@@ -313,7 +316,10 @@ public final class IplProjectionTree {
         // (a re-opened parent must not orphan its still-live chain for a tick); siblings in
         // priority order (see the class comment), identical on server and client.
         List<Entry> ordered = new ArrayList<>(entries);
+        Map<Entry, Integer> rank = new IdentityHashMap<>();
+        for (Entry e : ordered) rank.put(e, upstreamRank(e, ordered));
         ordered.sort(java.util.Comparator.<Entry>comparingInt(e -> pathDepth(e.path()))
+            .thenComparingInt(rank::get)
             .thenComparing(Entry::wide)
             .thenComparing(Entry::path));
         for (Entry e : ordered) {
@@ -330,6 +336,21 @@ public final class IplProjectionTree {
             else parent.children.add(node);
         }
         return all.isEmpty() ? EMPTY : new IplProjectionTree(sub, List.copyOf(roots), List.copyOf(all));
+    }
+
+    /**
+     * How many siblings of {@code e} it lies strictly downstream of (0 = nothing in front of it).
+     * Same rule as {@code IplAtlasStraddleSession.upstreamRank}.
+     */
+    private static int upstreamRank(Entry e, List<Entry> all) {
+        if (e.portal() == null) return 0;
+        int rank = 0;
+        for (Entry other : all) {
+            if (other == e || other.portal() == null || !other.via().equals(e.via())
+                || other.path().equals(e.path())) continue;
+            if (PortalOrder.strictlyDownstreamOf(e.portal(), e.wide(), other.portal(), other.wide())) rank++;
+        }
+        return rank;
     }
 
     private static int pathDepth(String path) {

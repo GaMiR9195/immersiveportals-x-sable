@@ -3,7 +3,7 @@
 #
 # Builds the patched sable_rapier library for the HOST platform and stages it at the project
 # root as sable_rapier_<arch>_linux.so (macOS: sable_rapier_<arch>_macos.dylib), where
-# build.gradle bundles it into /natives_ipl/ for IplNativesOverrideMixin.
+# build.gradle bundles it into /natives_ipl/ for Rapier3DMixin.
 #
 # Prereqs (one-time):
 #   rustup (https://rustup.rs). The pinned nightly in rust-toolchain.toml is installed

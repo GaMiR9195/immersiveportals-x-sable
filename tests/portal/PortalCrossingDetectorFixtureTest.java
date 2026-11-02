@@ -144,18 +144,20 @@ public class PortalCrossingDetectorFixtureTest {
             PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
             check(PortalCrossingDetector.retainsAdmittedSession(body,door),"retention has no tick timeout "+i);
         }
-        body.current.position().x=.74;
+        // Thresholds follow the production release skin (it was widened from 0.25 to 0.65).
+        double skin=PortalCrossingDetector.SESSION_RELEASE_MARGIN;
+        body.current.position().x=.5+skin-.01;
         PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
-        check(PortalCrossingDetector.retainsAdmittedSession(body,door),"24cm protrusion retained");
-        body.current.position().x=.76;
+        check(PortalCrossingDetector.retainsAdmittedSession(body,door),"protrusion just inside the release skin retained");
+        body.current.position().x=.5+skin+.01;
         PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
-        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"26cm protrusion releases while most of cube still overlaps");
+        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"protrusion past the skin releases while the cube still overlaps");
         check(PortalCrossingDetector.evaluate(body,door,FORWARD,0).currentIntersectsPortalAperture(),
             "release must override current aperture overlap, not OR with it");
-        body.current.position().set(-.76,0,0);
+        body.current.position().set(-(.5+skin+.01),0,0);
         PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
         check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"left side release symmetric");
-        body.current.position().set(0,.76,0);
+        body.current.position().set(0,.5+skin+.01,0);
         PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
         check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"top edge release symmetric");
         body.current.position().set(0,0,-.7);

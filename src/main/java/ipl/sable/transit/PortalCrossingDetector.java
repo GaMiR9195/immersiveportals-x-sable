@@ -68,9 +68,9 @@ public final class PortalCrossingDetector {
      * уже ушедший в P; тест дочернего портала Q узла N — только кусок N и поддерево N>Q.
      * С одной сессией фильтр ничего не отбрасывает, поведение обычного прохода прежнее.
      */
-    private record PieceScope(String parentPath, UUID portal) {
+    private record PieceScope(String parentPath, UUID portal, boolean leading) {
         String id() {
-            return parentPath + "|" + portal;
+            return parentPath + "|" + portal + (leading ? "|lead" : "");
         }
     }
 
@@ -79,10 +79,36 @@ public final class PortalCrossingDetector {
     private record ScopedBlocksKey(UUID body, String scope, long generation, long tick, long revision) {}
     private static final Map<ScopedBlocksKey, List<BlockPos>> SCOPED_BLOCKS = new HashMap<>();
 
+    /**
+     * Piece of every occupied block, once per body, tick, session generation and block revision.
+     *
+     * <p>Русский комментарий (почему): каждая область куска (корень, каждый ребёнок каждого
+     * узла) раньше заново спрашивала {@code tree.pieceAt} для всех блоков тела — в ряду из N
+     * порталов это N проходов по телу на тик, плюс ещё по проходу в проверках "держит ли кусок
+     * материал". Принадлежность блока куску от области не зависит, поэтому считается один раз,
+     * а области только фильтруют готовый массив: нарезка дешевле без всяких ограничений глубины.
+     */
+    private record PieceIndex(UUID body, long generation, long tick, long revision) {}
+    private record Pieces(List<BlockPos> blocks, IplProjectionTree.Node[] pieces) {}
+    private static final Map<PieceIndex, Pieces> PIECE_INDEX = new HashMap<>();
+
     /** Runs {@code action} with crossing tests restricted to one projection piece. */
     public static <T> T inPieceScope(String parentPath, UUID portal, java.util.function.Supplier<T> action) {
+        return inScope(new PieceScope(parentPath == null ? "" : parentPath, portal, false), action);
+    }
+
+    /**
+     * Like {@link #inPieceScope} for a chained portal, plus the blocks of the PRECEDING piece whose
+     * box already reaches through the parent's portal (their image is visible beyond its exit).
+     * Only used to decide whether a new child session opens; see {@code IplTransitController}.
+     */
+    public static <T> T inLeadingPieceScope(String parentPath, UUID portal, java.util.function.Supplier<T> action) {
+        return inScope(new PieceScope(parentPath == null ? "" : parentPath, portal, true), action);
+    }
+
+    private static <T> T inScope(PieceScope scope, java.util.function.Supplier<T> action) {
         PieceScope previous = pieceScope;
-        pieceScope = new PieceScope(parentPath == null ? "" : parentPath, portal);
+        pieceScope = scope;
         try {
             return action.get();
         } finally {
@@ -92,7 +118,7 @@ public final class PortalCrossingDetector {
 
     /** Enter/exit pair for loop bodies with {@code continue}; always exit in a finally. */
     public static void enterPieceScope(String parentPath, UUID portal) {
-        pieceScope = new PieceScope(parentPath == null ? "" : parentPath, portal);
+        pieceScope = new PieceScope(parentPath == null ? "" : parentPath, portal, false);
     }
 
     public static void exitPieceScope() {
@@ -110,12 +136,12 @@ public final class PortalCrossingDetector {
             IplProjectionTree.generation(), trailTick, IplPortalVolumeCache.revision(body));
         List<BlockPos> cached = SCOPED_BLOCKS.get(key);
         if (cached != null) return cached;
-        Frame frame = new Frame(realTrail(body).end);
+        IplProjectionTree.Node[] pieces = pieces(body, tree, all);
         String childPath = scope.parentPath().isEmpty() ? null : scope.parentPath() + ">" + scope.portal();
+        Lead lead = scope.leading() && childPath != null ? Lead.of(tree, scope.parentPath(), realTrail(body).end) : null;
         List<BlockPos> out = new java.util.ArrayList<>(all.size());
-        for (BlockPos block : all) {
-            IplProjectionTree.Node piece = tree.pieceAt(
-                new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block)));
+        for (int i = 0; i < all.size(); i++) {
+            IplProjectionTree.Node piece = pieces[i];
             boolean accept;
             if (childPath == null) {
                 // Root test of portal P: native piece, or a piece whose path starts at P.
@@ -123,12 +149,69 @@ public final class PortalCrossingDetector {
             } else {
                 accept = piece != null && (piece.path.equals(scope.parentPath())
                     || piece.path.equals(childPath) || piece.path.startsWith(childPath + ">"));
+                if (!accept && lead != null && piece == lead.node.parent) accept = lead.reachesThrough(all.get(i));
             }
-            if (accept) out.add(block);
+            if (accept) out.add(all.get(i));
         }
         List<BlockPos> result = out.size() == all.size() ? all : List.copyOf(out);
         SCOPED_BLOCKS.put(key, result);
         return result;
+    }
+
+    /** {@link #PIECE_INDEX} entry for {@code all} (the body's current occupied blocks). */
+    private static IplProjectionTree.Node[] pieces(ServerSubLevel body, IplProjectionTree tree, List<BlockPos> all) {
+        PieceIndex key = new PieceIndex(body.getUniqueId(), IplProjectionTree.generation(), trailTick,
+            IplPortalVolumeCache.revision(body));
+        Pieces cached = PIECE_INDEX.get(key);
+        if (cached != null && cached.blocks() == all) return cached.pieces();
+        Frame frame = new Frame(realTrail(body).end);
+        IplProjectionTree.Node[] pieces = new IplProjectionTree.Node[all.size()];
+        for (int i = 0; i < pieces.length; i++) {
+            BlockPos block = all.get(i);
+            pieces[i] = tree.pieceAt(new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block)));
+        }
+        PIECE_INDEX.put(key, new Pieces(all, pieces));
+        return pieces;
+    }
+
+    /**
+     * Blocks just BEFORE {@code node}'s portal (in the piece that enters it) whose box already
+     * reaches through: the client clips images at the plane, not at block centers, so the
+     * visible image starts with these boxes.
+     */
+    private record Lead(IplProjectionTree.Node node, Frame frame, double supportN, double supportW, double supportH) {
+        @org.jetbrains.annotations.Nullable
+        static Lead of(IplProjectionTree tree, String path, Pose3dc realPose) {
+            for (IplProjectionTree.Node node : tree.nodes()) {
+                if (!node.path.equals(path)) continue;
+                Frame frame = new Frame(realPose);
+                Vec3 n = realDirection(node, node.portal.getNormal());
+                Vec3 w = realDirection(node, node.portal.getAxisW());
+                Vec3 h = realDirection(node, node.portal.getAxisH());
+                return new Lead(node, frame, frame.obbSupport(n.x, n.y, n.z),
+                    frame.obbSupport(w.x, w.y, w.z), frame.obbSupport(h.x, h.y, h.z));
+            }
+            return null;
+        }
+
+        /** A direction of {@code node}'s SOURCE frame expressed in the real-body frame. */
+        private static Vec3 realDirection(IplProjectionTree.Node node, Vec3 v) {
+            return node.parent == null ? v : node.parent.mapping.unmapVec(v);
+        }
+
+        boolean reachesThrough(BlockPos block) {
+            Vec3 real = new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block));
+            Vec3 source = node.parent == null ? real : node.parent.mapping.mapPoint(real);
+            Vec3 o = node.portal.getOriginPos();
+            double rx = source.x - o.x, ry = source.y - o.y, rz = source.z - o.z;
+            Vec3 n = node.portal.getNormal();
+            double depthBeyond = -(rx * n.x + ry * n.y + rz * n.z);
+            if (depthBeyond < -supportN - EPSILON || depthBeyond > IplProjectionTree.SKIN) return false;
+            Vec3 aw = node.portal.getAxisW();
+            Vec3 ah = node.portal.getAxisH();
+            return Math.abs(rx * aw.x + ry * aw.y + rz * aw.z) <= node.halfW + supportW
+                && Math.abs(rx * ah.x + ry * ah.y + rz * ah.z) <= node.halfH + supportH;
+        }
     }
 
     /**
@@ -149,11 +232,14 @@ public final class PortalCrossingDetector {
         }
         if (!others) return true;
         Frame frame = new Frame(realTrail(body).end);
-        for (BlockPos block : IplPortalVolumeCache.blocks(body)) {
-            Vec3 real = new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block));
-            IplProjectionTree.Node piece = tree.pieceAt(real);
+        List<BlockPos> all = IplPortalVolumeCache.blocks(body);
+        IplProjectionTree.Node[] pieces = pieces(body, tree, all);
+        for (int i = 0; i < pieces.length; i++) {
+            IplProjectionTree.Node piece = pieces[i];
             if (piece == null || piece.root() == own) continue;
-            if (own != null && own.beyondContains(real)) continue;
+            BlockPos block = all.get(i);
+            if (own != null && own.beyondContains(
+                new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block)))) continue;
             return false;
         }
         return true;
@@ -168,11 +254,8 @@ public final class PortalCrossingDetector {
     public static boolean pieceHoldsMaterial(ServerSubLevel body, String path) {
         IplProjectionTree tree = IplProjectionTree.of(body);
         if (tree.isEmpty()) return false;
-        Frame frame = new Frame(realTrail(body).end);
         String below = path + ">";
-        for (BlockPos block : IplPortalVolumeCache.blocks(body)) {
-            IplProjectionTree.Node piece = tree.pieceAt(
-                new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block)));
+        for (IplProjectionTree.Node piece : pieces(body, tree, IplPortalVolumeCache.blocks(body))) {
             if (piece != null && (piece.path.equals(path) || piece.path.startsWith(below))) return true;
         }
         return false;
@@ -209,6 +292,7 @@ public final class PortalCrossingDetector {
     public static void beginTrailTick() {
         MAPPED_TRAILS.clear();
         SCOPED_BLOCKS.clear();
+        PIECE_INDEX.clear();
         trailTick++;
     }
 
@@ -517,6 +601,8 @@ public final class PortalCrossingDetector {
 
     public static void clearTrails() {
         MAPPED_TRAILS.clear();
+        SCOPED_BLOCKS.clear();
+        PIECE_INDEX.clear();
         TRAILS.clear();
         EXIT_LATCHES.clear();
         EXIT_ANCHORS.clear();

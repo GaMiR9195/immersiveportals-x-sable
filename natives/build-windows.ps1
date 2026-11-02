@@ -1,7 +1,7 @@
 # IPSable local natives build (portal-physics spec phase 4).
 #
 # Builds the patched sable_rapier natives for Windows x86_64 and stages the DLL at the
-# project root, where build.gradle packs it into /natives_ipl/ for IplNativesOverrideMixin
+# project root, where build.gradle packs it into /natives_ipl/ for Rapier3DMixin
 # to load in place of the sable jar's bundled build. Release jars use build-cross.sh
 # (MSVC, all platforms) instead.
 #

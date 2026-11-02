@@ -63,7 +63,7 @@ public final class IplProjectionEntities {
 
     /**
      * The live ship whose plot {@code ctx} sees at {@code pos}. The container lookup is
-     * bridged ({@code IplPlotBridgeMixin}), so this is also how a projected ship owned by
+     * bridged ({@code SubLevelContainerMixin}), so this is also how a projected ship owned by
      * another level is found -- exactly the ship whose blocks {@code ctx} reads there.
      */
     @Nullable

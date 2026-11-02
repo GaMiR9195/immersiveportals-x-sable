@@ -3,7 +3,7 @@ package ipl.sable.atlas;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline;
-import ipl.sable.mixin.IplRapierPipelineAccess;
+import ipl.sable.mixin.RapierPipelineAccessor;
 import net.minecraft.server.level.ServerLevel;
 import org.jetbrains.annotations.Nullable;
 
@@ -35,7 +35,7 @@ public final class IplScenes {
     public static long sceneHandle(@Nullable ServerLevel level) {
         RapierPhysicsPipeline pipeline = pipelineOf(level);
         if (pipeline == null) return 0;
-        IplRapierPipelineAccess access = (IplRapierPipelineAccess) pipeline;
+        RapierPipelineAccessor access = (RapierPipelineAccessor) pipeline;
         return access.ipl$scene() == null ? 0 : access.ipl$sceneHandle();
     }
 
@@ -68,7 +68,7 @@ public final class IplScenes {
     /**
      * The live ship whose plot contains block {@code pos}: {@code context}'s own grid first,
      * then every other level. Plot slots are allocated server-wide unique
-     * ({@code IplUnionPlotAllocationMixin}), so the fallback is unambiguous; it is how a
+     * ({@code SubLevelContainerMixin}), so the fallback is unambiguous; it is how a
      * PROJECTED ship's plot (owned by another dimension) is found.
      */
     @Nullable

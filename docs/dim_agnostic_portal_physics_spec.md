@@ -185,8 +185,8 @@ stateless and disposable.
 - Entities standing on / walking on sublevels go through `SubLevelEntityCollision` —
   Sable's own OBB/MTV pass against plot blocks, **outside Rapier**. The physics clone
   has no presence in that system, and doesn't need one: IPSable's straddle pose-map
-  mixins (`IplStraddleCollisionPoseMixin`, `IplStraddleInBlockPoseMixin`,
-  `IplStraddleOnPosMixin`, + the caller-seam fixes) already make entity collision
+  mixins (`SubLevelEntityCollisionMixin`, `EntityInBlockMixin`,
+  `EntityOnPosMixin`, + the caller-seam fixes) already make entity collision
   query the one authoritative sublevel at the portal-mapped pose. They are the
   entity-layer analog of the clone and survive this redesign unchanged.
 - Stated here so nobody later "discovers" entities as a gap in the per-scene design.

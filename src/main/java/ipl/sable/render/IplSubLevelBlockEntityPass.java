@@ -9,7 +9,7 @@ import dev.ryanhcode.sable.sublevel.render.dispatcher.SubLevelRenderDispatcher;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
 import ipl.sable.client.IplParentDimSync;
 import ipl.sable.client.IplStraddleRenderState;
-import ipl.sable.mixin.client.IplRenderSectionGlobalsAccessor;
+import ipl.sable.mixin.client.RenderSectionAccessor;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.world.level.Level;
@@ -30,14 +30,14 @@ import java.util.Set;
 /**
  * Единая точка входа для блок-сущностей саб-уровней
  * ({@code VanillaSubLevelRenderDispatcher.renderBlockEntities}, HEAD-перехват в
- * {@code SableSubLevelBlockEntityClipMixin}).
+ * {@code RenderDispatcherBlockEntityClipMixin}).
  *
  * <p><b>Почему так, а не скобками вокруг каждой BE.</b> BER ничего не рисует сам — он лишь
  * складывает вершины в {@code BufferSource}, а шейдер выполняется при {@code endBatch()}.
  * Скобка «поставить плоскость → BER → снять плоскость» заканчивалась ДО реальной отрисовки,
  * поэтому шестерни/сундуки/верёвки на пересекающем портал корабле резались чем попало (или
  * не резались). Теперь каждый пересекающий портал саб-уровень рисует свои BE внутри
- * {@link SubLevelBlockEntityRenderScope#renderAndFlush}: плоскости ставятся один раз, весь
+ * {@link IplBlockEntityRenderScope#renderAndFlush}: плоскости ставятся один раз, весь
  * проход BE саб-уровня выполняется, и только ПОСЛЕ него буфер сбрасывается — вне любого BER
  * (сброс внутри BER ломал общий буфер catnip, это и был старый краш «Not building!»).
  *
@@ -81,7 +81,7 @@ public final class IplSubLevelBlockEntityPass {
     private static boolean redispatching;
     /** Маршрут хотя бы раз отработал — значит, глобальные BE рисуем мы, а не ванильный цикл. */
     private static boolean routeSeen;
-    /** &gt; 0 — BER должны рисовать всё сами (см. {@code IplFlywheelVisualizationSupportMixin}). */
+    /** &gt; 0 — BER должны рисовать всё сами (см. {@code FlywheelVisualizationManagerMixin}). */
     private static int forceVanilla;
     /** BE, уже нарисованные в текущем «теле» саб-уровня (чтобы не рисовать дважды). */
     private static Set<BlockEntity> currentRecord;
@@ -162,18 +162,18 @@ public final class IplSubLevelBlockEntityPass {
 
         // Проекцию (IplStraddleRenderState) и уже открытую область держит вызывающий код —
         // он сам ставит плоскости куска и сам сбрасывает буфер после прохода.
-        if (IplStraddleRenderState.isActiveFor(sub) || SubLevelBlockEntityRenderScope.isActiveFor(sub)) {
+        if (IplStraddleRenderState.isActiveFor(sub) || IplBlockEntityRenderScope.isActiveFor(sub)) {
             renderBody(dispatcher, sub, renderer, camX, camY, camZ, partialTick, true);
             return;
         }
-        if (SourceClipPortalFinder.findStraddlingPortalPlane(sub) == null) {
+        if (IplClipPortalFinder.findStraddlingPortalPlane(sub) == null) {
             renderBody(dispatcher, sub, renderer, camX, camY, camZ, partialTick, false);
             return;
         }
         // Пересекающий портал саб-уровень в своём (нативном) проходе: одна область на весь
         // проход его BE, сброс — после. Буфер берём текущий: во время прохода портала IP
         // подменяет RenderBuffers у Minecraft и у LevelRenderer на вторичные.
-        SubLevelBlockEntityRenderScope.renderAndFlush(
+        IplBlockEntityRenderScope.renderAndFlush(
             sub, Minecraft.getInstance().renderBuffers().bufferSource(),
             () -> renderBody(dispatcher, sub, renderer, camX, camY, camZ, partialTick, true));
     }
@@ -224,7 +224,7 @@ public final class IplSubLevelBlockEntityPass {
         Set<BlockEntity> drawnGlobals = DRAWN_GLOBALS.peekLast();
         if (sub.getRenderData() instanceof VanillaChunkedSubLevelRenderData chunks) {
             for (SectionRenderDispatcher.RenderSection section : chunks.allRenderSections()) {
-                Set<BlockEntity> set = ((IplRenderSectionGlobalsAccessor) section).ipl$getGlobalBlockEntities();
+                Set<BlockEntity> set = ((RenderSectionAccessor) section).ipl$getGlobalBlockEntities();
                 synchronized (set) {
                     if (set.isEmpty()) continue;
                     for (BlockEntity be : set) {
@@ -261,7 +261,7 @@ public final class IplSubLevelBlockEntityPass {
     public static boolean hasGlobalBlockEntities(ClientSubLevel sub) {
         if (!(sub.getRenderData() instanceof VanillaChunkedSubLevelRenderData chunks)) return false;
         for (SectionRenderDispatcher.RenderSection section : chunks.allRenderSections()) {
-            Set<BlockEntity> globals = ((IplRenderSectionGlobalsAccessor) section).ipl$getGlobalBlockEntities();
+            Set<BlockEntity> globals = ((RenderSectionAccessor) section).ipl$getGlobalBlockEntities();
             synchronized (globals) {
                 if (!globals.isEmpty()) return true;
             }

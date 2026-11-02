@@ -78,7 +78,7 @@ public final class IplFlywheelFallback {
                 }
                 EMBEDDINGS.put(sub, info);
                 if (ipl.sable.client.IplParentDimSync.isSuppressedSuccessor(sub)
-                    || SourceClipPortalFinder.findStraddlingPortalPlane(sub) != null) {
+                    || IplClipPortalFinder.findStraddlingPortalPlane(sub) != null) {
                     HIDDEN.add(info.embedding());
                 }
             }

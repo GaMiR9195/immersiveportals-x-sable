@@ -12,7 +12,7 @@ import java.util.NoSuchElementException;
  * Per-thread scratch state that lets the entity-vs-ship collision loop cut individual
  * collision boxes at the portal plane instead of keeping or dropping whole blocks.
  *
- * <p><b>Why this exists.</b> {@code IplStraddleBlockClipMixin} filters the candidate
+ * <p><b>Why this exists.</b> {@code SubLevelEntityCollisionMixin} filters the candidate
  * {@code BlockPos} iterable, which is the only granularity a position predicate can
  * offer: a block is either physically present on this side of the portal or it is not.
  * With an oblique portal (the 45-degree case) that quantises the physical boundary to

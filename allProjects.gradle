@@ -36,7 +36,7 @@ allprojects {
         maven {
             // For modern Flywheel (1.0.x dev.engine-room.* artifacts) -- same
             // repo Sable uses to resolve `flywheel-neoforge-1.21.1`. Needed
-            // because IplFlywheelEmbeddedClipMixin uses direct class
+            // because FlywheelEmbeddedEnvironmentMixin uses direct class
             // references to EmbeddedEnvironment and GlProgram.
             name "NeoForged"
             url "https://maven.neoforged.net/releases"

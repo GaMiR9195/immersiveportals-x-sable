@@ -5,7 +5,7 @@ import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import ipl.sable.render.SourceClipPortalFinder;
+import ipl.sable.render.IplClipPortalFinder;
 import ipl.sable.transit.IplStraddlePoseMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -144,14 +144,6 @@ public final class IplClientProjections {
         return IplStraddleRenderCache.projections(destLevel, () -> projectionsUncached(destLevel));
     }
 
-    /** The first direct projection of {@code clientSub}, wherever it points. */
-    @Nullable
-    public static StraddleProjection getStraddleProjectionFor(ClientSubLevel clientSub) {
-        SourceClipPortalFinder.ClipDecision decision = SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
-        if (decision == null || decision.portal() == null) return null;
-        return direct(clientSub, decision);
-    }
-
     private static List<StraddleProjection> projectionsUncached(@Nullable ClientLevel destLevel) {
         if (destLevel == null) return List.of();
         List<StraddleProjection> out = null;
@@ -162,31 +154,35 @@ public final class IplClientProjections {
                 if (sub.isRemoved() || !(sub instanceof ClientSubLevel clientSub)) continue;
                 if (clientSub.getRenderData() == null || IplParentDimSync.isSuppressedSuccessor(clientSub)) continue;
                 // ONE projection per session portal (multi-straddle).
-                List<SourceClipPortalFinder.ClipDecision> roots =
-                    SourceClipPortalFinder.findStraddlingPortalPlanes(clientSub);
-                List<List<Portal>> chains = IplStraddleSessionStore.resolveChains(clientSub);
-                for (SourceClipPortalFinder.ClipDecision decision : roots) {
+                List<IplClipPortalFinder.ClipDecision> roots =
+                    IplClipPortalFinder.findStraddlingPortalPlanes(clientSub);
+                // Render chains include the tails the delayed pose still shows (see the store):
+                // they are both drawn and used as the root's second cut plane.
+                List<List<Portal>> chains = IplStraddleSessionStore.resolveRenderChains(clientSub);
+                for (IplClipPortalFinder.ClipDecision decision : roots) {
                     if (decision.portal() == null || decision.portal().getDestDim() != destLevel.dimension()) continue;
+                    StraddleProjection projection = direct(clientSub, decision, chains, roots);
+                    if (!keepsAnything(projection)) continue;
                     if (out == null) out = new ArrayList<>(2);
-                    out.add(direct(clientSub, decision, chains));
+                    out.add(projection);
                 }
                 for (List<Portal> chain : chains) {
                     Portal last = chain.get(chain.size() - 1);
                     if (last.getDestDim() != destLevel.dimension()) continue;
+                    if (coveredBySibling(clientSub, chain, chains)) continue;
+                    StraddleProjection projection = chained(clientSub, chain, chains);
+                    if (!keepsAnything(projection)) continue;
                     if (out == null) out = new ArrayList<>(2);
-                    out.add(chained(clientSub, chain, chains));
+                    out.add(projection);
                 }
             }
         }
         return out == null ? List.of() : out;
     }
 
-    private static StraddleProjection direct(ClientSubLevel sub, SourceClipPortalFinder.ClipDecision decision) {
-        return direct(sub, decision, IplStraddleSessionStore.resolveChains(sub));
-    }
-
     private static StraddleProjection direct(
-        ClientSubLevel sub, SourceClipPortalFinder.ClipDecision decision, List<List<Portal>> chains
+        ClientSubLevel sub, IplClipPortalFinder.ClipDecision decision, List<List<Portal>> chains,
+        List<IplClipPortalFinder.ClipDecision> roots
     ) {
         Portal portal = decision.portal();
         IplStraddlePoseMap.StraddleMapping mapping = IplStraddlePoseMap.StraddleMapping.of(portal);
@@ -194,8 +190,66 @@ public final class IplClientProjections {
         Plane destPlane = new Plane(portal.transformPoint(decision.plane().pos()),
             portal.transformLocalVec(decision.plane().normal()).scale(-1.0));
         List<Portal> via = List.of(portal);
+        Plane exclude = childEntryPlane(via, chains);
+        if (exclude == null) exclude = upstreamSiblingPlane(sub, portal, roots);
         return new StraddleProjection(sub, portal, computeMappedPose(sub.renderPose(), mapping),
-            destPlane, via, mapping, childEntryPlane(via, chains));
+            destPlane, via, mapping, exclude);
+    }
+
+    /**
+     * The cut a root projection through {@code portal} owes to an UPSTREAM sibling root (one
+     * whose plane {@code portal} stands beyond, see {@code PortalOrder}): material past that
+     * sibling's plane went through the sibling, so only the side not yet through it is kept,
+     * expressed in {@code portal}'s destination frame. Fully covered portals never get here
+     * (the session store drops them); this is the partial-overlap case.
+     */
+    @Nullable
+    private static Plane upstreamSiblingPlane(
+        ClientSubLevel sub, Portal portal, List<IplClipPortalFinder.ClipDecision> roots
+    ) {
+        if (roots.size() < 2) return null;
+        UUID id = sub.getUniqueId();
+        boolean wide = IplStraddleSessionStore.isWide(id, portal.getUUID().toString());
+        for (IplClipPortalFinder.ClipDecision other : roots) {
+            Portal sibling = other.portal();
+            if (sibling == null || sibling.getUUID().equals(portal.getUUID())) continue;
+            boolean siblingWide = IplStraddleSessionStore.isWide(id, sibling.getUUID().toString());
+            if (!ipl.sable.transit.PortalOrder.strictlyDownstreamOf(portal, wide, sibling, siblingWide)) continue;
+            return new Plane(portal.transformPoint(sibling.getOriginPos()), portal.transformLocalVec(sibling.getNormal()));
+        }
+        return null;
+    }
+
+    /**
+     * Whether a sibling chain (same path up to the last portal) covers {@code chain}'s last
+     * portal: its region lies beyond the sibling's plane, so its piece is empty and its
+     * projection would only repeat the sibling's material in the wrong world.
+     */
+    private static boolean coveredBySibling(ClientSubLevel sub, List<Portal> chain, List<List<Portal>> chains) {
+        UUID id = sub.getUniqueId();
+        Portal last = chain.get(chain.size() - 1);
+        String path = pathOf(chain);
+        for (List<Portal> other : chains) {
+            if (other == chain || other.size() != chain.size()) continue;
+            boolean sameParent = true;
+            for (int i = 0; i < chain.size() - 1 && sameParent; i++) {
+                sameParent = other.get(i).getUUID().equals(chain.get(i).getUUID());
+            }
+            Portal sibling = other.get(other.size() - 1);
+            if (!sameParent || sibling.getUUID().equals(last.getUUID())) continue;
+            if (ipl.sable.transit.PortalOrder.coveredBy(last, IplStraddleSessionStore.isWide(id, path),
+                sibling, IplStraddleSessionStore.isWide(id, pathOf(other)))) return true;
+        }
+        return false;
+    }
+
+    private static String pathOf(List<Portal> chain) {
+        StringBuilder path = new StringBuilder();
+        for (Portal portal : chain) {
+            if (path.length() > 0) path.append('>');
+            path.append(portal.getUUID());
+        }
+        return path.toString();
     }
 
     private static StraddleProjection chained(ClientSubLevel sub, List<Portal> chain, List<List<Portal>> chains) {
@@ -222,6 +276,35 @@ public final class IplClientProjections {
             destPlane, List.copyOf(chain), mapping, exclude);
     }
 
+    /** Slack for block-entity geometry slightly outside the plot's block box. */
+    private static final double CULL_MARGIN = 1.0;
+
+    /**
+     * Русский комментарий (почему): проекция рисует всю геометрию корабля, а режет её шейдер.
+     * Сессии, открытые заранее (предсказанный или ведущий вход), и хвосты держат проекции, чей
+     * кусок ещё или уже пуст, — в ряду порталов это полные лишние проходы на каждый портал.
+     * Если коробка плота целиком по отрезанную сторону любой из двух плоскостей куска, рисовать
+     * нечего: такая проекция не попадает в список (отбор, компиляция, отрисовка, выбор).
+     */
+    private static boolean keepsAnything(StraddleProjection projection) {
+        var bounds = projection.sub().getPlot().getBoundingBox();
+        if (bounds == null) return true;
+        return reaches(projection.destPlane(), projection.mappedPose(), bounds)
+            && (projection.exclude() == null || reaches(projection.exclude(), projection.mappedPose(), bounds));
+    }
+
+    /** Whether any corner of the plot box at {@code pose} is on (or near) the kept side of {@code plane}. */
+    private static boolean reaches(Plane plane, Pose3dc pose, dev.ryanhcode.sable.companion.math.BoundingBox3ic bounds) {
+        for (int i = 0; i < 8; i++) {
+            Vec3 corner = pose.transformPosition(new Vec3(
+                (i & 1) == 0 ? bounds.minX() : bounds.maxX() + 1.0,
+                (i & 2) == 0 ? bounds.minY() : bounds.maxY() + 1.0,
+                (i & 4) == 0 ? bounds.minZ() : bounds.maxZ() + 1.0));
+            if (plane.getDistanceTo(corner) > -CULL_MARGIN) return true;
+        }
+        return false;
+    }
+
     /**
      * Плоскость входа в первый дочерний портал куска {@code path}: кусок проекции, который
      * уже зашёл в следующий портал, должен быть ОБРЕЗАН на его входе (то, что за входом,
@@ -230,7 +313,7 @@ public final class IplClientProjections {
      * саб-уровня» вместо кусков, переходящих из портала в портал.
      *
      * <p>Сохраняемое полупространство — сторона нормали входа (по конвенции IP нормаль
-     * смотрит на исходную сторону), как и у корневого среза в {@link SourceClipPortalFinder}.
+     * смотрит на исходную сторону), как и у корневого среза в {@link IplClipPortalFinder}.
      * Дочерних порталов может быть несколько; шейдер даёт только два независимых среза,
      * поэтому берётся первый (детерминированно — порядок сессий сервера).
      */
@@ -253,7 +336,7 @@ public final class IplClientProjections {
 
     /**
      * Client ships of ANY level with a portal image into {@code level} that intersects
-     * {@code bounds} (spatial-query splice; see {@code IplProjectionIntersectionMixin}).
+     * {@code bounds} (spatial-query splice; see {@code CompanionIntersectMixin}).
      */
     @Nullable
     public static List<SubLevel> intersectingImages(Level level, dev.ryanhcode.sable.companion.math.BoundingBox3dc bounds) {
@@ -280,7 +363,7 @@ public final class IplClientProjections {
     /** Whether this client sub-level currently straddles a portal (client judgment). */
     public static boolean isClientStraddling(SubLevel sub) {
         return sub instanceof ClientSubLevel clientSub
-            && SourceClipPortalFinder.findStraddlingPortalPlane(clientSub) != null;
+            && IplClipPortalFinder.findStraddlingPortalPlane(clientSub) != null;
     }
 
     /** Isometry mapping {@code sub}'s own chart into {@code destLevel}, or null. */
@@ -325,7 +408,7 @@ public final class IplClientProjections {
     @Nullable
     public static Portal getClientStraddlePortal(SubLevel sub) {
         if (!(sub instanceof ClientSubLevel clientSub)) return null;
-        SourceClipPortalFinder.ClipDecision decision = SourceClipPortalFinder.findStraddlingPortalPlane(clientSub);
+        IplClipPortalFinder.ClipDecision decision = IplClipPortalFinder.findStraddlingPortalPlane(clientSub);
         if (decision == null || decision.portal() == null) return null;
         if (Math.abs(decision.portal().getScaling() - 1.0) > 1e-9) return null;
         return decision.portal();

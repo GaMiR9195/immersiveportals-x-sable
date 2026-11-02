@@ -16,7 +16,7 @@ import qouteall.q_misc_util.my_util.DQuaternion;
  *
  * <p>Server side the isometry comes from the active Atlas image session;
  * client side it is derived from the straddle portal found by
- * {@code SourceClipPortalFinder} (lazily, via the client-only lookup class).
+ * {@code IplClipPortalFinder} (lazily, via the client-only lookup class).
  */
 public final class IplStraddlePoseMap {
 
@@ -26,7 +26,7 @@ public final class IplStraddlePoseMap {
      * Full portal isometry {@code P = translate(dest) ∘ R ∘ translate(-origin)}, snapshot
      * at session start (immune to the portal entity moving afterwards). Scale-1 only —
      * callers gate scaling before construction. Mirrors
-     * {@code SableTransitOps.computeMappedPose}'s math; reused here so the collision /
+     * {@code IplTransitOps.computeMappedPose}'s math; reused here so the collision /
      * interaction family maps identically to transit and rendering.
      */
     public static final class StraddleMapping {

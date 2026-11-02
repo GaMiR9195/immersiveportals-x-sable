@@ -1,6 +1,6 @@
 package ipl.sable.client;
 
-import ipl.sable.mixin.client.IplLevelRendererAccessor;
+import ipl.sable.mixin.client.LevelRendererAccessor;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 
 /** Vanilla NeoForge stage, independent from Veil's shader and buffer pipeline. */
@@ -16,7 +16,7 @@ public final class IplStaffPortalBeamStage {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(RenderLevelStageEvent.class, event -> {
             if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES
                 && event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
-            var level = ((IplLevelRendererAccessor) (Object) event.getLevelRenderer()).ipl$getLevel();
+            var level = ((LevelRendererAccessor) (Object) event.getLevelRenderer()).ipl$getLevel();
             if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
                 IplEnteringVolumeRenderer.render(event.getPoseStack(),
                     net.minecraft.client.Minecraft.getInstance().renderBuffers().bufferSource(), event.getCamera(), level);

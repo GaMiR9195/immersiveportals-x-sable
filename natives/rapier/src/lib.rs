@@ -589,7 +589,8 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_ste
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         with_handle(handle, |scene| {
             rope::tick(scene);
-            joints::tick(scene);
+            // Atlas: one armed step for all charts -> refresh every chart's joints.
+            joints::tick_all(scene);
 
             scene.manifold_info_map.clear();
 

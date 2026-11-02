@@ -25,9 +25,9 @@ import java.util.concurrent.ConcurrentMap;
  * on the chest: clip math runs, but the cull boundary doesn't line up with the
  * portal.
  *
- * <p>Populated by {@code IplShaderUniformProbeMixin} at
+ * <p>Populated by {@code ShaderInstanceMixin} at
  * {@code ShaderInstance.updateLocations()} RETURN. Read by
- * {@code IplGlUseProgramProbeMixin} at {@code _glUseProgram} HEAD.
+ * {@code GlStateManagerMixin} at {@code _glUseProgram} HEAD.
  */
 public final class IplProgramRegistry {
     private IplProgramRegistry() {}
@@ -41,7 +41,7 @@ public final class IplProgramRegistry {
         new ConcurrentHashMap<>();
 
     /**
-     * Called from {@code IplShaderUniformProbeMixin} after a {@code ShaderInstance}
+     * Called from {@code ShaderInstanceMixin} after a {@code ShaderInstance}
      * resolves uniform locations. Records whether the program backs an
      * entity-style shader (per {@link EntityShaderNames#IS_ENTITY_STYLE}).
      *

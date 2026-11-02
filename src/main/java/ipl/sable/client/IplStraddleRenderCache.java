@@ -1,7 +1,7 @@
 package ipl.sable.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
-import ipl.sable.render.SourceClipPortalFinder;
+import ipl.sable.render.IplClipPortalFinder;
 import net.minecraft.client.multiplayer.ClientLevel;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -21,11 +21,11 @@ public final class IplStraddleRenderCache {
         final ClientLevel level;
         @Nullable List<IplClientProjections.StraddleProjection> projections;
         final IdentityHashMap<ClientSubLevel, IdentityHashMap<Object, Boolean>> visibility = new IdentityHashMap<>();
-        final IdentityHashMap<ClientSubLevel, List<SourceClipPortalFinder.ClipDecision>> allDecisions = new IdentityHashMap<>();
+        final IdentityHashMap<ClientSubLevel, List<IplClipPortalFinder.ClipDecision>> allDecisions = new IdentityHashMap<>();
         final IdentityHashMap<ClientSubLevel, List<Portal>> renderPortals = new IdentityHashMap<>();
         final IdentityHashMap<ClientLevel, List<Portal>> portalCandidates;
         final IdentityHashMap<Portal, Boolean> canonicalPortalFaces;
-        final IdentityHashMap<ClientSubLevel, SourceClipPortalFinder.ClipDecision> decisions =
+        final IdentityHashMap<ClientSubLevel, IplClipPortalFinder.ClipDecision> decisions =
             new IdentityHashMap<>();
         final java.util.Set<ClientSubLevel> noDecision =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -104,11 +104,11 @@ public final class IplStraddleRenderCache {
         if (pass!=null) pass.visibility.computeIfAbsent(sub,s->new IdentityHashMap<>()).put(pose,visible);
     }
     @Nullable
-    public static List<SourceClipPortalFinder.ClipDecision> allDecisions(ClientSubLevel sub) {
+    public static List<IplClipPortalFinder.ClipDecision> allDecisions(ClientSubLevel sub) {
         Pass pass=current(null);
         return pass==null?null:pass.allDecisions.get(sub);
     }
-    public static void cacheAllDecisions(ClientSubLevel sub,List<SourceClipPortalFinder.ClipDecision> decisions) {
+    public static void cacheAllDecisions(ClientSubLevel sub,List<IplClipPortalFinder.ClipDecision> decisions) {
         Pass pass=current(null);
         if (pass!=null) pass.allDecisions.put(sub,decisions);
     }
@@ -149,7 +149,7 @@ public final class IplStraddleRenderCache {
     }
 
     @Nullable
-    public static SourceClipPortalFinder.ClipDecision decision(ClientSubLevel sub) {
+    public static IplClipPortalFinder.ClipDecision decision(ClientSubLevel sub) {
         Pass pass = current(null);
         if (pass == null) return null;
         return pass.decisions.get(sub);
@@ -161,7 +161,7 @@ public final class IplStraddleRenderCache {
     }
 
     public static void cacheDecision(
-        ClientSubLevel sub, @Nullable SourceClipPortalFinder.ClipDecision computed
+        ClientSubLevel sub, @Nullable IplClipPortalFinder.ClipDecision computed
     ) {
         Pass pass = current(null);
         if (pass == null) return;

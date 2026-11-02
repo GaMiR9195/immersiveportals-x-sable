@@ -37,7 +37,7 @@ public final class IplProgramBindHook {
         if (program <= 0 || !IPGlobal.enableClippingMechanism) return;
         boolean portalClip = FrontClipping.isClippingEnabled;
         boolean portalPass = PortalRendering.isRendering();
-        boolean subClip = SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld() != null;
+        boolean subClip = IplClipUniformPatcher.getCurrentSubLevelEqWorld() != null;
         if (!portalClip && !portalPass) {
             // A late bind can re-enable slot 0 while FrontClipping's flag is
             // false. FrontClipping.disableClipping() cannot clear that raw GL
@@ -75,18 +75,18 @@ public final class IplProgramBindHook {
 
     private static float[] equation(int program, boolean second) {
         // Plot-local («чанковое») уравнение — только внутри чанковой скобки Sable; см.
-        // SubLevelClipUniformPatcher#chunkInputSpace. BER на тех же программах — мировое.
-        if (SubLevelClipUniformPatcher.isChunkInputSpace()
+        // IplClipUniformPatcher#chunkInputSpace. BER на тех же программах — мировое.
+        if (IplClipUniformPatcher.isChunkInputSpace()
             && IplProgramRegistry.usesVanillaSubLevelInputSpace(program)) {
-            return second ? SubLevelClipUniformPatcher.getCurrentSubLevelEqVanillaInput2()
-                : SubLevelClipUniformPatcher.getCurrentSubLevelEqVanillaInput();
+            return second ? IplClipUniformPatcher.getCurrentSubLevelEqVanillaInput2()
+                : IplClipUniformPatcher.getCurrentSubLevelEqVanillaInput();
         }
         if (IplProgramRegistry.isEntityStyleProgram(program)) {
-            return second ? SubLevelClipUniformPatcher.getCurrentSubLevelEqEye2()
-                : SubLevelClipUniformPatcher.getCurrentSubLevelEqEye();
+            return second ? IplClipUniformPatcher.getCurrentSubLevelEqEye2()
+                : IplClipUniformPatcher.getCurrentSubLevelEqEye();
         }
-        return second ? SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld2()
-            : SubLevelClipUniformPatcher.getCurrentSubLevelEqWorld();
+        return second ? IplClipUniformPatcher.getCurrentSubLevelEqWorld2()
+            : IplClipUniformPatcher.getCurrentSubLevelEqWorld();
     }
 
     /** Covers an already-bound program at bracket entry, without touching other programs. */
@@ -122,7 +122,7 @@ public final class IplProgramBindHook {
     }
 
     private static double[] portalEquation(int program) {
-        double[] scoped = SubLevelClipUniformPatcher.portalInputEquation(program);
+        double[] scoped = IplClipUniformPatcher.portalInputEquation(program);
         if (scoped != null) return scoped;
         boolean eye = IplProgramRegistry.isEntityStyleProgram(program);
         if (FrontClipping.isClippingEnabled) {

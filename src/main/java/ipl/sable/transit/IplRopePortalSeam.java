@@ -8,7 +8,7 @@ import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
 import dev.ryanhcode.sable.physics.impl.rapier.rope.RapierRopeHandle;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
-import ipl.sable.mixin.IplRopeObjectAccess;
+import ipl.sable.mixin.RopeObjectAccessor;
 import ipl.sable.natives.IplRapierNatives;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -190,7 +190,7 @@ public final class IplRopePortalSeam {
                 java.util.List<RopePhysicsObject> toBreak = new java.util.ArrayList<>(0);
                 for (ArbitraryPhysicsObject obj : system.getArbitraryObjects()) {
                     if (!(obj instanceof RopePhysicsObject rope)) continue;
-                    if (!(((IplRopeObjectAccess) rope).ipl$handle()
+                    if (!(((RopeObjectAccessor) rope).ipl$handle()
                         instanceof RapierRopeHandle handle)) continue;
                     liveRopeIds.add(handle.handle());
                     boolean isSplit = PREFIXES.containsKey(handle.handle() << 1)
@@ -201,7 +201,7 @@ public final class IplRopePortalSeam {
                     }
                 }
                 for (RopePhysicsObject rope : toBreak) {
-                    long id = ((RapierRopeHandle) ((IplRopeObjectAccess) rope).ipl$handle())
+                    long id = ((RapierRopeHandle) ((RopeObjectAccessor) rope).ipl$handle())
                         .handle();
                     LOG.debug("[IPL-ROPE-SEAM] rope {} overstretched — breaking", id);
                     system.removeObject(rope);
