@@ -3,6 +3,7 @@
    (stock Sable model); the far side of a portal is an Atlas **projection** of the same body.
 2) Multi-portal / chained straddling, attachment gate, seamless same-dim flips and cross-dim moves.
 3) Linux/macOS natives build script, multi-platform natives loader, much less console spam.
+4) Optimization, cache, less useless actions. 
 
 All changes introduced in 0.6.0 can be found here: `README060NEW.md`.
 
