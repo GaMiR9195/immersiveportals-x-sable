@@ -28,8 +28,8 @@ public final class PortalCrossingDetector {
 
     private static final double EPSILON = 1.0e-8;
     private static final double PORTAL_HYSTERESIS_DEPTH = 0.1;
-    /** Maximum side protrusion of the occupied SECTION at the portal, release only.
-     * Quarter-block tolerance never widens fresh admission or native clipping. */
+    /** Side protrusion tolerated in the trailing SECTION of an admitted completion (mirrored
+     * by the client latch); fresh admission and native clipping never use it. */
     public static final double SESSION_RELEASE_MARGIN = 0.65;
     private static final Map<UUID, Trail> TRAILS = new HashMap<>();
     private static final Map<UUID, Pose3d> EXIT_ANCHORS = new HashMap<>();
@@ -207,43 +207,79 @@ public final class PortalCrossingDetector {
             double rx = source.x - o.x, ry = source.y - o.y, rz = source.z - o.z;
             Vec3 n = node.portal.getNormal();
             double depthBeyond = -(rx * n.x + ry * n.y + rz * n.z);
-            if (depthBeyond < -supportN - EPSILON || depthBeyond > IplProjectionTree.SKIN) return false;
+            if (depthBeyond < -supportN - EPSILON || depthBeyond > PortalPrism.SKIN) return false;
             Vec3 aw = node.portal.getAxisW();
             Vec3 ah = node.portal.getAxisH();
-            return Math.abs(rx * aw.x + ry * aw.y + rz * aw.z) <= node.halfW + supportW
-                && Math.abs(rx * ah.x + ry * ah.y + rz * ah.z) <= node.halfH + supportH;
+            return Math.abs(rx * aw.x + ry * aw.y + rz * aw.z) <= node.prism.halfW() + supportW
+                && Math.abs(rx * ah.x + ry * ah.y + rz * ah.z) <= node.prism.halfH() + supportH;
         }
     }
 
     /**
-     * Whether no material of {@code body} is held by the projection piece of ANOTHER root
-     * portal. A flip re-bases the whole body through {@code portal}; with part of it projected
-     * through a different portal (several portals straddled at once) that part would be carried
-     * to the wrong place, so the body stays stitched until that piece has emptied. Material
-     * inside {@code portal}'s own region counts as through it even where an adjacent sibling has
-     * the priority (shared lateral margin). Native material is judged by the crossing test.
+     * Whether a flip through {@code portal} would carry only material that is physically
+     * through a portal. The flip re-bases the WHOLE body, so
+     * <ul>
+     * <li>no block may be in the native piece: material that crossed the infinite plane
+     *   beside the frame keeps living in the source world and the body stays stitched;</li>
+     * <li>with material in the pieces of several roots (branches), the root holding the most
+     *   blocks takes the body (ties: sibling priority) and the rest is carried along -- the
+     *   "pushed into two portals at once" case that the frame collision normally prevents.</li>
+     * </ul>
+     * A body without sessions (it went through within one tick) is judged per block, see
+     * {@link #crossedWithinAperture}.
      */
-    public static boolean noMaterialBeyondOtherPortals(ServerSubLevel body, Portal portal) {
+    public static boolean flipReadyThrough(ServerSubLevel body, Portal portal) {
         IplProjectionTree tree = IplProjectionTree.of(body);
-        IplProjectionTree.Node own = null;
-        boolean others = false;
-        for (IplProjectionTree.Node root : tree.roots()) {
-            if (root.portal.getUUID().equals(portal.getUUID())) own = root;
-            else others = true;
+        if (tree.isEmpty()) return crossedWithinAperture(body, portal);
+        List<IplProjectionTree.Node> roots = tree.roots();
+        int[] held = new int[roots.size()];
+        for (IplProjectionTree.Node piece : pieces(body, tree, IplPortalVolumeCache.blocks(body))) {
+            if (piece == null) return false;
+            held[roots.indexOf(piece.root())]++;
         }
-        if (!others) return true;
-        Frame frame = new Frame(realTrail(body).end);
-        List<BlockPos> all = IplPortalVolumeCache.blocks(body);
-        IplProjectionTree.Node[] pieces = pieces(body, tree, all);
-        for (int i = 0; i < pieces.length; i++) {
-            IplProjectionTree.Node piece = pieces[i];
-            if (piece == null || piece.root() == own) continue;
-            BlockPos block = all.get(i);
-            if (own != null && own.beyondContains(
-                new Vec3(frame.centerX(block), frame.centerY(block), frame.centerZ(block)))) continue;
-            return false;
+        int best = 0;
+        for (int i = 1; i < held.length; i++) if (held[i] > held[best]) best = i;
+        return roots.get(best).portal.getUUID().equals(portal.getUUID());
+    }
+
+    /**
+     * Every block centre crossed {@code portal}'s plane during the current trail segment, and
+     * inside the widened aperture: the per-block form of "went through the frame, not past it".
+     */
+    public static boolean crossedWithinAperture(ServerSubLevel body, Portal portal) {
+        Trail trail = trail(body);
+        Frame from = new Frame(trail.start);
+        Frame to = new Frame(trail.end);
+        Vec3 o = portal.getOriginPos();
+        Vec3 n = portal.getNormal();
+        Vec3 w = portal.getAxisW();
+        Vec3 h = portal.getAxisH();
+        double halfW = portal.getWidth() * 0.5 + PortalPrism.LATERAL_MARGIN;
+        double halfH = portal.getHeight() * 0.5 + PortalPrism.LATERAL_MARGIN;
+        for (BlockPos block : blocks(body)) {
+            double ax = from.centerX(block) - o.x, ay = from.centerY(block) - o.y, az = from.centerZ(block) - o.z;
+            double bx = to.centerX(block) - o.x, by = to.centerY(block) - o.y, bz = to.centerZ(block) - o.z;
+            // Crossing direction is -normal.
+            double d0 = -(ax * n.x + ay * n.y + az * n.z);
+            double d1 = -(bx * n.x + by * n.y + bz * n.z);
+            if (d0 >= 0.0 || d1 < 0.0) return false;
+            double t = d0 / (d0 - d1);
+            double px = ax + (bx - ax) * t, py = ay + (by - ay) * t, pz = az + (bz - az) * t;
+            if (Math.abs(px * w.x + py * w.y + pz * w.z) > halfW
+                || Math.abs(px * h.x + py * h.y + pz * h.z) > halfH) return false;
         }
         return true;
+    }
+
+    /**
+     * Where the body point that stood at {@code portal}'s aperture centre at the START of the
+     * current trail segment is now (trail frame: mapped inside a mapped view). Seeding a new
+     * session's anchor there gives its prism the direction of the last segment at once, also
+     * for a body that went through within one tick.
+     */
+    public static Vec3 entryAnchor(ServerSubLevel body, Portal portal) {
+        Trail trail = trail(body);
+        return trail.end.transformPosition(trail.start.transformPositionInverse(portal.getOriginPos()));
     }
 
     /**
@@ -587,14 +623,6 @@ public final class PortalCrossingDetector {
         double t = completionTime(body, portal, 0.0);
         Frame crossing = new Frame(interpolate(trail.start, trail.end, t));
         return sectionFits(portal, blocks, crossing, releaseMargin, 1.0e-7);
-    }
-
-    /** Release when ANY occupied section protrudes too far sideways, even if the
-     * rest of the object still overlaps the opening. Distant non-crossing geometry
-     * is irrelevant; a sparse plot's empty AABB gap cannot retain the seam either. */
-    public static boolean retainsAdmittedSession(ServerSubLevel body, Portal portal) {
-        return sectionFits(portal, blocks(body),
-            new Frame(trail(body).end), SESSION_RELEASE_MARGIN, PORTAL_HYSTERESIS_DEPTH);
     }
 
     private static boolean sectionFits(Portal portal, List<BlockPos> blocks, Frame frame,

@@ -89,11 +89,13 @@ public abstract class LevelRendererOutlineMixin {
         }
 
         IplClientProjections.StraddleProjection projection = ipl$projectionFor(clientOwner, piece);
-        Pose3dc pose = projection != null ? projection.mappedPose() : piece.mapping.mapPose(real);
-        Plane plane = projection != null ? projection.destPlane()
-            : new Plane(piece.portal.getDestPos(), piece.portal.getContentDirection());
-        Portal portal = projection != null ? projection.portal() : piece.portal;
-        IplStraddleRenderState.set(clientOwner, pose, plane, portal);
+        if (projection != null) {
+            IplStraddleRenderState.set(projection);
+        } else {
+            IplStraddleRenderState.set(clientOwner, piece.mapping.mapPose(real),
+                List.of(new Plane(piece.portal.getDestPos(), piece.portal.getContentDirection())),
+                piece.portal);
+        }
         try {
             return original.call(context, camera, target, deltaTracker, poseStack, bufferSource);
         } finally {

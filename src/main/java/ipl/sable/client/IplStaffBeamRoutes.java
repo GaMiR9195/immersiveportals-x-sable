@@ -12,6 +12,7 @@ import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.ducks.IEWorld;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
@@ -642,12 +643,12 @@ public final class IplStaffBeamRoutes {
     private static Portal findLivePortal(IplGrabLink link) {
         for (ClientLevel level : ClientWorldLoader.getClientWorlds()) {
             if (!level.dimension().equals(link.fromDim())) continue;
-            for (Entity entity : level.entitiesForRendering()) {
-                if (entity instanceof Portal portal && !portal.isRemoved()
-                    && portal.getUUID().equals(link.portalId())
-                    && portal.getOriginPos().distanceToSqr(link.origin()) < 0.25) {
-                    return portal;
-                }
+            // By UUID through the entity index (IEWorld), not a scan of every loaded entity.
+            Entity entity = level instanceof IEWorld world
+                ? world.portal_getEntityLookup().get(link.portalId()) : null;
+            if (entity instanceof Portal portal && !portal.isRemoved()
+                && portal.getOriginPos().distanceToSqr(link.origin()) < 0.25) {
+                return portal;
             }
             for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
                 if (!portal.isRemoved() && portal.getUUID().equals(link.portalId())

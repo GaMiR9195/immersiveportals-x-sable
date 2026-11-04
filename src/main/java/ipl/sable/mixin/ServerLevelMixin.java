@@ -11,7 +11,7 @@ import org.spongepowered.asm.mixin.Mixin;
  * Server twin of {@code ClientLevelMixin}: projectiles, mob line of sight,
  * explosions' exposure rays, Create's raycasts, item use validation — every server
  * {@code clip} hits straddling ships piece-by-piece (native piece cut at its root
- * portal tubes, images through every session including chains, foreign images included).
+ * portal prisms, images through every session including chains, foreign images included).
  * Без этого стрела проходила бы сквозь видимую часть корабля за порталом и попадала в
  * "призрака" на исходной стороне.
  */

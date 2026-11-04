@@ -124,7 +124,7 @@ public final class IplStraddleStaffPick {
         ));
         // `level.clip` is projection-aware (IplProjectionRaycast): it already hits every
         // piece of every straddling ship present in `level` -- native pieces cut at their
-        // portal tubes, direct images, chained images, foreign images. The winning frame
+        // portal prisms, direct images, chained images, foreign images. The winning frame
         // tells exactly which representation was hit; no candidate guessing needed.
         IplProjectionRaycast.FrameHit frame = IplProjectionRaycast.lastWinner(block);
         ClientSubLevel sub = block.getType() == HitResult.Type.MISS ? null

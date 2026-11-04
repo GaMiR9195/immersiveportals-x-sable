@@ -3,12 +3,16 @@ package ipl.sable.client;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import ipl.sable.IplPerfDiagnostics;
 import ipl.sable.transit.PortalAperture;
 import ipl.sable.transit.PortalCrossingDetector;
 import ipl.sable.transit.PortalOrder;
+import ipl.sable.transit.PortalPrism;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
+import qouteall.imm_ptl.core.ducks.IEWorld;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
@@ -244,7 +248,8 @@ final class IplClientVisualTransitLatch {
     }
 
     /**
-     * Whether {@code candidate} stands beyond the plane of a portal the ship is already split by.
+     * Whether {@code candidate} stands beyond the plane of a portal the ship is already split by,
+     * inside that portal's through prism.
      *
      * <p>Предсказание смотрит на коробку плота в РОДНЫХ координатах. В ряду {@code ->|  |}
      * передняя часть корабля уже ушла в левый портал (наверх), но её родные координаты через пару
@@ -255,10 +260,15 @@ final class IplClientVisualTransitLatch {
      * переднему порталу (см. {@code PortalOrder}).
      */
     private static boolean behindCurrentSplit(ClientSubLevel sub, Portal candidate, List<Portal> current) {
+        PortalPrism candidatePrism = null;
         for (Portal split : current) {
             if (split.getUUID().equals(candidate.getUUID())) continue;
-            boolean wide = IplStraddleSessionStore.isWide(sub.getUniqueId(), split.getUUID().toString());
-            if (PortalOrder.strictlyDownstreamOf(candidate, false, split, wide)) return true;
+            if (candidatePrism == null) candidatePrism = PortalPrism.straight(candidate, Double.POSITIVE_INFINITY);
+            // The split's prism is slanted by its session anchor exactly as on the server.
+            Vec3 anchor = IplStraddleSessionStore.anchor(sub.getUniqueId(), split.getUUID().toString());
+            PortalPrism splitPrism = PortalPrism.of(split,
+                anchor == null ? null : sub.renderPose().transformPosition(anchor), Double.POSITIVE_INFINITY);
+            if (PortalOrder.strictlyDownstreamOf(candidate, candidatePrism, split, splitPrism)) return true;
         }
         return false;
     }
@@ -303,9 +313,15 @@ final class IplClientVisualTransitLatch {
         return true;
     }
 
+    /**
+     * Every portal of {@code level} (entities + global portals, one per UUID). A full entity
+     * scan: only the aperture-entry prediction needs the whole set, and it is cached per
+     * render pass there. Lookups of ONE known portal go through {@link #lookupPortal}.
+     */
     static List<Portal> portals(ClientLevel level) {
         List<Portal> cached = IplStraddleRenderCache.portalCandidates(level);
         if (cached != null) return cached;
+        long start = IplPerfDiagnostics.ENABLED ? System.nanoTime() : 0L;
         Map<UUID, Portal> unique = new HashMap<>();
         for (Entity entity : level.entitiesForRendering()) {
             if (entity instanceof Portal portal) unique.put(portal.getUUID(), portal);
@@ -315,14 +331,42 @@ final class IplClientVisualTransitLatch {
         }
         List<Portal> portals = List.copyOf(unique.values());
         IplStraddleRenderCache.cachePortalCandidates(level, portals);
+        if (IplPerfDiagnostics.ENABLED) {
+            IplPerfDiagnostics.record(IplPerfDiagnostics.CLIENT_PORTAL_SCAN, System.nanoTime() - start);
+        }
         return portals;
     }
 
-    private static Portal findPortal(ClientLevel level, UUID portalId) {
-        for (Portal portal : portals(level)) {
-            if (portal.getUUID().equals(portalId)) return portal;
+    /**
+     * The portal {@code portalId} of {@code level} exactly as {@link #portals} would yield it
+     * (a global portal shadows an entity with the same UUID), but in O(1): the level's entity
+     * index by UUID instead of a scan of every loaded entity.
+     *
+     * <p>Раньше поиск одного портала шёл через {@link #portals}: вне прохода рендера кэша нет,
+     * и каждый вызов перебирал ВСЕ сущности уровня. А поиск порталов сессий сидит на горячем
+     * пути пространственных запросов Sable ({@code getAllIntersecting} — движение каждой
+     * частицы, коллизии сущностей, лучи, тени): пока корабль стоит в портале, клиентский тик
+     * стоил «запросы × сущности» — рывки кадров при нормальном среднем FPS.
+     */
+    @Nullable
+    static Portal lookupPortal(ClientLevel level, UUID portalId) {
+        Portal global = null;
+        for (Portal portal : GlobalPortalStorage.getGlobalPortals(level)) {
+            if (portal.getUUID().equals(portalId)) global = portal; // last wins, as in the map
         }
-        return null;
+        if (global != null) return global;
+        if (!(level instanceof IEWorld world)) {
+            for (Entity entity : level.entitiesForRendering()) {
+                if (entity instanceof Portal portal && portal.getUUID().equals(portalId)) return portal;
+            }
+            return null;
+        }
+        return world.portal_getEntityLookup().get(portalId) instanceof Portal portal ? portal : null;
+    }
+
+    @Nullable
+    private static Portal findPortal(ClientLevel level, UUID portalId) {
+        return lookupPortal(level, portalId);
     }
 
     private static Projection project(ClientSubLevel sub, Pose3dc pose, Portal portal) {

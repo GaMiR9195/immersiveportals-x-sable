@@ -133,7 +133,7 @@ public final class IplProjectionEntities {
 
     /**
      * Frames of {@code sub} a plot box can physically touch: every frame for big boxes,
-     * otherwise the pieces of its corners and center (a piece is a convex tube or its
+     * otherwise the pieces of its corners and center (a piece is a convex prism or its
      * complement, so a small box crossing a boundary has a sample on each side).
      */
     static List<IplProjectionTree.Node> touchedPieces(SubLevel sub, IplProjectionTree tree, AABB plotBox) {

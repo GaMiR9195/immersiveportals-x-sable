@@ -3,6 +3,7 @@ package ipl.sable.mixin.client;
 import com.mojang.blaze3d.shaders.Shader;
 import com.mojang.blaze3d.shaders.Uniform;
 import ipl.sable.duck.IplSubLevelClipShader;
+import ipl.sable.render.IplClipUniformPatcher;
 import ipl.sable.render.IplProgramBindHook;
 import ipl.sable.render.IplProgramRegistry;
 import net.minecraft.client.renderer.ShaderInstance;
@@ -36,7 +37,7 @@ public abstract class ShaderInstanceMixin implements IplSubLevelClipShader {
     // ---- Uniform-ы плоскостей отсечения ----
     // Like IP's MixinShaderInstance adds iportal_ClippingEquation, this adds the backing
     // Uniform objects for the GLSL that shader_transformation.yaml injects
-    // (ipl_subLevelClipEquation[0] and [1]). Each mixin adds a distinct uniform, so both
+    // (ipl_subLevelClipEquation[0..SLOTS-1]). Each mixin adds distinct uniforms, so both
     // injections into updateLocations coexist.
 
     @Shadow
@@ -47,13 +48,10 @@ public abstract class ShaderInstanceMixin implements IplSubLevelClipShader {
     @Final
     private String name;
 
+    /** One Uniform per array element; null while the shader does not declare the array. */
     @Unique
     @Nullable
-    private Uniform ipl$subLevelClipEquation;
-
-    @Unique
-    @Nullable
-    private Uniform ipl$subLevelClipEquation2;
+    private Uniform[] ipl$subLevelClipEquation;
 
     /**
      * Shaders whose GLSL actually declares {@code ipl_subLevelClipEquation}; must match the
@@ -129,9 +127,12 @@ public abstract class ShaderInstanceMixin implements IplSubLevelClipShader {
         if (!IPL$AFFECTED_SHADERS.contains(name)) return;
         Shader self = (Shader) (Object) this;
         // type=7 (UT_FLOAT4), count=4: the same vec4 layout as IP's iportal_ClippingEquation.
-        // "name[1]" resolves the second array element's own location (the base name is [0]).
-        ipl$subLevelClipEquation = ipl$addNeutralUniform("ipl_subLevelClipEquation", self);
-        ipl$subLevelClipEquation2 = ipl$addNeutralUniform("ipl_subLevelClipEquation[1]", self);
+        // "name[i]" resolves each array element's own location (the base name is [0]).
+        Uniform[] slots = new Uniform[IplClipUniformPatcher.SLOTS];
+        for (int i = 0; i < slots.length; i++) {
+            slots[i] = ipl$addNeutralUniform(IplProgramBindHook.subLevelUniformName(i), self);
+        }
+        ipl$subLevelClipEquation = slots;
     }
 
     /**
@@ -154,14 +155,9 @@ public abstract class ShaderInstanceMixin implements IplSubLevelClipShader {
 
     @Nullable
     @Override
-    public Uniform ipl$getSubLevelClipUniform() {
-        return ipl$subLevelClipEquation;
-    }
-
-    @Nullable
-    @Override
-    public Uniform ipl$getSubLevelClipUniform2() {
-        return ipl$subLevelClipEquation2;
+    public Uniform ipl$getSubLevelClipUniform(int slot) {
+        Uniform[] slots = ipl$subLevelClipEquation;
+        return slots == null ? null : slots[slot];
     }
 
     // ---- Регистрация программы и диагностика ----
@@ -221,7 +217,8 @@ public abstract class ShaderInstanceMixin implements IplSubLevelClipShader {
             int loc = GL20.glGetUniformLocation(program, uName);
             uniformNames.add(uName + "@" + loc + ":t=" + typeBuf.get(0) + ":s=" + sizeBuf.get(0));
             if ("iportal_ClippingEquation".equals(uName)) clipPresent = true;
-            if ("ipl_subLevelClipEquation".equals(uName)) subLevelClipPresent = true;
+            // GL reports a uniform array by its first element, "ipl_subLevelClipEquation[0]".
+            if (uName.startsWith("ipl_subLevelClipEquation")) subLevelClipPresent = true;
         }
 
         IPL$LOG.info(

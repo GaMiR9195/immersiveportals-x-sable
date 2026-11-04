@@ -30,7 +30,7 @@ import java.util.function.Predicate;
  * the portal-mapped pose when the collision mapping is active for the probe box.
  *
  * <p>The candidate-block iterable also gets the straddle keep-filter (same authority
- * as {@link SubLevelEntityCollisionMixin}): the culled half's blocks must not count as
+ * as {@link SubLevelEntityCollisionMixin}): blocks of other pieces must not count as
  * ground, or sneaking could walk off onto phantom deck at the seam.
  */
 @Pseudo

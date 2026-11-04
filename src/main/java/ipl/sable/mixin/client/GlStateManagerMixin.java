@@ -8,7 +8,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/** Same implementation as ProgramManager's hook; includes BOTH sub-level clip planes. */
+/** Same implementation as ProgramManager's hook; includes every sub-level clip slot. */
 @Mixin(value = GlStateManager.class, remap = false)
 public class GlStateManagerMixin {
     @Inject(method = "_glUseProgram(I)V", at = @At("HEAD"))

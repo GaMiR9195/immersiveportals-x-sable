@@ -1,5 +1,6 @@
 package ipl.sable.mixin.client;
 
+import ipl.sable.render.IplClipUniformPatcher;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
@@ -13,14 +14,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Adds IP's portal clip (slot 0) and the sub-level clip (slot 1) to Flywheel vertex shaders.
+ * Adds IP's portal clip (slot 0) and the sub-level clip slots ({@code 1..SLOTS}) to Flywheel
+ * vertex shaders.
  *
  * <p>Flywheel compiles its programs itself, past Mojang's {@code Program}, Veil's
  * preprocessor and Iris's transformer, so none of the other GLSL injections reach instanced
  * visuals (Create cogs, Aeronautics handles, Simulated sub-models). Before
  * {@code compile(ShaderType, String)} this mixin rewrites {@code fullSource} of every vertex
- * shader that contains Flywheel's standard {@code gl_Position} line: it declares both clip
- * uniforms after {@code #version} and writes {@code gl_ClipDistance[0..1]} for the
+ * shader that contains Flywheel's standard {@code gl_Position} line: it declares the clip
+ * uniforms after {@code #version} and writes {@code gl_ClipDistance[0..SLOTS]} for the
  * camera-relative position {@code flw_vertexPos.xyz - flw_cameraPos} — the space of IP's
  * {@code activeClipPlaneEquationBeforeModelView}. The equations are uploaded on bind by
  * {@code IplProgramBindHook} ({@code FlywheelEmbeddedEnvironmentMixin} and the
@@ -42,16 +44,25 @@ public abstract class FlywheelCompilationMixin {
     @Unique
     private static final String IPL$UNIFORM_DECLS =
         "\nuniform vec4 iportal_ClippingEquation;\n" +
-            "uniform vec4 ipl_subLevelClipEquation;\n";
+            "uniform vec4 ipl_subLevelClipEquation[" + IplClipUniformPatcher.SLOTS + "];\n";
 
     @Unique
-    private static final String IPL$CLIP_WRITES =
-        IPL$ANCHOR + "\n" +
-            "    {\n" +
-            "        vec3 _ipl_camRel = flw_vertexPos.xyz - flw_cameraPos;\n" +
-            "        gl_ClipDistance[0] = dot(_ipl_camRel, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;\n" +
-            "        gl_ClipDistance[1] = dot(_ipl_camRel, ipl_subLevelClipEquation.xyz) + ipl_subLevelClipEquation.w;\n" +
-            "    }\n";
+    private static final String IPL$CLIP_WRITES = ipl$clipWrites();
+
+    /** Constant indices only: GLSL 1.50 sizes {@code gl_ClipDistance} by the largest one. */
+    @Unique
+    private static String ipl$clipWrites() {
+        StringBuilder writes = new StringBuilder(IPL$ANCHOR).append("\n    {\n")
+            .append("        vec3 _ipl_camRel = flw_vertexPos.xyz - flw_cameraPos;\n")
+            .append("        gl_ClipDistance[0] = dot(_ipl_camRel, iportal_ClippingEquation.xyz)")
+            .append(" + iportal_ClippingEquation.w;\n");
+        for (int i = 0; i < IplClipUniformPatcher.SLOTS; i++) {
+            writes.append("        gl_ClipDistance[").append(i + 1)
+                .append("] = dot(_ipl_camRel, ipl_subLevelClipEquation[").append(i)
+                .append("].xyz) + ipl_subLevelClipEquation[").append(i).append("].w;\n");
+        }
+        return writes.append("    }\n").toString();
+    }
 
     @Shadow
     @Final

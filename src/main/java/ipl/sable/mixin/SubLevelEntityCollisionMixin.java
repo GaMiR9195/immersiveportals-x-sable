@@ -9,6 +9,7 @@ import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.mixinterface.voxel_shape_iteration.FastVoxelShapeIterable;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.entity_collision.SubLevelEntityCollision;
+import ipl.sable.transit.IplCollisionRegion;
 import ipl.sable.transit.IplStraddleCollisionClip;
 import ipl.sable.transit.IplStraddlePoseMap;
 import net.minecraft.core.BlockPos;
@@ -22,24 +23,26 @@ import java.util.NoSuchElementException;
 import java.util.function.Predicate;
 
 /**
- * Столкновения сущностей с кораблём, пересекающим портал: блоки режутся по плоскости портала,
- * а часть за порталом сталкивается в своей (отображённой) позе.
+ * Столкновения сущностей с кораблём, пересекающим портал: каждый кадр видит только свой кусок
+ * тела (родной — всё вне призм порталов, образ — то, что прошло через проём), а часть за
+ * порталом сталкивается в своей (отображённой) позе.
  */
 @Pseudo
 @Mixin(value = SubLevelEntityCollision.class, remap = false)
 public abstract class SubLevelEntityCollisionMixin {
 
-    // ---- Отсечение блоков по плоскости портала ----
-    // Portal-plane clip for ENTITY-vs-ship collision on straddling sub-levels — the
+    // ---- Отсечение блоков по куску кадра ----
+    // Piece clip for ENTITY-vs-ship collision on straddling sub-levels — the
     // gameplay-collision counterpart of the native solver contact clip (spec §2.5).
     //
     // <p>{@code SubLevelEntityCollision.collide} SATs the entity's OBB against every ship
     // block near it, oblivious to the portal: from the source side an entity would collide
     // with the through-part (rendered and physically present dest-side only), and via the
-    // mapped image with the not-yet-through part. This wrap filters the
-    // candidate block iterable so blocks on the wrong side of the portal plane simply don't
-    // exist for collision — the same iterable feeds the main
-    // SAT loop, step-up probing, and the tracking check, so all stay consistent.
+    // mapped image with the not-yet-through part. This wrap filters the candidate block
+    // iterable so blocks outside the frame's piece ({@link IplCollisionRegion}: the portal
+    // prisms, not the portal's infinite plane) simply don't exist for collision — the same
+    // iterable feeds the main SAT loop, step-up probing, and the tracking check, so all stay
+    // consistent.
     //
     // <p>Non-straddling ships get a null filter and pass through unchanged. The lookahead in
     // the filtering iterator advances the underlying mutable BlockPos at the same point
@@ -50,9 +53,9 @@ public abstract class SubLevelEntityCollisionMixin {
     // blocks, so the physical boundary would land on the sub-level's block lattice instead
     // of on the portal plane: a ship only partly through the portal would be cut along
     // block divisions, leaving up to half a block of phantom material behind the plane or a
-    // matching hole in front of it. The filter is therefore deliberately generous — it keeps a block if ANY part of its cube
-    // is still on the kept side — and the second wrap below trims what survives, clipping
-    // each individual collision box against the same half-space via
+    // matching hole in front of it. The filter is therefore deliberately generous — it keeps
+    // a block if ANY part of its cube may be in the piece — and the second wrap below trims
+    // what survives, clipping each individual collision box to the same piece via
     // {@link IplStraddleCollisionClip}. Both loops that consume these boxes
     // ({@code collide} and the step-up probe's {@code hasCollision}) go through
     // {@code sable$allBoxes}, so the two stay consistent with each other and with the
@@ -71,19 +74,18 @@ public abstract class SubLevelEntityCollisionMixin {
         @Local(ordinal = 1) SubLevel subLevel
     ) {
         Iterable<BlockPos> all = original.call(min, max);
-        Predicate<BlockPos> keep = IplStraddlePoseMap.getBlockCollisionKeepFilter(
+        IplCollisionRegion region = IplStraddlePoseMap.getBlockCollisionRegion(
             subLevel, entity.level(), entity.getBoundingBox());
         // Installed (or cleared) for EVERY sub-level in the intersection loop, not just
         // straddling ones, so a cut can never leak into the next sub-level's boxes.
-        IplStraddleCollisionClip.setPlanes(
-            keep == null ? null : IplStraddlePoseMap.getBlockCollisionKeepPlanes(
-                subLevel, entity.level(), entity.getBoundingBox()));
-        if (keep == null) return all;
+        IplStraddleCollisionClip.setRegion(region);
+        if (region == null) return all;
+        Predicate<BlockPos> keep = IplStraddlePoseMap.blockFilter(region);
         return () -> new FilteredIterator(all.iterator(), keep);
     }
 
     /**
-     * Trims each surviving block's collision boxes at the portal plane. Applies to the
+     * Trims each surviving block's collision boxes to the frame's piece. Applies to the
      * main SAT loop and to the step-up probe, both of which iterate boxes through this
      * same interface call.
      */
@@ -105,7 +107,7 @@ public abstract class SubLevelEntityCollisionMixin {
             target = "Ldev/ryanhcode/sable/mixinterface/voxel_shape_iteration/FastVoxelShapeIterable;sable$allBoxes()Ljava/util/Iterator;"
         )
     )
-    private static Iterator<BoundingBox3dc> ipl$clipBoxesAtPortalPlane(
+    private static Iterator<BoundingBox3dc> ipl$clipBoxesToPiece(
         FastVoxelShapeIterable shape, Operation<Iterator<BoundingBox3dc>> original
     ) {
         return IplStraddleCollisionClip.clip(original.call(shape));

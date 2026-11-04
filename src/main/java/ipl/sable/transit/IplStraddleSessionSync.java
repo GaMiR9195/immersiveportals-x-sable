@@ -4,12 +4,15 @@ import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.DoubleTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -110,7 +113,7 @@ public final class IplStraddleSessionSync {
         LinkedHashMap<String, String> portals =
             ACTIVE.computeIfAbsent(shipId, k -> new LinkedHashMap<>());
         String encoded = encodePortal(portal, IplAtlasStraddleSession.isCompleted(key),
-            IplAtlasStraddleSession.isWide(key));
+            IplAtlasStraddleSession.sessionAnchor(key));
         if (encoded.equals(portals.put(key.path(), encoded))) return;
 
         LOG.debug("[IPL-STRADDLE-SYNC] start ship={} path={}", shipId, key.path());
@@ -127,7 +130,7 @@ public final class IplStraddleSessionSync {
      * NBT-списком.
      */
     public static String encodePortal(Portal portal) {
-        return encodePortal(portal, false, false);
+        return encodePortal(portal, false, null);
     }
 
     /** Keys {@code Portal.readAdditionalSaveData}/{@code Entity.load} need for geometry. */
@@ -138,7 +141,8 @@ public final class IplStraddleSessionSync {
         "rotationA", "rotationB", "rotationC", "rotationD",
         "scale", "teleportable", "interactable", "isVisible");
 
-    private static String encodePortal(Portal portal, boolean completed, boolean wide) {
+    /** {@code anchor}: the session's plot-local passage anchor (constant for its lifetime). */
+    private static String encodePortal(Portal portal, boolean completed, @Nullable Vec3 anchor) {
         CompoundTag full = new CompoundTag();
         portal.saveWithoutId(full);
         CompoundTag tag = new CompoundTag();
@@ -147,7 +151,13 @@ public final class IplStraddleSessionSync {
             if (value != null) tag.put(key, value.copy());
         }
         tag.putBoolean("ipl_session_completed", completed);
-        if (wide) tag.putBoolean("ipl_session_wide", true);
+        if (anchor != null) {
+            ListTag xyz = new ListTag();
+            xyz.add(DoubleTag.valueOf(anchor.x));
+            xyz.add(DoubleTag.valueOf(anchor.y));
+            xyz.add(DoubleTag.valueOf(anchor.z));
+            tag.put("ipl_session_anchor", xyz);
+        }
         tag.putString("ipl_source_dimension", portal.level().dimension().location().toString());
         tag.putString("entity_type",
             EntityType.getKey(portal.getType()).toString());

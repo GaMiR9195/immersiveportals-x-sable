@@ -12,17 +12,17 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import java.util.Iterator;
 
 /**
- * GLOBAL portal cut for sub-level collision boxes.
+ * GLOBAL piece cut for sub-level collision boxes.
  *
  * <p>{@code sable$allBoxes()} is the single funnel every consumer of a sub-level's
  * collision geometry goes through -- Sable's own movement solver and step-up probe, its
  * fall helper, and ANY third-party mod that iterates a sub-level's boxes through the same
  * interface. Every call site left uncut shows up in game: the player darkened inside
- * blocks, forced into a crouch or prone pose, or standing on geometry that lies behind the
- * portal plane.
+ * blocks, forced into a crouch or prone pose, or standing on geometry that already went
+ * through the portal.
  *
  * <p>Cutting at the source makes the cut universal by construction. It is
- * gated by {@link IplStraddleCollisionClip}, whose keep-planes are installed and cleared
+ * gated by {@link IplStraddleCollisionClip}, whose piece region is installed and cleared
  * per sub-level inside the intersection loop, so when no cut is installed this returns
  * the original iterator untouched and costs one thread-local read.
  *
@@ -40,7 +40,7 @@ public abstract class VoxelShapeMixin {
         at = @At("RETURN"),
         cancellable = true
     )
-    private void ipl$clipAllBoxesAtPortalPlane(CallbackInfoReturnable<Object> cir) {
+    private void ipl$clipAllBoxesToPiece(CallbackInfoReturnable<Object> cir) {
         Object returned = cir.getReturnValue();
         if (!(returned instanceof Iterator<?> iterator)) return;
         if (!IplStraddleCollisionClip.isActive()) return;

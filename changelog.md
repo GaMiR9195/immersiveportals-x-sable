@@ -19,6 +19,26 @@ projections. See `README060NEW.md`.
 - Sessions are keyed by the portal path (`StraddleKey`). Chains (an image straddling another
   portal) open child sessions with composite isometries, depth ≤ 16, at most 64 sessions per
   body. Multi-portal straddling works with no extra limits.
+- A session owns only what went through its aperture: its **through prism** (`PortalPrism`) is
+  the aperture rectangle (plus a 0.25-block lateral margin) swept from the portal plane along
+  the direction the material actually passed, the chord to a plot-local anchor captured at entry
+  (slope ≤ 1.5). The native clip regions, the projection tree, raycasts, entity collisions and
+  the client clip all use this one shape; the half-space ("wide") region after admission is
+  gone. A chained image keeps the intersection of its path's prisms.
+- Flip condition: the whole body must be through apertures (no block left in the native
+  piece). A body pushed into two portals at once enters the one whose piece holds more of its
+  blocks (ties: sibling priority) and takes the rest along; a body that crosses within one tick
+  must cross the plane inside the aperture with every block.
+- Sibling priority is geometric on prisms (`PortalOrder`: Q yields to P when Q's aperture lies
+  beyond P's plane inside P's prism), then by path; the client tree applies the same order as
+  the server.
+- Render: every piece is cut into convex cells (`IplClipCells`) with up to six clip planes
+  (`ipl_subLevelClipEquation[6]` → `gl_ClipDistance[1..6]`, in IP's shader transformation and
+  in Flywheel). The first native cell is the body's own draw; further cells (a body sticking
+  out beside an aperture, pieces with child portals or siblings) are extra passes.
+- Entity collision with a straddling body clips the block boxes to the piece of the chosen
+  frame (`IplCollisionRegion`): a block cut by a prism face collides in each frame with its own
+  part only.
 - Chained straddle detection reuses the existing swept trail mapped through the session
   isometry instead of running a second sweep per image; flips re-process the body in the
   same tick so infinite portal loops stay seamless.
@@ -76,7 +96,7 @@ projections. See `README060NEW.md`.
   reflection (`StaffActionPacketAccessor`, `SectionOcclusionGraphAccessor`),
   `catch (Throwable)` narrowed to `RuntimeException` and kept only at native, optional-mod,
   persisted-data and per-tick isolation boundaries, no blanket try/catch around RPC
-  handlers. `IplClipUniformPatcher.patchForSubLevel` enables both sub-level clip slots
+  handlers. `IplClipUniformPatcher.patchForSubLevel` enables all sub-level clip slots
   itself. Comments describe current behavior. Moved, merged and removed classes:
   `docs/renames-0.6.0.md`.
 
@@ -93,6 +113,12 @@ projections. See `README060NEW.md`.
   `IplSubLevelUniformRegistry`, unused native declarations, `IplTransitOps.executeTransit`
   and pass-through wrappers, the unused shape argument of the entering-volume overlay RPC.
 - `-Dipl.sable.clip.forceAll` and debug logging in per-draw render paths.
+- Half-space session regions (`WIDE_EXTENT`, `isWide`, sync key `ipl_session_wide`, replaced by
+  `ipl_session_anchor`), `PortalOrder.coveredBy`, `PortalCrossingDetector.retainsAdmittedSession`
+  and `noMaterialBeyondOtherPortals`, the second clip plane API (`secondPlaneFor`,
+  `findStraddlingPortalPlanes`, `getPlane2For`, `ipl$getSubLevelClipUniform2`) and the half-space
+  collision helpers (`frameCuts`, `LocalHalfSpace`, `getSourceHalfKeepFilter`,
+  `isInMappedHalf`). Full list: `docs/renames-0.6.0.md`.
 - `IplTrackingStamp` and the clock offset argument of the `move` RPC, clock alignment of the
   destination level and ghost extrapolation: one timeline makes them unnecessary.
 - Native JNI exports Java never called (`createPortalRim`, `removePortalRim`,
@@ -103,6 +129,14 @@ projections. See `README060NEW.md`.
 
 ### Fixed
 
+- The Atlas clip cut a straddling ship along the portal's infinite plane: material that crossed
+  the plane beside the frame (next to the portal, behind the wall) was clipped out of the source
+  world, drawn and colliding behind the exit, and carried along by the flip. Only material inside
+  the session's through prism belongs to the portal now; the rest keeps moving, colliding and
+  rendering in the source world.
+- A body wedged into two portals at once never flipped while both pieces held material.
+- A piece with more than one child portal was cut only by the first one (two clip slots), and
+  siblings in one wall could render differently from their physics.
 - A ship moving to another dimension stopped at the exit for a tick and then jerked to catch
   up, on every portal pass; seen by players in the destination dimension and by players
   entering it. The successor now starts from the pre-step pose only when the destination
@@ -151,6 +185,18 @@ projections. See `README060NEW.md`.
 - `tests/render` and `tests/gl` fixtures follow the production API again; all four test
   suites pass.
 
+- Uneven frame pacing (stutter at normal FPS) while a ship straddled a portal. Every Sable
+  spatial query (each particle's move, entity collisions and entity lookups, raycasts) resolved
+  the session portals by scanning every loaded client entity; only render passes cached that
+  scan, so the client tick cost "queries × entities" for as long as a projection existed.
+  Portals are now looked up by UUID in the level's entity index, and so are ship-anchored
+  cluster portals and physics-staff links (they scanned every frame while a member was not
+  synced). The server splice no longer copies the session set or builds a set per query, and
+  skips ships without an image into the queried level; image bounds go through a one-point
+  pre-reject before the 8-corner box. Surrogate portals that cannot be rebuilt in a level are
+  no longer re-decoded (and their failure re-logged) on every query. `-Dipl.perfDiagnostics=true`
+  logs the cost of these paths every 5 seconds.
+
 ### Known limitations
 
 - Worlds saved with ships inside `ipl_sable:sublevels` are NOT migrated: disassemble or
@@ -161,9 +207,16 @@ projections. See `README060NEW.md`.
   body; Rapier filters same-body pairs).
 - `sable_rapier_x86_64_windows.dll` in the source tree predates the native ABI probe: local
   builds that bundle it clip images in ABI-1 mode (exclusion regions only, coarse
-  multi-portal and chain collisions). Release builds compile fresh natives in CI.
+  multi-portal and chain collisions). Release builds compile fresh natives in CI. Prisms need
+  no native rebuild: the native region test already takes unnormalized axes.
+- Through prisms are straight (slanted along the anchor chord): material that leaves its prism
+  sideways after a strong turn inside the aperture counts as native again. There is no aperture
+  rim collision yet, so a body wider than the portal stays stitched and never flips.
 - Verified by compiling against the real dependencies (`cargo check` for the natives) and by
-  the four test suites in `tests/`; not tested in game.
+  the four test suites in `tests/`; not tested in game. The stutter fix above and the
+  through-prism, flip, six-slot clip and collision-piece changes were checked without the
+  dependencies (symbol and flow check against the mod's own sources, the test suites, a
+  randomized equivalence test of the box pre-reject); build it before release.
 
 ## [0.5.3]
 

@@ -6,17 +6,17 @@ import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderD
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaSingleSubLevelRenderData;
 import ipl.sable.client.IplParentDimSync;
 import ipl.sable.client.IplStraddleRenderCache;
-import ipl.sable.client.IplStraddleRenderState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.ducks.IEWorldRenderer;
+import qouteall.q_misc_util.my_util.Plane;
 
 /**
  * Visibility of a sub-level draw: Sable's vanilla/reach-around {@code updateCulling} does not
- * cull, so hidden successors, off-frustum bodies and bodies entirely behind their kept clip
- * half-space are rejected here. {@link #inFrustum} also answers Create: Pocket Sized's own
+ * cull, so hidden successors, off-frustum bodies and bodies entirely outside one plane of
+ * their clip cell are rejected here. {@link #inFrustum} also answers Create: Pocket Sized's own
  * frustum filter ({@code PocketRenderFrameMixin}).
  */
 public final class IplSubLevelRenderVisibility {
@@ -67,11 +67,12 @@ public final class IplSubLevelRenderVisibility {
     private static boolean compute(ClientSubLevel sub, Pose3dc pose) {
         double[] bounds = worldBounds(sub, pose);
         if (!inFrustum(bounds, 0.0)) return false;
-        // Both the source and the mapped instance have their OWN pose and kept half.
-        var plane = IplStraddleRenderState.getPlaneFor(sub);
-        if (plane != null) return !outside(bounds, plane.normal(), plane.pos());
-        for (var decision : IplClipPortalFinder.findStraddlingPortalPlanes(sub)) {
-            if (outside(bounds, decision.plane().normal(), decision.plane().pos())) return false;
+        // The native draw and every projection have their OWN pose and cell; an empty native
+        // piece carries a cut above the world, so its draw is rejected here.
+        var decision = IplClipPortalFinder.findStraddlingPortalPlane(sub);
+        if (decision == null) return true;
+        for (Plane plane : decision.planes()) {
+            if (outside(bounds, plane.normal(), plane.pos())) return false;
         }
         return true;
     }

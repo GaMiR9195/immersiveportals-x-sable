@@ -7,24 +7,23 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.ArrayDeque;
+import java.util.List;
 
 /**
  * Render-thread state for drawing a straddling sub-level's DEST-SIDE projection.
  *
  * <p>While set, the sub-level renders with the portal-mapped pose
- * ({@code ClientSubLevelMixin}) and the legacy source-clip bracket
- * ({@code ChunkedRenderDataMixin} → {@code IplClipPortalFinder}) installs the provided
- * complementary plane instead of searching for one — so the projection shows exactly the
- * through-the-portal portion, cut at the mapped portal plane.
+ * ({@code ClientSubLevelMixin}) and the clip brackets ({@code ChunkedRenderDataMixin} →
+ * {@code IplClipPortalFinder}) install the projection's own convex cell instead of the native
+ * one — so the projection shows exactly its piece of the body.
  */
 public final class IplStraddleRenderState {
 
     @Nullable private static ClientSubLevel activeSub;
     @Nullable private static Pose3dc activePose;
-    @Nullable private static Plane activePlane;
+    /** Convex clip cell of the armed piece (intersection of kept half-spaces). */
+    @Nullable private static List<Plane> activePlanes;
     @Nullable private static Portal activePortal;
-    /** Вторая плоскость куска проекции (выход в следующий портал цепочки), или null. */
-    @Nullable private static Plane activePlane2;
     private static final ArrayDeque<State> suspended = new ArrayDeque<>();
     /**
      * Глубина «приостановки» подмены позы. Пока &gt; 0, {@link #getPoseFor} отдаёт null,
@@ -43,34 +42,25 @@ public final class IplStraddleRenderState {
     private static int poseSuspendDepth;
 
     private record State(
-        @Nullable ClientSubLevel sub, @Nullable Pose3dc pose,
-        @Nullable Plane plane, @Nullable Portal portal, @Nullable Plane plane2
+        @Nullable ClientSubLevel sub, @Nullable Pose3dc pose, @Nullable List<Plane> planes, @Nullable Portal portal
     ) {}
 
     private IplStraddleRenderState() {}
 
-    public static void set(ClientSubLevel sub, Pose3dc mappedPose, Plane destPlane, Portal portal) {
-        set(sub, mappedPose, destPlane, portal, null);
-    }
-
-    /** Арм проекции целиком: обе плоскости куска (см. {@link IplClientProjections.StraddleProjection#exclude}). */
+    /** Arms a whole projection: its mapped pose and its cell. */
     public static void set(IplClientProjections.StraddleProjection projection) {
-        set(projection.sub(), projection.mappedPose(), projection.destPlane(),
-            projection.portal(), projection.exclude());
+        set(projection.sub(), projection.mappedPose(), projection.planes(), projection.portal());
     }
 
-    public static void set(
-        ClientSubLevel sub, Pose3dc mappedPose, Plane destPlane, Portal portal, @Nullable Plane plane2
-    ) {
+    public static void set(ClientSubLevel sub, Pose3dc mappedPose, List<Plane> planes, Portal portal) {
         // Preserve outer state for recursive portal rendering.
         if (activeSub != null) {
-            suspended.addLast(new State(activeSub, activePose, activePlane, activePortal, activePlane2));
+            suspended.addLast(new State(activeSub, activePose, activePlanes, activePortal));
         }
         activeSub = sub;
         activePose = mappedPose;
-        activePlane = destPlane;
+        activePlanes = planes;
         activePortal = portal;
-        activePlane2 = plane2;
     }
 
     public static void clear() {
@@ -78,16 +68,14 @@ public final class IplStraddleRenderState {
         if (previous != null) {
             activeSub = previous.sub();
             activePose = previous.pose();
-            activePlane = previous.plane();
+            activePlanes = previous.planes();
             activePortal = previous.portal();
-            activePlane2 = previous.plane2();
             return;
         }
         activeSub = null;
         activePose = null;
-        activePlane = null;
+        activePlanes = null;
         activePortal = null;
-        activePlane2 = null;
     }
 
     /** Начать участок, где BER должен видеть настоящую позу (см. {@link #poseSuspendDepth}). */
@@ -108,19 +96,14 @@ public final class IplStraddleRenderState {
         return poseSuspendDepth == 0 && isActiveFor(sub) ? activePose : null;
     }
 
+    /** The armed piece's cell, or null when no projection of {@code sub} is armed. */
     @Nullable
-    public static Plane getPlane2For(@Nullable Object sub) {
-        return isActiveFor(sub) ? activePlane2 : null;
-    }
-
-    @Nullable
-    public static Plane getPlaneFor(@Nullable Object sub) {
-        return isActiveFor(sub) ? activePlane : null;
+    public static List<Plane> getPlanesFor(@Nullable Object sub) {
+        return isActiveFor(sub) ? activePlanes : null;
     }
 
     @Nullable
     public static Portal getPortalFor(@Nullable Object sub) {
         return isActiveFor(sub) ? activePortal : null;
     }
-
 }

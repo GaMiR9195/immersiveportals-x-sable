@@ -131,7 +131,7 @@ public class PortalCrossingDetectorFixtureTest {
         body.current.position().set(10,0,2);
         PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
         check(!PortalCrossingDetector.completesThroughAperture(body,door),"sideways withdrawal cannot finish through infinite plane");
-        // Release bounds ANY section protrusion, not the last overlap of the whole object.
+        // A body resting across the frame edge overlaps the opening but is not admitted.
         PortalCrossingDetector.clearTrails();body=new ServerSubLevel();
         body.current.position().set(.55,0,0); // far edge is 0.05 beyond a width=2 door
         PortalCrossingDetector.seedPhysicsStart(body);
@@ -139,31 +139,45 @@ public class PortalCrossingDetectorFixtureTest {
         state=PortalCrossingDetector.evaluate(body,door,FORWARD,0);
         check(state.currentIntersectsPortalAperture(),"section still overlaps the true opening");
         check(!state.sweptTowardDestination(),"retention skin cannot admit stationary body");
-        check(PortalCrossingDetector.retainsAdmittedSession(body,door),"5cm solver correction retains admitted seam");
         check(!PortalCrossingDetector.willEnterAperture(body,door,FORWARD,0,1),"stationary prediction fast path");
-        for(int i=0;i<20;i++) {
-            PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
-            check(PortalCrossingDetector.retainsAdmittedSession(body,door),"retention has no tick timeout "+i);
-        }
-        // Thresholds follow the production release skin (it was widened from 0.25 to 0.65).
-        double skin=PortalCrossingDetector.SESSION_RELEASE_MARGIN;
-        body.current.position().x=.5+skin-.01;
-        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
-        check(PortalCrossingDetector.retainsAdmittedSession(body,door),"protrusion just inside the release skin retained");
-        body.current.position().x=.5+skin+.01;
-        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
-        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"protrusion past the skin releases while the cube still overlaps");
-        check(PortalCrossingDetector.evaluate(body,door,FORWARD,0).currentIntersectsPortalAperture(),
-            "release must override current aperture overlap, not OR with it");
-        body.current.position().set(-(.5+skin+.01),0,0);
-        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
-        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"left side release symmetric");
-        body.current.position().set(0,.5+skin+.01,0);
-        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
-        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"top edge release symmetric");
+
+        // Without a session (one-tick passage) every block centre must cross inside the aperture.
+        body=moving(0,0,-2,0,0,2);
+        check(PortalCrossingDetector.crossedWithinAperture(body,door),"one-tick passage through the frame");
+        check(PortalCrossingDetector.flipReadyThrough(body,door),"sessionless flip is judged per block");
+        near(PortalCrossingDetector.entryAnchor(body,door).z,4,"entry anchor follows the segment");
+        body=moving(3,0,-2,3,0,2);
+        check(!PortalCrossingDetector.flipReadyThrough(body,door),"passing beside the frame never flips");
+        body=moving(0,0,.5,0,0,2);
+        check(!PortalCrossingDetector.flipReadyThrough(body,door),"material already beyond the plane needs a session");
+
+        // With a session only the prism counts: a block beyond the plane BESIDE the frame stays
+        // native, keeps the body stitched and blocks the flip (the rim collision handles it).
+        body=resting(0,0,1);body.blocks.add(new net.minecraft.core.BlockPos(3,0,0));
+        IplPortalVolumeCache.invalidate(body);
+        IplProjectionTree.install(body,door);
+        String doorPath=door.getUUID().toString();
+        check(PortalCrossingDetector.pieceHoldsMaterial(body,doorPath),"block in the prism holds the session");
+        check(!PortalCrossingDetector.flipReadyThrough(body,door),"block beside the frame stays native");
+        body.blocks.remove(1);IplPortalVolumeCache.invalidate(body);
+        check(PortalCrossingDetector.flipReadyThrough(body,door),"whole body in the prism flips");
         body.current.position().set(0,0,-.7);
         PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
-        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"normal withdrawal releases seam");
+        check(!PortalCrossingDetector.pieceHoldsMaterial(body,doorPath),"withdrawal empties the piece");
+
+        // Branches: pushed into two portals at once, the root holding more blocks takes the body
+        // (ties: sibling priority) and carries the rest along.
+        Portal other=new Portal();other.origin=new Vec3(10,0,0);other.width=2;other.height=2;
+        body=resting(0,0,1);body.blocks.add(new net.minecraft.core.BlockPos(0,1,0));
+        body.blocks.add(new net.minecraft.core.BlockPos(10,0,0));
+        IplPortalVolumeCache.invalidate(body);
+        IplProjectionTree.install(body,other,door);
+        check(PortalCrossingDetector.pieceHoldsMaterial(body,other.getUUID().toString()),"second branch holds material");
+        check(PortalCrossingDetector.flipReadyThrough(body,door),"majority branch takes the body");
+        check(!PortalCrossingDetector.flipReadyThrough(body,other),"minority branch yields");
+        body.blocks.remove(1);IplPortalVolumeCache.invalidate(body);
+        check(PortalCrossingDetector.flipReadyThrough(body,other),"tie goes to sibling priority");
+        check(!PortalCrossingDetector.flipReadyThrough(body,door),"tie: exactly one branch flips");
 
         // Tolerant trailing exit is explicit and session-owned, never the default.
         PortalCrossingDetector.clearTrails();body=new ServerSubLevel();
@@ -191,13 +205,14 @@ public class PortalCrossingDetectorFixtureTest {
         check(PortalCrossingDetector.completesThroughAperture(body,door,PortalCrossingDetector.SESSION_RELEASE_MARGIN),
             "same-tick proven admission can use release skin");
 
-        // Empty space between occupied blocks cannot retain an admitted seam either.
+        // Empty space between occupied blocks is not material of a session either.
         body=new ServerSubLevel();body.blocks.clear();
         body.blocks.add(new net.minecraft.core.BlockPos(-10,0,0));
         body.blocks.add(new net.minecraft.core.BlockPos(10,0,0));
         PortalCrossingDetector.seedPhysicsStart(body);
         PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
-        check(!PortalCrossingDetector.retainsAdmittedSession(body,door),"sparse AABB gap is not retained geometry");
+        IplProjectionTree.install(body,door);
+        check(!PortalCrossingDetector.pieceHoldsMaterial(body,door.getUUID().toString()),"sparse AABB gap holds no material");
 
         // A state cache must be reused within a segment, not across edits/frames.
         PortalCrossingDetector.clearTrails();body=new ServerSubLevel();
@@ -224,9 +239,18 @@ public class PortalCrossingDetectorFixtureTest {
         state=PortalCrossingDetector.evaluate(body,door,FORWARD,0);
         check(state.currentIntersectsPortalAperture(),"normal hysteresis contact remains");
         check(!state.sweptIntersectsPortalAperture(),"stationary sweep still has zero thickness");
-        System.out.println("0.5.2 finite-exit, section-release, cache cases: passed");
+        System.out.println("finite-exit, prism-piece, branch and cache cases: passed");
         System.out.println("PASS: "+assertions+" detector fixture assertions");
     }
+    /** Single-block body whose last trail segment runs from (x0,y0,z0) to (x1,y1,z1). */
+    private static ServerSubLevel moving(double x0,double y0,double z0,double x1,double y1,double z1) {
+        PortalCrossingDetector.clearTrails();ServerSubLevel body=new ServerSubLevel();
+        body.current.position().set(x0,y0,z0);PortalCrossingDetector.seedPhysicsStart(body);
+        body.current.position().set(x1,y1,z1);
+        PortalCrossingDetector.beginTrailTick();PortalCrossingDetector.captureTrail(body);
+        return body;
+    }
+    private static ServerSubLevel resting(double x,double y,double z) { return moving(x,y,z,x,y,z); }
     private static void near(double a,double b,String s){check(Math.abs(a-b)<1e-7,s+": "+a+" / "+b);}
     private static void check(boolean ok,String s){assertions++;if(!ok)throw new AssertionError(s);}
 }

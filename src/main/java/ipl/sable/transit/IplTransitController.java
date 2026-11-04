@@ -256,15 +256,14 @@ public final class IplTransitController {
                     && !IplAtlasStraddleSession.downstreamOfSibling(key, portal)
                     && PortalCrossingDetector.willEnterAperture(airship, portal, normal, APERTURE_MARGIN, lookahead);
                 boolean straddling = state.phase() == PortalCrossingDetector.CrossingPhase.STRADDLING;
-                boolean retains = straddling && admitted && PortalCrossingDetector.retainsAdmittedSession(airship, portal);
-                boolean heldComplete = haveSession && !hasSource && IplAtlasStraddleSession.isCompleted(key);
-                boolean straddlingAperture = (straddling
-                    && ((admitted ? retains : state.currentIntersectsPortalAperture()) || heldComplete))
+                // Сессию держит материал в её призме, а не бесконечная плоскость: то, что ушло за
+                // плоскость мимо рамки, остаётся родным и сессию не продлевает.
+                boolean holdsMaterial = haveSession
+                    && state.phase() != PortalCrossingDetector.CrossingPhase.APPROACHING
+                    && PortalCrossingDetector.pieceHoldsMaterial(airship, key.path());
+                boolean straddlingAperture = straddling
+                    && (state.currentIntersectsPortalAperture() || holdsMaterial)
                     || predictedEntry;
-                // "широкая" область (полупространство) только когда вход доказан и все
-                // сечения тела в проёме, либо тело уже целиком за плоскостью. Предсказанное
-                // открытие и непризнанный вход остаются трубками.
-                boolean wide = straddling && (retains || heldComplete);
                 if (straddlingAperture) {
                     Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
                     if (!ipl$mayOpenFace(state, haveSession, predictedEntry)) continue;
@@ -277,16 +276,19 @@ public final class IplTransitController {
                         continue;
                     }
                     IplEnteringVolumeVisualization.clearBuffer(airship);
-                    keepRootSession(server, airship, portal, normal, key, seen, physicalEntry, finiteCompletion, wide);
+                    keepRootSession(server, airship, portal, normal, key, seen, physicalEntry, finiteCompletion);
                     continue;
                 }
                 boolean startedSourceSide = state.startedBeforePortalPlane()
                     || PortalCrossingDetector.hasBufferedExit(airship);
-                boolean completedOwnedCrossing = IplAtlasStraddleSession.isCompleted(key)
-                    || finiteCompletion && ((haveSession && IplAtlasStraddleSession.isAdmitted(key))
-                        || startedSourceSide && state.sweptIntersectsPortalAperture()
-                            && state.sweptTowardDestination());
-                if (state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED && completedOwnedCrossing) {
+                // Флип переносит ВСЁ тело, поэтому он возможен, только когда всё тело прошло через
+                // проёмы (PortalCrossingDetector.flipReadyThrough). Без сессии (проход за один тик)
+                // это решают свип и проход каждого блока через проём.
+                boolean ownedCrossing = state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED
+                    && (haveSession || finiteCompletion && startedSourceSide
+                        && state.sweptIntersectsPortalAperture() && state.sweptTowardDestination())
+                    && PortalCrossingDetector.flipReadyThrough(airship, portal);
+                if (ownedCrossing) {
                     Portal twin = ipl$oppositeCoincidentFace(portal, nearby);
                     if (!haveSession && twin != null && ipl$hasAnySession(airship.getUniqueId(), twin)) continue;
                     if (!ipl$mayOpenFace(state, haveSession, false)) continue;
@@ -304,13 +306,12 @@ public final class IplTransitController {
                     if (group == null) continue; // a failed joint walk is NOT a solo body
                     List<ServerSubLevel> mates = group.mates();
                     boolean blocked = !ipl$groupReady(airship, mates, portal)
-                        || !ipl$groupWhollyThrough(airship, mates, portal)
                         || IplAttachmentGate.flipBlocker(airship, mates, group.nativeJointed(),
                             IplShipFlip.isCrossDimension(airship, portal)) != null;
                     if (blocked) {
-                        // Attached, not ready, or still spread over another portal: the far side
-                        // keeps living on the projection.
-                        keepRootSession(server, airship, portal, normal, key, seen, false, true, true);
+                        // Attached or a mate not through yet: the far side keeps living on the
+                        // projection.
+                        keepRootSession(server, airship, portal, normal, key, seen, false, true);
                         continue;
                     }
                     double completion = PortalCrossingDetector.completionTime(airship, portal);
@@ -324,10 +325,8 @@ public final class IplTransitController {
                     if (haveSession) {
                         // A session whose piece still holds material is not ended: the material would
                         // drop back behind the portal. Backing out (APPROACHING) empties it by definition.
-                        boolean holdsMaterial = state.phase() != PortalCrossingDetector.CrossingPhase.APPROACHING
-                            && PortalCrossingDetector.pieceHoldsMaterial(airship, key.path());
                         if (holdsMaterial || PortalCrossingDetector.touchesPortalVirtually(airship, portal)) {
-                            keepRootSession(server, airship, portal, normal, key, seen, false, false, false);
+                            keepRootSession(server, airship, portal, normal, key, seen, false, false);
                             continue;
                         }
                         endSession(server, key, reason);
@@ -346,8 +345,9 @@ public final class IplTransitController {
 
     private static void keepRootSession(MinecraftServer server, ServerSubLevel airship, Portal portal, Vec3 normal,
                                         StraddleKey key, Set<StraddleKey> seen,
-                                        boolean physicalEntry, boolean completed, boolean wide) {
-        IplAtlasStraddleSession.onStraddleTick(airship, portal, normal, wide);
+                                        boolean physicalEntry, boolean completed) {
+        IplAtlasStraddleSession.onStraddleTick(airship, portal, normal,
+            PortalCrossingDetector.entryAnchor(airship, portal));
         if (!IplAtlasStraddleSession.hasSessionKey(key)) return;
         if (physicalEntry) IplAtlasStraddleSession.markAdmitted(key);
         if (completed) IplAtlasStraddleSession.markCompleted(key);
@@ -395,6 +395,8 @@ public final class IplTransitController {
                         PortalCrossingDetector.inPieceScope(parentPath, portal.getUUID(), () -> {
                             var state = PortalCrossingDetector.evaluate(airship, portal, normal, APERTURE_MARGIN);
                             var motion = state.currentSweepDirection();
+                            // Anchor of a session opened now, in the parent's destination frame.
+                            Vec3 anchor = haveChild ? null : PortalCrossingDetector.entryAnchor(airship, portal);
                             if (state.phase() == PortalCrossingDetector.CrossingPhase.APPROACHING) {
                                 // Same phantom guard as the roots: a portal beyond a sibling child's
                                 // plane is reached only through that child.
@@ -402,15 +404,13 @@ public final class IplTransitController {
                                     && !IplAtlasStraddleSession.downstreamOfSibling(childKey, portal)
                                     && PortalCrossingDetector.willEnterAperture(
                                         airship, portal, normal, APERTURE_MARGIN, earlyOpenSegments);
-                                return new ChainVerdict(predicted, false, false, motion);
+                                return new ChainVerdict(predicted, false, motion, anchor);
                             }
                             boolean crossed = state.phase() == PortalCrossingDetector.CrossingPhase.CROSSED;
                             if (haveChild) {
-                                boolean retains = PortalCrossingDetector.retainsAdmittedSession(airship, portal);
                                 boolean completed = crossed
                                     && !PortalCrossingDetector.hasSourceGeometry(airship, portal);
-                                return new ChainVerdict(crossed || retains || state.currentIntersectsPortalAperture(),
-                                    crossed || retains, completed, motion);
+                                return new ChainVerdict(state.currentIntersectsPortalAperture(), completed, motion, null);
                             }
                             // Новая дочерняя сессия — только по доказанному входу, как у
                             // корней. Условия "не TOWARD_SOURCE" мало: при медленном толкании свип
@@ -435,8 +435,7 @@ public final class IplTransitController {
                                 || motion == PortalCrossingDetector.SweepDirection.TOWARD_DESTINATION;
                             boolean open = entered && state.startedBeforePortalPlane()
                                 && state.sweptIntersectsPortalAperture() && towardDestination;
-                            return new ChainVerdict(open, open && (crossed
-                                || PortalCrossingDetector.retainsAdmittedSession(airship, portal)), false, motion);
+                            return new ChainVerdict(open, false, motion, anchor);
                         }));
                     if (!verdict.keep() && ipl$planeNearExit(parentPortal, portal)) {
                         // Кусок родителя — блоки с центром ЗА его
@@ -446,7 +445,7 @@ public final class IplTransitController {
                         // эти грани уже за P2, а сессия открылась бы только через полблока пути, и
                         // всё это время кусок торчал бы сквозь грань P2. Поэтому вход доказывается и по
                         // таким блокам, и они же держат открытую так сессию, пока центры не дошли
-                        // (иначе она закрывалась бы на следующем тике и мигала). Флаги wide/completed
+                        // (иначе она закрывалась бы на следующем тике и мигала). Флаг completed
                         // уже открытой сессии по-прежнему решает только настоящий кусок.
                         boolean leads = PortalCrossingDetector.inMappedView(mapping, () ->
                             PortalCrossingDetector.inLeadingPieceScope(parentPath, portal.getUUID(), () -> {
@@ -459,7 +458,7 @@ public final class IplTransitController {
                                     && (state.sweptTowardDestination() || state.currentSweepDirection()
                                         == PortalCrossingDetector.SweepDirection.TOWARD_DESTINATION);
                             }));
-                        if (leads) verdict = new ChainVerdict(true, false, false, verdict.motion());
+                        if (leads) verdict = new ChainVerdict(true, false, verdict.motion(), verdict.anchor());
                     }
                     if (haveChild && twinHasChild) {
                         // Обе стороны с сессией (остаток прошлых тиков/повышения): остаётся сторона,
@@ -479,7 +478,7 @@ public final class IplTransitController {
                         // Same rule as the roots: a child piece holding material keeps its session.
                         || haveChild && PortalCrossingDetector.pieceHoldsMaterial(airship, childKey.path());
                     if (keep) {
-                        IplAtlasStraddleSession.onChainTick(parentKey, portal, normal, verdict.wide());
+                        IplAtlasStraddleSession.onChainTick(parentKey, portal, normal, verdict.anchor());
                         if (IplAtlasStraddleSession.hasSessionKey(childKey)) {
                             // Дочерняя сессия открывается только по доказанному входу
                             // образа, поэтому сразу "admitted"; "completed" (образ целиком за
@@ -544,21 +543,11 @@ public final class IplTransitController {
     }
 
     /**
-     * The flip moves a whole body through ONE portal, so no member of the group may still have
-     * material in the piece of another portal (a body straddling several portals stays stitched
-     * until it is through one of them).
+     * Chain evaluation outcome (computed inside the mapped view and piece scope); {@code anchor}
+     * seeds the passage of a child session opened by this verdict.
      */
-    private static boolean ipl$groupWhollyThrough(ServerSubLevel airship, List<ServerSubLevel> mates, Portal portal) {
-        if (!PortalCrossingDetector.noMaterialBeyondOtherPortals(airship, portal)) return false;
-        for (ServerSubLevel mate : mates) {
-            if (!PortalCrossingDetector.noMaterialBeyondOtherPortals(mate, portal)) return false;
-        }
-        return true;
-    }
-
-    /** Chain evaluation outcome (computed inside the mapped view and piece scope). */
-    private record ChainVerdict(boolean keep, boolean wide, boolean completed,
-                                PortalCrossingDetector.SweepDirection motion) {}
+    private record ChainVerdict(boolean keep, boolean completed,
+                                PortalCrossingDetector.SweepDirection motion, @Nullable Vec3 anchor) {}
 
     private static List<ServerSubLevel> executeCandidates(MinecraftServer server, List<TransitCandidate> candidates,
                                                           Map<UUID, UUID> movedRiders) {
@@ -618,16 +607,16 @@ public final class IplTransitController {
         for (ServerSubLevel member : mates) {
             if (member.isRemoved() || member.getLevel() != body.getLevel()
                 || IplShipPortalAnchor.isAnchorShip(portal, member.getUniqueId())) return false;
-            var state = PortalCrossingDetector.evaluate(member, portal, normal, APERTURE_MARGIN);
-            if (state.phase() != PortalCrossingDetector.CrossingPhase.CROSSED) return false;
-            StraddleKey key = new StraddleKey(member.getUniqueId(), portal.getUUID());
-            boolean admitted = state.provesPhysicalEntry() || IplAtlasStraddleSession.isAdmitted(key);
-            if (!IplAtlasStraddleSession.isCompleted(key)
-                && !PortalCrossingDetector.completesThroughAperture(member, portal,
-                    admitted ? PortalCrossingDetector.SESSION_RELEASE_MARGIN : 0.0)) return false;
+            if (!ipl$wholeThrough(member, portal, normal)) return false;
         }
-        return PortalCrossingDetector.evaluate(body, portal, normal, APERTURE_MARGIN).phase()
-            == PortalCrossingDetector.CrossingPhase.CROSSED;
+        return ipl$wholeThrough(body, portal, normal);
+    }
+
+    /** Beyond the plane and wholly through the aperture (see {@code PortalCrossingDetector.flipReadyThrough}). */
+    private static boolean ipl$wholeThrough(ServerSubLevel member, Portal portal, Vec3 normal) {
+        return PortalCrossingDetector.evaluate(member, portal, normal, APERTURE_MARGIN).phase()
+            == PortalCrossingDetector.CrossingPhase.CROSSED
+            && PortalCrossingDetector.flipReadyThrough(member, portal);
     }
 
     /** Members crossing together with a body (sorted by UUID) and whether native joints are involved. */

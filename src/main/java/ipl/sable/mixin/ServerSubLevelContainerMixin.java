@@ -1,9 +1,11 @@
 package ipl.sable.mixin;
 
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
+import ipl.sable.IplPerfDiagnostics;
 import ipl.sable.transit.IplTransitController;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -19,8 +21,29 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(value = ServerSubLevelContainer.class, remap = false)
 public abstract class ServerSubLevelContainerMixin {
 
+    /** Start of this container's tick, for {@code -Dipl.perfDiagnostics=true} only. */
+    @Unique
+    private long ipl$tickStart;
+
+    @Inject(method = "tick", at = @At("HEAD"), require = 1)
+    private void ipl$onContainerTickHead(CallbackInfo ci) {
+        if (IplPerfDiagnostics.ENABLED) ipl$tickStart = System.nanoTime();
+    }
+
     @Inject(method = "tick", at = @At("TAIL"), require = 1)
     private void ipl$onContainerTickTail(CallbackInfo ci) {
-        IplTransitController.onContainerTick((ServerSubLevelContainer) (Object) this);
+        if (!IplPerfDiagnostics.ENABLED) {
+            IplTransitController.onContainerTick((ServerSubLevelContainer) (Object) this);
+            return;
+        }
+        long transitStart = System.nanoTime();
+        try {
+            IplTransitController.onContainerTick((ServerSubLevelContainer) (Object) this);
+        } finally {
+            long end = System.nanoTime();
+            IplPerfDiagnostics.record(IplPerfDiagnostics.SERVER_TRANSIT, end - transitStart);
+            if (ipl$tickStart != 0L) IplPerfDiagnostics.record(IplPerfDiagnostics.SERVER_CONTAINER, end - ipl$tickStart);
+            ipl$tickStart = 0L;
+        }
     }
 }

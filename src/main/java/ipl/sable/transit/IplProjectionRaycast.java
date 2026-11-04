@@ -29,7 +29,7 @@ import java.util.function.Predicate;
  * straddling ship is, physically, several disjoint PIECES (see {@link IplProjectionTree}):
  * the native piece at the real pose, and one piece per session at that session's
  * composite portal mapping. Each piece is a ray-convex region (native: outside every root
- * tube; node: inside its keep-tube intersection, outside its children's tubes), so a
+ * prism; node: inside its path's prism intersection, outside its children's prisms), so a
  * frame cast walks the ray only through its own region and skips holes exactly at their
  * boundaries. A block straddling the portal plane is therefore hit on its visible cut
  * face, never on a phantom twin behind the plane.
@@ -202,8 +202,8 @@ public final class IplProjectionRaycast {
 
     /**
      * Clip one frame: the ray restricted to that piece's region. {@code node == null} is
-     * the native piece (holes = root tubes); otherwise the keep interval of the node minus
-     * its children's tubes and the space it yields to higher-priority siblings. Blocks are
+     * the native piece (holes = root prisms); otherwise the keep interval of the node minus
+     * its children's prisms and the space it yields to higher-priority siblings. Blocks are
      * read from the ship's OWN level (the plot owner), so no cross-level bridging is involved.
      */
     @Nullable

@@ -14,6 +14,7 @@ mapfile -t fixtures < <(find tests/portal/fixtures -name '*.java')
   src/main/java/ipl/sable/transit/PortalSectionMath.java \
   src/main/java/ipl/sable/transit/PortalCrossingDetector.java \
   src/main/java/ipl/sable/transit/PortalOrder.java \
+  src/main/java/ipl/sable/transit/PortalPrism.java \
   tests/portal/PortalCrossingDetectorFixtureTest.java \
   tests/portal/PortalOrderTest.java
 "$JAVA" -cp "$out:$JOML_JAR" ipl.sable.transit.PortalCrossingDetectorFixtureTest

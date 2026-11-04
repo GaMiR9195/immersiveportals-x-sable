@@ -11,12 +11,12 @@ import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.IplPerfDiagnostics;
 import ipl.sable.atlas.IplScenes;
 import ipl.sable.client.IplClientProjections;
 import ipl.sable.client.IplParentDimSync;
 import ipl.sable.transit.IplAtlasStraddleSession;
 import ipl.sable.transit.IplStraddlePoseMap;
-import ipl.sable.transit.StraddleKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import org.spongepowered.asm.mixin.Mixin;
@@ -25,9 +25,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -54,14 +52,28 @@ public abstract class CompanionIntersectMixin {
     private Iterable<SubLevel> ipl$includeProjectedSubLevels(
         Iterable<SubLevel> original, Level level, BoundingBox3dc bounds
     ) {
+        if (!IplPerfDiagnostics.ENABLED) return ipl$splice(original, level, bounds);
+        long start = System.nanoTime();
+        try {
+            return ipl$splice(original, level, bounds);
+        } finally {
+            IplPerfDiagnostics.record(level.isClientSide
+                ? IplPerfDiagnostics.CLIENT_SPLICE : IplPerfDiagnostics.SERVER_SPLICE, System.nanoTime() - start);
+        }
+    }
+
+    /** Runs on EVERY Sable spatial query (particles, collisions, raycasts, entity lookups). */
+    @Unique
+    private static Iterable<SubLevel> ipl$splice(Iterable<SubLevel> original, Level level, BoundingBox3dc bounds) {
         List<SubLevel> extra = null;
         boolean dropGhosts = false;
         if (level instanceof ServerLevel serverLevel) {
             if (IplAtlasStraddleSession.isIdle()) return original;
-            Set<UUID> seen = new HashSet<>();
-            for (StraddleKey key : IplAtlasStraddleSession.sessionKeys()) {
-                if (!seen.add(key.subLevelUuid())) continue;
-                ServerSubLevel sub = IplScenes.findSubLevel(serverLevel.getServer(), key.subLevelUuid());
+            // Ships with at least one image INTO this level, in session order (precomputed per
+            // session-set change): no key copy or set per query, and ships whose images all
+            // live in other levels are not even looked up.
+            for (UUID shipId : IplAtlasStraddleSession.shipsWithImagesInto(serverLevel)) {
+                ServerSubLevel sub = IplScenes.findSubLevel(serverLevel.getServer(), shipId);
                 if (sub == null || !ipl$imageHits(sub, level, bounds)) continue;
                 if (extra == null) extra = new ArrayList<>(2);
                 extra.add(sub);
@@ -89,7 +101,7 @@ public abstract class CompanionIntersectMixin {
     private static boolean ipl$imageHits(SubLevel sub, Level level, BoundingBox3dc bounds) {
         boolean[] hit = {false};
         IplStraddlePoseMap.forEachStraddleInto(sub, level, (portal, mapping) -> {
-            if (!hit[0] && mapping.mapAabb(sub.boundingBox()).intersects(bounds)) hit[0] = true;
+            if (!hit[0] && mapping.mappedIntersects(sub.boundingBox(), bounds)) hit[0] = true;
         });
         return hit[0];
     }

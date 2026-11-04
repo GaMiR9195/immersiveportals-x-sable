@@ -12,8 +12,6 @@ import ipl.sable.render.IplClipPortalFinder;
 import ipl.sable.render.IplClipUniformPatcher;
 import ipl.sable.render.IplSubLevelBlockEntityPass;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL30;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Unique;
@@ -24,7 +22,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import java.util.Collection;
 
 /**
- * Extend our per-sub-level clip (gl_ClipDistance[1] / ipl_subLevelClipEquation)
+ * Extend our per-sub-level clip (gl_ClipDistance[1..SLOTS] / ipl_subLevelClipEquation[SLOTS])
  * to Sable's block-entity render pass.
  *
  * <p><b>Why this is needed:</b> Sable renders sub-level block entities (chests
@@ -37,9 +35,9 @@ import java.util.Collection;
  * don't cover it. Without intervention:
  *
  * <ul>
- *   <li>In main-dim render of source dim, our slot 1 is disabled (or has a
- *       stale equation) -- block entities render unclipped, so source-side
- *       chests visible past the portal plane in the dest-side half show up
+ *   <li>In main-dim render of source dim, our slots are disabled (or have
+ *       stale equations) -- block entities render unclipped, so chests that
+ *       already went into the portal aperture show up on the source side
  *       where they shouldn't.</li>
  *   <li>In portal-through render, IP's slot 0 may apply a direction different
  *       from the sub-level chunk clip, so block entities can be clipped on the
@@ -47,7 +45,7 @@ import java.util.Collection;
  * </ul>
  *
  * <p>Wrapping the per-sub-level call inside the loop lets us install the same
- * per-sub-level equation we use for chunks via {@link IplClipPortalFinder},
+ * per-sub-level cell we use for chunks via {@link IplClipPortalFinder},
  * so block entities follow the chunks visually.
  *
  * <p>We wrap both {@code renderBlockEntities(Collection,...)} and
@@ -121,11 +119,10 @@ public abstract class RenderDispatcherBlockEntityClipMixin {
     }
 
     /**
-     * Install our per-sub-level clip plane for the duration of {@code body.run()}.
-     * Resolves the straddling portal for {@code sub}, writes the equation to our
-     * slot-1/slot-2 uniforms, runs the operation, then restores state. Skips bracketing
-     * if the sub-level isn't straddling any portal or is already inside
-     * {@link IplBlockEntityRenderScope}.
+     * Install our per-sub-level clip cell for the duration of {@code body.run()}.
+     * Resolves the piece drawn for {@code sub}, writes its planes to our sub-level slots,
+     * runs the operation, then restores state. Skips bracketing if the sub-level isn't
+     * straddling any portal or is already inside {@link IplBlockEntityRenderScope}.
      */
     @Unique
     private static void ipl$withClip(ClientSubLevel sub, Runnable body) {
@@ -135,21 +132,18 @@ public abstract class RenderDispatcherBlockEntityClipMixin {
         }
         IplClipPortalFinder.ClipDecision decision =
             IplClipPortalFinder.findStraddlingPortalPlane(sub);
-        if (decision == null) {
+        if (decision == null || decision.planes().isEmpty()) {
             body.run();
             return;
         }
 
-        // Вторая плоскость куска (выход в следующий портал / граница соседнего куска).
-        IplClipUniformPatcher.patchForSubLevel(
-            sub, decision.plane(), IplClipPortalFinder.secondPlaneFor(sub));
+        IplClipUniformPatcher.patchForSubLevel(sub, decision.planes());
 
         try {
             body.run();
         } finally {
-            // Slots 1 and 2 are always disabled on exit (see ChunkedRenderDataMixin).
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
+            // The sub-level slots are always disabled on exit (see ChunkedRenderDataMixin).
+            IplClipUniformPatcher.disableSlots();
             IplClipUniformPatcher.clearAndUpload();
         }
     }

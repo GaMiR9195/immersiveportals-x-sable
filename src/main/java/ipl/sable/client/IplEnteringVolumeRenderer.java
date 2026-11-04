@@ -4,6 +4,7 @@ import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.blaze3d.vertex.VertexFormat;
+import ipl.sable.render.IplClipUniformPatcher;
 import net.minecraft.client.Camera;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -39,26 +40,26 @@ public final class IplEnteringVolumeRenderer {
     private static volatile long volumeExpiresAt;
     private static final StringBuilder INCOMING_SHAPE = new StringBuilder();
     private static final StringBuilder INCOMING_BLOCKS = new StringBuilder();
-    private static boolean clipDistance0WasEnabled;
-    private static boolean clipDistance1WasEnabled;
-    private static boolean clipDistance2WasEnabled;
+    /** Enable state of {@code GL_CLIP_DISTANCE0 + i} before the overlay: IP's slot and ours. */
+    private static final boolean[] CLIP_DISTANCE_WAS_ENABLED =
+        new boolean[1 + IplClipUniformPatcher.SLOTS];
 
     /**
-     * Suspends BOTH portal clip planes for the debug overlay.
+     * Suspends ALL portal clip planes for the debug overlay.
      *
      * <p>The overlay is diagnostic geometry: it must show the swept volume the detector
      * actually computed, not the part of it that survives the portal's render clipping.
-     * Inside a portal-through pass two clip planes are live at once -- ImmersivePortals'
-     * own front clipping on {@code gl_ClipDistance[0]} and our sub-level cut on
-     * {@code gl_ClipDistance[1]} -- and they keep opposite halves of (very nearly) the
-     * same plane. Anything drawn through them, including this overlay, survives only in
+     * Inside a portal-through pass several clip planes are live at once -- ImmersivePortals'
+     * own front clipping on {@code gl_ClipDistance[0]} and our sub-level cell on
+     * {@code gl_ClipDistance[1..SLOTS]} -- and two of them keep opposite halves of (very
+     * nearly) the same plane. Anything drawn through them, including this overlay, survives only in
      * the sliver where both agree, which is why the sweep visualisation appeared cut off
      * at the portal even though the volume behind it was complete. Turning the planes off
      * for this draw makes the overlay show the whole volume, which is the entire point of
      * having it.
      *
      * <p>The previous enable state is captured and restored rather than blindly
-     * re-enabled: the overlay renders in passes where neither plane, one, or both may be
+     * re-enabled: the overlay renders in passes where any subset of the planes may be
      * active, and leaving a plane on that the pass never turned on would clip the world
      * geometry drawn after us.
      */
@@ -66,17 +67,16 @@ public final class IplEnteringVolumeRenderer {
         new RenderStateShard.TexturingStateShard(
             "ipl_entering_volume_no_portal_clip",
             () -> {
-                clipDistance0WasEnabled = GL32C.glIsEnabled(GL32C.GL_CLIP_DISTANCE0);
-                clipDistance1WasEnabled = GL32C.glIsEnabled(GL32C.GL_CLIP_DISTANCE1);
-                clipDistance2WasEnabled = GL32C.glIsEnabled(GL32C.GL_CLIP_DISTANCE2);
-                if (clipDistance0WasEnabled) GL32C.glDisable(GL32C.GL_CLIP_DISTANCE0);
-                if (clipDistance1WasEnabled) GL32C.glDisable(GL32C.GL_CLIP_DISTANCE1);
-                if (clipDistance2WasEnabled) GL32C.glDisable(GL32C.GL_CLIP_DISTANCE2);
+                for (int i = 0; i < CLIP_DISTANCE_WAS_ENABLED.length; i++) {
+                    boolean enabled = GL32C.glIsEnabled(GL32C.GL_CLIP_DISTANCE0 + i);
+                    CLIP_DISTANCE_WAS_ENABLED[i] = enabled;
+                    if (enabled) GL32C.glDisable(GL32C.GL_CLIP_DISTANCE0 + i);
+                }
             },
             () -> {
-                if (clipDistance0WasEnabled) GL32C.glEnable(GL32C.GL_CLIP_DISTANCE0);
-                if (clipDistance1WasEnabled) GL32C.glEnable(GL32C.GL_CLIP_DISTANCE1);
-                if (clipDistance2WasEnabled) GL32C.glEnable(GL32C.GL_CLIP_DISTANCE2);
+                for (int i = 0; i < CLIP_DISTANCE_WAS_ENABLED.length; i++) {
+                    if (CLIP_DISTANCE_WAS_ENABLED[i]) GL32C.glEnable(GL32C.GL_CLIP_DISTANCE0 + i);
+                }
             });
 
     private static final RenderType FOG_RENDER_TYPE = RenderType.create(

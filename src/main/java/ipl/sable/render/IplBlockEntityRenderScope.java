@@ -3,7 +3,6 @@ package ipl.sable.render;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import net.minecraft.client.renderer.MultiBufferSource;
 import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL30;
 import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
@@ -33,10 +32,9 @@ public final class IplBlockEntityRenderScope {
         if (!IplSubLevelRenderVisibility.hasBlockEntities(sub)) return;
         IplClipPortalFinder.ClipDecision decision =
             IplClipPortalFinder.findStraddlingPortalPlane(sub);
-        if (decision == null) {
+        if (decision == null || decision.planes().isEmpty()) {
             disableStalePortalClipOutsidePortalPass();
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
+            IplClipUniformPatcher.disableSlots();
             render.run();
             return;
         }
@@ -44,8 +42,7 @@ public final class IplBlockEntityRenderScope {
         // Finish prior, unrelated vertices BEFORE changing their clip equations.
         // This boundary is outside the entire sub-level renderer, never inside a BER.
         buffers.endBatch();
-        IplClipUniformPatcher.patchForSubLevel(
-            sub, decision.plane(), IplClipPortalFinder.secondPlaneFor(sub));
+        IplClipUniformPatcher.patchForSubLevel(sub, decision.planes());
         // IP owns slot 0 while its portal bracket is live. Outside that bracket it
         // must be off: a portal pass can otherwise leave an old slot-0 equation
         // enabled and cull native destination BEs after the parent handoff.
@@ -59,8 +56,7 @@ public final class IplBlockEntityRenderScope {
         } finally {
             ACTIVE.get().removeLastOccurrence(sub);
             if (ACTIVE.get().isEmpty()) ACTIVE.remove();
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
+            IplClipUniformPatcher.disableSlots();
             IplClipUniformPatcher.clearAndUpload();
         }
     }

@@ -11,7 +11,7 @@ import org.spongepowered.asm.mixin.Mixin;
  * Projection-aware raycasting on the client: every vanilla {@code clip} (crosshair pick,
  * block place/break, the physics staff, Jade, ...) sees each straddling ship as the set
  * of PIECES it physically is (native piece + one piece per portal session, chains
- * included), each cut exactly at its portal tubes. See {@link IplProjectionRaycast}.
+ * included), each cut exactly at its portal prisms. See {@link IplProjectionRaycast}.
  *
  * <p>Merged-override pattern: Sable's overlay lives in the interface default's bytecode
  * ({@code BlockGetterMixin} overwrite), so {@code BlockGetter.super.clip} is the stock

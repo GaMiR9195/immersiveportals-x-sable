@@ -4,7 +4,6 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.transit.IplProjectionTree;
-import ipl.sable.transit.PortalOrder;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
@@ -13,6 +12,7 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.nbt.TagParser;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,9 +39,11 @@ import java.util.concurrent.ConcurrentMap;
  * sessions, replaced wholesale by each snapshot RPC.
  *
  * <p>This store carries ONLY parity — which portal face the ship is crossing, hence
- * which half is "still here". Plane geometry is rebuilt every frame from the resolved
- * portal's current transform, so moving portals stay smooth while parity can never
- * flicker: it changes exactly when the server's latch does.
+ * which half is "still here" — and each session's passage anchor, a plot-local point fixed for
+ * the session's lifetime that slants its through prism exactly like the server's. Region
+ * geometry is rebuilt every frame from the resolved portal's current transform and the
+ * anchor's current position, so moving portals stay smooth while parity can never flicker:
+ * it changes exactly when the server's latch does.
  *
  * <p>Portal resolution prefers the LIVE entity in the ship's parent level, but each
  * snapshot also carries the portal's full NBT (global-portal-style), from which a
@@ -54,16 +56,26 @@ public final class IplStraddleSessionStore {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-straddle-session-store");
 
-    /** {@code path} = chain path ({@code root} or {@code root>child>...}); roots use the portal id. */
-    private record SessionPortal(UUID portalId, String portalNbtB64, boolean completed, String path, boolean wide) {
-        SessionPortal(UUID id, String payload) { this(id, payload, false, id.toString(), false); }
-        SessionPortal(UUID id, String payload, boolean completed) { this(id, payload, completed, id.toString(), false); }
+    /**
+     * {@code path} = chain path ({@code root} or {@code root>child>...}); roots use the portal id.
+     * {@code anchor} = the session's plot-local passage anchor (the server's prism slope, see
+     * {@code PortalPrism}); null when the server sent none.
+     */
+    private record SessionPortal(
+        UUID portalId, String portalNbtB64, boolean completed, String path, @Nullable Vec3 anchor
+    ) {
+        SessionPortal(UUID id, String payload) { this(id, payload, false, id.toString(), null); }
+        SessionPortal(UUID id, String payload, boolean completed) { this(id, payload, completed, id.toString(), null); }
 
         boolean isChain() { return path.indexOf('>') >= 0; }
 
-        /** The same session seen one portal earlier (a transit ghost renders through {@code rootPath}). */
+        /**
+         * The same session seen one portal earlier (a transit ghost renders through
+         * {@code rootPath}). The anchor stays behind: it is local to the successor's plot, not
+         * the ghost's, so the ghost's brief image uses the straight tube.
+         */
         SessionPortal under(String rootPath) {
-            return new SessionPortal(portalId, portalNbtB64, completed, rootPath + ">" + path, wide);
+            return new SessionPortal(portalId, portalNbtB64, completed, rootPath + ">" + path, null);
         }
     }
 
@@ -123,6 +135,14 @@ public final class IplStraddleSessionStore {
     private static final ConcurrentMap<UUID, Portal> SURROGATES = new ConcurrentHashMap<>();
     private static final ConcurrentMap<UUID, String> SURROGATE_PAYLOADS = new ConcurrentHashMap<>();
 
+    /**
+     * Payloads that cannot be rebuilt in a level (another source dimension, a portal type that
+     * fails to load). The answer is fixed per payload and level; without this, every spatial
+     * query re-decoded and re-parsed the SNBT (and logged a failed load again).
+     */
+    private record SurrogateMiss(String payload, ClientLevel level) {}
+    private static final ConcurrentMap<UUID, SurrogateMiss> SURROGATE_MISSES = new ConcurrentHashMap<>();
+
     /** Server flips without a full client straddle keep this portal as a render-only tail. */
     private static final ConcurrentMap<UUID, SessionPortal> HANDOFF_VISUALS = new ConcurrentHashMap<>();
 
@@ -155,14 +175,24 @@ public final class IplStraddleSessionStore {
     }
 
     /**
-     * Server verdict for the region shape of session {@code path}: half-space ("wide") or
-     * aperture tube. Interactions must use the same geometry as the server's contact clip.
+     * The plot-local passage anchor of session {@code path} (live first, then the render tails
+     * the delayed pose still shows), or null: the prism slope must match the server's contact
+     * clip, so interactions and the render cut use the same shape as physics.
      */
-    public static boolean isWide(UUID shipId, String path) {
-        List<SessionPortal> list = path.indexOf('>') < 0 ? SESSIONS.get(shipId) : CHAINS.get(shipId);
-        if (list == null) return false;
-        SessionPortal entry = byPath(list, path);
-        return entry != null && entry.wide();
+    @Nullable
+    public static Vec3 anchor(UUID shipId, String path) {
+        boolean chain = path.indexOf('>') >= 0;
+        SessionPortal entry = byPath(chain ? CHAINS.get(shipId) : SESSIONS.get(shipId), path);
+        if (entry == null) {
+            Tail tail = tailByPath(chain ? RETIRED_CHAINS.get(shipId) : RETIRED.get(shipId), path);
+            if (tail == null && chain) tail = tailByPath(GHOST_TAILS.get(shipId), path);
+            if (tail != null) entry = tail.entry();
+        }
+        if (entry == null && !chain) {
+            SessionPortal handoff = HANDOFF_VISUALS.get(shipId);
+            if (handoff != null && handoff.path().equals(path)) entry = handoff;
+        }
+        return entry == null ? null : entry.anchor();
     }
 
     /** True when no session, chain, retired or handoff image exists (cheap hot-path gate). */
@@ -249,6 +279,7 @@ public final class IplStraddleSessionStore {
         HANDOFF_VISUALS.clear();
         SURROGATES.clear();
         SURROGATE_PAYLOADS.clear();
+        SURROGATE_MISSES.clear();
         IplClientVisualTransitLatch.clearAll();
         IplStraddleRenderCache.invalidateActivePasses();
         IplProjectionTree.invalidate();
@@ -518,36 +549,7 @@ public final class IplStraddleSessionStore {
                 out.add(resolvedHandoff);
             }
         }
-        return withoutCoveredSplits(sub.getUniqueId(), IplClientVisualTransitLatch.append(sub, level, visibleActive, out));
-    }
-
-    /**
-     * Drops split portals whose whole region lies beyond another split portal's plane.
-     *
-     * <p>Такой портал ниже по течению (см. {@code PortalOrder}) —
-     * его кусок по приоритету пуст, весь материал за его плоскостью принадлежит переднему порталу.
-     * Его проекция рисовала бы чужой кусок в чужом мире (край корабля в нижнем портале ряда
-     * {@code ->|  |}), а его плоскость в родном срезе лишь занимала второй слот шейдера, вытесняя
-     * плоскость настоящего второго портала.
-     */
-    private static List<Portal> withoutCoveredSplits(UUID shipId, List<Portal> portals) {
-        if (portals.size() < 2) return portals;
-        List<Portal> out = null;
-        for (int i = 0; i < portals.size(); i++) {
-            Portal q = portals.get(i);
-            boolean covered = false;
-            for (Portal p : portals) {
-                if (p == q || p.getUUID().equals(q.getUUID())) continue;
-                if (PortalOrder.coveredBy(q, isWide(shipId, q.getUUID().toString()),
-                    p, isWide(shipId, p.getUUID().toString()))) {
-                    covered = true;
-                    break;
-                }
-            }
-            if (covered && out == null) out = new ArrayList<>(portals.subList(0, i));
-            else if (!covered && out != null) out.add(q);
-        }
-        return out == null ? portals : List.copyOf(out);
+        return IplClientVisualTransitLatch.append(sub, level, visibleActive, out);
     }
 
     /** A retired session is geometry AND time bounded, never an infinite half-space. */
@@ -640,6 +642,7 @@ public final class IplStraddleSessionStore {
         for (SessionPortal portal : HANDOFF_VISUALS.values()) referenced.add(portal.portalId());
         SURROGATES.keySet().retainAll(referenced);
         SURROGATE_PAYLOADS.keySet().retainAll(referenced);
+        SURROGATE_MISSES.keySet().retainAll(referenced);
     }
 
     private static void collectReferencedPortals(
@@ -658,12 +661,10 @@ public final class IplStraddleSessionStore {
 
     @Nullable
     private static Portal findPortal(ClientLevel level, UUID portalId) {
-        // One entity scan per level/render tree, shared with prediction. Do not use
-        // an invoker into Minecraft's protected entity index merely for this lookup.
-        for (Portal portal : IplClientVisualTransitLatch.portals(level)) {
-            if (portal.getUUID().equals(portalId) && !portal.isRemoved()) return portal;
-        }
-        return null;
+        // O(1) by UUID through IP's own entity-index duck (IEWorld), never a scan of every
+        // loaded entity: this runs inside Sable's spatial queries (see lookupPortal).
+        Portal portal = IplClientVisualTransitLatch.lookupPortal(level, portalId);
+        return portal != null && !portal.isRemoved() ? portal : null;
     }
 
     /** Global-portal-style reconstruction: type + NBT → detached Portal data carrier. */
@@ -673,28 +674,37 @@ public final class IplStraddleSessionStore {
         if (cached != null && cached.level() == level
             && sessionPortal.portalNbtB64().equals(SURROGATE_PAYLOADS.get(sessionPortal.portalId()))) return cached;
         if (sessionPortal.portalNbtB64().isEmpty()) return null;
+        SurrogateMiss miss = SURROGATE_MISSES.get(sessionPortal.portalId());
+        if (miss != null && miss.level() == level && miss.payload().equals(sessionPortal.portalNbtB64())) return null;
         CompoundTag tag = decodeNbt(sessionPortal.portalNbtB64());
         // A future session can arrive before its queued parent flip. Its geometry
         // must not be reconstructed in the current/source dimension.
         if (tag.contains("ipl_source_dimension") && !tag.getString("ipl_source_dimension")
-            .equals(level.dimension().location().toString())) return null;
+            .equals(level.dimension().location().toString())) return missSurrogate(sessionPortal, level);
         EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.get(ResourceLocation.parse(tag.getString("entity_type")));
         Portal portal;
         try {
             // Loading runs the portal type's own NBT code (IP or another mod's subclass);
             // a type that cannot be rebuilt from geometry keys loses only its image.
-            if (!(type.create(level) instanceof Portal created)) return null;
+            if (!(type.create(level) instanceof Portal created)) return missSurrogate(sessionPortal, level);
             created.load(tag);
             created.setUUID(sessionPortal.portalId());
             created.updateCache();
             portal = created;
         } catch (RuntimeException e) {
             LOG.error("[IPL-STRADDLE-SYNC] surrogate build failed for {}", sessionPortal.portalId(), e);
-            return null;
+            return missSurrogate(sessionPortal, level);
         }
+        SURROGATE_MISSES.remove(sessionPortal.portalId());
         SURROGATES.put(sessionPortal.portalId(), portal);
         SURROGATE_PAYLOADS.put(sessionPortal.portalId(), sessionPortal.portalNbtB64());
         return portal;
+    }
+
+    @Nullable
+    private static Portal missSurrogate(SessionPortal sessionPortal, ClientLevel level) {
+        SURROGATE_MISSES.put(sessionPortal.portalId(), new SurrogateMiss(sessionPortal.portalNbtB64(), level));
+        return null;
     }
 
     /** Portal NBT as encoded by {@code IplStraddleSessionSync.encodePortal}. */
@@ -717,15 +727,16 @@ public final class IplStraddleSessionStore {
             String path = sep < 0 ? part : part.substring(0, sep);
             String encoded = sep < 0 ? "" : part.substring(sep + 1);
             boolean completed = false;
-            boolean wide = false;
+            Vec3 anchor = null;
             if (!encoded.isEmpty()) {
                 CompoundTag tag = decodeNbt(encoded);
                 completed = tag.getBoolean("ipl_session_completed");
-                wide = tag.getBoolean("ipl_session_wide");
+                ListTag xyz = tag.getList("ipl_session_anchor", Tag.TAG_DOUBLE);
+                if (xyz.size() == 3) anchor = new Vec3(xyz.getDouble(0), xyz.getDouble(1), xyz.getDouble(2));
             }
             int cut = path.lastIndexOf('>');
             UUID portalId = UUID.fromString(cut < 0 ? path : path.substring(cut + 1));
-            out.add(new SessionPortal(portalId, encoded, completed, path, wide));
+            out.add(new SessionPortal(portalId, encoded, completed, path, anchor));
         }
         return out;
     }

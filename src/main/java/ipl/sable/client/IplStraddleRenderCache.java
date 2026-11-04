@@ -1,20 +1,17 @@
 package ipl.sable.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
-import ipl.sable.render.IplClipPortalFinder;
 import net.minecraft.client.multiplayer.ClientLevel;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.ArrayDeque;
-import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Set;
 import java.util.function.Supplier;
 
-/** Per-render-pass cache for straddle projection lists and clip decisions. */
+/** Per-render-pass cache for straddle projection lists and render plans (pieces and their cells). */
 public final class IplStraddleRenderCache {
 
     private static final ThreadLocal<ArrayDeque<Pass>> PASSES =
@@ -24,14 +21,10 @@ public final class IplStraddleRenderCache {
         final ClientLevel level;
         @Nullable List<IplClientProjections.StraddleProjection> projections;
         final IdentityHashMap<ClientSubLevel, IdentityHashMap<Object, Boolean>> visibility = new IdentityHashMap<>();
-        final IdentityHashMap<ClientSubLevel, List<IplClipPortalFinder.ClipDecision>> allDecisions = new IdentityHashMap<>();
+        final IdentityHashMap<ClientSubLevel, IplClientProjections.RenderPlan> plans = new IdentityHashMap<>();
         final IdentityHashMap<ClientSubLevel, List<Portal>> renderPortals = new IdentityHashMap<>();
         final IdentityHashMap<ClientLevel, List<Portal>> portalCandidates;
         final IdentityHashMap<Portal, Boolean> canonicalPortalFaces;
-        final IdentityHashMap<ClientSubLevel, IplClipPortalFinder.ClipDecision> decisions =
-            new IdentityHashMap<>();
-        final Set<ClientSubLevel> noDecision =
-            Collections.newSetFromMap(new IdentityHashMap<>());
 
         Pass(ClientLevel level, @Nullable Pass root) {
             this.level = level;
@@ -108,15 +101,16 @@ public final class IplStraddleRenderCache {
         if (pass != null) pass.visibility.computeIfAbsent(sub, s -> new IdentityHashMap<>()).put(pose, visible);
     }
 
+    /** The pieces of {@code sub} in this pass; null is a cache miss. */
     @Nullable
-    public static List<IplClipPortalFinder.ClipDecision> allDecisions(ClientSubLevel sub) {
+    public static IplClientProjections.RenderPlan plan(ClientSubLevel sub) {
         Pass pass = current(null);
-        return pass == null ? null : pass.allDecisions.get(sub);
+        return pass == null ? null : pass.plans.get(sub);
     }
 
-    public static void cacheAllDecisions(ClientSubLevel sub, List<IplClipPortalFinder.ClipDecision> decisions) {
+    public static void cachePlan(ClientSubLevel sub, IplClientProjections.RenderPlan plan) {
         Pass pass = current(null);
-        if (pass != null) pass.allDecisions.put(sub, decisions);
+        if (pass != null) pass.plans.put(sub, plan);
     }
 
     /** Null is a cache miss; an empty list is a cached negative result. */
@@ -154,27 +148,6 @@ public final class IplStraddleRenderCache {
         if (pass != null) pass.canonicalPortalFaces.put(portal, canonical);
     }
 
-    @Nullable
-    public static IplClipPortalFinder.ClipDecision decision(ClientSubLevel sub) {
-        Pass pass = current(null);
-        if (pass == null) return null;
-        return pass.decisions.get(sub);
-    }
-
-    public static boolean hasDecision(ClientSubLevel sub) {
-        Pass pass = current(null);
-        return pass != null && (pass.decisions.containsKey(sub) || pass.noDecision.contains(sub));
-    }
-
-    public static void cacheDecision(
-        ClientSubLevel sub, @Nullable IplClipPortalFinder.ClipDecision computed
-    ) {
-        Pass pass = current(null);
-        if (pass == null) return;
-        if (computed == null) pass.noDecision.add(sub);
-        else pass.decisions.put(sub, computed);
-    }
-
     /**
      * A parent handoff can arrive inside a nested portal pass. Discard every active pass's
      * source-frame lists so neither that pass nor an enclosing pass can reuse a projection.
@@ -184,11 +157,9 @@ public final class IplStraddleRenderCache {
             pass.projections = null;
             pass.renderPortals.clear();
             pass.visibility.clear();
-            pass.allDecisions.clear();
+            pass.plans.clear();
             pass.portalCandidates.clear();
             pass.canonicalPortalFaces.clear();
-            pass.decisions.clear();
-            pass.noDecision.clear();
         }
     }
 

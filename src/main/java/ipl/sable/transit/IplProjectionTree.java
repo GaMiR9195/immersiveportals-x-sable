@@ -26,37 +26,30 @@ import java.util.function.Consumer;
  * uses.
  *
  * <p>Одна истина для всех взаимодействий (пик, дистанция досягаемости, контур, нажимные
- * плиты, сущности): дерево сессий и та же геометрия трубок, что и в физике (natives:
- * KEEP = пересечение трубок пути, EXCLUDE = трубки дочерних порталов). Одной плоскости
- * первого портала для этого мало: с несколькими порталами и цепочками (выход из 2-го
- * портала и дальше) она даёт неверный кадр.
+ * плиты, сущности, отсечение рендера): дерево сессий и та же геометрия призм прохода, что и в
+ * физике (natives: KEEP = пересечение призм пути, EXCLUDE = призмы дочерних порталов). Одной
+ * плоскости первого портала для этого мало: с несколькими порталами и цепочками (выход из
+ * 2-го портала и дальше) она даёт неверный кадр, а бесконечная плоскость забирала бы и то,
+ * что прошло мимо рамки.
  *
- * <p>A plot point belongs to exactly ONE piece: the native piece (inside no root tube) or
- * the deepest node whose tube chain it went through. Region tests reproduce
- * {@code IplAtlasStraddleSession}'s regions (same skin, lateral margin and depth bound),
- * so interaction, collision images and physics always agree on where a block physically
- * is. Built from server sessions or from the client session mirror; cached per thread and
- * tick, invalidated whenever a session set changes.
+ * <p>A plot point belongs to exactly ONE piece: the native piece (inside no root prism) or
+ * the deepest node whose prism chain it went through. Region tests reproduce
+ * {@code IplAtlasStraddleSession}'s regions ({@link PortalPrism}: same anchor, skin, lateral
+ * margin and depth bound), so interaction, collision images and physics always agree on
+ * where a block physically is. Built from server sessions or from the client session mirror;
+ * cached per thread and tick, invalidated whenever a session set changes.
  *
- * <p>SIBLING PRIORITY. Sibling sessions (several roots of one body, several children of one
- * node) can claim the same space: adjacent apertures share their lateral margin, a wide
- * (half-space) region contains every tube next to it, and a portal standing beyond another
- * one's plane lies inside that one's region. Contested space goes to the sibling that comes
- * first in {@link #build}'s order -- UPSTREAM portals before the ones beyond their plane
- * ({@link PortalOrder}), then aperture tubes before the wide region, then path order -- and
- * the physics regions apply the same order ({@code IplAtlasStraddleSession.outranks}). A wide
- * region therefore keeps everything outside its siblings' tubes when a sibling opens, instead
- * of collapsing to a tube and dropping its lateral material back into the source world, and
- * material that went through a portal is never claimed by a portal further along its old
- * (native) path.
+ * <p>BRANCHES AND SIBLING PRIORITY. Several roots of one body, or several children of one
+ * node, are branches: different parts of the body went through different portals, each part
+ * owns the material inside its own prism. Siblings can still claim the same space (adjacent
+ * apertures share their lateral margin, a portal standing beyond another one's plane lies
+ * inside that one's prism). Contested space goes to the sibling that comes first in
+ * {@link #build}'s order -- UPSTREAM portals before the ones beyond their plane
+ * ({@link PortalOrder}), then path order -- and the physics regions apply the same order
+ * ({@code IplAtlasStraddleSession.outranks}): material that went through a portal is never
+ * claimed by a portal further along its old (native) path.
  */
 public final class IplProjectionTree {
-
-    /** Same constants as the physics regions ({@code IplAtlasStraddleSession}). */
-    public static final double SKIN = 1.0e-3;
-    public static final double LATERAL_MARGIN = 0.25;
-    /** Lateral half-extent of a "wide" (half-space) node, same as the physics payload. */
-    public static final double WIDE_EXTENT = 1.0e6;
 
     private static final IplProjectionTree EMPTY = new IplProjectionTree(null, List.of(), List.of());
 
@@ -70,23 +63,17 @@ public final class IplProjectionTree {
         /** Composite isometry: real-body world -> this node's destination world. */
         public final IplStraddlePoseMap.StraddleMapping mapping;
         public final List<Node> children = new ArrayList<>(1);
-        final double halfW;
-        final double halfH;
-        final double maxDepth;
+        /** Through region of {@link #portal} in this node's SOURCE frame (the physics shape). */
+        public final PortalPrism prism;
         final int depth;
-        /** Half-space (depth-bounded only) instead of the aperture tube; see IplAtlasStraddleSession. */
-        public final boolean wide;
 
-        Node(String path, Portal portal, @Nullable Node parent, double maxDepth, boolean wide) {
+        Node(String path, Portal portal, @Nullable Node parent, PortalPrism prism) {
             this.path = path;
             this.portal = portal;
             this.parent = parent;
             this.local = IplStraddlePoseMap.StraddleMapping.of(portal);
             this.mapping = parent == null ? local : parent.mapping.then(local);
-            this.wide = wide;
-            this.halfW = wide ? WIDE_EXTENT : portal.getWidth() * 0.5 + LATERAL_MARGIN;
-            this.halfH = wide ? WIDE_EXTENT : portal.getHeight() * 0.5 + LATERAL_MARGIN;
-            this.maxDepth = maxDepth;
+            this.prism = prism;
             this.depth = parent == null ? 1 : parent.depth + 1;
         }
 
@@ -105,50 +92,18 @@ public final class IplProjectionTree {
             return out;
         }
 
-        /** Point in this node's SOURCE frame lies in the tube beyond its portal plane. */
+        /** Point in this node's SOURCE frame lies in its through prism. */
         public boolean beyondContains(Vec3 w) {
-            Vec3 o = portal.getOriginPos();
-            double rx = w.x - o.x, ry = w.y - o.y, rz = w.z - o.z;
-            Vec3 n = portal.getNormal();
-            // Crossing direction is -normal (the transit controller's sourceToDest).
-            double depthBeyond = -(rx * n.x + ry * n.y + rz * n.z);
-            if (depthBeyond < -SKIN || depthBeyond > maxDepth) return false;
-            Vec3 aw = portal.getAxisW();
-            Vec3 ah = portal.getAxisH();
-            return Math.abs(rx * aw.x + ry * aw.y + rz * aw.z) <= halfW
-                && Math.abs(rx * ah.x + ry * ah.y + rz * ah.z) <= halfH;
+            return prism.contains(w);
         }
 
         /**
          * Ray-parameter interval [t0, t1] where {@code from + t*dir} (SOURCE frame of this
-         * node, {@code dir} unit) is inside the beyond tube; null when never.
+         * node, {@code dir} unit) is inside the through prism; null when never.
          */
         @Nullable
         public double[] beyondInterval(Vec3 from, Vec3 dir) {
-            Vec3 o = portal.getOriginPos();
-            Vec3 rel = from.subtract(o);
-            double[] t = {Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY};
-            Vec3 inward = portal.getNormal().scale(-1.0);
-            if (!slab(t, rel.dot(inward), dir.dot(inward), -SKIN, maxDepth)) return null;
-            Vec3 aw = portal.getAxisW();
-            if (!slab(t, rel.dot(aw), dir.dot(aw), -halfW, halfW)) return null;
-            Vec3 ah = portal.getAxisH();
-            if (!slab(t, rel.dot(ah), dir.dot(ah), -halfH, halfH)) return null;
-            return t[0] <= t[1] ? t : null;
-        }
-
-        private static boolean slab(double[] t, double s0, double sd, double lo, double hi) {
-            if (Math.abs(sd) < 1.0e-12) return s0 >= lo && s0 <= hi;
-            double ta = (lo - s0) / sd;
-            double tb = (hi - s0) / sd;
-            if (ta > tb) {
-                double swap = ta;
-                ta = tb;
-                tb = swap;
-            }
-            if (ta > t[0]) t[0] = ta;
-            if (tb < t[1]) t[1] = tb;
-            return t[0] <= t[1];
+            return prism.interval(from, dir);
         }
 
         /** The root session of this node's path. */
@@ -160,7 +115,7 @@ public final class IplProjectionTree {
 
         /**
          * Ray interval (DESTINATION frame) inside the KEEP set of this node: the
-         * intersection of every ancestor tube mapped forward. Convex, so one interval.
+         * intersection of every ancestor prism mapped forward. Convex, so one interval.
          */
         @Nullable
         public double[] keepInterval(Vec3 from, Vec3 dir) {
@@ -222,7 +177,7 @@ public final class IplProjectionTree {
     }
 
     /** Siblings of {@code node} in priority order (itself included). */
-    private List<Node> siblingsOf(Node node) {
+    public List<Node> siblingsOf(Node node) {
         return node.parent == null ? roots : node.parent.children;
     }
 
@@ -274,37 +229,41 @@ public final class IplProjectionTree {
 
     // ------------------------------------------------------------------ building
 
-    /** One session description, parents before children; {@code wide} = half-space regions. */
-    public record Entry(String path, String via, Portal portal, boolean wide) {
+    /**
+     * One session description; {@code anchor} = the session's plot-local passage anchor
+     * (null: straight tube, see {@link PortalPrism}).
+     */
+    public record Entry(String path, String via, Portal portal, @Nullable Vec3 anchor) {
         public Entry(String path, String via, Portal portal) {
-            this(path, via, portal, false);
+            this(path, via, portal, null);
         }
     }
 
     public static IplProjectionTree build(SubLevel sub, List<Entry> entries) {
+        return build(sub, entries, sub.logicalPose());
+    }
+
+    /**
+     * The tree of {@code entries} with the body at {@code pose}: anchors and prism depths follow
+     * that pose (the logical pose for physics and interaction, the render pose for drawing).
+     */
+    public static IplProjectionTree build(SubLevel sub, List<Entry> entries, Pose3dc pose) {
         if (entries.isEmpty()) return EMPTY;
-        Map<String, Node> byPath = new HashMap<>();
-        List<Node> roots = new ArrayList<>(2);
-        List<Node> all = new ArrayList<>(entries.size());
         var box = sub.getPlot().getBoundingBox();
         double dx = box.maxX() - box.minX() + 1.0;
         double dy = box.maxY() - box.minY() + 1.0;
         double dz = box.maxZ() - box.minZ() + 1.0;
         double diagonal = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        Vec3 center = sub.logicalPose().transformPosition(new Vec3(
+        Vec3 center = pose.transformPosition(new Vec3(
             (box.minX() + box.maxX() + 1.0) * .5,
             (box.minY() + box.maxY() + 1.0) * .5,
             (box.minZ() + box.maxZ() + 1.0) * .5));
         // Parents strictly before children, whatever order the session map iterated in
-        // (a re-opened parent must not orphan its still-live chain for a tick); siblings in
-        // priority order (see the class comment), identical on server and client.
+        // (a re-opened parent must not orphan its still-live chain for a tick).
         List<Entry> ordered = new ArrayList<>(entries);
-        Map<Entry, Integer> rank = new IdentityHashMap<>();
-        for (Entry e : ordered) rank.put(e, upstreamRank(e, ordered));
-        ordered.sort(Comparator.<Entry>comparingInt(e -> pathDepth(e.path()))
-            .thenComparingInt(rank::get)
-            .thenComparing(Entry::wide)
-            .thenComparing(Entry::path));
+        ordered.sort(Comparator.<Entry>comparingInt(e -> pathDepth(e.path())).thenComparing(Entry::path));
+        Map<String, Node> byPath = new HashMap<>();
+        List<Node> roots = new ArrayList<>(2);
         for (Entry e : ordered) {
             if (byPath.containsKey(e.path()) || e.portal() == null) continue;
             if (Math.abs(e.portal().getScaling() - 1.0) > 1e-9) continue;
@@ -312,26 +271,50 @@ public final class IplProjectionTree {
             if (!e.via().isEmpty() && parent == null) continue; // orphan chain this tick
             Vec3 c = parent == null ? center : parent.mapping.mapPoint(center);
             double normalDistance = Math.abs(c.subtract(e.portal().getOriginPos()).dot(e.portal().getNormal()));
-            Node node = new Node(e.path(), e.portal(), parent, diagonal + normalDistance, e.wide());
+            Vec3 anchor = null;
+            if (e.anchor() != null) {
+                Vec3 world = pose.transformPosition(e.anchor());
+                anchor = parent == null ? world : parent.mapping.mapPoint(world);
+            }
+            Node node = new Node(e.path(), e.portal(), parent,
+                PortalPrism.of(e.portal(), anchor, diagonal + normalDistance));
             byPath.put(e.path(), node);
-            all.add(node);
             if (parent == null) roots.add(node);
             else parent.children.add(node);
         }
-        return all.isEmpty() ? EMPTY : new IplProjectionTree(sub, List.copyOf(roots), List.copyOf(all));
+        if (roots.isEmpty()) return EMPTY;
+        // Siblings in priority order (see the class comment), identical on server and client.
+        prioritize(roots);
+        List<Node> all = new ArrayList<>(byPath.size());
+        for (List<Node> level = roots; !level.isEmpty(); ) {
+            all.addAll(level);
+            List<Node> next = new ArrayList<>(level.size());
+            for (Node n : level) next.addAll(n.children);
+            level = next;
+        }
+        return new IplProjectionTree(sub, List.copyOf(roots), List.copyOf(all));
+    }
+
+    /** Sorts every sibling list (roots, children of each node) by sibling priority. */
+    private static void prioritize(List<Node> siblings) {
+        if (siblings.size() > 1) {
+            Map<Node, Integer> rank = new IdentityHashMap<>();
+            for (Node n : siblings) rank.put(n, upstreamRank(n, siblings));
+            siblings.sort(Comparator.<Node>comparingInt(rank::get).thenComparing(n -> n.path));
+        }
+        for (Node n : siblings) prioritize(n.children);
     }
 
     /**
-     * How many siblings of {@code e} it lies strictly downstream of (0 = nothing in front of it).
+     * How many siblings {@code node} lies strictly downstream of (0 = nothing in front of it).
      * Same rule as {@code IplAtlasStraddleSession.upstreamRank}.
      */
-    private static int upstreamRank(Entry e, List<Entry> all) {
-        if (e.portal() == null) return 0;
+    private static int upstreamRank(Node node, List<Node> siblings) {
         int rank = 0;
-        for (Entry other : all) {
-            if (other == e || other.portal() == null || !other.via().equals(e.via())
-                || other.path().equals(e.path())) continue;
-            if (PortalOrder.strictlyDownstreamOf(e.portal(), e.wide(), other.portal(), other.wide())) rank++;
+        for (Node other : siblings) {
+            if (other != node && PortalOrder.strictlyDownstreamOf(node.portal, node.prism, other.portal, other.prism)) {
+                rank++;
+            }
         }
         return rank;
     }

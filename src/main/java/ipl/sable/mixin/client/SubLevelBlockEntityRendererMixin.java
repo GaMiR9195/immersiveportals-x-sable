@@ -16,8 +16,6 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderBuffers;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL30;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Mutable;
@@ -133,7 +131,8 @@ public abstract class SubLevelBlockEntityRendererMixin {
         // its centre is behind it. Inside IplBlockEntityRenderScope the planes are already
         // installed and stay active through BufferSource.endBatch(), when deferred BE vertices
         // actually draw.
-        if (decision == null || IplBlockEntityRenderScope.isActiveFor(sub)) {
+        if (decision == null || decision.planes().isEmpty()
+            || IplBlockEntityRenderScope.isActiveFor(sub)) {
             original.call(dispatcher, be, partialTick, pose, source);
             return;
         }
@@ -142,14 +141,12 @@ public abstract class SubLevelBlockEntityRendererMixin {
         // the call while the vertices are deferred to endBatch(). Flushing the buffer here is
         // not an option — it corrupts catnip's shared shade-separation buffer ("Not building!"
         // crash) — which is why the main path always goes through IplBlockEntityRenderScope.
-        IplClipUniformPatcher.patchForSubLevel(
-            sub, decision.plane(), IplClipPortalFinder.secondPlaneFor(sub));
+        IplClipUniformPatcher.patchForSubLevel(sub, decision.planes());
 
         try {
             original.call(dispatcher, be, partialTick, pose, source);
         } finally {
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
+            IplClipUniformPatcher.disableSlots();
             IplClipUniformPatcher.clearAndUpload();
         }
     }

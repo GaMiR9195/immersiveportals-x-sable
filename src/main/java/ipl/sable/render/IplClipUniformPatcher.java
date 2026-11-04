@@ -18,15 +18,17 @@ import qouteall.imm_ptl.core.ducks.IEShader;
 import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.q_misc_util.my_util.Plane;
 
+import java.util.List;
+
 /**
- * Writes the sub-level clip equations to the {@code ipl_subLevelClipEquation[2]} uniform
- * that drives {@code gl_ClipDistance[1]} and {@code gl_ClipDistance[2]} in the shader
- * transformation.
+ * Writes the sub-level clip equations to the {@code ipl_subLevelClipEquation[SLOTS]} uniform
+ * array that drives {@code gl_ClipDistance[1..SLOTS]} in the shader transformation: one
+ * independent hardware slot per plane of the current piece's convex cell (see
+ * {@link IplClipCells}).
  *
  * <p>This is independent of IP's {@code iportal_ClippingEquation /
- * gl_ClipDistance[0]} pipeline. We compute the equation directly from the
- * supplied {@link Plane} (sub-level-center-oriented, mirror-flip-applied --
- * see {@link IplClipPortalFinder}) and the current camera position, in
+ * gl_ClipDistance[0]} pipeline. We compute each equation directly from the
+ * supplied {@link Plane} (see {@link IplClipPortalFinder}) and the current camera position, in
  * the same form IP uses for its own inner clipping:
  *
  * <pre>
@@ -38,33 +40,44 @@ import qouteall.q_misc_util.my_util.Plane;
  * camera-relative world position via the
  * {@code gbufferModelViewInverse × iris_ModelViewMat × (Position + ChunkOffset)}
  * chain in {@code shader_transformation.yaml}. {@code n · worldPos + c > 0}
- * is the kept half-space.
+ * is the kept half-space; a vertex survives only inside all of them.
  */
 public final class IplClipUniformPatcher {
 
     /**
-     * Currently-active sub-level equation in <b>camera-relative world space</b>.
+     * Sub-level cut slots, {@code gl_ClipDistance[1..SLOTS]}: with IP's slot 0 that is 7 of the
+     * 8 clip distances every GL 3.0 implementation guarantees. A prism has five faces, so one
+     * cell of a piece near one portal always fits; deeper chains drop redundant planes first
+     * (inside the plot box) and only then the last ones.
+     */
+    public static final int SLOTS = 6;
+
+    private static final float[][] NONE = new float[SLOTS][];
+
+    /**
+     * Currently-active sub-level equations in <b>camera-relative world space</b>, per slot
+     * (null = no cut in that slot, uploaded as the neutral {@code (0,0,0,1)}).
      * Used by chunk shaders (iris+sodium {@code terrain_*}) which compute
      * {@code _ipl_worldPos = gbufferModelViewInverse * iris_ModelViewMat *
-     * (iris_Position + iris_ChunkOffset)} and dot against this equation in
+     * (iris_Position + iris_ChunkOffset)} and dot against these equations in
      * world space.
      */
-    private static volatile float[] currentSubLevelEqWorld = null;
+    private static volatile float[][] currentSubLevelEqWorld = NONE;
 
     /**
-     * Equation for vanilla Sable chunk vertices. Their {@code Position + ChunkOffset}
+     * Equations for vanilla Sable chunk vertices. Their {@code Position + ChunkOffset}
      * is plot-local after camera translation, unlike Iris/Sodium terrain world positions.
      */
-    private static volatile float[] currentSubLevelEqVanillaInput = null;
+    private static volatile float[][] currentSubLevelEqVanillaInput = NONE;
 
     /**
-     * Currently-active sub-level equation in <b>eye space</b> (rotated by the
+     * Currently-active sub-level equations in <b>eye space</b> (rotated by the
      * camera's view rotation). Used by entity-style shaders (Iris-rewritten
      * {@code block_entity_diffuse} / {@code moving_block}, vanilla
      * {@code rendertype_entity_*}, Veil-managed Simulated/Aeronautics
      * shaders) which compute {@code _ipl_eyePos = iris_ModelViewMat *
      * iris_Position} (or {@code ModelViewMat * Position}) and dot against
-     * this equation in eye space.
+     * these equations in eye space.
      *
      * <p><b>Why two variants:</b> the world-space equation has the form
      * {@code (n_w, c)} where {@code c = -n_w · (planePoint - camPos)}.
@@ -79,41 +92,30 @@ public final class IplClipUniformPatcher {
      * either always pass the clip test or get culled on a wrong-axis
      * plane.
      */
-    private static volatile float[] currentSubLevelEqEye = null;
+    private static volatile float[][] currentSubLevelEqEye = NONE;
 
-    /** Camera-relative world-space equation, or null if no bracket is active. */
-    public static float[] getCurrentSubLevelEqWorld() {
-        return currentSubLevelEqWorld;
+    /** Whether a sub-level bracket is active (its cell may still be empty: all slots neutral). */
+    private static volatile boolean subLevelClip;
+
+    public static boolean hasSubLevelClip() {
+        return subLevelClip;
     }
 
-    /** Eye-space equation (world normal rotated by view), or null. */
-    public static float[] getCurrentSubLevelEqEye() {
-        return currentSubLevelEqEye;
+    /** Camera-relative world-space equation of {@code slot}, or null. */
+    @Nullable
+    public static float[] getCurrentSubLevelEqWorld(int slot) {
+        return currentSubLevelEqWorld[slot];
     }
 
-    public static float[] getCurrentSubLevelEqVanillaInput() {
-        return currentSubLevelEqVanillaInput;
+    /** Eye-space equation of {@code slot} (world normal rotated by view), or null. */
+    @Nullable
+    public static float[] getCurrentSubLevelEqEye(int slot) {
+        return currentSubLevelEqEye[slot];
     }
 
-    /**
-     * Second cut plane (multi-straddle), same spaces as the primaries; null means
-     * "no second cut" and uploaders write the neutral {@code (0,0,0,1)}. The shader
-     * writes the two distances into independent slots 1 and 2.
-     */
-    private static volatile float[] currentSubLevelEqWorld2 = null;
-    private static volatile float[] currentSubLevelEqEye2 = null;
-    private static volatile float[] currentSubLevelEqVanillaInput2 = null;
-
-    public static float[] getCurrentSubLevelEqWorld2() {
-        return currentSubLevelEqWorld2;
-    }
-
-    public static float[] getCurrentSubLevelEqEye2() {
-        return currentSubLevelEqEye2;
-    }
-
-    public static float[] getCurrentSubLevelEqVanillaInput2() {
-        return currentSubLevelEqVanillaInput2;
+    @Nullable
+    public static float[] getCurrentSubLevelEqVanillaInput(int slot) {
+        return currentSubLevelEqVanillaInput[slot];
     }
 
     /**
@@ -155,33 +157,31 @@ public final class IplClipUniformPatcher {
     private IplClipUniformPatcher() {}
 
     /**
-     * Publishes the sub-level cut ({@code plane}) and the optional second cut of a
-     * multi-straddle ({@code plane2}) in all three input spaces, uploads them to the
-     * currently bound program and enables clip distances 1 and 2.
+     * Publishes the cell {@code planes} (the first {@link #SLOTS}) in all three input spaces,
+     * uploads them to the currently bound program and enables the slots that program writes.
      *
      * <p>Upload goes only to the active GL program; a shader that is merely selected keeps
-     * the uniform dirty for its next {@code apply}, because {@code glUniform} without a
+     * the uniforms dirty for its next {@code apply}, because {@code glUniform} without a
      * bound program is invalid.
      */
-    public static void patchForSubLevel(ClientSubLevel sub, Plane plane, @Nullable Plane plane2) {
+    public static void patchForSubLevel(ClientSubLevel sub, List<Plane> planes) {
         Vec3 cameraPos = CHelper.getCurrentCameraPos();
-        Matrix4f modelView = RenderSystem.getModelViewMatrix();
-
-        float[] eqWorld = worldEquation(plane, cameraPos);
-        currentSubLevelEqWorld = eqWorld;
-        currentSubLevelEqEye = transformEquationForModelView(eqWorld, modelView);
-        currentSubLevelEqVanillaInput = vanillaInputEquation(sub, plane, eqWorld[3]);
-
-        if (plane2 != null) {
-            float[] eqWorld2 = worldEquation(plane2, cameraPos);
-            currentSubLevelEqWorld2 = eqWorld2;
-            currentSubLevelEqEye2 = transformEquationForModelView(eqWorld2, modelView);
-            currentSubLevelEqVanillaInput2 = vanillaInputEquation(sub, plane2, eqWorld2[3]);
-        } else {
-            currentSubLevelEqWorld2 = null;
-            currentSubLevelEqEye2 = null;
-            currentSubLevelEqVanillaInput2 = null;
+        int count = Math.min(planes.size(), SLOTS);
+        float[][] world = new float[SLOTS][];
+        float[][] eye = new float[SLOTS][];
+        float[][] input = new float[SLOTS][];
+        Matrix4f eyeTransform = count == 0 ? null
+            : new Matrix4f(RenderSystem.getModelViewMatrix()).invert().transpose();
+        for (int i = 0; i < count; i++) {
+            Plane plane = planes.get(i);
+            world[i] = worldEquation(plane, cameraPos);
+            eye[i] = transformEquation(world[i], eyeTransform);
+            input[i] = vanillaInputEquation(sub, plane, world[i][3]);
         }
+        currentSubLevelEqWorld = world;
+        currentSubLevelEqEye = eye;
+        currentSubLevelEqVanillaInput = input;
+        subLevelClip = true;
 
         ShaderInstance shader = RenderSystem.getShader();
         if (shader != null) IplProgramBindHook.prepareShader(shader);
@@ -191,11 +191,16 @@ public final class IplClipUniformPatcher {
 
         // Each cut owns its own slot: min() of two linear functions is only piecewise-linear
         // while the rasterizer interpolates every clip distance linearly, so a shared slot
-        // would replace the crease between the two planes with a straight chord. Enabled on
-        // every scope because Veil bloom disables GL_CLIP_DISTANCE1 mid-frame and does not
-        // restore it.
-        GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
-        GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
+        // would replace the crease between two planes with a straight chord. All slots are
+        // enabled on every scope (a raw bind may follow without our hook, and Veil bloom
+        // disables GL_CLIP_DISTANCE1 mid-frame without restoring it); unused slots carry the
+        // neutral equation.
+        for (int i = 1; i <= SLOTS; i++) GL11.glEnable(GL30.GL_CLIP_DISTANCE0 + i);
+    }
+
+    /** Turns every sub-level slot off (bracket exit: the slots belong to the bracket only). */
+    public static void disableSlots() {
+        for (int i = 1; i <= SLOTS; i++) GL11.glDisable(GL30.GL_CLIP_DISTANCE0 + i);
     }
 
     /** {@code (n, -n · (p - camera))}: the plane in camera-relative world space. */
@@ -230,11 +235,11 @@ public final class IplClipUniformPatcher {
             .mul(pose.scale());
     }
 
-    /** Converts a camera-relative world plane to the current shader eye space. */
-    private static float[] transformEquationForModelView(float[] equation, Matrix4f modelView) {
+    /** Converts a camera-relative world plane to the current shader eye space ({@code M^-T}). */
+    private static float[] transformEquation(float[] equation, Matrix4f inverseTranspose) {
         Vector4f transformed = new Vector4f(
             equation[0], equation[1], equation[2], equation[3]);
-        new Matrix4f(modelView).invert().transpose().transform(transformed);
+        inverseTranspose.transform(transformed);
         return new float[]{transformed.x, transformed.y, transformed.z, transformed.w};
     }
 
@@ -295,12 +300,10 @@ public final class IplClipUniformPatcher {
         // Clear the published equations first so subsequent program binds
         // outside the sub-level bracket fall back to portal-mirror or
         // no-clip writes in GlStateManagerMixin.
-        currentSubLevelEqWorld = null;
-        currentSubLevelEqEye = null;
-        currentSubLevelEqVanillaInput = null;
-        currentSubLevelEqWorld2 = null;
-        currentSubLevelEqEye2 = null;
-        currentSubLevelEqVanillaInput2 = null;
+        currentSubLevelEqWorld = NONE;
+        currentSubLevelEqEye = NONE;
+        currentSubLevelEqVanillaInput = NONE;
+        subLevelClip = false;
 
         ShaderInstance shader = RenderSystem.getShader();
         if (shader != null) IplProgramBindHook.prepareShader(shader);

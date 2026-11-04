@@ -12,6 +12,7 @@ import net.neoforged.neoforge.common.NeoForge;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.ducks.IEWorld;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.animation.ClientPortalAnimationManagement;
 import qouteall.q_misc_util.my_util.DQuaternion;
@@ -142,20 +143,22 @@ public final class IplClientShipPortalAnchor {
         }
     }
 
-    /** Resolved portal entities (client Level.getEntities() is protected — scan once, cache). */
+    /** Resolved portal entities, by UUID (re-resolved once removed). */
     private static final Map<UUID, Portal> PORTAL_CACHE = new HashMap<>();
 
     private static Portal findPortal(UUID id) {
         Portal cached = PORTAL_CACHE.get(id);
         if (cached != null && !cached.isRemoved()) return cached;
         PORTAL_CACHE.remove(id);
+        // Per-frame driver: a cluster member that is not synced to this client (other
+        // dimension, out of range) misses every frame. Look it up by UUID in each level's
+        // entity index (IP's IEWorld duck) instead of scanning every loaded entity.
         for (ClientLevel level : ClientWorldLoader.getClientWorlds()) {
-            for (Entity entity : level.entitiesForRendering()) {
-                if (entity instanceof Portal portal && !portal.isRemoved()
-                    && portal.getUUID().equals(id)) {
-                    PORTAL_CACHE.put(id, portal);
-                    return portal;
-                }
+            Entity entity = level instanceof IEWorld world
+                ? world.portal_getEntityLookup().get(id) : null;
+            if (entity instanceof Portal portal && !portal.isRemoved()) {
+                PORTAL_CACHE.put(id, portal);
+                return portal;
             }
         }
         return null;

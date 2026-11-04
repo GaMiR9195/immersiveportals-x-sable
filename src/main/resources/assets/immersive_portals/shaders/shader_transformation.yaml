@@ -1,12 +1,12 @@
 ---
 configs:
   - comment: |-
-      For vanilla terrain rendering. Slot 1 (ipl_subLevelClipEquation) added
-      so cogs and other sub-level block entities -- which bind these vanilla
-      rendertype shaders via vanilla BlockEntityRenderer inside
-      RenderDispatcherBlockEntityClipMixin's bracket -- get clipped on the
-      sub-level plane. Without slot-1 here, the bracket enables
-      GL_CLIP_DISTANCE1 but the vertex shader never writes it, leaving the
+      For vanilla terrain rendering. Slots 1..6 (ipl_subLevelClipEquation[6],
+      one per plane of the drawn piece's convex cell) added so cogs and other
+      sub-level block entities -- which bind these vanilla rendertype shaders
+      via vanilla BlockEntityRenderer inside RenderDispatcherBlockEntityClipMixin's
+      bracket -- get clipped by the cell. Without them here, the bracket enables
+      GL_CLIP_DISTANCE1..6 but the vertex shader never writes them, leaving the
       rasterizer reading undefined and letting cog meshes leak.
       Sable's vanilla chunk path leaves `Position + ChunkOffset` in rotated
       plot-local, camera-relative space; its model-view transform applies the
@@ -30,38 +30,41 @@ configs:
           void ( )*main( )*\(( )*( )*\)( )*(
           )*\{
         replacement: |-
-          out float gl_ClipDistance[3];
+          out float gl_ClipDistance[7];
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation[2];
+          uniform vec4 ipl_subLevelClipEquation[6];
           void main() {
               vec3 _ipl_worldPos = Position.xyz + ChunkOffset;
               gl_ClipDistance[0] = dot(_ipl_worldPos, iportal_ClippingEquation.xyz) +
                   iportal_ClippingEquation.w;
-              // Two INDEPENDENT hardware clip planes. Folding both cuts into one
-              // gl_ClipDistance with min() was wrong: the rasterizer interpolates
-              // each clip distance LINEARLY across a primitive, and min() of two
-              // linear functions is only piecewise-linear. Sampling it at the three
-              // vertices and interpolating replaces the true concave crease with a
-              // straight chord, so the cut visibly bends into a small triangular
-              // wedge exactly where the two planes are close together -- i.e. right
-              // at the portal plane. Separate slots are clipped exactly.
+              // INDEPENDENT hardware clip planes, one per cell plane. Folding cuts
+              // into one gl_ClipDistance with min() was wrong: the rasterizer
+              // interpolates each clip distance LINEARLY across a primitive, and min()
+              // of two linear functions is only piecewise-linear. Sampling it at the
+              // three vertices and interpolating replaces the true concave crease with
+              // a straight chord, so the cut visibly bends into a small triangular
+              // wedge exactly where two planes are close together -- i.e. right at the
+              // portal plane. Separate slots are clipped exactly.
               gl_ClipDistance[1] = dot(_ipl_worldPos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
               gl_ClipDistance[2] = dot(_ipl_worldPos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
+              gl_ClipDistance[3] = dot(_ipl_worldPos, ipl_subLevelClipEquation[2].xyz) + ipl_subLevelClipEquation[2].w;
+              gl_ClipDistance[4] = dot(_ipl_worldPos, ipl_subLevelClipEquation[3].xyz) + ipl_subLevelClipEquation[3].w;
+              gl_ClipDistance[5] = dot(_ipl_worldPos, ipl_subLevelClipEquation[4].xyz) + ipl_subLevelClipEquation[4].w;
+              gl_ClipDistance[6] = dot(_ipl_worldPos, ipl_subLevelClipEquation[5].xyz) + ipl_subLevelClipEquation[5].w;
     debugOutput: false
   - comment: |-
-      For iris+sodium shaderpack-style terrain. Slot-1 added so cog block
-      bodies that get baked into Sodium chunk geometry (and therefore
-      rasterized through this program under shader pack) can clip on the
-      sub-level plane. The static-cog-body leak we chased through
+      For iris+sodium shaderpack-style terrain. Sub-level slots added so cog
+      block bodies that get baked into Sodium chunk geometry (and therefore
+      rasterized through this program under shader pack) can clip by the
+      sub-level cell. The static-cog-body leak we chased through
       cog_leak3..7 was on this exact program (RenderDoc EID 7122,
       `iportal_ClippingEquation = (-0.263876, 0.426615, -0.865084,
       -11.126332)` with `ipl_subLevelClipEquation = <ABSENT>`).
       Same eye-space math pattern as the existing slot-0 write so we don't
-      change the working slot-0 behavior. The slot-1 uniform is harmless
-      for non-sub-level draws because `GlStateManagerMixin` only
-      enables `GL_CLIP_DISTANCE1` when a sub-level bracket is active --
-      otherwise the rasterizer ignores `gl_ClipDistance[1]` writes
-      regardless of what's in the uniform.
+      change the working slot-0 behavior. The sub-level uniforms are harmless
+      for non-sub-level draws because `GL_CLIP_DISTANCE1..6` are only enabled
+      while a sub-level bracket is active -- otherwise the rasterizer ignores
+      `gl_ClipDistance[1..6]` writes regardless of what's in the uniform.
     type: vs
     affectedShaders:
       - iris_gbuffers_terrain
@@ -72,7 +75,7 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation[2];
+          uniform vec4 ipl_subLevelClipEquation[6];
           void main() {
       - pattern: "\\}(?![\\S\\s]*\\})"
         # match the last } ([\S\s] matches any character). use the modelview-transformed coordinate
@@ -83,6 +86,10 @@ configs:
               // Independent slots -- see the vanilla-terrain entry for why min() bends the cut.
               gl_ClipDistance[1] = dot(_ipl_eye, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
               gl_ClipDistance[2] = dot(_ipl_eye, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
+              gl_ClipDistance[3] = dot(_ipl_eye, ipl_subLevelClipEquation[2].xyz) + ipl_subLevelClipEquation[2].w;
+              gl_ClipDistance[4] = dot(_ipl_eye, ipl_subLevelClipEquation[3].xyz) + ipl_subLevelClipEquation[3].w;
+              gl_ClipDistance[5] = dot(_ipl_eye, ipl_subLevelClipEquation[4].xyz) + ipl_subLevelClipEquation[4].w;
+              gl_ClipDistance[6] = dot(_ipl_eye, ipl_subLevelClipEquation[5].xyz) + ipl_subLevelClipEquation[5].w;
           }
           }
     debugOutput: false
@@ -115,7 +122,7 @@ configs:
       # vertices (the per-entity model translation gets folded into iris_ChunkOffset).
       # Adding them here fixes IP's slot 0 clip (iportal_ClippingEquation) for block
       # entities through portal-through views -- the previously-unclipped chest case --
-      # plus our slot 1 for any sub-level block entities we'll bracket separately.
+      # plus our sub-level slots for any sub-level block entities we bracket separately.
       - entities_solid
       - entities_cutout
       - entities_translucent
@@ -125,20 +132,24 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation[2];
+          uniform vec4 ipl_subLevelClipEquation[6];
           void main() {
               vec3 _ipl_worldPos = (gbufferModelViewInverse * iris_ModelViewMat * vec4(iris_Position + iris_ChunkOffset, 1.0)).xyz;
               gl_ClipDistance[0] = dot(_ipl_worldPos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
-              // Two INDEPENDENT hardware clip planes. Folding both cuts into one
-              // gl_ClipDistance with min() was wrong: the rasterizer interpolates
-              // each clip distance LINEARLY across a primitive, and min() of two
-              // linear functions is only piecewise-linear. Sampling it at the three
-              // vertices and interpolating replaces the true concave crease with a
-              // straight chord, so the cut visibly bends into a small triangular
-              // wedge exactly where the two planes are close together -- i.e. right
-              // at the portal plane. Separate slots are clipped exactly.
+              // INDEPENDENT hardware clip planes, one per cell plane. Folding cuts
+              // into one gl_ClipDistance with min() was wrong: the rasterizer
+              // interpolates each clip distance LINEARLY across a primitive, and min()
+              // of two linear functions is only piecewise-linear. Sampling it at the
+              // three vertices and interpolating replaces the true concave crease with
+              // a straight chord, so the cut visibly bends into a small triangular
+              // wedge exactly where two planes are close together -- i.e. right at the
+              // portal plane. Separate slots are clipped exactly.
               gl_ClipDistance[1] = dot(_ipl_worldPos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
               gl_ClipDistance[2] = dot(_ipl_worldPos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
+              gl_ClipDistance[3] = dot(_ipl_worldPos, ipl_subLevelClipEquation[2].xyz) + ipl_subLevelClipEquation[2].w;
+              gl_ClipDistance[4] = dot(_ipl_worldPos, ipl_subLevelClipEquation[3].xyz) + ipl_subLevelClipEquation[3].w;
+              gl_ClipDistance[5] = dot(_ipl_worldPos, ipl_subLevelClipEquation[4].xyz) + ipl_subLevelClipEquation[4].w;
+              gl_ClipDistance[6] = dot(_ipl_worldPos, ipl_subLevelClipEquation[5].xyz) + ipl_subLevelClipEquation[5].w;
     debugOutput: false
   - comment: |-
       Iris-rewritten vanilla rendertype_entity shaders. When Iris is loaded
@@ -184,7 +195,7 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation[2];
+          uniform vec4 ipl_subLevelClipEquation[6];
           void main() {
               vec3 _ipl_eyePos = (iris_ModelViewMat * vec4(iris_Position, 1.0)).xyz;
               // Slot 0 (IP portal clip): eye-space dot. IP writes the
@@ -194,6 +205,10 @@ configs:
               // exists in Iris's no-shaderpack vanilla replacements.
               gl_ClipDistance[1] = dot(_ipl_eyePos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
               gl_ClipDistance[2] = dot(_ipl_eyePos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
+              gl_ClipDistance[3] = dot(_ipl_eyePos, ipl_subLevelClipEquation[2].xyz) + ipl_subLevelClipEquation[2].w;
+              gl_ClipDistance[4] = dot(_ipl_eyePos, ipl_subLevelClipEquation[3].xyz) + ipl_subLevelClipEquation[3].w;
+              gl_ClipDistance[5] = dot(_ipl_eyePos, ipl_subLevelClipEquation[4].xyz) + ipl_subLevelClipEquation[4].w;
+              gl_ClipDistance[6] = dot(_ipl_eyePos, ipl_subLevelClipEquation[5].xyz) + ipl_subLevelClipEquation[5].w;
     debugOutput: false
   - comment: |-
       Veil-managed Simulated / Aeronautics block-entity shaders. These are
@@ -245,19 +260,23 @@ configs:
           )*\{
         replacement: |-
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation[2];
+          uniform vec4 ipl_subLevelClipEquation[6];
           void main() {
               vec3 _ipl_eyePos = (ModelViewMat * vec4(Position.xyz, 1.0)).xyz;
               gl_ClipDistance[0] = dot(_ipl_eyePos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
               // Independent slots -- see the vanilla-terrain entry for why min() bends the cut.
               gl_ClipDistance[1] = dot(_ipl_eyePos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
               gl_ClipDistance[2] = dot(_ipl_eyePos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
+              gl_ClipDistance[3] = dot(_ipl_eyePos, ipl_subLevelClipEquation[2].xyz) + ipl_subLevelClipEquation[2].w;
+              gl_ClipDistance[4] = dot(_ipl_eyePos, ipl_subLevelClipEquation[3].xyz) + ipl_subLevelClipEquation[3].w;
+              gl_ClipDistance[5] = dot(_ipl_eyePos, ipl_subLevelClipEquation[4].xyz) + ipl_subLevelClipEquation[4].w;
+              gl_ClipDistance[6] = dot(_ipl_eyePos, ipl_subLevelClipEquation[5].xyz) + ipl_subLevelClipEquation[5].w;
     debugOutput: false
   - comment: |-
       Vanilla entities, sign text, and Catnip cuboid outlines (the CPS beam and
       selection). All supply Position + ModelViewMat. The previous list omitted
       the entire vanilla entity family, so enabling clipping alone did nothing.
-      Keep all three distances independent, in eye space.
+      Keep every distance independent, in eye space.
     type: vs
     affectedShaders:
       - rendertype_entity_solid
@@ -284,14 +303,18 @@ configs:
           void ( )*main( )*\(( )*( )*\)( )*(
           )*\{
         replacement: |-
-          out float gl_ClipDistance[3];
+          out float gl_ClipDistance[7];
           uniform vec4 iportal_ClippingEquation;
-          uniform vec4 ipl_subLevelClipEquation[2];
+          uniform vec4 ipl_subLevelClipEquation[6];
           void main() {
               vec3 _ipl_eyePos = (ModelViewMat * vec4(Position.xyz, 1.0)).xyz;
               gl_ClipDistance[0] = dot(_ipl_eyePos, iportal_ClippingEquation.xyz) + iportal_ClippingEquation.w;
               gl_ClipDistance[1] = dot(_ipl_eyePos, ipl_subLevelClipEquation[0].xyz) + ipl_subLevelClipEquation[0].w;
               gl_ClipDistance[2] = dot(_ipl_eyePos, ipl_subLevelClipEquation[1].xyz) + ipl_subLevelClipEquation[1].w;
+              gl_ClipDistance[3] = dot(_ipl_eyePos, ipl_subLevelClipEquation[2].xyz) + ipl_subLevelClipEquation[2].w;
+              gl_ClipDistance[4] = dot(_ipl_eyePos, ipl_subLevelClipEquation[3].xyz) + ipl_subLevelClipEquation[3].w;
+              gl_ClipDistance[5] = dot(_ipl_eyePos, ipl_subLevelClipEquation[4].xyz) + ipl_subLevelClipEquation[4].w;
+              gl_ClipDistance[6] = dot(_ipl_eyePos, ipl_subLevelClipEquation[5].xyz) + ipl_subLevelClipEquation[5].w;
     debugOutput: false
   - comment: For sodium
     type: vs

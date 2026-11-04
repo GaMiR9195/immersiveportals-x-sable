@@ -57,6 +57,9 @@ public final class IplStraddlePoseMap {
             this.inv = new Quaterniond(rot).conjugate();
         }
 
+        /** The body's own chart (no portal): every map is the identity. */
+        public static final StraddleMapping IDENTITY = new StraddleMapping(Vec3.ZERO, Vec3.ZERO, new Quaterniond());
+
         public static StraddleMapping of(Portal portal) {
             DQuaternion q = portal.getRotationD();
             Quaterniond rot = isApproxIdentity(q) ? new Quaterniond() : new Quaterniond(q.x, q.y, q.z, q.w);
@@ -120,6 +123,37 @@ public final class IplStraddlePoseMap {
                 }
             }
             return out;
+        }
+
+        /**
+         * Exactly {@code mapAabb(box).intersects(query)}, behind a cheap conservative
+         * pre-reject: a rigid map keeps every corner of {@code box} within its half-diagonal of
+         * the mapped centre, so when the cube of that radius around the mapped centre misses
+         * {@code query}, the mapped box misses it too and the 8-corner path is skipped.
+         *
+         * <p>Сплайс пространственных запросов ({@code CompanionIntersectMixin}) зовёт эту
+         * проверку на КАЖДЫЙ запрос Sable, пока корабль стоит в портале: частицы, коллизии,
+         * лучи. Почти все они далеко от образа корабля — одна точка вместо восьми.
+         */
+        public boolean mappedIntersects(BoundingBox3dc box, BoundingBox3dc query) {
+            double hx = (box.maxX() - box.minX()) * 0.5;
+            double hy = (box.maxY() - box.minY()) * 0.5;
+            double hz = (box.maxZ() - box.minZ()) * 0.5;
+            // Margin far above the rounding of the 8-corner path; a non-unit quaternion can
+            // only scale (JOML may not normalise), never move a corner beyond |q|^2 * radius.
+            double r = Math.sqrt(hx * hx + hy * hy + hz * hz) * Math.max(1.0, rot.lengthSquared())
+                * (1.0 + 1.0e-6) + 1.0e-3;
+            Vector3d c = rot.transform(new Vector3d(
+                box.minX() + hx - origin.x, box.minY() + hy - origin.y, box.minZ() + hz - origin.z));
+            double cx = dest.x + c.x;
+            double cy = dest.y + c.y;
+            double cz = dest.z + c.z;
+            if (cx + r < query.minX() || cx - r > query.maxX()
+                || cy + r < query.minY() || cy - r > query.maxY()
+                || cz + r < query.minZ() || cz - r > query.maxZ()) {
+                return false;
+            }
+            return mapAabb(box).intersects(query);
         }
 
         /**
@@ -215,52 +249,79 @@ public final class IplStraddlePoseMap {
     }
 
     /**
-     * One keep half-space of a frame, expressed in the ship's REAL frame (its own level,
-     * real pose): material is kept where {@code (p - point) . keep >= 0}.
-     */
-    public record RealHalfSpace(Vec3 point, Vec3 keep) {}
-
-    /**
-     * The half-space cuts of one frame (null = native piece), all in the REAL frame:
-     * native piece = front side of every root portal; node = beyond side of every portal
-     * of its path (each pulled back to the real frame through its parent's mapping) and
-     * front side of every child portal (pulled back through the node's own mapping).
+     * The material {@code node}'s frame owns (null = the native piece), in the ship's REAL
+     * frame (its own level, real pose); see {@link IplCollisionRegion}. Native piece: outside
+     * every root prism. Node: inside the prisms of its whole path (each pulled back to the
+     * real frame through its parent's mapping), outside its children's prisms and outside the
+     * prism of every higher-priority sibling along the path -- exactly
+     * {@link IplProjectionTree#pieceAt}, the physics regions and the render cells. Material that
+     * went beyond a portal's plane BESIDE its aperture stays in the native frame.
      *
-     * <p>Срезы строятся по дереву проекций: у цепочки это плоскость ПОСЛЕДНЕГО портала пути
-     * плюс вырезы дочерних сессий. Они совпадают с регионами физики (KEEP/EXCLUDE трубки),
-     * трубка для коллизий сущностей приближается полупространством.
+     * <p>{@code seam} widens each frame across its portal planes toward the neighbouring
+     * frame: keep faces move forward, excluded prisms start deeper (collision support slack,
+     * {@link #SEAM_SUPPORT_MARGIN}).
      */
-    public static List<RealHalfSpace> frameCuts(IplProjectionTree tree, @Nullable IplProjectionTree.Node node) {
-        List<RealHalfSpace> out = new ArrayList<>(2);
+    public static IplCollisionRegion frameRegion(
+        IplProjectionTree tree, @Nullable IplProjectionTree.Node node, double seam
+    ) {
+        List<double[][]> exclude = new ArrayList<>(2);
         if (node == null) {
             for (IplProjectionTree.Node root : tree.roots()) {
-                out.add(new RealHalfSpace(root.portal.getOriginPos(), root.portal.getNormal()));
+                exclude.add(excluded(root.prism, null, seam));
             }
-            return out;
+            return new IplCollisionRegion(List.of(), exclude);
         }
+        List<double[]> keep = new ArrayList<>(10);
         for (IplProjectionTree.Node a = node; a != null; a = a.parent) {
-            Vec3 point = a.portal.getOriginPos();
-            Vec3 keep = a.portal.getNormal().scale(-1.0);
-            if (a.parent != null) {
-                point = a.parent.mapping.unmapPoint(point);
-                keep = a.parent.mapping.unmapVec(keep);
+            StraddleMapping back = a.parent == null ? null : a.parent.mapping;
+            double[][] faces = a.prism.faces();
+            faces[0][3] += seam;
+            for (double[] face : faces) keep.add(unmapPlane(back, face));
+            for (IplProjectionTree.Node sibling : tree.siblingsOf(a)) {
+                if (sibling == a) break;
+                exclude.add(excluded(sibling.prism, back, 0.0));
             }
-            out.add(new RealHalfSpace(point, keep));
         }
         for (IplProjectionTree.Node child : node.children) {
-            out.add(new RealHalfSpace(
-                node.mapping.unmapPoint(child.portal.getOriginPos()),
-                node.mapping.unmapVec(child.portal.getNormal())));
+            exclude.add(excluded(child.prism, node.mapping, seam));
         }
-        return out;
+        return new IplCollisionRegion(keep, exclude);
+    }
+
+    /** The faces of {@code prism} (portal face {@code seam} deeper) pulled back through {@code back}. */
+    private static double[][] excluded(PortalPrism prism, @Nullable StraddleMapping back, double seam) {
+        double[][] faces = prism.faces();
+        faces[0][3] -= seam;
+        for (int i = 0; i < faces.length; i++) faces[i] = unmapPlane(back, faces[i]);
+        return faces;
+    }
+
+    /** A plane of {@code back}'s destination frame in its source frame (null = same frame). */
+    private static double[] unmapPlane(@Nullable StraddleMapping back, double[] plane) {
+        if (back == null) return plane;
+        Vec3 normal = back.unmapVec(new Vec3(plane[0], plane[1], plane[2]));
+        Vec3 point = back.unmapPoint(new Vec3(-plane[3] * plane[0], -plane[3] * plane[1], -plane[3] * plane[2]));
+        return new double[]{normal.x, normal.y, normal.z, -normal.dot(point)};
+    }
+
+    /** A REAL-frame world plane in the plot-local frame of {@code pose}, unit normal again. */
+    private static double[] localPlane(Pose3dc pose, double[] plane) {
+        Vector3d point = pose.transformPositionInverse(
+            new Vector3d(-plane[3] * plane[0], -plane[3] * plane[1], -plane[3] * plane[2]));
+        Vector3d normal = pose.transformNormalInverse(
+            new Vector3d(plane[0], plane[1], plane[2]), new Vector3d());
+        double length = normal.length();
+        if (length > 1.0e-12) normal.div(length);
+        return new double[]{normal.x, normal.y, normal.z, -normal.dot(point)};
     }
 
     /**
      * The interaction/collision frame for a position in {@code ctx}: null = the native
      * frame; otherwise the frame of the NEAREST present image. Every frame through which
      * the ship exists in {@code ctx} competes (native piece and every session node into
-     * {@code ctx}, chains included), each measured against its CUT box (the part that
-     * physically exists). Ties resolve to the image (legacy behaviour).
+     * {@code ctx}, chains included), each measured against the material it physically owns
+     * ({@link #frameRegion}, in the real frame: the mappings are isometries). Ties resolve to
+     * the image (legacy behaviour).
      */
     @Nullable
     public static StraddleFrame chooseCollisionFrame(SubLevel sub, Level ctx, Vec3 position) {
@@ -269,29 +330,22 @@ public final class IplStraddlePoseMap {
         if (tree.isEmpty()) return null;
 
         BoundingBox3dc shipBox = sub.boundingBox();
+        double[] box = {
+            shipBox.minX(), shipBox.minY(), shipBox.minZ(),
+            shipBox.maxX(), shipBox.maxY(), shipBox.maxZ()};
         boolean nativeHere = sub.getLevel() == ctx;
 
         double[] best = {Double.MAX_VALUE};
         StraddleFrame[] chosen = {null};
         IplProjectionTree.forEachFrameIn(sub, ctx, node -> {
-            StraddleMapping mapping = node == null ? null : node.mapping;
             if (node != null && nativeHere) {
                 // Same dimension: an image only claims positions past ITS exit plane.
                 Vec3 exitPoint = node.portal.getDestPos();
                 Vec3 exitInward = node.portal.getContentDirection();
                 if (exitInward.dot(position.subtract(exitPoint)) < 0.0) return;
             }
-            BoundingBox3d box =
-                new BoundingBox3d();
-            box.set(mapping == null ? shipBox : mapping.mapAabb(shipBox));
-            BoundingBox3d cut = box;
-            for (RealHalfSpace h : frameCuts(tree, node)) {
-                if (cut == null) break;
-                Vec3 point = mapping == null ? h.point() : mapping.mapPoint(h.point());
-                Vec3 keep = mapping == null ? h.keep() : mapping.mapVec(h.keep());
-                cut = clipBoxKeeping(cut, point, keep);
-            }
-            double d = cut == null ? Double.MAX_VALUE : distanceSqToBox(cut, position);
+            Vec3 real = node == null ? position : node.mapping.unmapPoint(position);
+            double d = frameRegion(tree, node, 0.0).distanceSq(box, real.x, real.y, real.z);
             if (node == null) {
                 if (d < best[0]) best[0] = d;
                 return; // native: chosen stays null unless an image is nearer/equal
@@ -303,7 +357,6 @@ public final class IplStraddlePoseMap {
         });
         return chosen[0];
     }
-
     /**
      * Entity-collision variant of {@link #getMappingInto}. Same-dimension crossings have
      * one Level for both source and destination, so the normal frame lookup deliberately
@@ -334,96 +387,53 @@ public final class IplStraddlePoseMap {
     }
 
     /**
-     * Blocks. Plane slack for COLLISION filters only (raycast/wireframe stays strict).
-     * The filters cut by block CENTER but the collision frame is chosen by ENTITY
-     * center — without slack, an entity whose center hasn't crossed the plane, standing
-     * on a block whose center has, finds its support dropped by its own frame while the
-     * block's image exists only in the other frame: a half-block dead zone you fall
-     * through exactly at the portal plane. Keeping a one-block band alive in BOTH
-     * frames makes the seam load-bearing throughout the frame handoff; 0.9 covers the
-     * worst case (half block + player half-width, any plane orientation).
+     * Blocks. Slack across the portal planes for COLLISION only (raycast/wireframe stays
+     * strict): how far each frame's piece reaches into the neighbouring frame. The collision
+     * frame is chosen by ENTITY center, so an entity whose center hasn't crossed the plane
+     * yet stands in a frame that no longer owns the support just past it. Keeping a band
+     * alive in BOTH frames makes the seam load-bearing throughout the frame handoff; 0.9
+     * covers the worst case (half block + player half-width, any plane orientation).
      */
     private static final double SEAM_SUPPORT_MARGIN =
         Double.parseDouble(System.getProperty("ipl.sable.clip.seamSupportMargin", "0.0"));
 
     /**
-     * Plot-local block keep-filter for entity-vs-ship collision while the ship straddles
-     * a portal, or null when no clipping applies. Selects the frame the collision code
-     * uses for this entity ({@link #chooseCollisionFrame}, the same choice the pose wraps
-     * use, so filter and pose can never disagree) and keeps exactly that piece's blocks:
-     * the frame's half-space cuts, minus space yielded to a higher-priority sibling.
+     * Plot-local material of the collision frame for an entity at {@code entityBounds}, or
+     * null when no clipping applies. The frame is {@link #chooseCollisionFrame}'s, the same
+     * choice the pose wraps use, so region and pose can never disagree; the region is that
+     * frame's piece ({@link #frameRegion}) at the lead pose.
+     */
+    @Nullable
+    public static IplCollisionRegion getBlockCollisionRegion(
+        @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
+    ) {
+        if (sub == null || contextLevel == null || entityBounds == null) return null;
+        IplProjectionTree tree = IplProjectionTree.of(sub);
+        if (tree.isEmpty()) return null;
+        StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
+        IplProjectionTree.Node node = frame == null ? null : frame.node();
+        if (node == null && sub.getLevel() != contextLevel) return null;
+        Pose3dc pose = leadPose(sub);
+        IplCollisionRegion region = frameRegion(tree, node, SEAM_SUPPORT_MARGIN)
+            .map(plane -> localPlane(pose, plane));
+        return region.isUnbounded() ? null : region;
+    }
+
+    /**
+     * Whole-block keep-filter of {@link #getBlockCollisionRegion}: generous (a block stays
+     * when any part of its cube may be in the piece), the collision boxes are trimmed to the
+     * piece afterwards ({@link IplStraddleCollisionClip}).
      */
     @Nullable
     public static Predicate<BlockPos> getBlockCollisionKeepFilter(
         @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
     ) {
-        if (sub == null || contextLevel == null || entityBounds == null) return null;
-        IplProjectionTree tree = IplProjectionTree.of(sub);
-        if (tree.isEmpty()) return null;
-        StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
-        IplProjectionTree.Node node = frame == null ? null : frame.node();
-        if (node == null && sub.getLevel() != contextLevel) return null;
-        Pose3dc pose = leadPose(sub);
-        Predicate<BlockPos> cut = cutFilter(pose, frameCuts(tree, node), SEAM_SUPPORT_MARGIN);
-        if (node == null || !tree.yieldsAnything(node)) return cut;
-        // Space contested by several portals belongs to one piece only (sibling priority).
-        Predicate<BlockPos> owned =
-            pos -> !tree.yieldsAt(node, pose.transformPosition(Vec3.atCenterOf(pos)));
-        return cut == null ? owned : cut.and(owned);
+        IplCollisionRegion region = getBlockCollisionRegion(sub, contextLevel, entityBounds);
+        return region == null ? null : blockFilter(region);
     }
 
-    /**
-     * A portal half-space already expressed in the sub-level's PLOT-LOCAL frame:
-     * the kept side is {@code n · (p - point) >= 0}. {@code n} is unit length.
-     */
-    public record LocalHalfSpace(double px, double py, double pz,
-                                 double nx, double ny, double nz) {
-        /** Signed distance of a plot-local point from the plane; positive = kept side. */
-        public double signedDistance(double x, double y, double z) {
-            return (x - px) * nx + (y - py) * ny + (z - pz) * nz;
-        }
-    }
-
-    /**
-     * The same cut(s) {@link #getBlockCollisionKeepFilter} applies, but handed back as
-     * geometry instead of a whole-block predicate, so callers can trim individual
-     * collision boxes at the portal plane instead of keeping or dropping entire blocks.
-     *
-     * <p>Null when no clipping applies. A box must survive every returned cut.
-     */
-    @Nullable
-    public static List<LocalHalfSpace> getBlockCollisionKeepPlanes(
-        @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
-    ) {
-        if (sub == null || contextLevel == null || entityBounds == null) return null;
-        IplProjectionTree tree = IplProjectionTree.of(sub);
-        if (tree.isEmpty()) return null;
-        StraddleFrame frame = chooseCollisionFrame(sub, contextLevel, entityBounds.getCenter());
-        IplProjectionTree.Node node = frame == null ? null : frame.node();
-        if (node == null && sub.getLevel() != contextLevel) return null;
-        Pose3dc pose = leadPose(sub);
-        List<LocalHalfSpace> parts = new ArrayList<>(2);
-        for (RealHalfSpace h : frameCuts(tree, node)) {
-            parts.add(localHalfSpace(pose, h.point(), h.keep()));
-        }
-        return parts.isEmpty() ? null : parts;
-    }
-
-    /** AND of real-frame half-space cuts as a plot-local block predicate. */
-    @Nullable
-    private static Predicate<BlockPos> cutFilter(
-        Pose3dc pose, List<RealHalfSpace> cuts, double planeMargin
-    ) {
-        if (cuts.isEmpty()) return null;
-        List<Predicate<BlockPos>> parts = new ArrayList<>(cuts.size());
-        for (RealHalfSpace h : cuts) parts.add(buildKeepFilter(pose, h.point(), h.keep(), planeMargin));
-        if (parts.size() == 1) return parts.get(0);
-        return pos -> {
-            for (Predicate<BlockPos> part : parts) {
-                if (!part.test(pos)) return false;
-            }
-            return true;
-        };
+    public static Predicate<BlockPos> blockFilter(IplCollisionRegion region) {
+        return pos -> region.keepsCube(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, 0.5);
     }
 
     /**
@@ -473,124 +483,6 @@ public final class IplStraddlePoseMap {
         return out;
     }
 
-    private static LocalHalfSpace localHalfSpace(Pose3dc pose, Vec3 point, Vec3 keepNormal) {
-        Vector3d lp = pose.transformPositionInverse(
-            new Vector3d(point.x, point.y, point.z));
-        Vector3d ln = pose.transformNormalInverse(
-            new Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
-            new Vector3d());
-        double length = Math.sqrt(ln.x * ln.x + ln.y * ln.y + ln.z * ln.z);
-        if (length > 1.0e-12) {
-            ln.x /= length;
-            ln.y /= length;
-            ln.z /= length;
-        }
-        return new LocalHalfSpace(lp.x, lp.y, lp.z, ln.x, ln.y, ln.z);
-    }
-
-    /**
-     * Cut one plot-local box with a {@link LocalHalfSpace}, keeping the side the normal
-     * points to; null when the box lies entirely behind the plane.
-     *
-     * <p>Axis-aligned planes cut exactly. Oblique planes cut conservatively: the
-     * behind-most corner is pushed onto the plane along the normal, which is the same
-     * approximation ImmersivePortals' own {@code CollisionHelper.clipBox} uses, and the
-     * same one {@link #clipBoxKeeping} already applies to whole-ship boxes. The result
-     * is a slightly generous box, never a missing one -- physically the safe direction
-     * for collision.
-     */
-    @Nullable
-    public static BoundingBox3d clipLocalBoxKeeping(
-        double minX, double minY, double minZ,
-        double maxX, double maxY, double maxZ,
-        LocalHalfSpace plane
-    ) {
-        double nx = plane.nx(), ny = plane.ny(), nz = plane.nz();
-        double px = nx > 0 ? minX : maxX;
-        double py = ny > 0 ? minY : maxY;
-        double pz = nz > 0 ? minZ : maxZ;
-        double sx = nx > 0 ? maxX : minX;
-        double sy = ny > 0 ? maxY : minY;
-        double sz = nz > 0 ? maxZ : minZ;
-        double dPushed = plane.signedDistance(px, py, pz);
-        if (dPushed >= 0.0) {
-            return new BoundingBox3d(
-                minX, minY, minZ, maxX, maxY, maxZ);
-        }
-        double dStatic = plane.signedDistance(sx, sy, sz);
-        if (dStatic <= 0.0) return null;
-        px -= dPushed * nx;
-        py -= dPushed * ny;
-        pz -= dPushed * nz;
-        return new BoundingBox3d(
-            Math.min(px, sx), Math.min(py, sy), Math.min(pz, sz),
-            Math.max(px, sx), Math.max(py, sy), Math.max(pz, sz));
-    }
-
-    /**
-     * Keep-filter for plot blocks reached through the ship's NATIVE frame (real pose):
-     * drops the through-half — past the portal plane across its full infinite span. This
-     * matches the native portal-plane contact clip for an active straddle session. Null
-     * when the ship isn't straddling out of {@code contextLevel}.
-     */
-    @Nullable
-    public static Predicate<BlockPos> getSourceHalfKeepFilter(
-        @Nullable SubLevel sub, @Nullable Level contextLevel
-    ) {
-        return getSourceHalfKeepFilter(sub, contextLevel, 0.0);
-    }
-
-    /**
-     * {@code planeMargin} extends the kept side past the plane (collision support
-     * slack). Multi-straddle: the AND of EVERY exiting session's cut — a block must be
-     * on the kept side of all of them to be physically present on the source side.
-     */
-    @Nullable
-    public static Predicate<BlockPos> getSourceHalfKeepFilter(
-        @Nullable SubLevel sub, @Nullable Level contextLevel, double planeMargin
-    ) {
-        if (sub == null || contextLevel == null) return null;
-        if (sub.getLevel() != contextLevel) return null;
-        IplProjectionTree tree = IplProjectionTree.of(sub);
-        if (tree.isEmpty()) return null;
-        // Source side keeps +portal normal (crossing direction is -normal, the same
-        // convention as the transit controller's parity rule).
-        return cutFilter(leadPose(sub), frameCuts(tree, null), planeMargin);
-    }
-
-    /**
-     * Compile a world-frame half-space cut into a plot-local block-center predicate:
-     * transformed once, one dot product per block.
-     * Uses the end-of-tick pose rather than any substep lerp — within-tick ship motion
-     * is far below the block-center granularity this test operates at.
-     */
-    private static Predicate<BlockPos> buildKeepFilter(
-        Pose3dc pose, Vec3 point, Vec3 keepNormal, double planeMargin
-    ) {
-        Vector3d lp = pose.transformPositionInverse(
-            new Vector3d(point.x, point.y, point.z));
-        Vector3d ln = pose.transformNormalInverse(
-            new Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
-            new Vector3d());
-        double keepThreshold = -planeMargin;
-        // Test the block's real EXTENT against the half-space, not its centre. A centre test
-        // keeps or drops each block WHOLE and quantises the cut to the block lattice: for an
-        // oblique (45-degree) portal the physical boundary would sit up to half a block on
-        // the wrong side of the plane, asymmetrically across the aperture -- solid material
-        // behind the portal on one side, missing support in front of it on the other.
-        //
-        // A block is kept when ANY part of its unit cube is in the kept half: the support
-        // function of an axis-aligned unit cube along the (plot-local) plane normal is
-        // 0.5*(|nx|+|ny|+|nz|). Nothing with material on the kept side is dropped and
-        // nothing lying entirely behind the plane is kept, at ANY plane orientation.
-        double halfExtentAlongNormal =
-            0.5 * (Math.abs(ln.x) + Math.abs(ln.y) + Math.abs(ln.z));
-        return pos -> (pos.getX() + 0.5 - lp.x) * ln.x
-                    + (pos.getY() + 0.5 - lp.y) * ln.y
-                    + (pos.getZ() + 0.5 - lp.z) * ln.z
-                    + halfExtentAlongNormal >= keepThreshold;
-    }
-
     /**
      * {@code all} filtered to positions passing {@code keep}. Lookahead advances the
      * source iterator inside {@code hasNext} — the same timing as vanilla's
@@ -624,85 +516,6 @@ public final class IplStraddlePoseMap {
                 return next;
             }
         };
-    }
-
-    /**
-     * Same-dimension mapped-half membership: past the MAPPED destination plane AND no
-     * farther from the mapped ship image than from the real ship. The second condition is
-     * load-bearing for rotated pairs — the dest portal's INFINITE half-space can sweep
-     * across the source-side region too, and without the proximity check approaching-side
-     * entities would be handed the mapped pose (and fall through the real hull).
-     */
-    public static boolean isInMappedHalf(
-        StraddleMapping mapping, Portal portal,
-        BoundingBox3dc shipBox, Vec3 position
-    ) {
-        Vec3 srcPlanePoint = portal.getOriginPos();
-        Vec3 inward = portal.getNormal().scale(-1.0);
-        Vec3 destPlanePoint = mapping.mapPoint(srcPlanePoint);
-        Vec3 destInward = mapping.mapVec(inward);
-        if (destInward.dot(position.subtract(destPlanePoint)) < 0.0) return false;
-
-        // Proximity against the CLIPPED halves, not the full boxes. Mid-crossing, the
-        // full-ship AABB and its mapped image overlap the seam region (close or rotated
-        // pairs especially), so an entity standing on real source-side deck sat inside
-        // BOTH boxes — the 0-vs-0 tie resolved to "mapped" and collision flipped to the
-        // wrong frame around halfway. The halves that physically exist are the real box
-        // BEFORE the source plane and the image PAST the dest plane; measure those.
-        BoundingBox3d srcHalf =
-            clipBoxKeeping(shipBox, srcPlanePoint, inward.scale(-1.0));
-        BoundingBox3d dstHalf =
-            clipBoxKeeping(mapping.mapAabb(shipBox), destPlanePoint, destInward);
-        double dSource = srcHalf == null ? Double.MAX_VALUE : distanceSqToBox(srcHalf, position);
-        double dMapped = dstHalf == null ? Double.MAX_VALUE : distanceSqToBox(dstHalf, position);
-        return dMapped <= dSource;
-    }
-
-    /**
-     * Cut a box with a plane, keeping the side {@code keepNormal} points to; null when
-     * fully cut. Axis-aligned planes cut exactly; oblique planes conservatively (the
-     * behind-most corner is pushed onto the plane along the normal — same approximation
-     * ImmersivePortals' own CollisionHelper.clipBox uses).
-     */
-    @Nullable
-    private static BoundingBox3d clipBoxKeeping(
-        BoundingBox3dc box, Vec3 planePos, Vec3 keepNormal
-    ) {
-        Vec3 n = keepNormal.normalize();
-        double px = n.x > 0 ? box.minX() : box.maxX();
-        double py = n.y > 0 ? box.minY() : box.maxY();
-        double pz = n.z > 0 ? box.minZ() : box.maxZ();
-        double sx = n.x > 0 ? box.maxX() : box.minX();
-        double sy = n.y > 0 ? box.maxY() : box.minY();
-        double sz = n.z > 0 ? box.maxZ() : box.minZ();
-        double dPushed = (px - planePos.x) * n.x + (py - planePos.y) * n.y
-                       + (pz - planePos.z) * n.z;
-        BoundingBox3d out =
-            new BoundingBox3d();
-        if (dPushed >= 0.0) {
-            out.set(box);
-            return out;
-        }
-        double dStatic = (sx - planePos.x) * n.x + (sy - planePos.y) * n.y
-                       + (sz - planePos.z) * n.z;
-        if (dStatic <= 0.0) return null;
-        px -= dPushed * n.x;
-        py -= dPushed * n.y;
-        pz -= dPushed * n.z;
-        out.set(
-            Math.min(px, sx), Math.min(py, sy), Math.min(pz, sz),
-            Math.max(px, sx), Math.max(py, sy), Math.max(pz, sz));
-        return out;
-    }
-
-    private static double distanceSqToBox(
-        BoundingBox3dc box, Vec3 p
-    ) {
-        double cx = Math.max(box.minX(), Math.min(box.maxX(), p.x));
-        double cy = Math.max(box.minY(), Math.min(box.maxY(), p.y));
-        double cz = Math.max(box.minZ(), Math.min(box.maxZ(), p.z));
-        double dx = p.x - cx, dy = p.y - cy, dz = p.z - cz;
-        return dx * dx + dy * dy + dz * dz;
     }
 
     public static boolean isApproxIdentity(@Nullable DQuaternion q) {
