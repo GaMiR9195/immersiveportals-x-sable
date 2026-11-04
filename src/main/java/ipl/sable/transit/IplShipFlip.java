@@ -1,6 +1,7 @@
 package ipl.sable.transit;
 
 import dev.ryanhcode.sable.api.physics.PhysicsPipeline;
+import dev.ryanhcode.sable.api.physics.mass.MergedMassTracker;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
@@ -8,6 +9,11 @@ import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
 import dev.ryanhcode.sable.sublevel.plot.ServerLevelPlot;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
+import ipl.sable.atlas.IplFusedStep;
+import ipl.sable.mixin.MergedMassTrackerAccessor;
+import ipl.sable.mixin.SubLevelAccessor;
+import ipl.sable.mixin.SubLevelContainerAccessor;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -16,16 +22,21 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Matrix3d;
 import org.joml.Vector3d;
+import org.joml.Vector3dc;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.chunk_loading.ImmPtlChunkTracking;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.teleportation.ServerTeleportationManager;
+import qouteall.q_misc_util.api.McRemoteProcedureCall;
+import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -69,7 +80,7 @@ public final class IplShipFlip {
 
     /** Executes the flip; returns the live body afterwards (a new instance when moved), or null. */
     @Nullable
-    public static ServerSubLevel flip(ServerSubLevel ship, Portal portal, java.util.Map<UUID, UUID> movedRiders) {
+    public static ServerSubLevel flip(ServerSubLevel ship, Portal portal, Map<UUID, UUID> movedRiders) {
         if (!canFlip(ship, portal)) return null;
         return isCrossDimension(ship, portal)
             ? moveAcross(ship, portal, movedRiders)
@@ -78,7 +89,7 @@ public final class IplShipFlip {
 
     // ------------------------------------------------------------------ same dimension
 
-    private static ServerSubLevel teleportWithin(ServerSubLevel ship, Portal portal, java.util.Map<UUID, UUID> movedRiders) {
+    private static ServerSubLevel teleportWithin(ServerSubLevel ship, Portal portal, Map<UUID, UUID> movedRiders) {
         ServerLevel level = ship.getLevel();
         MinecraftServer server = level.getServer();
         ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
@@ -93,8 +104,7 @@ public final class IplShipFlip {
         teleportRiders(ship, level, level, portal, movedRiders);
         pipeline.teleport(ship, mappedPose.position(), mappedPose.orientation());
         ship.logicalPose().set(mappedPose);
-        ship.updateLastPose();
-        ((ipl.sable.mixin.SubLevelAccessor) ship).ipl$getPreviousPose().set(mappedPrevious);
+        ((SubLevelAccessor) ship).ipl$getPreviousPose().set(mappedPrevious);
         pipeline.resetVelocity(ship);
         pipeline.addLinearAndAngularVelocity(ship,
             new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
@@ -112,14 +122,14 @@ public final class IplShipFlip {
     // ------------------------------------------------------------------ other dimension
 
     @Nullable
-    private static ServerSubLevel moveAcross(ServerSubLevel ship, Portal portal, java.util.Map<UUID, UUID> movedRiders) {
+    private static ServerSubLevel moveAcross(ServerSubLevel ship, Portal portal, Map<UUID, UUID> movedRiders) {
         ServerLevel sourceLevel = ship.getLevel();
         MinecraftServer server = sourceLevel.getServer();
         ServerLevel destination = server.getLevel(portal.getDestDim());
         ServerSubLevelContainer sourceContainer = SubLevelContainer.getContainer(sourceLevel);
         ServerSubLevelContainer destContainer = SubLevelContainer.getContainer(destination);
         int[] slot = sameSlot(ship, destContainer);
-        if (slot == null) slot = IplTransitOps.findFirstEmptyPlotForMirror(destContainer);
+        if (slot == null) slot = IplTransitOps.findFirstEmptyPlot(destContainer);
         if (slot == null) {
             LOG.warn("[IPL-MOVE] destination {} plot grid full; {} stays projected",
                 destination.dimension().location(), ship.getUniqueId());
@@ -127,34 +137,24 @@ public final class IplShipFlip {
         }
         ChunkPos srcMin = ship.getPlot().getChunkMin();
         int logPlot = destContainer.getLogPlotSize();
-        var origin = (ipl.sable.mixin.SubLevelContainerAccessor) destContainer;
+        var origin = (SubLevelContainerAccessor) destContainer;
         double slotDeltaX = (double) (((slot[0] + origin.ipl$originX()) << logPlot) - srcMin.x) * 16.0;
         double slotDeltaZ = (double) (((slot[1] + origin.ipl$originZ()) << logPlot) - srcMin.z) * 16.0;
         UUID uuid = ship.getUniqueId();
         Pose3d pose = IplTransitOps.computeMappedPose(new Pose3d(ship.logicalPose()), portal);
-        // Предыдущая поза тоже переносится через портал: иначе у нового объекта lastPose == pose,
-        // первый снимок клиента «стоит на месте», а Sable не сдвигает стоящих на корпусе сущностей
-        // в этом тике — и то и другое выглядит как подвисание на выходе из портала.
+        // The previous pose crosses too: with lastPose == pose the client's first interval of the
+        // successor stands still and Sable does not carry entities on the hull for a tick.
         Pose3d previous = IplStraddlePoseMap.StraddleMapping.of(portal).mapPose(ship.lastPose());
         if (slotDeltaX != 0.0 || slotDeltaZ != 0.0) {
             pose.rotationPoint().add(slotDeltaX, 0.0, slotDeltaZ);
             previous.rotationPoint().add(slotDeltaX, 0.0, slotDeltaZ);
             LOG.warn("[IPL-MOVE] same plot slot unavailable for {}; plot-local references may go stale", uuid);
         }
-        // Сдвиг часов трекинга: метки обоих уровней для ТЕКУЩЕГО серверного тика.
-        int serverTick = server.getTickCount();
-        int clockOffset = 0;
-        boolean destinationStepsThisTick = false;
-        if (destContainer.trackingSystem() instanceof IplTrackingStamp dstStamp
-            && sourceContainer.trackingSystem() instanceof IplTrackingStamp srcStamp) {
-            clockOffset = dstStamp.ipl$stampFor(serverTick) - srcStamp.ipl$stampFor(serverTick);
-            destinationStepsThisTick = !dstStamp.ipl$hasTicked(serverTick);
-        }
-        // Уровень назначения в этом серверном тике ещё не тикал (Верхний мир -> Незер: Незер тикает
-        // позже), и его физика сдвинет новое тело ещё раз. Тогда за один тик корабль сделал бы два
-        // шага: рывок вперёд у клиентов, пассажиры отстают от корпуса. Поэтому тело ставится на позу
-        // ДО шага этого тика, и шаг назначения приводит его туда, где оно было в источнике.
-        Pose3d start = destinationStepsThisTick ? new Pose3d(previous) : pose;
+        // The body already made this tick's step in the source. If the destination still steps
+        // this tick (stock natives, a level that ticks later), the successor starts from the
+        // previous pose and that step brings it back to where it left the source; otherwise it
+        // starts at the pose itself. Under the fused world every level has stepped by now.
+        Pose3d start = IplFusedStep.stepsLaterThisTick(destContainer.physicsSystem()) ? new Pose3d(previous) : pose;
         PhysicsPipeline sourcePipeline = sourceContainer.physicsSystem().getPipeline();
         Vector3d linear = sourcePipeline.getLinearVelocity(ship, new Vector3d());
         Vector3d angular = sourcePipeline.getAngularVelocity(ship, new Vector3d());
@@ -164,22 +164,22 @@ public final class IplShipFlip {
         endSessions(server, uuid, "move");
         IplStraddleSessionSync.advanceFrame(uuid, portal);
         // The ghost bridge must reach clients BEFORE Sable's stop-tracking packet.
-        sendMove(server, ship, sourceLevel, destination, portal, pose, clockOffset);
+        sendMove(server, ship, sourceLevel, destination, portal, pose);
         teleportRiders(ship, sourceLevel, destination, portal, movedRiders);
 
         ServerSubLevel moved;
         try {
             moved = (ServerSubLevel) destContainer.allocateSubLevel(uuid, slot[0], slot[1], start);
-        } catch (Throwable t) {
-            LOG.error("[IPL-MOVE] allocation in {} failed for {}", destination.dimension().location(), uuid, t);
+        } catch (RuntimeException e) {
+            LOG.error("[IPL-MOVE] allocation in {} failed for {}", destination.dimension().location(), uuid, e);
             return null;
         }
         try {
-            ((ipl.sable.mixin.SubLevelAccessor) moved).ipl$getPreviousPose().set(previous);
+            ((SubLevelAccessor) moved).ipl$getPreviousPose().set(previous);
             if (ship.getName() != null) moved.setName(ship.getName());
             if (ship.getUserDataTag() != null) moved.setUserDataTag(ship.getUserDataTag().copy());
             seedMassBaseline(ship, moved, slotDeltaX, slotDeltaZ);
-            IplTransitOps.copyPlotBlocksPublic(ship.getPlot(), moved.getPlot(), sourceLevel, destination);
+            IplTransitOps.copyPlotBlocks(ship.getPlot(), moved.getPlot(), sourceLevel, destination);
             relocatePlotEntities(ship, moved, sourceLevel, destination);
             if (mappedLin.lengthSqr() > 1e-12 || mappedAng.lengthSqr() > 1e-12) {
                 destContainer.physicsSystem().getPipeline().addLinearAndAngularVelocity(moved,
@@ -187,12 +187,12 @@ public final class IplShipFlip {
                     new Vector3d(mappedAng.x, mappedAng.y, mappedAng.z));
             }
             sourceContainer.removeSubLevel(ship, SubLevelRemovalReason.REMOVED);
-        } catch (Throwable t) {
-            LOG.error("[IPL-MOVE] move of {} failed; rolling back the copy", uuid, t);
+        } catch (RuntimeException e) {
+            LOG.error("[IPL-MOVE] move of {} failed; rolling back the copy", uuid, e);
             try {
                 if (!moved.isRemoved()) destContainer.removeSubLevel(moved, SubLevelRemovalReason.REMOVED);
-            } catch (Throwable t2) {
-                LOG.error("[IPL-MOVE] rollback failed for {}", uuid, t2);
+            } catch (RuntimeException rollbackError) {
+                LOG.error("[IPL-MOVE] rollback failed for {}", uuid, rollbackError);
             }
             return null;
         }
@@ -205,7 +205,7 @@ public final class IplShipFlip {
     private static int @Nullable [] sameSlot(ServerSubLevel ship, ServerSubLevelContainer dest) {
         ChunkPos center = ship.getPlot().getCenterChunk();
         int logPlot = dest.getLogPlotSize();
-        var origin = (ipl.sable.mixin.SubLevelContainerAccessor) dest;
+        var origin = (SubLevelContainerAccessor) dest;
         int localX = (center.x >> logPlot) - origin.ipl$originX();
         int localZ = (center.z >> logPlot) - origin.ipl$originZ();
         int side = 1 << dest.getLogSideLength();
@@ -216,26 +216,22 @@ public final class IplShipFlip {
 
     private static void endSessions(MinecraftServer server, UUID uuid, String reason) {
         IplAtlasStraddleSession.clearShip(uuid, reason);
-        // Русский комментарий (почему): раньше конец каждой сессии рассылался отдельным снимком
-        // (N снимков убывающего размера на флип в ряду порталов) — лишний трафик и промежуточные
-        // состояния у клиента вроде "цепочка без корня". Один пустой снимок старого кадра
-        // эквивалентен: клиент переводит все исчезнувшие сессии в хвосты с одним тиком конца.
+        // One empty snapshot of the old frame ends every session at once: clients turn all vanished
+        // sessions into tails with the same end tick (no per-session snapshots, no "chain without
+        // root" intermediate states on a row of portals).
         IplStraddleSessionSync.endAllFor(server, uuid, reason);
     }
 
+    /** See {@link MergedMassTrackerAccessor}: the copy must not re-base the rotation point. */
     private static void seedMassBaseline(ServerSubLevel source, ServerSubLevel target, double dx, double dz) {
-        try {
-            if (!(source.getMassTracker() instanceof dev.ryanhcode.sable.api.physics.mass.MergedMassTracker src)
-                || !(target.getMassTracker() instanceof dev.ryanhcode.sable.api.physics.mass.MergedMassTracker dst)
-                || !((Object) dst instanceof ipl.sable.mixin.MergedMassTrackerAccessor access)) return;
-            org.joml.Vector3dc com = src.getCenterOfMass();
-            if (com == null) return;
-            access.ipl$setLastCenterOfMass(new Vector3d(com).add(dx, 0.0, dz));
-            access.ipl$setLastInertiaTensor(new org.joml.Matrix3d(src.getInertiaTensor()));
-            access.ipl$setLastMass(src.getMass());
-        } catch (Throwable t) {
-            LOG.debug("[IPL-MOVE] mass baseline seeding failed for {}", target.getUniqueId(), t);
-        }
+        if (!(source.getMassTracker() instanceof MergedMassTracker src)
+            || !(target.getMassTracker() instanceof MergedMassTracker dst)) return;
+        Vector3dc com = src.getCenterOfMass();
+        if (com == null) return;
+        MergedMassTrackerAccessor access = (MergedMassTrackerAccessor) (Object) dst;
+        access.ipl$setLastCenterOfMass(new Vector3d(com).add(dx, 0.0, dz));
+        access.ipl$setLastInertiaTensor(new Matrix3d(src.getInertiaTensor()));
+        access.ipl$setLastMass(src.getMass());
     }
 
     private static void relocatePlotEntities(ServerSubLevel source, ServerSubLevel target,
@@ -256,21 +252,21 @@ public final class IplShipFlip {
                     Entity result = ServerTeleportationManager.teleportEntityGeneral(
                         entity, entity.position().add(dx, 0.0, dz), to);
                     if (result != null && !result.isRemoved()) result.setDeltaMovement(entity.getDeltaMovement());
-                } catch (Throwable t) {
-                    LOG.warn("[IPL-MOVE] failed to relocate plot entity {} of {}", entity, source.getUniqueId(), t);
+                } catch (RuntimeException e) {
+                    LOG.warn("[IPL-MOVE] failed to relocate plot entity {} of {}", entity, source.getUniqueId(), e);
                 }
             }
         }
     }
 
-    /** Entities riding the hull that are already beyond the portal plane follow the body. */
     /**
-     * {@code movedRiders}: rider -> ship that carried it this tick. Русский: один и тот же
-     * корабль может пройти несколько порталов подряд за тик (ряд порталов) — его пассажиры
-     * должны пройти их вместе с ним; запрещено только "перетаскивание" чужим кораблём.
+     * Entities riding the hull that are already beyond the portal plane follow the body.
+     * {@code movedRiders} maps rider -> ship that carried it this tick: a ship may pass several
+     * portals in one tick (a row of portals) and its riders go along, but another ship must not
+     * drag them.
      */
     private static void teleportRiders(ServerSubLevel ship, ServerLevel from, ServerLevel to, Portal portal,
-                                       java.util.Map<UUID, UUID> movedRiders) {
+                                       Map<UUID, UUID> movedRiders) {
         AABB query = ship.boundingBox().toMojang().inflate(0.5);
         Vec3 planePoint = portal.getOriginPos();
         Vec3 sourceToDest = portal.getNormal().scale(-1.0);
@@ -289,8 +285,8 @@ public final class IplShipFlip {
                     movedRiders.put(entity.getUUID(), carrier);
                     movedRiders.put(result.getUUID(), carrier);
                 }
-            } catch (Throwable t) {
-                LOG.warn("[IPL-FLIP] failed to carry rider {} of {}", entity, ship.getUniqueId(), t);
+            } catch (RuntimeException e) {
+                LOG.warn("[IPL-FLIP] failed to carry rider {} of {}", entity, ship.getUniqueId(), e);
             }
         }
     }
@@ -311,7 +307,7 @@ public final class IplShipFlip {
             ServerSubLevel body = pending.body();
             if (body == null || body.isRemoved()) continue;
             for (ServerPlayer player : recipients(server, body, body.getLevel(), body.logicalPose().position())) {
-                qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(player,
+                McRemoteProcedureCall.tellClientToInvoke(player,
                     "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
                     body.getUniqueId().toString(), body.getLevel().dimension().location().toString(),
                     pending.transform(), pending.portalNbt(), Integer.toString(pending.firstDestinationTick()),
@@ -325,7 +321,7 @@ public final class IplShipFlip {
     }
 
     private static void sendMove(MinecraftServer server, ServerSubLevel ship, ServerLevel from, ServerLevel to,
-                                 Portal portal, Pose3d destinationPose, int clockOffset) {
+                                 Portal portal, Pose3d destinationPose) {
         Set<ServerPlayer> players = new HashSet<>(recipients(server, ship, to, destinationPose.position()));
         for (UUID id : ship.getTrackingPlayers()) {
             ServerPlayer player = server.getPlayerList().getPlayer(id);
@@ -336,19 +332,18 @@ public final class IplShipFlip {
         String frame = Long.toString(IplStraddleSessionSync.frame(ship.getUniqueId()));
         String inverse = IplGrabLink.inverse(portal).encode();
         for (ServerPlayer player : players) {
-            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(player,
+            McRemoteProcedureCall.tellClientToInvoke(player,
                 "ipl.sable.client.IplParentDimSync.RemoteCallables.move",
                 ship.getUniqueId().toString(), from.dimension().location().toString(),
-                to.dimension().location().toString(), transform, nbt, frame, inverse,
-                Integer.toString(clockOffset));
+                to.dimension().location().toString(), transform, nbt, frame, inverse);
         }
     }
 
     private static List<ServerPlayer> recipients(MinecraftServer server, ServerSubLevel body,
-                                                 ServerLevel viewedLevel, org.joml.Vector3dc position) {
+                                                 ServerLevel viewedLevel, Vector3dc position) {
         Set<UUID> ids = new HashSet<>(body.getTrackingPlayers());
         ids.addAll(IplGrabChain.getDraggingPlayers(body.getUniqueId()));
-        ChunkPos chunk = new ChunkPos(net.minecraft.core.BlockPos.containing(position.x(), position.y(), position.z()));
+        ChunkPos chunk = new ChunkPos(BlockPos.containing(position.x(), position.y(), position.z()));
         for (ServerPlayer viewer : ImmPtlChunkTracking.getPlayersViewingChunk(
             viewedLevel.dimension(), chunk.x, chunk.z, false)) {
             ids.add(viewer.getUUID());
@@ -364,7 +359,7 @@ public final class IplShipFlip {
     static String encodePortalTransform(Portal portal) {
         Vec3 origin = portal.getOriginPos();
         Vec3 destination = portal.getDestPos();
-        qouteall.q_misc_util.my_util.DQuaternion rotation = portal.getRotationD();
+        DQuaternion rotation = portal.getRotationD();
         return String.join(";",
             Double.toHexString(origin.x), Double.toHexString(origin.y), Double.toHexString(origin.z),
             Double.toHexString(destination.x), Double.toHexString(destination.y), Double.toHexString(destination.z),

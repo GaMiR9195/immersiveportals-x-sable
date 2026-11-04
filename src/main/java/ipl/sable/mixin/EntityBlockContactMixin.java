@@ -26,7 +26,7 @@ import org.spongepowered.asm.mixin.injection.At;
  * a merged mixin handler whose mangled name cannot be targeted; vanilla's own calls pass
  * world positions and fall straight through ({@code ctx} is returned unchanged).
  *
- * <p>Русский комментарий: пропуск вызова ({@code entityInsideLevel == null}) — это
+ * <p>Пропуск вызова ({@code entityInsideLevel == null}) — это
  * блок, чья касаемая часть срезана порталом в кадре, который сканировала сущность
  * (например, игрок стоит за порталом "сзади" там, где родная поза ещё содержит
  * улетевшую в портал часть корабля).
@@ -39,8 +39,7 @@ public abstract class EntityBlockContactMixin {
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/world/level/block/state/BlockState;entityInside(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/entity/Entity;)V"
-        ),
-        require = 0
+        )
     )
     private void ipl$entityInsideInOwnerLevel(BlockState state, Level level, BlockPos pos, Entity entity,
                                               Operation<Void> original) {
@@ -53,8 +52,7 @@ public abstract class EntityBlockContactMixin {
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/world/level/block/Block;stepOn(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/entity/Entity;)V"
-        ),
-        require = 0
+        )
     )
     private void ipl$stepOnInOwnerLevel(Block block, Level level, BlockPos pos, BlockState state, Entity entity,
                                         Operation<Void> original) {
@@ -66,8 +64,7 @@ public abstract class EntityBlockContactMixin {
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/world/level/block/Block;fallOn(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/entity/Entity;F)V"
-        ),
-        require = 0
+        )
     )
     private void ipl$fallOnInOwnerLevel(Block block, Level level, BlockState state, BlockPos pos, Entity entity,
                                         float distance, Operation<Void> original) {

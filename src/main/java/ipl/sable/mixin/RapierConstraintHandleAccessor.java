@@ -10,6 +10,6 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 @Mixin(value = RapierConstraintHandle.class, remap = false)
 public interface RapierConstraintHandleAccessor {
 
-    @Accessor(value = "handle", remap = false)
+    @Accessor(value = "handle")
     long ipl$getNativeHandle();
 }

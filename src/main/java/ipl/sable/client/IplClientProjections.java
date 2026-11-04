@@ -1,15 +1,21 @@
 package ipl.sable.client;
 
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
+import dev.ryanhcode.sable.companion.math.BoundingBox3ic;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.render.IplClipPortalFinder;
+import ipl.sable.transit.IplProjectionTree;
 import ipl.sable.transit.IplStraddlePoseMap;
+import ipl.sable.transit.PortalOrder;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
@@ -18,7 +24,9 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 
@@ -115,7 +123,7 @@ public final class IplClientProjections {
      */
     @Nullable
     public static ClientSubLevel findSubLevelAtPlot(Vec3 localAnchor) {
-        var chunk = new net.minecraft.world.level.ChunkPos(net.minecraft.core.BlockPos.containing(localAnchor));
+        var chunk = new ChunkPos(BlockPos.containing(localAnchor));
         ClientLevel main = Minecraft.getInstance().level;
         ClientSubLevel found = plotSub(main, chunk);
         if (found != null) return found;
@@ -128,7 +136,7 @@ public final class IplClientProjections {
     }
 
     @Nullable
-    private static ClientSubLevel plotSub(@Nullable ClientLevel level, net.minecraft.world.level.ChunkPos chunk) {
+    private static ClientSubLevel plotSub(@Nullable ClientLevel level, ChunkPos chunk) {
         if (level == null) return null;
         SubLevelContainer container = SubLevelContainer.getContainer((Level) level);
         if (container == null || !container.inBounds(chunk.x, chunk.z)) return null;
@@ -214,7 +222,7 @@ public final class IplClientProjections {
             Portal sibling = other.portal();
             if (sibling == null || sibling.getUUID().equals(portal.getUUID())) continue;
             boolean siblingWide = IplStraddleSessionStore.isWide(id, sibling.getUUID().toString());
-            if (!ipl.sable.transit.PortalOrder.strictlyDownstreamOf(portal, wide, sibling, siblingWide)) continue;
+            if (!PortalOrder.strictlyDownstreamOf(portal, wide, sibling, siblingWide)) continue;
             return new Plane(portal.transformPoint(sibling.getOriginPos()), portal.transformLocalVec(sibling.getNormal()));
         }
         return null;
@@ -237,7 +245,7 @@ public final class IplClientProjections {
             }
             Portal sibling = other.get(other.size() - 1);
             if (!sameParent || sibling.getUUID().equals(last.getUUID())) continue;
-            if (ipl.sable.transit.PortalOrder.coveredBy(last, IplStraddleSessionStore.isWide(id, path),
+            if (PortalOrder.coveredBy(last, IplStraddleSessionStore.isWide(id, path),
                 sibling, IplStraddleSessionStore.isWide(id, pathOf(other)))) return true;
         }
         return false;
@@ -263,8 +271,8 @@ public final class IplClientProjections {
         // Вторая плоскость куска цепочки. Приоритет — вход в СЛЕДУЮЩИЙ портал (кусок, ушедший
         // глубже, рисует уже следующая проекция). Если глубже никто не ушёл — выход ПРЕДЫДУЩЕГО
         // портала, перенесённый через последний: без неё «родная» часть корабля, отображённая
-        // составной изометрией, могла попасть за выход последнего портала при косой
-        // расстановке порталов и рисовалась лишней копией.
+        // составной изометрией, при косой расстановке порталов может попасть за выход последнего
+        // портала и нарисоваться лишней копией.
         Plane exclude = childEntryPlane(chain, chains);
         if (exclude == null && chain.size() >= 2) {
             Portal parent = chain.get(chain.size() - 2);
@@ -280,7 +288,7 @@ public final class IplClientProjections {
     private static final double CULL_MARGIN = 1.0;
 
     /**
-     * Русский комментарий (почему): проекция рисует всю геометрию корабля, а режет её шейдер.
+     * Проекция рисует всю геометрию корабля, а режет её шейдер.
      * Сессии, открытые заранее (предсказанный или ведущий вход), и хвосты держат проекции, чей
      * кусок ещё или уже пуст, — в ряду порталов это полные лишние проходы на каждый портал.
      * Если коробка плота целиком по отрезанную сторону любой из двух плоскостей куска, рисовать
@@ -294,7 +302,7 @@ public final class IplClientProjections {
     }
 
     /** Whether any corner of the plot box at {@code pose} is on (or near) the kept side of {@code plane}. */
-    private static boolean reaches(Plane plane, Pose3dc pose, dev.ryanhcode.sable.companion.math.BoundingBox3ic bounds) {
+    private static boolean reaches(Plane plane, Pose3dc pose, BoundingBox3ic bounds) {
         for (int i = 0; i < 8; i++) {
             Vec3 corner = pose.transformPosition(new Vec3(
                 (i & 1) == 0 ? bounds.minX() : bounds.maxX() + 1.0,
@@ -309,7 +317,7 @@ public final class IplClientProjections {
      * Плоскость входа в первый дочерний портал куска {@code path}: кусок проекции, который
      * уже зашёл в следующий портал, должен быть ОБРЕЗАН на его входе (то, что за входом,
      * рисует дочерняя проекция в своём измерении). Без этой второй плоскости прямая
-     * проекция рисовала корабль целиком за входом следующего портала — «несколько копий
+     * проекция рисовала бы корабль целиком за входом следующего портала — «несколько копий
      * саб-уровня» вместо кусков, переходящих из портала в портал.
      *
      * <p>Сохраняемое полупространство — сторона нормали входа (по конвенции IP нормаль
@@ -339,7 +347,7 @@ public final class IplClientProjections {
      * {@code bounds} (spatial-query splice; see {@code CompanionIntersectMixin}).
      */
     @Nullable
-    public static List<SubLevel> intersectingImages(Level level, dev.ryanhcode.sable.companion.math.BoundingBox3dc bounds) {
+    public static List<SubLevel> intersectingImages(Level level, BoundingBox3dc bounds) {
         if (IplStraddleSessionStore.isIdle()) return null;
         List<SubLevel> out = null;
         for (ClientLevel candidateLevel : clientLevels()) {
@@ -393,27 +401,6 @@ public final class IplClientProjections {
         }
     }
 
-    /** Sessions the ship exits FROM {@code contextLevel} (its own level). */
-    public static void forEachClientStraddleFrom(
-        SubLevel sub, Level contextLevel, BiConsumer<Portal, IplStraddlePoseMap.StraddleMapping> visitor
-    ) {
-        if (!(sub instanceof ClientSubLevel clientSub) || sub.getLevel() != contextLevel) return;
-        for (Portal portal : IplStraddleSessionStore.resolveAllPortals(clientSub)) {
-            if (Math.abs(portal.getScaling() - 1.0) > 1e-9) continue;
-            visitor.accept(portal, IplStraddlePoseMap.StraddleMapping.of(portal));
-        }
-    }
-
-    /** The straddle portal from the client-side finder (scale-gated), or null. */
-    @Nullable
-    public static Portal getClientStraddlePortal(SubLevel sub) {
-        if (!(sub instanceof ClientSubLevel clientSub)) return null;
-        IplClipPortalFinder.ClipDecision decision = IplClipPortalFinder.findStraddlingPortalPlane(clientSub);
-        if (decision == null || decision.portal() == null) return null;
-        if (Math.abs(decision.portal().getScaling() - 1.0) > 1e-9) return null;
-        return decision.portal();
-    }
-
     // ------------------------------------------------------------------ projection tree
 
     /** Client clock for {@link ipl.sable.transit.IplProjectionTree}'s per-tick cache. */
@@ -428,21 +415,21 @@ public final class IplClientProjections {
      * prefix registered before its extension. Transit ghosts are visual-only and have no
      * tree (their real successor owns interaction).
      */
-    public static List<ipl.sable.transit.IplProjectionTree.Entry> treeEntries(SubLevel sub) {
+    public static List<IplProjectionTree.Entry> treeEntries(SubLevel sub) {
         if (!(sub instanceof ClientSubLevel clientSub) || IplParentDimSync.isGhost(clientSub)) return List.of();
         if (!IplStraddleSessionStore.mayStraddle(sub.getUniqueId())) return List.of();
-        List<ipl.sable.transit.IplProjectionTree.Entry> out = new ArrayList<>(2);
-        java.util.Set<String> seen = new java.util.HashSet<>();
+        List<IplProjectionTree.Entry> out = new ArrayList<>(2);
+        Set<String> seen = new HashSet<>();
         for (Portal portal : IplStraddleSessionStore.resolveAllPortals(clientSub)) {
             String path = portal.getUUID().toString();
-            if (seen.add(path)) out.add(new ipl.sable.transit.IplProjectionTree.Entry(path, "", portal,
+            if (seen.add(path)) out.add(new IplProjectionTree.Entry(path, "", portal,
                 IplStraddleSessionStore.isWide(sub.getUniqueId(), path)));
         }
         for (List<Portal> chain : IplStraddleSessionStore.resolveChains(clientSub)) {
             String via = "";
             for (Portal portal : chain) {
                 String path = via.isEmpty() ? portal.getUUID().toString() : via + ">" + portal.getUUID();
-                if (seen.add(path)) out.add(new ipl.sable.transit.IplProjectionTree.Entry(path, via, portal,
+                if (seen.add(path)) out.add(new IplProjectionTree.Entry(path, via, portal,
                     IplStraddleSessionStore.isWide(sub.getUniqueId(), path)));
                 via = path;
             }

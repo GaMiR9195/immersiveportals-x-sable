@@ -1,10 +1,12 @@
 package ipl.sable.transit;
 
-import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler;
 import ipl.sable.duck.IplStaffDragSessionControl;
 import ipl.sable.mixin.StaffServerHandlerAccessor;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -17,6 +19,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
+import qouteall.q_misc_util.api.McRemoteProcedureCall;
+import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -29,10 +33,9 @@ import java.util.UUID;
 /**
  * Server-authoritative grab chain: THE coordinate frame of an active staff drag.
  *
- * <p>Replaces the old {@code IplStaffPortalDragState} and every heuristic it carried —
- * distance-to-box goal choosers, sticky switch margins, held-portal pins, single-transit
- * records, nearest-portal-after-dimension-change guessing. All of that inferred frames
- * from geometry snapshots; this class records frames from the EVENTS that change them:
+ * <p>Frames are never inferred from geometry snapshots (distance-to-box goal choosers,
+ * sticky switch margins, nearest-portal-after-dimension-change guessing); this class records
+ * them from the EVENTS that change them:
  *
  * <ul>
  *   <li><b>Grab start</b> seeds the chain from the pick-time portal path (the client
@@ -175,7 +178,7 @@ public final class IplGrabChain {
 
             ServerPlayer player = server.getPlayerList().getPlayer(frame.playerId);
             if (player != null) {
-                qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+                McRemoteProcedureCall.tellClientToInvoke(
                     player,
                     "ipl.sable.client.IplGrabChainClient.RemoteCallables.dragRebase",
                     subId.toString(), Long.toString(frame.revision), link.encode(),
@@ -198,11 +201,10 @@ public final class IplGrabChain {
      * inference. On a desync (chain endpoints disagree with reality) the goal passes
      * through unchanged and the desync is logged: visible, never silently guessed around.
      */
-    public static Vec3 mapGoal(ServerPlayer player, SubLevel sub, Vec3 goal) {
+    public static Vec3 mapGoal(ServerPlayer player, ServerSubLevel sub, Vec3 goal) {
         Frame frame = FRAMES.get(player.getUUID());
         if (frame == null || !frame.subId.equals(sub.getUniqueId())) return goal;
-
-        if (!(sub.getLevel() instanceof ServerLevel parent)) return goal;
+        ServerLevel parent = sub.getLevel();
 
         if (frame.chain.isEmpty()) {
             if (!player.level().dimension().equals(parent.dimension())) {
@@ -224,19 +226,6 @@ public final class IplGrabChain {
         }
 
         return IplGrabLink.fold(frame.chain, goal);
-    }
-
-    /**
-     * {@link #mapGoal} for a DIRECTION (a velocity): the chain's rotations only, with no
-     * translation. Used by the drag motor's velocity lead, which needs the goal's rate of
-     * change expressed in the body's parent frame rather than the player's.
-     */
-    public static Vec3 mapGoalDirection(ServerPlayer player, SubLevel sub, Vec3 direction) {
-        Frame frame = FRAMES.get(player.getUUID());
-        if (frame == null || !frame.subId.equals(sub.getUniqueId())) return direction;
-        if (frame.chain.isEmpty()) return direction;
-        if (!frame.chain.get(0).fromDim().equals(player.level().dimension())) return direction;
-        return IplGrabLink.foldDirection(frame.chain, direction);
     }
 
     /**
@@ -266,49 +255,42 @@ public final class IplGrabChain {
          * discontinuous path yields an empty chain plus a log line, never a guess.
          */
         public static void seedChain(ServerPlayer player, String subUuid, String encodedPath, String sourceFrame, String seedId) {
-            try {
-                UUID subId = UUID.fromString(subUuid);
-                Frame frame = new Frame(subId, player.getUUID());
-                frame.seedId = UUID.fromString(seedId).toString();
-                frame.chain = resolveSeed(player, encodedPath);
-                var missed = IplStraddleSessionSync.hopsAfter(subId, Long.parseLong(sourceFrame));
-                if (missed == null) {
-                    // Never guess a transform or bind an old visual pick to a new body.
-                    for (ServerLevel any : player.server.getAllLevels()) {
-                        PhysicsStaffServerHandler.get(any).stopDragging(player.getUUID());
-                    }
-                    qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(player,
-                        "ipl.sable.client.IplGrabChainClient.RemoteCallables.rejectSeed", subUuid, frame.seedId);
-                    LOG.warn("[IPL-GRAB-CHAIN] expired pick frame {} for {}", sourceFrame, subId);
-                    return;
+            UUID subId = UUID.fromString(subUuid);
+            Frame frame = new Frame(subId, player.getUUID());
+            frame.seedId = UUID.fromString(seedId).toString();
+            frame.chain = resolveSeed(player, encodedPath);
+            var missed = IplStraddleSessionSync.hopsAfter(subId, Long.parseLong(sourceFrame));
+            if (missed == null) {
+                // Never guess a transform or bind an old visual pick to a new body.
+                for (ServerLevel any : player.server.getAllLevels()) {
+                    PhysicsStaffServerHandler.get(any).stopDragging(player.getUUID());
                 }
-                for (var hop : missed) {
-                    frame.chain = IplGrabLink.append(frame.chain, hop.link());
-                    frame.revision++;
-                    if (!isIdentity(hop.link().rotation())) frame.pendingRotations.add(
-                        new PendingRotation(frame.revision, new Quaterniond(hop.link().rotation())));
-                    qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(player,
-                        "ipl.sable.client.IplGrabChainClient.RemoteCallables.dragRebase",
-                        subUuid, Long.toString(frame.revision), hop.link().encode(), Long.toString(hop.frame()), frame.seedId);
-                }
-                FRAMES.put(player.getUUID(), frame);
-                LOG.debug("[IPL-GRAB-CHAIN] seeded chain for player {} sub {} depth={}",
-                    player.getUUID(), subId, frame.chain.size());
-                broadcast(player.server, player.getUUID());
-            } catch (RuntimeException e) {
-                LOG.error("[IPL-GRAB-CHAIN] bad seed from {}", player.getUUID(), e);
+                McRemoteProcedureCall.tellClientToInvoke(player,
+                    "ipl.sable.client.IplGrabChainClient.RemoteCallables.rejectSeed", subUuid, frame.seedId);
+                LOG.warn("[IPL-GRAB-CHAIN] expired pick frame {} for {}", sourceFrame, subId);
+                return;
             }
+            for (var hop : missed) {
+                frame.chain = IplGrabLink.append(frame.chain, hop.link());
+                frame.revision++;
+                if (!isIdentity(hop.link().rotation())) frame.pendingRotations.add(
+                    new PendingRotation(frame.revision, new Quaterniond(hop.link().rotation())));
+                McRemoteProcedureCall.tellClientToInvoke(player,
+                    "ipl.sable.client.IplGrabChainClient.RemoteCallables.dragRebase",
+                    subUuid, Long.toString(frame.revision), hop.link().encode(), Long.toString(hop.frame()), frame.seedId);
+            }
+            FRAMES.put(player.getUUID(), frame);
+            LOG.debug("[IPL-GRAB-CHAIN] seeded chain for player {} sub {} depth={}",
+                player.getUUID(), subId, frame.chain.size());
+            broadcast(player.server, player.getUUID());
         }
 
         /** Client processed the rebase RPC for this revision; stop compensating packets. */
         public static void ackRebase(ServerPlayer player, String revision, String seedId) {
             Frame frame = FRAMES.get(player.getUUID());
             if (frame == null || !frame.seedId.equals(seedId)) return;
-            try {
-                long acked = Long.parseLong(revision);
-                frame.pendingRotations.removeIf(pending -> pending.revision() <= acked);
-            } catch (NumberFormatException ignored) {
-            }
+            long acked = Long.parseLong(revision);
+            frame.pendingRotations.removeIf(pending -> pending.revision() <= acked);
         }
     }
 
@@ -330,8 +312,8 @@ public final class IplGrabChain {
             if (sep < 0) return failSeed(player, encodedPath, "malformed step " + step);
             UUID portalId = UUID.fromString(body.substring(0, sep));
             ResourceKey<Level> dim = ResourceKey.create(
-                net.minecraft.core.registries.Registries.DIMENSION,
-                net.minecraft.resources.ResourceLocation.parse(body.substring(sep + 1)));
+                Registries.DIMENSION,
+                ResourceLocation.parse(body.substring(sep + 1)));
             ServerLevel level = player.server.getLevel(dim);
             Portal portal = level == null ? null : findPortal(level, portalId);
             if (portal == null) return failSeed(player, encodedPath, "unresolvable portal " + portalId);
@@ -386,7 +368,7 @@ public final class IplGrabChain {
     }
 
     private static Quaterniond rotationOf(Portal portal) {
-        qouteall.q_misc_util.my_util.DQuaternion q = portal.getRotationD();
+        DQuaternion q = portal.getRotationD();
         return q == null ? new Quaterniond() : new Quaterniond(q.x, q.y, q.z, q.w);
     }
 
@@ -404,7 +386,7 @@ public final class IplGrabChain {
         if (frame == null) return;
         String encoded = IplGrabLink.encodeChain(frame.chain);
         for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
-            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+            McRemoteProcedureCall.tellClientToInvoke(
                 viewer,
                 "ipl.sable.client.IplGrabChainClient.RemoteCallables.snapshot",
                 playerId.toString(), frame.subId.toString(),
@@ -416,7 +398,7 @@ public final class IplGrabChain {
     private static void broadcastClear(MinecraftServer server, UUID playerId, String seedId) {
         if (server == null) return;
         for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
-            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+            McRemoteProcedureCall.tellClientToInvoke(
                 viewer,
                 "ipl.sable.client.IplGrabChainClient.RemoteCallables.clear",
                 playerId.toString(), seedId

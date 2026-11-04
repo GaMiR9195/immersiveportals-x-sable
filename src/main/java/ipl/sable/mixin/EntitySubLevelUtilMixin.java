@@ -35,7 +35,7 @@ public abstract class EntitySubLevelUtilMixin {
     private static final boolean IPL$ENABLED =
         !"false".equals(System.getProperty("ipl.sable.clientKickPoseGuard"));
 
-    @Inject(method = "kickEntity", at = @At("HEAD"), remap = false, require = 0,
+    @Inject(method = "kickEntity", at = @At("HEAD"),
         cancellable = true)
     private static void ipl$guardUnsyncedClientKick(
         SubLevel subLevel, Entity entity, CallbackInfo ci

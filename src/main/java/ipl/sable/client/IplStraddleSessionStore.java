@@ -1,26 +1,34 @@
 package ipl.sable.client;
 
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import ipl.sable.transit.IplProjectionTree;
+import ipl.sable.transit.PortalOrder;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.nbt.TagParser;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -66,20 +74,19 @@ public final class IplStraddleSessionStore {
      * Snapshots of a coordinate frame the client has not entered yet (its parent flip is still
      * queued behind the delayed render stream).
      *
-     * <p>Русский комментарий (почему): раньше на кадр хранился только ПОСЛЕДНИЙ снимок. В ряду
-     * порталов сервер успевает внутри ещё не применённого кадра открыть и закрыть сессию
-     * (следующий флип наступает раньше, чем клиент догнал предыдущий) — последний снимок пуст,
-     * и при входе в кадр кусок за следующим порталом пропадал целиком: мерцание и «потеря
-     * бесшовности». Теперь закончившиеся внутри кадра сессии сохраняются хвостами со своим
-     * тиком окончания и дорисовываются, пока до него не дошли часы интерполяции.
+     * <p>В ряду порталов сервер успевает внутри ещё не применённого кадра открыть и закрыть
+     * сессию (следующий флип наступает раньше, чем клиент догнал предыдущий), и последний
+     * снимок кадра пуст. Одного последнего снимка мало: при входе в кадр кусок за следующим
+     * порталом пропал бы целиком. Поэтому закончившиеся внутри кадра сессии хранятся хвостами
+     * со своим тиком окончания и дорисовываются, пока до него не дошли часы интерполяции.
      */
     private static final class DeferredFrame {
         String payload = "";
         int endTick;
-        final Map<String, Tail> ended = new java.util.LinkedHashMap<>();
+        final Map<String, Tail> ended = new LinkedHashMap<>();
     }
     /** Later chart's sessions cannot replace the delayed current chart's state. */
-    private static final Map<UUID, java.util.NavigableMap<Long, DeferredFrame>> FUTURE = new java.util.HashMap<>();
+    private static final Map<UUID, NavigableMap<Long, DeferredFrame>> FUTURE = new HashMap<>();
 
     /** Ship → active ROOT session portals (session-start order; empty never stored). */
     private static final ConcurrentMap<UUID, List<SessionPortal>> SESSIONS = new ConcurrentHashMap<>();
@@ -98,12 +105,11 @@ public final class IplStraddleSessionStore {
     /**
      * The same render tail for CHAINED sessions.
      *
-     * <p>Русский комментарий (почему): флип рассылает снимки конца всех сессий старого кадра, а
-     * новый кадр клиент применяет только после того, как отложенная поза дошла до флипа
-     * (~1.5–2 тика). Корни на это время уже доживали хвостом, а цепочки удалялись сразу: кусок
-     * за вторым порталом исчезал (мерцание), а корневая проекция теряла плоскость входа в
-     * следующий портал и торчала за его гранью — ровно до применения флипа, то есть «по
-     * времени». Хвост цепочки живёт по тому же правилу тика окончания, что и хвост корня.
+     * <p>Флип рассылает снимки конца всех сессий старого кадра, а новый кадр клиент применяет
+     * только после того, как отложенная поза дошла до флипа (~1.5–2 тика). Если бы цепочки на
+     * это время удалялись сразу, кусок за вторым порталом мигал бы, а корневая проекция теряла
+     * бы плоскость входа в следующий портал и торчала за его гранью до применения флипа. Поэтому
+     * хвост цепочки живёт по тому же правилу тика окончания, что и хвост корня.
      */
     private static final ConcurrentMap<UUID, List<Tail>> RETIRED_CHAINS = new ConcurrentHashMap<>();
 
@@ -132,9 +138,7 @@ public final class IplStraddleSessionStore {
         if (sub == null) return null;
         Portal ghost = IplParentDimSync.ghostPortalFor(sub);
         if (ghost != null) return ghost;
-        if (!(sub.getLevel() instanceof ClientLevel level)) {
-            return null;
-        }
+        ClientLevel level = sub.getLevel();
         List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
         if (portals == null) return null;
         for (SessionPortal sessionPortal : portals) {
@@ -202,7 +206,7 @@ public final class IplStraddleSessionStore {
         SessionPortal next = new SessionPortal(portalId, portalNbtB64, true);
         if (!next.equals(HANDOFF_VISUALS.put(shipId, next))) {
             IplStraddleRenderCache.invalidateActivePasses();
-            ipl.sable.transit.IplProjectionTree.invalidate();
+            IplProjectionTree.invalidate();
         }
     }
 
@@ -211,7 +215,7 @@ public final class IplStraddleSessionStore {
         if (HANDOFF_VISUALS.remove(shipId) != null) {
             discardUnreferencedSurrogates();
             IplStraddleRenderCache.invalidateActivePasses();
-            ipl.sable.transit.IplProjectionTree.invalidate();
+            IplProjectionTree.invalidate();
         }
     }
 
@@ -227,7 +231,7 @@ public final class IplStraddleSessionStore {
         discardUnreferencedSurrogates();
         IplClientVisualTransitLatch.clear(shipId);
         IplStraddleRenderCache.invalidateActivePasses();
-        ipl.sable.transit.IplProjectionTree.invalidate();
+        IplProjectionTree.invalidate();
     }
 
     public static void clear() {
@@ -247,7 +251,7 @@ public final class IplStraddleSessionStore {
         SURROGATE_PAYLOADS.clear();
         IplClientVisualTransitLatch.clearAll();
         IplStraddleRenderCache.invalidateActivePasses();
-        ipl.sable.transit.IplProjectionTree.invalidate();
+        IplProjectionTree.invalidate();
     }
 
     /** Called only after all poses have been rebased into this exact chart. */
@@ -274,7 +278,7 @@ public final class IplStraddleSessionStore {
         }
         discardUnreferencedSurrogates();
         IplStraddleRenderCache.invalidateActivePasses();
-        ipl.sable.transit.IplProjectionTree.invalidate();
+        IplProjectionTree.invalidate();
     }
 
     /** ALL resolvable session portals for this ship, session-start order (multi-straddle). */
@@ -282,12 +286,9 @@ public final class IplStraddleSessionStore {
         if (sub == null) return List.of();
         Portal ghost = IplParentDimSync.ghostPortalFor(sub);
         if (ghost != null) return List.of(ghost);
-        if (!(sub.getLevel() instanceof ClientLevel level)) {
-            return List.of();
-        }
+        ClientLevel level = sub.getLevel();
         List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
-        if (portals == null) return List.of();
-        if (portals.isEmpty()) return List.of();
+        if (portals == null || portals.isEmpty()) return List.of();
         List<Portal> out = new ArrayList<>(portals.size());
         for (SessionPortal sessionPortal : portals) {
             Portal live = findPortal(level, sessionPortal.portalId());
@@ -303,10 +304,7 @@ public final class IplStraddleSessionStore {
         if (sub == null) return null;
         Portal ghost = IplParentDimSync.ghostPortalFor(sub);
         if (ghost != null) return ghost;
-        if (!(sub.getLevel() instanceof ClientLevel level)) {
-            return null;
-        }
-        List<Portal> portals = resolveRenderPortals(sub, level);
+        List<Portal> portals = resolveRenderPortals(sub, sub.getLevel());
         return portals.isEmpty() ? null : portals.get(0);
     }
 
@@ -315,10 +313,7 @@ public final class IplStraddleSessionStore {
         if (sub == null) return List.of();
         Portal ghost = IplParentDimSync.ghostPortalFor(sub);
         if (ghost != null) return List.of(ghost);
-        if (!(sub.getLevel() instanceof ClientLevel level)) {
-            return List.of();
-        }
-        return resolveRenderPortals(sub, level);
+        return resolveRenderPortals(sub, sub.getLevel());
     }
 
     /**
@@ -332,8 +327,8 @@ public final class IplStraddleSessionStore {
         List<SessionPortal> chains = CHAINS.get(sub.getUniqueId());
         if (chains == null || chains.isEmpty() || IplParentDimSync.isGhost(sub)) return List.of();
         List<SessionPortal> roots = SESSIONS.get(sub.getUniqueId());
-        if (roots == null || !(sub.getLevel() instanceof ClientLevel level)) return List.of();
-        return resolvePaths(level, roots, chains, null);
+        if (roots == null) return List.of();
+        return resolvePaths(sub.getLevel(), roots, chains, null);
     }
 
     /**
@@ -342,7 +337,8 @@ public final class IplStraddleSessionStore {
      * successor's chains seen through the ghost's portal. Never use for collision.
      */
     public static List<List<Portal>> resolveRenderChains(ClientSubLevel sub) {
-        if (sub == null || !(sub.getLevel() instanceof ClientLevel level)) return List.of();
+        if (sub == null) return List.of();
+        ClientLevel level = sub.getLevel();
         if (IplParentDimSync.isGhost(sub)) return ghostRenderChains(sub, level);
         UUID id = sub.getUniqueId();
         List<Tail> tails = liveTails(sub, RETIRED_CHAINS);
@@ -360,13 +356,13 @@ public final class IplStraddleSessionStore {
     }
 
     /**
-     * Русский комментарий (почему): при переносе в другое измерение старый объект живёт
-     * «призраком» и рисуется через портал переноса, пока преемник не получит геометрию.
-     * Цепочек у призрака не было вовсе: кусок за следующим порталом ряда пропадал на всё
-     * время передачи, а проекция через портал переноса торчала за входом следующего портала.
-     * Теперь цепочки призрака — сессии преемника, увиденные через портал переноса (тот же
-     * кусок в той же системе координат), а до первого снимка преемника — хвосты цепочек
-     * старого кадра. Обратный портал (дорога назад) пропускается: это родная часть призрака.
+     * При переносе в другое измерение старый объект живёт «призраком» и рисуется через портал
+     * переноса, пока преемник не получит геометрию. Цепочки призрака — сессии преемника,
+     * увиденные через портал переноса (тот же кусок в той же системе координат), а до первого
+     * снимка преемника — хвосты цепочек старого кадра. Без них кусок за следующим порталом ряда
+     * пропадал бы на всё время передачи, а проекция через портал переноса торчала бы за входом
+     * следующего портала. Обратный портал (дорога назад) пропускается: это родная часть
+     * призрака.
      */
     private static List<List<Portal>> ghostRenderChains(ClientSubLevel ghost, ClientLevel level) {
         Portal root = IplParentDimSync.ghostPortalFor(ghost);
@@ -528,7 +524,7 @@ public final class IplStraddleSessionStore {
     /**
      * Drops split portals whose whole region lies beyond another split portal's plane.
      *
-     * <p>Русский комментарий (почему): такой портал ниже по течению (см. {@code PortalOrder}) —
+     * <p>Такой портал ниже по течению (см. {@code PortalOrder}) —
      * его кусок по приоритету пуст, весь материал за его плоскостью принадлежит переднему порталу.
      * Его проекция рисовала бы чужой кусок в чужом мире (край корабля в нижнем портале ряда
      * {@code ->|  |}), а его плоскость в родном срезе лишь занимала второй слот шейдера, вытесняя
@@ -542,7 +538,7 @@ public final class IplStraddleSessionStore {
             boolean covered = false;
             for (Portal p : portals) {
                 if (p == q || p.getUUID().equals(q.getUUID())) continue;
-                if (ipl.sable.transit.PortalOrder.coveredBy(q, isWide(shipId, q.getUUID().toString()),
+                if (PortalOrder.coveredBy(q, isWide(shipId, q.getUUID().toString()),
                     p, isWide(shipId, p.getUUID().toString()))) {
                     covered = true;
                     break;
@@ -554,20 +550,6 @@ public final class IplStraddleSessionStore {
         return out == null ? portals : List.copyOf(out);
     }
 
-    /** Diagnostic: how a ship's session portal currently resolves. */
-    public static String debugPortalKind(ClientSubLevel sub) {
-        List<SessionPortal> portals = SESSIONS.get(sub.getUniqueId());
-        List<Tail> retired = RETIRED.get(sub.getUniqueId());
-        SessionPortal handoff = HANDOFF_VISUALS.get(sub.getUniqueId());
-        if (portals == null && retired == null && handoff == null) return "no-session";
-        Portal resolved = resolveRenderPortal(sub);
-        int count = (portals == null ? 0 : portals.size()) + (retired == null ? 0 : retired.size())
-            + (handoff == null ? 0 : 1);
-        if (resolved == null) return "session-UNRESOLVED(" + count + ")";
-        return SURROGATES.get(resolved.getUUID()) == resolved
-            ? "surrogate:" + resolved.getUUID() : "live:" + resolved.getUUID();
-    }
-
     /** A retired session is geometry AND time bounded, never an infinite half-space. */
     private static boolean stillRenderingThroughHalf(ClientSubLevel sub, Portal portal, int endTick, boolean completed) {
         return beforeEndTick(sub, endTick) && IplClientVisualTransitLatch.isAuthoritativeVisible(sub, portal, completed);
@@ -575,7 +557,7 @@ public final class IplStraddleSessionStore {
 
     /** Whether Sable's delayed render clock of {@code sub}'s level has not yet reached {@code endTick}. */
     private static boolean beforeEndTick(ClientSubLevel sub, int endTick) {
-        var container = dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer.getContainer(sub.getLevel());
+        var container = ClientSubLevelContainer.getContainer(sub.getLevel());
         if (container == null) return false;
         var clock = container.getInterpolation();
         return clock.lastInterpolationTick < endTick && !(clock.isStopped()
@@ -691,34 +673,42 @@ public final class IplStraddleSessionStore {
         if (cached != null && cached.level() == level
             && sessionPortal.portalNbtB64().equals(SURROGATE_PAYLOADS.get(sessionPortal.portalId()))) return cached;
         if (sessionPortal.portalNbtB64().isEmpty()) return null;
+        CompoundTag tag = decodeNbt(sessionPortal.portalNbtB64());
+        // A future session can arrive before its queued parent flip. Its geometry
+        // must not be reconstructed in the current/source dimension.
+        if (tag.contains("ipl_source_dimension") && !tag.getString("ipl_source_dimension")
+            .equals(level.dimension().location().toString())) return null;
+        EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.get(ResourceLocation.parse(tag.getString("entity_type")));
+        Portal portal;
         try {
-            String snbt = new String(
-                Base64.getDecoder().decode(sessionPortal.portalNbtB64()), StandardCharsets.UTF_8);
-            CompoundTag tag = TagParser.parseTag(snbt);
-            // A future session can arrive before its queued parent flip. Its geometry
-            // must not be reconstructed in the current/source dimension.
-            if (tag.contains("ipl_source_dimension") && !tag.getString("ipl_source_dimension")
-                .equals(level.dimension().location().toString())) return null;
-            EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.get(
-                ResourceLocation.parse(tag.getString("entity_type")));
-            Entity entity = type.create(level);
-            if (entity == null) return null;
-            entity.load(tag);
-            entity.setUUID(sessionPortal.portalId());
-            Portal portal = (Portal) entity;
-            portal.updateCache();
-            SURROGATES.put(sessionPortal.portalId(), portal);
-            SURROGATE_PAYLOADS.put(sessionPortal.portalId(), sessionPortal.portalNbtB64());
-            return portal;
-        } catch (Throwable t) {
-            LOG.error("[IPL-STRADDLE-SYNC] surrogate build failed for {}",
-                sessionPortal.portalId(), t);
+            // Loading runs the portal type's own NBT code (IP or another mod's subclass);
+            // a type that cannot be rebuilt from geometry keys loses only its image.
+            if (!(type.create(level) instanceof Portal created)) return null;
+            created.load(tag);
+            created.setUUID(sessionPortal.portalId());
+            created.updateCache();
+            portal = created;
+        } catch (RuntimeException e) {
+            LOG.error("[IPL-STRADDLE-SYNC] surrogate build failed for {}", sessionPortal.portalId(), e);
             return null;
+        }
+        SURROGATES.put(sessionPortal.portalId(), portal);
+        SURROGATE_PAYLOADS.put(sessionPortal.portalId(), sessionPortal.portalNbtB64());
+        return portal;
+    }
+
+    /** Portal NBT as encoded by {@code IplStraddleSessionSync.encodePortal}. */
+    private static CompoundTag decodeNbt(String base64) {
+        String snbt = new String(Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
+        try {
+            return TagParser.parseTag(snbt);
+        } catch (CommandSyntaxException e) {
+            throw new IllegalArgumentException("malformed session portal NBT", e);
         }
     }
 
     /** Snapshot payload → session entries (roots and chains, in server order). */
-    private static List<SessionPortal> parse(UUID shipId, @Nullable String portalPayload) {
+    private static List<SessionPortal> parse(@Nullable String portalPayload) {
         if (portalPayload == null || portalPayload.isEmpty()) return List.of();
         List<SessionPortal> out = new ArrayList<>(2);
         for (String part : portalPayload.split(";")) {
@@ -729,23 +719,13 @@ public final class IplStraddleSessionStore {
             boolean completed = false;
             boolean wide = false;
             if (!encoded.isEmpty()) {
-                try {
-                    CompoundTag tag = TagParser.parseTag(new String(
-                        Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8));
-                    completed = tag.getBoolean("ipl_session_completed");
-                    wide = tag.getBoolean("ipl_session_wide");
-                } catch (Exception e) {
-                    LOG.warn("[IPL-STRADDLE-SYNC] invalid session geometry for {}", shipId, e);
-                    continue;
-                }
+                CompoundTag tag = decodeNbt(encoded);
+                completed = tag.getBoolean("ipl_session_completed");
+                wide = tag.getBoolean("ipl_session_wide");
             }
-            try {
-                int cut = path.lastIndexOf('>');
-                UUID portalId = UUID.fromString(cut < 0 ? path : path.substring(cut + 1));
-                out.add(new SessionPortal(portalId, encoded, completed, path, wide));
-            } catch (IllegalArgumentException e) {
-                LOG.warn("[IPL-STRADDLE-SYNC] invalid session path {} for {}", path, shipId);
-            }
+            int cut = path.lastIndexOf('>');
+            UUID portalId = UUID.fromString(cut < 0 ? path : path.substring(cut + 1));
+            out.add(new SessionPortal(portalId, encoded, completed, path, wide));
         }
         return out;
     }
@@ -755,7 +735,7 @@ public final class IplStraddleSessionStore {
         List<SessionPortal> previousChains = CHAINS.get(shipId);
         List<SessionPortal> roots = new ArrayList<>(2);
         List<SessionPortal> chains = new ArrayList<>(0);
-        for (SessionPortal entry : parse(shipId, portalPayload)) {
+        for (SessionPortal entry : parse(portalPayload)) {
             (entry.isChain() ? chains : roots).add(entry);
         }
         if (roots.isEmpty()) {
@@ -781,7 +761,7 @@ public final class IplStraddleSessionStore {
         // Straddle decisions are cached per frame; drop them so this snapshot
         // takes effect within the same client tick it arrives in.
         IplStraddleRenderCache.invalidateActivePasses();
-        ipl.sable.transit.IplProjectionTree.invalidate();
+        IplProjectionTree.invalidate();
     }
 
     /** Moves sessions missing from {@code next} into {@code retired}; a returning session is live again. */
@@ -810,10 +790,10 @@ public final class IplStraddleSessionStore {
 
     /** Records a snapshot of a frame the client has not entered yet (see {@link DeferredFrame}). */
     private static void defer(UUID shipId, long frame, String portalPayload, int endTick) {
-        DeferredFrame deferred = FUTURE.computeIfAbsent(shipId, ignored -> new java.util.TreeMap<>())
+        DeferredFrame deferred = FUTURE.computeIfAbsent(shipId, ignored -> new TreeMap<>())
             .computeIfAbsent(frame, ignored -> new DeferredFrame());
-        List<SessionPortal> next = parse(shipId, portalPayload);
-        for (SessionPortal ended : parse(shipId, deferred.payload)) {
+        List<SessionPortal> next = parse(portalPayload);
+        for (SessionPortal ended : parse(deferred.payload)) {
             if (byPath(next, ended.path()) == null) deferred.ended.putIfAbsent(ended.path(), new Tail(ended, endTick));
         }
         for (SessionPortal live : next) deferred.ended.remove(live.path());
@@ -828,34 +808,28 @@ public final class IplStraddleSessionStore {
          * portal id, or {@code root>child>...} for chained sessions), empty = no sessions.
          */
         public static void snapshot(String shipUuid, CompoundTag sessions, String completedTick, String coordinateFrame) {
-            try {
-                UUID shipId = UUID.fromString(shipUuid);
-                // Компактный NBT-список -> прежний внутренний формат "path:geometry;..."
-                // (на клиенте у строки нет сетевого лимита).
-                StringBuilder joined = new StringBuilder();
-                if (sessions != null) {
-                    net.minecraft.nbt.ListTag list = sessions.getList("s", net.minecraft.nbt.Tag.TAG_COMPOUND);
-                    for (int i = 0; i < list.size(); i++) {
-                        CompoundTag e = list.getCompound(i);
-                        if (joined.length() > 0) joined.append(';');
-                        joined.append(e.getString("p")).append(':').append(e.getString("g"));
-                    }
-                }
-                String portalPayload = joined.toString();
-                // Broadcasts include untracked ships. Their track-start bootstrap sends
-                // the current frame/state; retaining every unknown loop epoch leaks memory.
-                if (IplClientProjections.findClientSub(shipId) == null) return;
-                int endTick = Integer.parseInt(completedTick);
-                long frame = Long.parseLong(coordinateFrame);
-                if (frame < IplParentDimSync.frame(shipId)) return;
-                if (frame > IplParentDimSync.frame(shipId)) {
-                    defer(shipId, frame, portalPayload, endTick);
-                    return;
-                }
-                applySnapshot(shipId, portalPayload, endTick);
-            } catch (Throwable t) {
-                LOG.error("[IPL-STRADDLE-SYNC] bad snapshot for {}", shipUuid, t);
+            UUID shipId = UUID.fromString(shipUuid);
+            // Broadcasts include untracked ships. Their track-start bootstrap sends
+            // the current frame/state; retaining every unknown loop epoch leaks memory.
+            if (IplClientProjections.findClientSub(shipId) == null) return;
+            // Компактный NBT-список -> внутренний формат "path:geometry;..."
+            // (на клиенте у строки нет сетевого лимита).
+            StringBuilder joined = new StringBuilder();
+            ListTag list = sessions.getList("s", Tag.TAG_COMPOUND);
+            for (int i = 0; i < list.size(); i++) {
+                CompoundTag e = list.getCompound(i);
+                if (!joined.isEmpty()) joined.append(';');
+                joined.append(e.getString("p")).append(':').append(e.getString("g"));
             }
+            String portalPayload = joined.toString();
+            int endTick = Integer.parseInt(completedTick);
+            long frame = Long.parseLong(coordinateFrame);
+            if (frame < IplParentDimSync.frame(shipId)) return;
+            if (frame > IplParentDimSync.frame(shipId)) {
+                defer(shipId, frame, portalPayload, endTick);
+                return;
+            }
+            applySnapshot(shipId, portalPayload, endTick);
         }
     }
 }

@@ -21,12 +21,12 @@ import java.util.NoSuchElementException;
  * stand on, or fall through, up to half a block of material that the render pass has
  * already clipped away. The visual seam and the collision seam disagree.
  *
- * <p><b>How this fixes it.</b> The block filter is deliberately generous: it keeps a
+ * <p><b>How.</b> The block filter is deliberately generous: it keeps a
  * block whenever ANY part of its cube is still on the kept side. This class then trims
  * what survives. Sable's collision loop obtains each block's collision boxes through
  * {@code FastVoxelShapeIterable.sable$allBoxes()} and turns every box into an OBB; by
  * wrapping that iterator we hand back boxes already clipped against the portal
- * half-space, so the SAT solver sees the partial box that actually exists. The cut now
+ * half-space, so the SAT solver sees the partial box that actually exists. The cut
  * follows the plane down to sub-block precision rather than the lattice.
  *
  * <p><b>Frame and lifecycle.</b> Planes are plot-local, matching the coordinates the

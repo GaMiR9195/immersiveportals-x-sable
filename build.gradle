@@ -183,6 +183,10 @@ minecraft.accessTransformers.entry 'public net.minecraft.world.entity.EntityType
 
 minecraft.accessTransformers.entry 'public net.minecraft.util.datafix.fixes.ItemStackComponentizationFix$ItemStackData'
 
+// Sub-level section shading flag (mixin/client/SectionCompilerMixin); Sable's own AT opens these at runtime.
+minecraft.accessTransformers.entry 'public net.minecraft.client.renderer.block.ModelBlockRenderer$Cache'
+minecraft.accessTransformers.entry 'public net.minecraft.client.renderer.block.ModelBlockRenderer CACHE'
+
 /*sourceSets {
     main {
         java {

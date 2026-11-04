@@ -14,10 +14,6 @@ public record StraddleKey(UUID subLevelUuid, UUID portalUuid, String via) {
         this(subLevelUuid, portalUuid, "");
     }
 
-    public StraddleKey {
-        if (via == null) via = "";
-    }
-
     public boolean isRoot() {
         return via.isEmpty();
     }
@@ -37,5 +33,18 @@ public record StraddleKey(UUID subLevelUuid, UUID portalUuid, String via) {
     /** Key of a child session continuing this chain through {@code nextPortal}. */
     public StraddleKey child(UUID nextPortal) {
         return new StraddleKey(subLevelUuid, nextPortal, path());
+    }
+
+    /** Key of the session this chained session continues; only for {@code !isRoot()}. */
+    public StraddleKey parent() {
+        return ofPath(subLevelUuid, via);
+    }
+
+    /** Inverse of {@link #path()}. */
+    private static StraddleKey ofPath(UUID subLevelUuid, String path) {
+        int cut = path.lastIndexOf('>');
+        return cut < 0
+            ? new StraddleKey(subLevelUuid, UUID.fromString(path))
+            : new StraddleKey(subLevelUuid, UUID.fromString(path.substring(cut + 1)), path.substring(0, cut));
     }
 }

@@ -1,26 +1,29 @@
 package ipl.sable.client;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import dev.simulated_team.simulated.SimulatedClient;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItem;
 import ipl.sable.mixin.client.StaffBeamAccessor;
 import ipl.sable.mixin.client.StaffClientHandlerAccessor;
+import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 import net.createmod.catnip.animation.AnimationTickHolder;
 import net.createmod.catnip.render.SuperRenderTypeBuffer;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.ClientWorldLoader;
-import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
-import java.util.List;
-import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
+import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -50,7 +53,7 @@ public final class IplStaffPortalBeamRenderer {
     private static final ThreadLocal<IplStaffBeamRoutes.Run> ACTIVE_RUN =
         new ThreadLocal<>();
 
-    private record FrameRuns(Object beam, int frame, net.minecraft.world.level.Level level,
+    private record FrameRuns(Object beam, int frame, Level level,
                              List<IplStaffBeamRoutes.Run> runs) {}
     // One geometry snapshot per owner per frame, including when a nested pass draws FIRST.
     private static final Map<UUID, FrameRuns> FRAME_RUNS = new HashMap<>();
@@ -65,7 +68,7 @@ public final class IplStaffPortalBeamRenderer {
         if (minecraft.options.hideGui || minecraft.level == null || renderLevel == null) return;
 
         PhysicsStaffClientHandler handler =
-            dev.simulated_team.simulated.SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
+            SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
         Object2ObjectMap<UUID, Object> beams = ((StaffClientHandlerAccessor) (Object) handler)
             .ipl$getBeams();
         if (beams.isEmpty()) {
@@ -91,7 +94,7 @@ public final class IplStaffPortalBeamRenderer {
             StaffBeamAccessor access =
                 (StaffBeamAccessor) (Object) beam;
             Vec3 localAnchor = access.ipl$getPreviousEnd().lerp(access.ipl$getEnd(), partialTick);
-            ClientSubLevel sub = findHostedSubLevel(localAnchor);
+            ClientSubLevel sub = IplClientProjections.findSubLevelAtPlot(localAnchor);
             if (sub == null) continue;
 
             FrameRuns cached = FRAME_RUNS.get(entry.getKey());
@@ -117,7 +120,7 @@ public final class IplStaffPortalBeamRenderer {
 
         if (drew) {
             buffer.draw();
-            com.mojang.blaze3d.systems.RenderSystem.enableCull(); // stock onRender postcondition
+            RenderSystem.enableCull(); // stock onRender postcondition
         }
     }
 
@@ -196,10 +199,5 @@ public final class IplStaffPortalBeamRenderer {
             if (player != null) return player;
         }
         return null;
-    }
-
-    /** Beam anchors are plot coordinates: resolve the owning sub-level across client levels. */
-    public static ClientSubLevel findHostedSubLevel(Vec3 localAnchor) {
-        return IplClientProjections.findSubLevelAtPlot(localAnchor);
     }
 }

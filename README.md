@@ -34,13 +34,14 @@ Since 0.6.0 the fork keeps exactly that native model and adds **projections**:
   placed at `portal isometry × body pose`. No clone, no sync: one body, one source of truth.
   Contacts beyond the portal plane are clipped away (requires patched natives; see below).
 - Rendering: the same render data is drawn again at the mapped pose, clipped at the portal plane.
-- Chains: an image that straddles another portal opens a child projection (depth ≤ 8).
+- Chains: an image that straddles another portal opens a child projection (depth ≤ 16).
 - Transit: once fully through, the body flips (same dim: pose teleport; other dim: native move
   into that level). Attached ships (world constraints, joints, ropes) keep the session open instead.
 - Interaction: targeting/outlines/break/place/redstone/BE logic and the physics staff work on the
   projected part.
 
-Deep nerd notes live in: `README060NEW.md` (the `docs/` specs describe the removed 0.5.x model).
+Deep nerd notes live in: `README060NEW.md`. `docs/atlas_portal_physics_spec.md` is the Atlas design;
+the other `docs/` specs describe the removed 0.5.x model.
 
 # What works
 - Sub-levels save/load natively in any dimension (stock Sable storage).

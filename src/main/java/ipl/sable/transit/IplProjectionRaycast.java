@@ -6,6 +6,7 @@ import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension;
 import dev.ryanhcode.sable.mixinterface.clip_overwrite.LevelPoseProviderExtension;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.client.IplStraddleSessionStore;
 import ipl.sable.mixin.ClipContextAccessor;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
@@ -33,12 +34,10 @@ import java.util.function.Predicate;
  * boundaries. A block straddling the portal plane is therefore hit on its visible cut
  * face, never on a phantom twin behind the plane.
  *
- * <p>Русский комментарий: раньше пик проекций был только на клиенте, только для прямых
- * (не цепочечных) проекций, а фильтр "через какую половину" был одной плоскостью
- * первого портала. Поэтому после выхода из второго портала по кораблю нельзя было
- * кликнуть вообще, а сервер (стрелы, линия видимости мобов, проверки досягаемости)
- * проекций не видел. Здесь один общий алгоритм для сервера и клиента: каждый кадр
+ * <p>Один алгоритм для сервера и клиента, для прямых и цепочечных проекций: каждый кадр
  * (кусок) кастуется отдельно только внутри своей области, ближайшее попадание побеждает.
+ * Так по кораблю можно кликнуть и после выхода из второго портала, а стрелы, линия
+ * видимости мобов и проверки досягаемости на сервере видят проекции.
  *
  * <p>Hits stay in PLOT coordinates (Sable's sub-level hit convention); distances are
  * measured in the queried level's world units along the ray, so every frame and the
@@ -85,7 +84,7 @@ public final class IplProjectionRaycast {
 
     private static boolean idle(Level level) {
         return level.isClientSide()
-            ? ipl.sable.client.IplStraddleSessionStore.isIdle()
+            ? IplStraddleSessionStore.isIdle()
             : IplAtlasStraddleSession.isIdle();
     }
 

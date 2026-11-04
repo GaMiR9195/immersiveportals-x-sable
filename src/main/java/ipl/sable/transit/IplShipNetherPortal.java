@@ -2,18 +2,24 @@ package ipl.sable.transit;
 
 import dev.ryanhcode.sable.companion.math.BoundingBox3ic;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Vec3i;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.imm_ptl.core.portal.PortalPlaceholderBlock;
 import qouteall.imm_ptl.core.portal.PortalExtension;
+import qouteall.imm_ptl.core.portal.PortalPlaceholderBlock;
 import qouteall.imm_ptl.core.portal.nether_portal.BlockPortalShape;
 import qouteall.imm_ptl.core.portal.nether_portal.BreakablePortalEntity;
 
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -95,7 +101,7 @@ public final class IplShipNetherPortal {
             // assembly transform is a pure translation, so the aperture's plot
             // position is exact: worldOrigin + delta. anchorToShipAtPlot also snaps
             // the entity onto the ship's current pose.
-            net.minecraft.world.phys.Vec3 plotOrigin = portal.getOriginPos()
+            Vec3 plotOrigin = portal.getOriginPos()
                 .add(delta.getX(), delta.getY(), delta.getZ());
             String result = IplShipPortalAnchor.anchorToShipAtPlot(portal, ship, plotOrigin);
             LOG.debug("[IPL-SHIP-PORTAL] assembly captured portal {}: {}",
@@ -113,12 +119,12 @@ public final class IplShipNetherPortal {
      * and stranding ghost placeholder blocks.
      */
     public static void restoreOnDisassembly(
-        ServerLevel parent, dev.ryanhcode.sable.sublevel.SubLevel ship,
-        BlockPos plotAnchor, BlockPos worldGoal, net.minecraft.world.level.block.Rotation rotation
+        ServerLevel parent, SubLevel ship,
+        BlockPos plotAnchor, BlockPos worldGoal, Rotation rotation
     ) {
-        int angle = rotation == net.minecraft.world.level.block.Rotation.NONE
+        int angle = rotation == Rotation.NONE
             ? 0 : (4 - rotation.ordinal()); // mirror SimAssemblyHelper's transform
-        for (java.util.UUID portalId : IplShipPortalAnchor.anchoredPortalsOf(ship.getUniqueId())) {
+        for (UUID portalId : IplShipPortalAnchor.anchoredPortalsOf(ship.getUniqueId())) {
             if (!(parent.getEntity(portalId) instanceof Portal portal) || portal.isRemoved()) {
                 continue;
             }
@@ -133,21 +139,21 @@ public final class IplShipNetherPortal {
 
     private static void restoreShape(
         Portal portal, BlockPos plotAnchor, BlockPos worldGoal,
-        int angle, net.minecraft.world.level.block.Rotation rotation
+        int angle, Rotation rotation
     ) {
         if (!(portal instanceof BreakablePortalEntity breakable)
             || breakable.blockPortalShape == null
             || Math.abs(breakable.blockPortalShape.anchor.getX()) < 1_000_000) {
             return;
         }
-        net.minecraft.core.Direction.Axis axis = breakable.blockPortalShape.axis;
-        if (axis != net.minecraft.core.Direction.Axis.Y
-            && (rotation == net.minecraft.world.level.block.Rotation.CLOCKWISE_90
-                || rotation == net.minecraft.world.level.block.Rotation.COUNTERCLOCKWISE_90)) {
-            axis = axis == net.minecraft.core.Direction.Axis.X
-                ? net.minecraft.core.Direction.Axis.Z : net.minecraft.core.Direction.Axis.X;
+        Direction.Axis axis = breakable.blockPortalShape.axis;
+        if (axis != Direction.Axis.Y
+            && (rotation == Rotation.CLOCKWISE_90
+                || rotation == Rotation.COUNTERCLOCKWISE_90)) {
+            axis = axis == Direction.Axis.X
+                ? Direction.Axis.Z : Direction.Axis.X;
         }
-        final net.minecraft.core.Direction.Axis mappedAxis = axis;
+        final Direction.Axis mappedAxis = axis;
         breakable.blockPortalShape = new BlockPortalShape(
             breakable.blockPortalShape.area.stream()
                 .map(pos -> BlockPos.containing(
@@ -196,7 +202,7 @@ public final class IplShipNetherPortal {
         for (BlockPos worldPos : worldShape.area) {
             if (parent.getBlockState(worldPos).getBlock() == PortalPlaceholderBlock.instance) {
                 parent.setBlockAndUpdate(worldPos,
-                    net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+                    Blocks.AIR.defaultBlockState());
             }
         }
     }

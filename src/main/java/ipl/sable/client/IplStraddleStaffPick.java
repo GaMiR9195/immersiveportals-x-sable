@@ -1,10 +1,17 @@
 package ipl.sable.client;
 
-import dev.ryanhcode.sable.companion.math.Pose3dc;
+import com.mojang.datafixers.util.Pair;
 import dev.ryanhcode.sable.companion.math.Pose3d;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.simulated_team.simulated.SimulatedClient;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffItem;
+import ipl.sable.transit.IplProjectionRaycast;
+import ipl.sable.transit.IplProjectionTree;
+import ipl.sable.transit.IplStraddlePoseMap;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
@@ -16,14 +23,19 @@ import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import qouteall.imm_ptl.core.portal.Portal;
-import ipl.sable.transit.IplProjectionRaycast;
-import ipl.sable.transit.IplProjectionTree;
+import qouteall.imm_ptl.core.portal.PortalUtils;
+import qouteall.imm_ptl.core.render.context_management.PortalRendering;
+import qouteall.q_misc_util.my_util.DQuaternion;
+import qouteall.q_misc_util.my_util.RayTraceResult;
 
-import com.mojang.datafixers.util.Pair;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -89,10 +101,9 @@ public final class IplStraddleStaffPick {
             player, player.level(), eye, player.getViewVector(partialTick), range, List.of(), 0, 0.0
         );
         if (target == null) return null;
-        // Exactly ONE pick may be pending at a time. The map used to accumulate captures
-        // across aborted picks, and startDraggingSubLevel would happily consume a stale
-        // one -- binding a freshly grabbed build to a portal path it was never picked
-        // through.
+        // Exactly ONE pick may be pending at a time: a capture left over from an aborted pick
+        // would be consumed by startDraggingSubLevel and bind a freshly grabbed build to a
+        // portal path it was never picked through.
         PENDING_TARGETS.clear();
         PENDING_TARGETS.put(target.sub().getUniqueId(), target);
         GRAB_DISTANCE.put(target.sub().getUniqueId(), target.visibleDistance());
@@ -136,8 +147,8 @@ public final class IplStraddleStaffPick {
             }
         }
 
-        Optional<Pair<Portal, qouteall.q_misc_util.my_util.RayTraceResult>> portalHit =
-            qouteall.imm_ptl.core.portal.PortalUtils.raytracePortals(
+        Optional<Pair<Portal, RayTraceResult>> portalHit =
+            PortalUtils.raytracePortals(
                 level, from, to, true, portal -> portal.isInteractableBy(player)
             );
         double portalDistance = portalHit.map(hit -> hit.getSecond().hitPos().distanceTo(from))
@@ -155,11 +166,11 @@ public final class IplStraddleStaffPick {
         if (portalHit.isEmpty()) return null;
 
         Portal portal = portalHit.get().getFirst();
-        qouteall.q_misc_util.my_util.RayTraceResult trace = portalHit.get().getSecond();
+        RayTraceResult trace = portalHit.get().getSecond();
         double rest = remaining - portalDistance;
         if (rest <= 0.0) return null;
 
-        java.util.ArrayList<Portal> nextPath = new java.util.ArrayList<>(path);
+        ArrayList<Portal> nextPath = new ArrayList<>(path);
         nextPath.add(portal);
         return pickThroughPortals(
             player,
@@ -218,10 +229,10 @@ public final class IplStraddleStaffPick {
 
     /** Current world render path, ordered from player world to current world. */
     public static List<Portal> getActiveRenderPath() {
-        if (!qouteall.imm_ptl.core.render.context_management.PortalRendering.isRendering()) {
+        if (!PortalRendering.isRendering()) {
             return List.of();
         }
-        return qouteall.imm_ptl.core.render.context_management.PortalRendering.getPortalPath();
+        return PortalRendering.getPortalPath();
     }
 
     /**
@@ -273,7 +284,7 @@ public final class IplStraddleStaffPick {
      * so ordinary same-world dragging keeps stock behavior.
      */
     public static void applyGrabDistance(PhysicsStaffClientHandler handler,
-                                         dev.ryanhcode.sable.sublevel.SubLevel sub) {
+                                         SubLevel sub) {
         Double distance = GRAB_DISTANCE.get(sub.getUniqueId());
         if (distance == null) return;
         PhysicsStaffClientHandler.ClientDragSession session = handler.getDragSession();
@@ -337,7 +348,7 @@ public final class IplStraddleStaffPick {
      */
     public static Vec3 unmapStaffInputAxis(Player player, ClientSubLevel sub, Vec3 axis) {
         PhysicsStaffClientHandler.ClientDragSession session =
-            dev.simulated_team.simulated.SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER.getDragSession();
+            SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER.getDragSession();
         Vec3 localAnchor = session != null
             && session.dragSubLevel().getUniqueId().equals(sub.getUniqueId())
             ? new Vec3(session.dragLocalAnchor().x(), session.dragLocalAnchor().y(),
@@ -388,7 +399,7 @@ public final class IplStraddleStaffPick {
     }
 
     @Nullable
-    private static ClientSubLevel getHitSubLevel(net.minecraft.world.level.Level level, BlockHitResult hit) {
+    private static ClientSubLevel getHitSubLevel(Level level, BlockHitResult hit) {
         // `level` is the visible source/destination world during portal recursion; the hit
         // location is in PLOT coordinates, whose owner may be a sub-level of another client
         // level (a projection). Resolve the plot across client levels.
@@ -406,24 +417,24 @@ public final class IplStraddleStaffPick {
         PortalTarget target = DRAG_TARGETS.get(sub.getUniqueId());
         if (target == null || target.sub() != sub
             || (target.portals().isEmpty() && target.imagePortal() == null)) {
-            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
-            net.minecraft.world.level.Level renderLevel = mc.level;
-            if (qouteall.imm_ptl.core.render.context_management.PortalRendering.isRendering()) {
-                renderLevel = qouteall.imm_ptl.core.render.context_management.PortalRendering
+            Minecraft mc = Minecraft.getInstance();
+            Level renderLevel = mc.level;
+            if (PortalRendering.isRendering()) {
+                renderLevel = PortalRendering
                     .getRenderingPortal().getDestinationWorld();
             }
-            ipl.sable.transit.IplStraddlePoseMap.StraddleMapping mapping = renderLevel == null
+            IplStraddlePoseMap.StraddleMapping mapping = renderLevel == null
                 ? null
-                : ipl.sable.transit.IplStraddlePoseMap.getMappingInto(sub, renderLevel);
+                : IplStraddlePoseMap.getMappingInto(sub, renderLevel);
             return mapping == null ? new Pose3d(pose) : mapping.mapPose(pose);
         }
         Pose3d mapped = new Pose3d(pose);
         if (target.portals().isEmpty()) {
             // Image grab: the visible representation in the image's world is the session
             // portal's forward map of the native pose.
-            net.minecraft.world.level.Level renderLevel = net.minecraft.client.Minecraft.getInstance().level;
-            if (qouteall.imm_ptl.core.render.context_management.PortalRendering.isRendering()) {
-                renderLevel = qouteall.imm_ptl.core.render.context_management.PortalRendering
+            Level renderLevel = Minecraft.getInstance().level;
+            if (PortalRendering.isRendering()) {
+                renderLevel = PortalRendering
                     .getRenderingPortal().getDestinationWorld();
             }
             Portal portal = target.imagePortal();
@@ -431,9 +442,9 @@ public final class IplStraddleStaffPick {
                 Vec3 position = portal.transformPoint(new Vec3(
                     mapped.position().x(), mapped.position().y(), mapped.position().z()
                 ));
-                qouteall.q_misc_util.my_util.DQuaternion rotation = portal.getRotationD();
+                DQuaternion rotation = portal.getRotationD();
                 mapped.position().set(position.x, position.y, position.z);
-                mapped.orientation().set(new org.joml.Quaterniond(
+                mapped.orientation().set(new Quaterniond(
                     rotation.x, rotation.y, rotation.z, rotation.w
                 ).mul(mapped.orientation()));
             }
@@ -454,8 +465,8 @@ public final class IplStraddleStaffPick {
             Vec3 position = portal.inverseTransformPoint(new Vec3(
                 mapped.position().x(), mapped.position().y(), mapped.position().z()
             ));
-            qouteall.q_misc_util.my_util.DQuaternion rotation = portal.getRotationD();
-            org.joml.Quaterniond inverse = new org.joml.Quaterniond(
+            DQuaternion rotation = portal.getRotationD();
+            Quaterniond inverse = new Quaterniond(
                 rotation.x, rotation.y, rotation.z, rotation.w
             ).invert();
             mapped.position().set(position.x, position.y, position.z);
@@ -469,7 +480,7 @@ public final class IplStraddleStaffPick {
      * straddle-session portal whose IMAGE was clicked (null when the native half was).
      */
     public record PortalTarget(
-        ClientSubLevel sub, net.minecraft.world.level.Level world, BlockHitResult hit,
+        ClientSubLevel sub, Level world, BlockHitResult hit,
         List<Portal> portals, @Nullable Portal imagePortal, double visibleDistance
     ) {}
 
@@ -490,14 +501,14 @@ public final class IplStraddleStaffPick {
      */
     @Nullable
     public static ProjectionHit clipProjections(ClientLevel level, ClipContext ctx) {
-        java.util.List<IplClientProjections.StraddleProjection> projections =
+        List<IplClientProjections.StraddleProjection> projections =
             IplClientProjections.getStraddleProjectionsInto(level);
         if (projections.isEmpty()) return null;
 
         Vec3 from = ctx.getFrom();
         Vec3 to = ctx.getTo();
-        java.util.Set<ClientSubLevel> seen =
-            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        Set<ClientSubLevel> seen =
+            Collections.newSetFromMap(new IdentityHashMap<>());
         IplProjectionRaycast.FrameHit best = null;
         for (IplClientProjections.StraddleProjection projection : projections) {
             if (!seen.add(projection.sub())) continue;

@@ -3,9 +3,16 @@ package ipl.sable.atlas;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import ipl.sable.mixin.RapierPipelineAccessor;
+import ipl.sable.natives.IplRapierNatives;
+import net.minecraft.core.BlockPos;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import org.jetbrains.annotations.Nullable;
+
+import java.util.UUID;
 
 /**
  * Per-level Atlas chart lookup for the native Sable model.
@@ -19,7 +26,7 @@ public final class IplScenes {
 
     /** Projections need the IPL Rapier natives (image colliders, clip regions). */
     public static boolean isEnabled() {
-        return ipl.sable.natives.IplRapierNatives.isAvailable();
+        return IplRapierNatives.isAvailable();
     }
 
     @Nullable
@@ -41,11 +48,11 @@ public final class IplScenes {
 
     /** The level whose container currently owns sub-level {@code id}, or null. */
     @Nullable
-    public static ServerLevel ownerLevel(@Nullable net.minecraft.server.MinecraftServer server, @Nullable java.util.UUID id) {
+    public static ServerLevel ownerLevel(@Nullable MinecraftServer server, @Nullable UUID id) {
         if (server == null || id == null) return null;
         for (ServerLevel level : server.getAllLevels()) {
             ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
-            if (container != null && container.getSubLevel(id) instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel sub
+            if (container != null && container.getSubLevel(id) instanceof ServerSubLevel sub
                 && !sub.isRemoved()) return level;
         }
         return null;
@@ -53,13 +60,13 @@ public final class IplScenes {
 
     /** The live server sub-level {@code id} in whichever level owns it, or null. */
     @Nullable
-    public static dev.ryanhcode.sable.sublevel.ServerSubLevel findSubLevel(
-        @Nullable net.minecraft.server.MinecraftServer server, @Nullable java.util.UUID id
+    public static ServerSubLevel findSubLevel(
+        @Nullable MinecraftServer server, @Nullable UUID id
     ) {
         if (server == null || id == null) return null;
         for (ServerLevel level : server.getAllLevels()) {
             ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
-            if (container != null && container.getSubLevel(id) instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel sub
+            if (container != null && container.getSubLevel(id) instanceof ServerSubLevel sub
                 && !sub.isRemoved()) return sub;
         }
         return null;
@@ -72,28 +79,28 @@ public final class IplScenes {
      * PROJECTED ship's plot (owned by another dimension) is found.
      */
     @Nullable
-    public static dev.ryanhcode.sable.sublevel.ServerSubLevel plotOwner(
-        @Nullable ServerLevel context, net.minecraft.core.BlockPos pos
+    public static ServerSubLevel plotOwner(
+        @Nullable ServerLevel context, BlockPos pos
     ) {
         if (context == null) return null;
         int chunkX = pos.getX() >> 4;
         int chunkZ = pos.getZ() >> 4;
-        dev.ryanhcode.sable.sublevel.ServerSubLevel own = plotSub(context, chunkX, chunkZ);
+        ServerSubLevel own = plotSub(context, chunkX, chunkZ);
         if (own != null || context.getServer() == null) return own;
         for (ServerLevel level : context.getServer().getAllLevels()) {
             if (level == context) continue;
-            dev.ryanhcode.sable.sublevel.ServerSubLevel found = plotSub(level, chunkX, chunkZ);
+            ServerSubLevel found = plotSub(level, chunkX, chunkZ);
             if (found != null) return found;
         }
         return null;
     }
 
     @Nullable
-    private static dev.ryanhcode.sable.sublevel.ServerSubLevel plotSub(ServerLevel level, int chunkX, int chunkZ) {
+    private static ServerSubLevel plotSub(ServerLevel level, int chunkX, int chunkZ) {
         ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
         if (container == null || !container.inBounds(chunkX, chunkZ)) return null;
-        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(chunkX, chunkZ);
-        return plot != null && plot.getSubLevel() instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel sub
+        LevelPlot plot = container.getPlot(chunkX, chunkZ);
+        return plot != null && plot.getSubLevel() instanceof ServerSubLevel sub
             && !sub.isRemoved() ? sub : null;
     }
 }

@@ -34,7 +34,7 @@ import java.util.function.Consumer;
  * in the level that piece lives in. The loop hooks fix Sable's "other intersecting ships"
  * pass for projected ships (wrong pose and wrong level for their plot-space entities).
  *
- * <p>Русский комментарий: перехватываем только запросы, где это действительно нужно
+ * <p>Перехватываем только запросы, где это действительно нужно
  * (корабль с живыми сессиями или чужой образ); обычные корабли идут стоковым путём, так
  * что оптимизации других модов (Pocket обрезает тот же цикл) продолжают работать.
  */
@@ -54,8 +54,7 @@ public abstract class EntityGetterProjectionMixin {
     @Inject(
         method = "get(Lnet/minecraft/world/phys/AABB;Ljava/util/function/Consumer;)V",
         at = @At("HEAD"),
-        cancellable = true,
-        require = 0
+        cancellable = true
     )
     private void ipl$pieceAwarePlotQuery(AABB box, Consumer consumer, CallbackInfo ci) {
         if (IplProjectionEntities.plotQuery(this.level, (LevelEntityGetter<Entity>) (Object) this.delegate, box,
@@ -68,8 +67,7 @@ public abstract class EntityGetterProjectionMixin {
     @Inject(
         method = "get(Lnet/minecraft/world/level/entity/EntityTypeTest;Lnet/minecraft/world/phys/AABB;Lnet/minecraft/util/AbortableIterationConsumer;)V",
         at = @At("HEAD"),
-        cancellable = true,
-        require = 0
+        cancellable = true
     )
     private void ipl$pieceAwareTypedPlotQuery(EntityTypeTest test, AABB box, AbortableIterationConsumer consumer,
                                               CallbackInfo ci) {
@@ -86,8 +84,7 @@ public abstract class EntityGetterProjectionMixin {
             value = "INVOKE",
             target = "Lnet/minecraft/world/level/entity/LevelEntityGetter;get(Lnet/minecraft/world/phys/AABB;Ljava/util/function/Consumer;)V",
             ordinal = 2
-        ),
-        require = 0
+        )
     )
     private void ipl$pieceAwareOtherShip(LevelEntityGetter getter, AABB localBounds, Consumer consumer,
                                          Operation<Void> original,
@@ -105,8 +102,7 @@ public abstract class EntityGetterProjectionMixin {
             value = "INVOKE",
             target = "Lnet/minecraft/world/level/entity/LevelEntityGetter;get(Lnet/minecraft/world/level/entity/EntityTypeTest;Lnet/minecraft/world/phys/AABB;Lnet/minecraft/util/AbortableIterationConsumer;)V",
             ordinal = 2
-        ),
-        require = 0
+        )
     )
     private void ipl$pieceAwareTypedOtherShip(LevelEntityGetter getter, EntityTypeTest test, AABB localBounds,
                                               AbortableIterationConsumer consumer, Operation<Void> original,

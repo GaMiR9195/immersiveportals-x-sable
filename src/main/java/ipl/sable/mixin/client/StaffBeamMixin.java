@@ -1,13 +1,14 @@
 package ipl.sable.mixin.client;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.mojang.blaze3d.vertex.PoseStack;
 import ipl.sable.client.IplStaffBeamRoutes;
 import ipl.sable.client.IplStaffPortalBeamRenderer;
 import net.createmod.catnip.outliner.LineOutline;
 import net.createmod.catnip.render.SuperRenderTypeBuffer;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
-import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
-import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -24,10 +25,10 @@ import java.util.List;
 )
 public abstract class StaffBeamMixin {
 
-    @Shadow(remap = false) private LineOutline line;
-    @Shadow(remap = false) private List<?> nodes;
-    @Shadow(remap = false) private double currentNodeRadius;
-    @Shadow(remap = false) private double length;
+    @Shadow private LineOutline line;
+    @Shadow private List<?> nodes;
+    @Shadow private double currentNodeRadius;
+    @Shadow private double length;
 
     /**
      * Node density comes from {@code length} inside {@code update()}, which runs every
@@ -38,7 +39,7 @@ public abstract class StaffBeamMixin {
      * creation) before every node-count update. NaN means no route data — plain local
      * beams keep stock behavior.
      */
-    @Inject(method = "update", at = @At("HEAD"), remap = false, require = 0)
+    @Inject(method = "update", at = @At("HEAD"))
     private void ipl$feedTrueLength(CallbackInfo ci) {
         double known = IplStaffBeamRoutes.knownLengthFor(this);
         if (!Double.isNaN(known)) {
@@ -50,7 +51,7 @@ public abstract class StaffBeamMixin {
     @WrapMethod(method = "render")
     private void ipl$renderRun(
         Vec3 source, Vec3 target,
-        com.mojang.blaze3d.vertex.PoseStack stack,
+        PoseStack stack,
         SuperRenderTypeBuffer buffer, Vec3 camera, float partialTick, Operation<Void> original
     ) {
         if (!IplStaffPortalBeamRenderer.isPhysicalBeamPass()) return;

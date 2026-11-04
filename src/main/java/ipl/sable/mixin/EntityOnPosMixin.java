@@ -1,14 +1,20 @@
 package ipl.sable.mixin;
 
-import dev.ryanhcode.sable.companion.math.Pose3d;
+import com.llamalad7.mixinextras.injector.ModifyReturnValue;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.atlas.IplScenes;
+import ipl.sable.client.IplClientProjections;
 import ipl.sable.transit.IplStraddlePoseMap;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
+import org.joml.Vector3d;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Frame-correct {@code getOnPos} for riders of straddling ships — MUST run BEFORE Sable's
@@ -49,14 +55,13 @@ public abstract class EntityOnPosMixin {
      * position is plot-bound and the plot's owner is straddling into this entity's
      * dimension, subtract the portal offset.
      */
-    @com.llamalad7.mixinextras.injector.ModifyReturnValue(
+    @ModifyReturnValue(
         method = {
             "getBlockPosBelowThatAffectsMyMovement",
             "getOnPosLegacy",
             "getOnPos()Lnet/minecraft/core/BlockPos;"
         },
-        at = @At("RETURN"),
-        require = 0
+        at = @At("RETURN")
     )
     private BlockPos ipl$correctOnPosFrame(BlockPos original) {
         Entity self = (Entity) (Object) this;
@@ -74,25 +79,25 @@ public abstract class EntityOnPosMixin {
         // shortcut (subtract the world portal delta) was only right for translation
         // pairs, and its wrong Y on rotated crossings tripped travel's
         // "chunk below not loaded" pin (dM.y = -0.098/tick: the eaten-jump bug).
-        dev.ryanhcode.sable.companion.math.Pose3dc pose = owner.logicalPose();
-        org.joml.Vector3d world = pose.transformPosition(new org.joml.Vector3d(
+        Pose3dc pose = owner.logicalPose();
+        Vector3d world = pose.transformPosition(new Vector3d(
             original.getX() + 0.5, original.getY() + 0.5, original.getZ() + 0.5));
-        net.minecraft.world.phys.Vec3 unmapped = mapping.unmapPoint(
-            new net.minecraft.world.phys.Vec3(world.x, world.y, world.z));
-        org.joml.Vector3d localTrue = pose.transformPositionInverse(
-            new org.joml.Vector3d(unmapped.x, unmapped.y, unmapped.z));
+        Vec3 unmapped = mapping.unmapPoint(
+            new Vec3(world.x, world.y, world.z));
+        Vector3d localTrue = pose.transformPositionInverse(
+            new Vector3d(unmapped.x, unmapped.y, unmapped.z));
         return BlockPos.containing(localTrue.x, localTrue.y, localTrue.z);
     }
 
     /** The ship owning plot block {@code pos} in ANY level (a projected ship lives in another one). */
-    @org.spongepowered.asm.mixin.Unique
-    @org.jetbrains.annotations.Nullable
+    @Unique
+    @Nullable
     private static SubLevel ipl$plotOwner(Entity self, BlockPos pos) {
         if (self.level().isClientSide) {
-            return ipl.sable.client.IplClientProjections.findSubLevelAtPlot(
-                net.minecraft.world.phys.Vec3.atCenterOf(pos));
+            return IplClientProjections.findSubLevelAtPlot(
+                Vec3.atCenterOf(pos));
         }
-        return self.level() instanceof net.minecraft.server.level.ServerLevel serverLevel
-            ? ipl.sable.atlas.IplScenes.plotOwner(serverLevel, pos) : null;
+        return self.level() instanceof ServerLevel serverLevel
+            ? IplScenes.plotOwner(serverLevel, pos) : null;
     }
 }

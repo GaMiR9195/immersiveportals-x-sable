@@ -5,7 +5,6 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.transit.IplStraddlePoseMap;
-import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -48,8 +47,7 @@ public abstract class EntityInBlockMixin {
             value = "INVOKE",
             target = "Ldev/ryanhcode/sable/sublevel/SubLevel;logicalPose()Ldev/ryanhcode/sable/companion/math/Pose3d;",
             remap = false
-        ),
-        require = 0
+        )
     )
     private Pose3d ipl$mapEntityContextPose(SubLevel sub, Operation<Pose3d> original) {
         Pose3d pose = original.call(sub);

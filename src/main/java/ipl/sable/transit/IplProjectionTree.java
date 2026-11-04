@@ -2,17 +2,22 @@ package ipl.sable.transit;
 
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.client.IplClientProjections;
+import ipl.sable.client.IplStraddleSessionStore;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * PROJECTION TREE of one sub-level: every live straddle session (root = the real body
@@ -20,15 +25,11 @@ import java.util.Map;
  * destination level) as one node, with the exact region geometry the native contact clip
  * uses.
  *
- * <p>Русский комментарий (почему так): раньше каждое "взаимодействие" (пик, дистанция
- * досягаемости, контур, нажимные плиты, сущности) само решало, в каком кадре находится
- * точка корабля — по одной плоскости первого портала. Для нескольких порталов и цепочек
- * (выход из 2-го портала и дальше) это давало неверный кадр, отсюда "не могу
- * взаимодействовать вообще". Теперь есть одна истина — дерево сессий и та же
- * геометрия трубок, что и в физике (natives: KEEP = пересечение трубок пути,
- * EXCLUDE = трубки дочерних порталов). Точка плота принадлежит ровно одному куску:
- * родному (не прошла ни один корневой портал) или узлу пути, и все потребители
- * спрашивают именно это.
+ * <p>Одна истина для всех взаимодействий (пик, дистанция досягаемости, контур, нажимные
+ * плиты, сущности): дерево сессий и та же геометрия трубок, что и в физике (natives:
+ * KEEP = пересечение трубок пути, EXCLUDE = трубки дочерних порталов). Одной плоскости
+ * первого портала для этого мало: с несколькими порталами и цепочками (выход из 2-го
+ * портала и дальше) она даёт неверный кадр.
  *
  * <p>A plot point belongs to exactly ONE piece: the native piece (inside no root tube) or
  * the deepest node whose tube chain it went through. Region tests reproduce
@@ -200,18 +201,6 @@ public final class IplProjectionTree {
         return all;
     }
 
-    /** Nodes whose image lives in {@code dim}. */
-    public List<Node> nodesInto(ResourceKey<Level> dim) {
-        List<Node> out = null;
-        for (Node n : all) {
-            if (n.destDim() == dim) {
-                if (out == null) out = new ArrayList<>(2);
-                out.add(n);
-            }
-        }
-        return out == null ? List.of() : out;
-    }
-
     /**
      * The piece a REAL-frame world point (body's own level, real pose) belongs to: null for
      * the native piece, otherwise the deepest node it went through. Contested space between
@@ -230,12 +219,6 @@ public final class IplProjectionTree {
             if (child.beyondContains(wDest)) return descend(child, child.local.mapPoint(wDest));
         }
         return node;
-    }
-
-    /** Native piece membership of a real-frame world point (no root tube contains it). */
-    public boolean nativeContains(Vec3 realWorld) {
-        for (Node root : roots) if (root.beyondContains(realWorld)) return false;
-        return true;
     }
 
     /** Siblings of {@code node} in priority order (itself included). */
@@ -318,7 +301,7 @@ public final class IplProjectionTree {
         List<Entry> ordered = new ArrayList<>(entries);
         Map<Entry, Integer> rank = new IdentityHashMap<>();
         for (Entry e : ordered) rank.put(e, upstreamRank(e, ordered));
-        ordered.sort(java.util.Comparator.<Entry>comparingInt(e -> pathDepth(e.path()))
+        ordered.sort(Comparator.<Entry>comparingInt(e -> pathDepth(e.path()))
             .thenComparingInt(rank::get)
             .thenComparing(Entry::wide)
             .thenComparing(Entry::path));
@@ -386,14 +369,14 @@ public final class IplProjectionTree {
         Level level = sub.getLevel();
         if (level == null) return EMPTY;
         boolean client = level.isClientSide();
-        if (client ? ipl.sable.client.IplStraddleSessionStore.isIdle() : IplAtlasStraddleSession.isIdle()) {
+        if (client ? IplStraddleSessionStore.isIdle() : IplAtlasStraddleSession.isIdle()) {
             return EMPTY;
         }
         Cache cache = CACHE.get();
         // One clock per side (client levels keep independent game times).
         long stamp = client
-            ? ipl.sable.client.IplClientProjections.clientStamp()
-            : level instanceof net.minecraft.server.level.ServerLevel server ? server.getServer().getTickCount() : 0L;
+            ? IplClientProjections.clientStamp()
+            : level instanceof ServerLevel server ? server.getServer().getTickCount() : 0L;
         long gen = generation;
         if (cache.stamp != stamp || cache.generation != gen) {
             cache.trees.clear();
@@ -403,7 +386,7 @@ public final class IplProjectionTree {
         IplProjectionTree tree = cache.trees.get(sub);
         if (tree == null) {
             List<Entry> entries = client
-                ? ipl.sable.client.IplClientProjections.treeEntries(sub)
+                ? IplClientProjections.treeEntries(sub)
                 : IplAtlasStraddleSession.treeEntries(sub);
             tree = build(sub, entries);
             cache.trees.put(sub, tree);
@@ -432,8 +415,8 @@ public final class IplProjectionTree {
      * Where a REAL-frame world point of {@code sub} physically is as seen from {@code ctx}:
      * its piece's mapped position when that piece lives in {@code ctx}, the point itself
      * for the native piece in the native level. When the piece is elsewhere, falls back to
-     * the native position (native level) or the first image into {@code ctx} -- the
-     * historical behaviour, so distances stay finite and continuous.
+     * the native position (native level) or the first image into {@code ctx}, so distances
+     * stay finite and continuous.
      */
     @Nullable
     public static Vec3 worldPointIn(SubLevel sub, Level ctx, Vec3 realWorld) {
@@ -452,7 +435,7 @@ public final class IplProjectionTree {
      * Every frame through which {@code sub} is present in {@code ctx}: the native frame
      * (node null) when native, plus each node whose image lives there.
      */
-    public static void forEachFrameIn(SubLevel sub, Level ctx, java.util.function.Consumer<Node> visitor) {
+    public static void forEachFrameIn(SubLevel sub, Level ctx, Consumer<Node> visitor) {
         IplProjectionTree tree = of(sub);
         if (sub.getLevel() == ctx) visitor.accept(null);
         for (Node n : tree.nodes()) {

@@ -1,8 +1,11 @@
 package ipl.sable.client;
 
-import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.companion.math.Pose3d;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import ipl.sable.transit.PortalAperture;
+import ipl.sable.transit.PortalCrossingDetector;
+import ipl.sable.transit.PortalOrder;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
@@ -147,7 +150,7 @@ final class IplClientVisualTransitLatch {
      */
     static boolean isAuthoritativeVisible(ClientSubLevel sub, Portal portal, boolean completed) {
         return isVisible(sub, portal, completed,
-            ipl.sable.transit.PortalCrossingDetector.SESSION_RELEASE_MARGIN);
+            PortalCrossingDetector.SESSION_RELEASE_MARGIN);
     }
 
     private static boolean isVisible(ClientSubLevel sub, Portal portal, boolean completed, double margin) {
@@ -164,7 +167,7 @@ final class IplClientVisualTransitLatch {
         // gaps; rejecting its non-contained section could hide real server-admitted
         // sparse geometry. Side RELEASE is owned by occupied-block server sections
         // and the session end tick, consumed on the delayed render timeline.
-        return ipl.sable.transit.PortalAperture.intersects(
+        return PortalAperture.intersects(
             sub.getPlot().getBoundingBox(), sub.renderPose(), portal, margin, 0.0);
     }
 
@@ -243,20 +246,19 @@ final class IplClientVisualTransitLatch {
     /**
      * Whether {@code candidate} stands beyond the plane of a portal the ship is already split by.
      *
-     * <p>Русский комментарий (почему): предсказание смотрит на коробку плота в РОДНЫХ координатах.
-     * В ряду {@code ->|  |} передняя часть корабля уже ушла в левый портал (наверх), но её родные
-     * координаты через пару блоков пересекают правый портал — предсказание включало его, и на
-     * {@link #CONFIRMATION_GRACE_TICKS} тиков в нижнем портале рисовался кусок корабля: «мелкий
-     * край на маленькое время», привязанный ко времени, а не к длине. До портала за плоскостью
-     * уже идущего разреза материал доходит только через этот разрез, поэтому такой портал не
-     * предсказывается вовсе; если сервер всё же откроет там сессию, её проекция всё равно
-     * уступит переднему порталу (см. {@code PortalOrder}).
+     * <p>Предсказание смотрит на коробку плота в РОДНЫХ координатах. В ряду {@code ->|  |}
+     * передняя часть корабля уже ушла в левый портал (наверх), но её родные координаты через пару
+     * блоков пересекают правый портал. Без этой проверки предсказание включило бы правый портал, и
+     * на {@link #CONFIRMATION_GRACE_TICKS} тиков в нижнем портале рисовался бы кусок корабля. До
+     * портала за плоскостью уже идущего разреза материал доходит только через этот разрез, поэтому
+     * такой портал не предсказывается; если сервер всё же откроет там сессию, её проекция уступит
+     * переднему порталу (см. {@code PortalOrder}).
      */
     private static boolean behindCurrentSplit(ClientSubLevel sub, Portal candidate, List<Portal> current) {
         for (Portal split : current) {
             if (split.getUUID().equals(candidate.getUUID())) continue;
             boolean wide = IplStraddleSessionStore.isWide(sub.getUniqueId(), split.getUUID().toString());
-            if (ipl.sable.transit.PortalOrder.strictlyDownstreamOf(candidate, false, split, wide)) return true;
+            if (PortalOrder.strictlyDownstreamOf(candidate, false, split, wide)) return true;
         }
         return false;
     }

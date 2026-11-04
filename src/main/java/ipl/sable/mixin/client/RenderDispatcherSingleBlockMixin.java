@@ -11,12 +11,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /**
  * Sub-levels always render through Sable's CHUNKED path, never the one-block path.
  *
- * <h2>The bug this removes</h2>
- *
- * <p>A one-block body carried into a portal showed a crooked portal cut: a
- * triangular slice on the far side of the portal whose size and even visibility changed
- * as the player moved the camera. Multi-block bodies were unaffected.
- *
  * <p>Sable has two vanilla render paths and they are NOT interchangeable:
  *
  * <ul>
@@ -32,46 +26,23 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *       {@code VanillaSubLevelRenderDispatcher.renderAfterSections}.</li>
  * </ul>
  *
- * <p>All of this mod's portal clipping is attached to the chunked path only --
+ * <p>All portal clipping of this mod is attached to the chunked path:
  * {@code ChunkedRenderDataMixin} targets {@code renderChunkedSubLevel}, and
- * {@code IplClipUniformPatcher.patchPortalClipForVanillaSubLevel} converts IP's
- * slot-0 {@code iportal_ClippingEquation} into exactly that path's plot-local input
- * space. Nothing in this mod referenced {@code VanillaSingleSubLevelRenderData} at all.
+ * {@code IplClipUniformPatcher.patchPortalClipForVanillaSubLevel} converts IP's slot-0
+ * {@code iportal_ClippingEquation} into exactly that path's plot-local input space. On the
+ * one-block path IP's camera-relative WORLD-space equation would be dotted against an
+ * EYE-space position ({@code n_world dot (R_view * p) == (R_view^T * n_world) dot p}): the
+ * cut normal turns with the camera, a one-block body in a portal shows a triangular corner
+ * cut that changes as the player looks around, and the slot-1/slot-2 sub-level cut is
+ * missing entirely.
  *
- * <p>So for a one-block body, IP's slot-0 equation -- built in camera-relative WORLD
- * space -- was dotted against an EYE-space vertex position. Eye space is
- * {@code R_view * p_world}, and {@code n_world dot (R_view * p) == (R_view^T * n_world) dot p},
- * i.e. the effective cut normal was the portal normal rotated by the inverse camera
- * rotation. The plane therefore swung around as the player turned: a plane at a wrong
- * oblique angle slicing a single cube is precisely a triangular corner cut, and its
- * area changed every time the camera moved. Our own slot-1/slot-2 sub-level cut was
- * never installed for that path either, so the source/destination split it is supposed
- * to make was simply missing.
- *
- * <h2>The fix</h2>
- *
- * <p>Rather than duplicating the whole clip bracket into a second, batched,
- * differently-spaced draw path (and having to split Sable's shared one-block mesh per
- * sub-level so a non-straddling block in the same batch is not cut too), all bodies
- * are routed to the chunked path that already clips correctly.
- *
- * <p>This is a first-class, supported Sable configuration, not a hack:
- * {@code isSingleBlock} already returns false for any block tagged
- * {@code SableTags.ALWAYS_CHUNK_RENDERING}, so chunk-rendering a 1x1x1 plot is a path
- * Sable maintains deliberately. Returning false here is the same decision for every
- * body: any of them may enter a portal.
- *
- * <p>The decision is also STABLE for the body's whole lifetime, so it cannot thrash
- * {@code resize()}'s {@code instanceof ... ^ isSingleBlock(...)} re-allocation, which a
- * straddle-dependent choice would have done on every crossing (once per tick in a
- * portal loop).
- *
- * <p>Bonus: the one-block path is also the path that historically lost visibility
- * entirely, because it depends on the separate {@code renderAfterSections} drain and on
- * {@code singleBlockLayers} being non-empty. No body depends on it any more.
- *
- * <p>{@code @Pseudo} because Sable is a runtime dependency, {@code remap = false}
- * because Sable's names are not in the Mojang mappings.
+ * <p>Routing every body to the chunked path is a configuration Sable supports itself:
+ * {@code isSingleBlock} already returns false for blocks tagged
+ * {@code SableTags.ALWAYS_CHUNK_RENDERING}. The answer is the same for every body and stable
+ * for its whole lifetime, so it never thrashes {@code resize()}'s
+ * {@code instanceof ... ^ isSingleBlock(...)} re-allocation (a straddle-dependent choice would
+ * re-allocate on every crossing), and no body depends on the one-block path's separate
+ * {@code renderAfterSections} drain.
  */
 @Pseudo
 @Mixin(value = VanillaSubLevelRenderDispatcher.class, remap = false)
@@ -80,13 +51,11 @@ public abstract class RenderDispatcherSingleBlockMixin {
     @Inject(
         method = "isSingleBlock",
         at = @At("HEAD"),
-        cancellable = true,
-        remap = false,
-        require = 0
+        cancellable = true
     )
     private static void ipl$forceChunkedRendering(
         ClientSubLevel subLevel, CallbackInfoReturnable<Boolean> cir
     ) {
-        if (subLevel != null) cir.setReturnValue(false);
+        cir.setReturnValue(false);
     }
 }

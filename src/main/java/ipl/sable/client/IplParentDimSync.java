@@ -2,19 +2,24 @@ package ipl.sable.client;
 
 import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.BoundingBox3d;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import ipl.sable.mixin.SubLevelAccessor;
 import ipl.sable.mixin.client.ClientSubLevelAccessor;
 import ipl.sable.mixin.client.SnapshotInterpolatorAccessor;
-import net.minecraft.client.multiplayer.ClientLevel;
+import ipl.sable.transit.IplGrabLink;
+import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
@@ -24,8 +29,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -41,8 +49,14 @@ import java.util.UUID;
  *       packet): the old client object becomes a short-lived GHOST that keeps rendering
  *       through the crossing portal (source half + projection) until its successor in the
  *       destination level has render geometry; the successor stays hidden meanwhile, so
- *       the switch happens in one frame with neither a gap nor a double image.</li>
+ *       the switch happens in one frame with neither a gap nor a double image. The successor
+ *       continues the ghost (its poses and snapshot history), so the motion goes on without a
+ *       skip or a change of pace.</li>
  * </ul>
+ *
+ * <p>All levels share one snapshot timeline and one interpolation clock
+ * ({@code IplTimeline}, {@link IplSharedClock}): a history carried into a new object keeps its
+ * stamps, and the new object shows exactly the pose the old one would have shown.
  */
 public final class IplParentDimSync {
 
@@ -50,14 +64,9 @@ public final class IplParentDimSync {
 
     private static final long GHOST_TIMEOUT_MS = 3000L;
     private static final int GHOST_READY_TICKS = 3;
-    /**
-     * Максимум тиков, на которые призрак продолжает движение сам (≈0.5 с), пока преемник
-     * межизмеренческого перехода ещё не пришёл.
-     */
-    private static final int GHOST_EXTRAPOLATION_TICKS = 10;
 
     /** Same-dimension flips waiting for the delayed render stream, FIFO per body. */
-    private static final Map<UUID, java.util.ArrayDeque<PendingHandoff>> PENDING_HANDOFFS = new HashMap<>();
+    private static final Map<UUID, ArrayDeque<PendingHandoff>> PENDING_HANDOFFS = new HashMap<>();
 
     private static final Map<UUID, Long> FRAMES = new HashMap<>();
 
@@ -78,30 +87,16 @@ public final class IplParentDimSync {
         final RemoteCallables.PortalMapping mapping;
         @Nullable final Portal surrogate;
         final long startMs;
-        /** Метка часов назначения минус метка часов источника для одного серверного тика. */
-        final int clockOffset;
         int readyTicks;
         boolean stopDeferred;
-        /** Преемник уже получил историю поз призрака и выровненные часы. */
-        boolean seeded;
-        /** Сдвиг plot-локальных координат преемника относительно призрака (если слот плота другой). */
-        double plotShiftX;
-        double plotShiftZ;
-        /** Метка последнего НАСТОЯЩЕГО снимка призрака (дальше — экстраполяция), или MIN_VALUE. */
-        int lastRealTick = Integer.MIN_VALUE;
-        /** Последний настоящий снимок и скорость за тик (линейная + поворот), для экстраполяции. */
-        @Nullable Pose3d extrapolationBase;
-        final Vector3d linearPerTick = new Vector3d();
-        final Quaterniond rotationPerTick = new Quaterniond();
 
         Ghost(ClientSubLevel sub, ResourceKey<Level> toDim, RemoteCallables.PortalMapping mapping,
-              @Nullable Portal surrogate, long startMs, int clockOffset) {
+              @Nullable Portal surrogate, long startMs) {
             this.sub = sub;
             this.toDim = toDim;
             this.mapping = mapping;
             this.surrogate = surrogate;
             this.startMs = startMs;
-            this.clockOffset = clockOffset;
         }
     }
 
@@ -138,8 +133,8 @@ public final class IplParentDimSync {
     }
 
     /** Rendering ends at the delayed client chart; motor commands end at the server chart. */
-    public static java.util.List<ipl.sable.transit.IplGrabLink> visibleGrabChain(
-        UUID id, long chainFrame, java.util.List<ipl.sable.transit.IplGrabLink> authoritative
+    public static List<IplGrabLink> visibleGrabChain(
+        UUID id, long chainFrame, List<IplGrabLink> authoritative
     ) {
         var queue = PENDING_HANDOFFS.get(id);
         if (queue == null || queue.isEmpty()) return authoritative;
@@ -147,8 +142,7 @@ public final class IplParentDimSync {
         for (var it = queue.descendingIterator(); it.hasNext();) {
             var handoff = it.next();
             if (handoff.destinationFrame() > chainFrame) continue;
-            var inverse = ipl.sable.transit.IplGrabLink.decode(handoff.inverseGrabLink());
-            if (inverse != null) result = ipl.sable.transit.IplGrabLink.append(result, inverse);
+            result = IplGrabLink.append(result, IplGrabLink.decode(handoff.inverseGrabLink()));
         }
         return result;
     }
@@ -156,11 +150,11 @@ public final class IplParentDimSync {
     /** Client tick tail: drains same-dimension handoffs, then advances transit ghosts. */
     public static void applyPendingHandoffs() {
         if (!PENDING_HANDOFFS.isEmpty()) {
-            Iterator<Map.Entry<UUID, java.util.ArrayDeque<PendingHandoff>>> iterator =
+            Iterator<Map.Entry<UUID, ArrayDeque<PendingHandoff>>> iterator =
                 PENDING_HANDOFFS.entrySet().iterator();
             while (iterator.hasNext()) {
-                Map.Entry<UUID, java.util.ArrayDeque<PendingHandoff>> entry = iterator.next();
-                java.util.ArrayDeque<PendingHandoff> pending = entry.getValue();
+                Map.Entry<UUID, ArrayDeque<PendingHandoff>> entry = iterator.next();
+                ArrayDeque<PendingHandoff> pending = entry.getValue();
                 try {
                     // Several ordered flips can queue before the delayed stream catches up;
                     // apply every transform in order (portal chains, self-recursive portals).
@@ -171,10 +165,11 @@ public final class IplParentDimSync {
                         pending.removeFirst();
                     }
                     if (pending.isEmpty()) iterator.remove();
-                } catch (Throwable t) {
+                } catch (RuntimeException e) {
+                    // One broken body must not stall the others or crash the client tick.
                     IplStraddleSessionStore.clearAllVisualState(entry.getKey());
                     iterator.remove();
-                    LOG.error("[IPL-PARENT-SYNC] failed deferred handoff for {}", entry.getKey(), t);
+                    LOG.error("[IPL-PARENT-SYNC] failed deferred handoff for {}", entry.getKey(), e);
                 }
             }
         }
@@ -187,10 +182,10 @@ public final class IplParentDimSync {
      * current client chart so Sable never interpolates across the seam.
      */
     public static Pose3dc mapPendingDestinationSnapshotBack(UUID subLevelId, int gameTick, Pose3dc snapshot) {
-        java.util.ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.get(subLevelId);
+        ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.get(subLevelId);
         if (pending == null || pending.isEmpty()) return snapshot;
         Pose3d mapped = new Pose3d(snapshot);
-        for (java.util.Iterator<PendingHandoff> it = pending.descendingIterator(); it.hasNext();) {
+        for (Iterator<PendingHandoff> it = pending.descendingIterator(); it.hasNext();) {
             PendingHandoff handoff = it.next();
             // Only packets at or after the captured tracking watermark belong to the new chart.
             if (gameTick >= handoff.firstDestinationTick()) {
@@ -225,14 +220,14 @@ public final class IplParentDimSync {
         if (GHOSTS.isEmpty() || sub == null) return null;
         Ghost ghost = GHOSTS.get(sub.getUniqueId());
         if (ghost == null || ghost.sub != sub) return null;
-        if (sub.getLevel() instanceof ClientLevel level) {
-            Portal live = IplStraddleSessionStore.findLivePortal(level, ghost.mapping.portalId());
-            if (live != null) return live;
-        }
-        return ghost.surrogate;
+        Portal live = IplStraddleSessionStore.findLivePortal(sub.getLevel(), ghost.mapping.portalId());
+        return live != null ? live : ghost.surrogate;
     }
 
-    /** A ghost follows its successor's live pose, mapped back through the crossing portal. */
+    /**
+     * A ghost follows its successor's live pose, mapped back through the crossing portal. The
+     * successor's plot may sit in another slot; its plot-local rotation point is shifted back.
+     */
     @Nullable
     public static Pose3dc ghostRenderPose(ClientSubLevel sub) {
         if (GHOSTS.isEmpty() || sub == null) return null;
@@ -241,8 +236,15 @@ public final class IplParentDimSync {
         ClientSubLevel successor = IplClientProjections.findClientSub(sub.getUniqueId(), ghost.toDim);
         if (successor == null || successor == sub) return null;
         Pose3d back = ghost.mapping.mapPoseInverse(new Pose3d(successor.renderPose()));
-        back.rotationPoint().sub(ghost.plotShiftX, 0.0, ghost.plotShiftZ);
+        back.rotationPoint().sub(plotShift(sub, successor));
         return back;
+    }
+
+    /** Offset of the successor's plot from the ghost's, in blocks: plot-local points move by it. */
+    private static Vector3d plotShift(ClientSubLevel ghost, ClientSubLevel successor) {
+        ChunkPos ghostPlot = ghost.getPlot().getChunkMin();
+        ChunkPos successorPlot = successor.getPlot().getChunkMin();
+        return new Vector3d((successorPlot.x - ghostPlot.x) * 16.0, 0.0, (successorPlot.z - ghostPlot.z) * 16.0);
     }
 
     /** Stop-tracking of a ghost: keep the object until its successor can be seen. */
@@ -272,109 +274,53 @@ public final class IplParentDimSync {
     }
 
     /**
-     * Конец обработки start-tracking: преемник межизмеренческого перехода создан Sable.
+     * The successor of a cross-dimension move, just created by Sable's start-tracking, continues
+     * its ghost through the crossing portal: it takes the poses the ghost shows, and the ghost's
+     * snapshots older than its own lead its buffer. Both levels sample with the one shared clock
+     * and stamp on one timeline, so the body keeps its time and pace across the portal, whatever
+     * else moves in either level.
      *
-     * <p>Почему здесь был «подвис как пинг»: у каждого уровня свои часы интерполяции, а
-     * start-tracking даёт новому объекту всего два снимка (и первый из них — копия второго,
-     * потому что сервер аллоцировал объект с lastPose == pose). Часы контейнера назначения при
-     * этом часто стоят или устарели: если игрок давно не получал оттуда движений, Sable
-     * зажимает указатель у нижней границы и показывает первый снимок 2–3 тика, а потом
-     * навсегда остаётся с удвоенной задержкой. Same-dim переход этого не имеет, потому что там
-     * буфер и часы остаются теми же (handoff лишь пересчитывает позы через портал).
-     *
-     * <p>Решение: переносим историю призрака (буфер снимков источника) через портал в буфер
-     * преемника с переводом меток в часы назначения ({@code clockOffset} от сервера) и, если
-     * часы назначения не идут синхронно, выставляем их по часам источника. Тогда преемник в
-     * первый же кадр показывает ту же позу, что показывал бы призрак, и дальше едет без паузы.
+     * <p>The ghost follows the successor from the moment it exists ({@link #ghostRenderPose}).
+     * On its own the successor would sit at the server's previous pose until its first tick and
+     * then hold its first snapshot until the clock reached it: the body skipped ahead at the exit
+     * and hung there.
      */
-    public static void onSuccessorTracked(Level level, UUID id) {
+    public static void continueFromGhost(Level level, UUID id) {
         Ghost ghost = GHOSTS.get(id);
-        if (ghost == null || ghost.seeded || ghost.sub.getLevel() == level) return;
-        SubLevelContainer container = SubLevelContainer.getContainer(level);
-        if (container == null || !(container.getSubLevel(id) instanceof ClientSubLevel successor)
-            || successor == ghost.sub) return;
-        ghost.seeded = true;
-        try {
-            seedSuccessor(ghost, successor);
-        } catch (Throwable t) {
-            LOG.error("[IPL-PARENT-SYNC] successor seeding failed for {}", id, t);
-        }
-    }
-
-    private static void seedSuccessor(Ghost ghost, ClientSubLevel successor) {
-        ClientSubLevelContainer from = ClientSubLevelContainer.getContainer(ghost.sub.getLevel());
-        ClientSubLevelContainer to = ClientSubLevelContainer.getContainer(successor.getLevel());
-        if (from == null || to == null) return;
-        var srcClock = from.getInterpolation();
-        var dstClock = to.getInterpolation();
-        var src = (ipl.sable.mixin.client.InterpolationClockAccessor) srcClock;
-        var dst = (ipl.sable.mixin.client.InterpolationClockAccessor) dstClock;
-        int offset = ghost.clockOffset;
-
-        net.minecraft.world.level.ChunkPos a = ghost.sub.getPlot().getChunkMin();
-        net.minecraft.world.level.ChunkPos b = successor.getPlot().getChunkMin();
-        ghost.plotShiftX = (b.x - a.x) * 16.0;
-        ghost.plotShiftZ = (b.z - a.z) * 16.0;
-
-        // 1. История: снимки призрака (карта источника) -> карта назначения, метки -> часы назначения.
-        java.util.List<SubLevelSnapshotInterpolator.Snapshot> mapped = new java.util.ArrayList<>();
-        SubLevelSnapshotInterpolator ghostInterpolator = ghost.sub.getInterpolator();
-        synchronized (ghostInterpolator.buffer) {
-            for (SubLevelSnapshotInterpolator.Snapshot snapshot : ghostInterpolator.buffer) {
-                // Синтетические (экстраполированные) снимки призрака преемнику не нужны.
-                if (ghost.lastRealTick != Integer.MIN_VALUE && snapshot.gameTick() > ghost.lastRealTick) continue;
-                Pose3d pose = ghost.mapping.mapPose(new Pose3d(snapshot.pose()));
-                pose.rotationPoint().add(ghost.plotShiftX, 0.0, ghost.plotShiftZ);
-                mapped.add(new SubLevelSnapshotInterpolator.Snapshot(snapshot.gameTick() + offset, pose));
-            }
-        }
-        if (!mapped.isEmpty()) {
-            int newest = mapped.get(mapped.size() - 1).gameTick();
-            SubLevelSnapshotInterpolator interpolator = successor.getInterpolator();
-            synchronized (interpolator.buffer) {
-                // Снимки start-tracking не новее истории призрака — синтетические (lastPose == pose).
-                interpolator.buffer.removeIf(snapshot -> snapshot.gameTick() <= newest);
-                interpolator.buffer.addAll(0, mapped);
-            }
-        }
-
-        // 2. Часы: если часы назначения стоят, не получали обновлений или разошлись с часами
-        //    источника больше чем на тик — ставим их по часам источника (+ сдвиг меток).
-        boolean srcLive = src.ipl$getReceivedFirstUpdate() && !srcClock.isStopped();
-        if (srcLive) {
-            double expected = src.ipl$getInterpolationTick() + offset;
-            double expectedNewest = src.ipl$getMostRecentTick() + offset;
-            boolean dstLive = dst.ipl$getReceivedFirstUpdate() && !dstClock.isStopped()
-                && dst.ipl$getMostRecentTick() >= expectedNewest - 2.0;
-            // Русский: часы назначения, по которым не едет никто, кроме преемника, выставляются точно,
-            // иначе остаток расхождения (до тика) виден как скачок позы при смене призрака.
-            boolean shared = to.getAllSubLevels().size() > 1;
-            if (!dstLive || !shared || Math.abs(dst.ipl$getInterpolationTick() - expected) > 1.0) {
-                dst.ipl$setInterpolationTick(expected);
-                dst.ipl$setMostRecentTick(Math.max(dst.ipl$getMostRecentTick(), expectedNewest));
-                dst.ipl$setEstimatedServerTickSpeed(src.ipl$getEstimatedServerTickSpeed());
-                dst.ipl$setServerMsFromLastUpdate(src.ipl$getServerMsFromLastUpdate());
-                dst.ipl$setReceivedFirstUpdate(true);
-                dst.ipl$setStopped(false);
-                dstClock.mostRecentInterpolationTick = srcClock.mostRecentInterpolationTick + offset;
-                dstClock.lastInterpolationTick = srcClock.lastInterpolationTick + offset;
-                LOG.debug("[IPL-PARENT-SYNC] aligned {} clock to {} (+{}) for {}",
-                    successor.getLevel().dimension().location(), ghost.sub.getLevel().dimension().location(),
-                    offset, successor.getUniqueId());
-            }
-        }
-
-        // 3. Начальные позы — из засеянного буфера по выровненным часам.
-        successor.setInitialPosesFrom(dstClock);
-        SubLevelSnapshotInterpolator interpolator = successor.getInterpolator();
-        synchronized (interpolator.buffer) {
-            if (!interpolator.buffer.isEmpty()) {
-                interpolator.getSampleAt(dstClock.getTickPointer(),
-                    ((SnapshotInterpolatorAccessor) interpolator).ipl$getRunningSnapshot());
-            }
-        }
+        if (ghost == null || !level.dimension().equals(ghost.toDim)) return;
+        SubLevelContainer destination = SubLevelContainer.getContainer(level);
+        if (destination == null || !(destination.getSubLevel(id) instanceof ClientSubLevel successor)) return;
+        Vector3d shift = plotShift(ghost.sub, successor);
+        continueHistory(ghost, successor, shift);
+        Pose3d logical = ghost.mapping.mapPose(new Pose3d(ghost.sub.logicalPose()));
+        Pose3d last = ghost.mapping.mapPose(new Pose3d(ghost.sub.lastPose()));
+        logical.rotationPoint().add(shift);
+        last.rotationPoint().add(shift);
+        successor.logicalPose().set(logical);
+        ((SubLevelAccessor) successor).ipl$getPreviousPose().set(last);
         successor.forceUpdateBounds();
         ((ClientSubLevelAccessor) successor).ipl$setLastRenderPosePartialTick(-1.0f);
+    }
+
+    /** The ghost's snapshots older than the successor's first one, mapped, lead its buffer. */
+    private static void continueHistory(Ghost ghost, ClientSubLevel successor, Vector3d shift) {
+        List<SubLevelSnapshotInterpolator.Snapshot> history = new ArrayList<>();
+        SubLevelSnapshotInterpolator source = ghost.sub.getInterpolator();
+        synchronized (source.buffer) {
+            for (SubLevelSnapshotInterpolator.Snapshot snapshot : source.buffer) {
+                Pose3d pose = ghost.mapping.mapPose(new Pose3d(snapshot.pose()));
+                pose.rotationPoint().add(shift);
+                history.add(new SubLevelSnapshotInterpolator.Snapshot(snapshot.gameTick(), pose));
+            }
+        }
+        SubLevelSnapshotInterpolator target = successor.getInterpolator();
+        synchronized (target.buffer) {
+            if (!target.buffer.isEmpty()) {
+                int first = target.buffer.getFirst().gameTick();
+                history.removeIf(snapshot -> snapshot.gameTick() >= first);
+            }
+            target.buffer.addAll(0, history);
+        }
     }
 
     /** {@code ClientSubLevel.onRemove}: forget per-body state only when no instance survives. */
@@ -394,18 +340,11 @@ public final class IplParentDimSync {
     private static void tickGhosts() {
         if (GHOSTS.isEmpty()) return;
         long now = System.currentTimeMillis();
-        for (Map.Entry<UUID, Ghost> entry : new java.util.ArrayList<>(GHOSTS.entrySet())) {
+        for (Map.Entry<UUID, Ghost> entry : new ArrayList<>(GHOSTS.entrySet())) {
             Ghost ghost = entry.getValue();
             if (ghost.sub.isRemoved()) {
                 if (GHOSTS.remove(entry.getKey(), ghost)) IplStraddleSessionStore.clearGhostTails(entry.getKey());
                 continue;
-            }
-            if (!ghost.seeded) {
-                try {
-                    extendGhostMotion(ghost);
-                } catch (RuntimeException t) {
-                    LOG.debug("[IPL-PARENT-SYNC] ghost extrapolation failed for {}", entry.getKey(), t);
-                }
             }
             ClientSubLevel successor = IplClientProjections.findClientSub(entry.getKey(), ghost.toDim);
             boolean ready = successor != null && successor != ghost.sub && hasGeometry(successor);
@@ -417,78 +356,25 @@ public final class IplParentDimSync {
     }
 
     /**
-     * Подвисание на выходе в другое измерение (клиентская часть).
-     *
-     * <p>Русский комментарий (почему): после межизмеренческого переноса старый клиентский
-     * объект (призрак) больше не получает снимков — сервер уже ведёт новый объект в другом
-     * уровне. Интерполятор Sable досчитывает вперёд максимум ОДИН тик, а затем стоит на
-     * последнем снимке. Преемник приходит через start-tracking уровня назначения: из
-     * Верхнего мира в Незер — в том же серверном тике, обратно — тиком позже, плюс сеть и
-     * сборка чанков плота. Всё это время призрак "висел", а потом прыгал к преемнику.
-     * Теперь, пока преемник не засеян, призрак продолжает движение с последней скоростью
-     * (линейной и угловой, по двум последним настоящим снимкам) синтетическими снимками
-     * на шкале часов источника — не дальше {@link #GHOST_EXTRAPOLATION_TICKS} тиков.
-     * Синтетические снимки помечены меткой {@code lastRealTick} и НЕ переносятся в буфер
-     * преемника (у него есть настоящие данные).
-     */
-    private static void extendGhostMotion(Ghost ghost) {
-        ClientSubLevelContainer container = ClientSubLevelContainer.getContainer(ghost.sub.getLevel());
-        if (container == null) return;
-        double pointer = container.getInterpolation().getTickPointer();
-        SubLevelSnapshotInterpolator interpolator = ghost.sub.getInterpolator();
-        synchronized (interpolator.buffer) {
-            int size = interpolator.buffer.size();
-            if (size == 0) return;
-            if (ghost.extrapolationBase == null) {
-                if (size < 2) return;
-                SubLevelSnapshotInterpolator.Snapshot a = interpolator.buffer.get(size - 2);
-                SubLevelSnapshotInterpolator.Snapshot b = interpolator.buffer.get(size - 1);
-                int span = b.gameTick() - a.gameTick();
-                if (span <= 0) return;
-                ghost.lastRealTick = b.gameTick();
-                ghost.extrapolationBase = new Pose3d(b.pose());
-                Vector3d pa = new Vector3d(a.pose().position());
-                ghost.linearPerTick.set(b.pose().position()).sub(pa).div(span);
-                // Поворот за тик: (b * a^-1)^(1/span) в мировой системе.
-                Quaterniond delta = new Quaterniond(b.pose().orientation())
-                    .mul(new Quaterniond(a.pose().orientation()).conjugate()).normalize();
-                if (delta.w < 0.0) delta.set(-delta.x, -delta.y, -delta.z, -delta.w);
-                ghost.rotationPerTick.identity().slerp(delta, 1.0 / span).normalize();
-            }
-            int newest = interpolator.buffer.get(size - 1).gameTick();
-            // Держим один снимок впереди указателя: Sable интерполирует, а не экстраполирует.
-            while (newest < pointer + 2.0 && newest - ghost.lastRealTick < GHOST_EXTRAPOLATION_TICKS) {
-                newest++;
-                int k = newest - ghost.lastRealTick;
-                Pose3d next = new Pose3d(ghost.extrapolationBase);
-                next.position().fma(k, ghost.linearPerTick);
-                Quaterniond step = new Quaterniond();
-                for (int i = 0; i < k; i++) step.mul(ghost.rotationPerTick);
-                step.mul(ghost.extrapolationBase.orientation(), next.orientation()).normalize();
-                interpolator.buffer.add(new SubLevelSnapshotInterpolator.Snapshot(newest, next));
-            }
-        }
-    }
-
-    /**
-     * Русский: преемник показывается, только когда собраны ВСЕ его секции (и ни одна не ждёт
-     * пересборки). Раньше хватало одной непустой: призрак убирался, пока остальные секции ещё
-     * строились, и корабль на глазах у игрока «догружался» кусками. Пустые секции Minecraft помечает EMPTY, так что ожидание конечно; если
-     * уровень назначения вообще не рисуется, призрак всё равно уходит по {@link #GHOST_TIMEOUT_MS}.
+     * Преемник показывается, только когда собраны ВСЕ его секции (и ни одна не ждёт
+     * пересборки): иначе призрак исчез бы, пока остальные секции ещё строятся, и корабль
+     * «догружался» бы кусками на глазах у игрока. Пустые секции Minecraft помечает EMPTY, так
+     * что ожидание конечно; если уровень назначения вообще не рисуется, призрак всё равно
+     * уходит по {@link #GHOST_TIMEOUT_MS}.
      */
     private static boolean hasGeometry(ClientSubLevel sub) {
         var data = sub.getRenderData();
         if (data == null) return false;
-        if (data instanceof dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData chunks) {
+        if (data instanceof VanillaChunkedSubLevelRenderData chunks) {
             boolean anyGeometry = false;
             for (var section : chunks.allRenderSections()) {
                 var compiled = section.getCompiled();
-                if (compiled == net.minecraft.client.renderer.chunk.SectionRenderDispatcher.CompiledSection.UNCOMPILED
+                if (compiled == SectionRenderDispatcher.CompiledSection.UNCOMPILED
                     || section.isDirty()) {
                     return false;
                 }
                 if (anyGeometry) continue;
-                for (net.minecraft.client.renderer.RenderType type : net.minecraft.client.renderer.RenderType.chunkBufferLayers()) {
+                for (RenderType type : RenderType.chunkBufferLayers()) {
                     if (!compiled.isEmpty(type)) {
                         anyGeometry = true;
                         break;
@@ -501,21 +387,14 @@ public final class IplParentDimSync {
     }
 
     private static void finalizeGhost(UUID id, Ghost ghost) {
-        try {
-            if (!ghost.sub.isRemoved()) {
-                SubLevelContainer container = SubLevelContainer.getContainer(ghost.sub.getLevel());
-                if (container != null) {
-                    // Its stop-tracking is still in flight: swallow it when it arrives.
-                    if (!ghost.stopDeferred) EXPECTED_STOPS.merge(ghost.sub.getLevel().dimension(), 1, Integer::sum);
-                    container.removeSubLevel(ghost.sub, SubLevelRemovalReason.REMOVED);
-                }
-            }
-        } catch (Throwable t) {
-            LOG.error("[IPL-PARENT-SYNC] ghost removal failed for {}", id, t);
-        } finally {
-            if (GHOSTS.remove(id, ghost)) IplStraddleSessionStore.clearGhostTails(id);
-            IplStraddleRenderCache.invalidateActivePasses();
+        SubLevelContainer container = ghost.sub.isRemoved() ? null : SubLevelContainer.getContainer(ghost.sub.getLevel());
+        if (container != null) {
+            // Its stop-tracking is still in flight: swallow it when it arrives.
+            if (!ghost.stopDeferred) EXPECTED_STOPS.merge(ghost.sub.getLevel().dimension(), 1, Integer::sum);
+            container.removeSubLevel(ghost.sub, SubLevelRemovalReason.REMOVED);
         }
+        if (GHOSTS.remove(id, ghost)) IplStraddleSessionStore.clearGhostTails(id);
+        IplStraddleRenderCache.invalidateActivePasses();
     }
 
     public static final class RemoteCallables {
@@ -529,76 +408,63 @@ public final class IplParentDimSync {
             String subLevelUuid, String dimensionId, String portalTransform,
             String portalNbtB64, String firstDestinationTick, String coordinateFrame, String inverseGrabLink
         ) {
-            try {
-                UUID id = UUID.fromString(subLevelUuid);
-                long destinationFrame = Long.parseLong(coordinateFrame);
-                if (destinationFrame <= frame(id)) return;
-                if (IplClientProjections.findClientSub(id, dimensionKey(dimensionId)) == null) {
-                    // Not tracked here: a later full sync is already in the new chart.
-                    enterFrame(id, destinationFrame);
-                    return;
-                }
-                var queue = PENDING_HANDOFFS.computeIfAbsent(id, ignored -> new java.util.ArrayDeque<>());
-                PendingHandoff next = new PendingHandoff(dimensionId, portalTransform, portalNbtB64,
-                    Integer.parseInt(firstDestinationTick), destinationFrame, inverseGrabLink);
-                queue.addLast(next);
-                if (queue.size() == 1) beginHandoffVisual(id, next);
-                // Drained at the client tick tail (applyPendingHandoffs).
-            } catch (RuntimeException t) {
-                LOG.error("[IPL-PARENT-SYNC] invalid handoff for {}", subLevelUuid, t);
+            UUID id = UUID.fromString(subLevelUuid);
+            long destinationFrame = Long.parseLong(coordinateFrame);
+            if (destinationFrame <= frame(id)) return;
+            if (IplClientProjections.findClientSub(id, dimensionKey(dimensionId)) == null) {
+                // Not tracked here: a later full sync is already in the new chart.
+                enterFrame(id, destinationFrame);
+                return;
             }
+            var queue = PENDING_HANDOFFS.computeIfAbsent(id, ignored -> new ArrayDeque<>());
+            PendingHandoff next = new PendingHandoff(dimensionId, portalTransform, portalNbtB64,
+                Integer.parseInt(firstDestinationTick), destinationFrame, inverseGrabLink);
+            queue.addLast(next);
+            if (queue.size() == 1) beginHandoffVisual(id, next);
+            // Drained at the client tick tail (applyPendingHandoffs).
         }
 
         /**
          * Cross-dimension move, delivered before Sable's stop-tracking of the old object.
          * The old object becomes a ghost; the successor arrives via start-tracking in the
-         * destination level and takes over once it has geometry.
+         * destination level (or is already tracked there) and takes over once it has geometry.
          */
         public static void move(
             String subLevelUuid, String fromDimensionId, String toDimensionId, String portalTransform,
-            String portalNbtB64, String coordinateFrame, String inverseGrabLink, String clockOffset
+            String portalNbtB64, String coordinateFrame, String inverseGrabLink
         ) {
-            try {
-                UUID id = UUID.fromString(subLevelUuid);
-                long destinationFrame = Long.parseLong(coordinateFrame);
-                if (destinationFrame <= frame(id)) return;
-                drainHandoffsNow(id);
-                Ghost previous = GHOSTS.get(id);
-                if (previous != null) finalizeGhost(id, previous);
+            UUID id = UUID.fromString(subLevelUuid);
+            long destinationFrame = Long.parseLong(coordinateFrame);
+            if (destinationFrame <= frame(id)) return;
+            drainHandoffsNow(id);
+            Ghost previous = GHOSTS.get(id);
+            if (previous != null) finalizeGhost(id, previous);
 
-                ResourceKey<Level> from = dimensionKey(fromDimensionId);
-                ClientSubLevel old = IplClientProjections.findClientSub(id, from);
-                if (old != null && old.getLevel() instanceof ClientLevel fromLevel) {
-                    PortalMapping mapping = PortalMapping.decode(portalTransform);
-                    Portal surrogate = IplStraddleSessionStore.resolveHandoffPortal(
-                        mapping.portalId(), portalNbtB64, fromLevel);
-                    IplClientVisualTransitLatch.clear(id);
-                    GHOSTS.put(id, new Ghost(old, dimensionKey(toDimensionId), mapping, surrogate,
-                        System.currentTimeMillis(), Integer.parseInt(clockOffset)));
-                    // Русский комментарий (почему): смена кадра ниже стирает цепочки старого
-                    // кадра; призрак дорисовывает их, пока не придёт первый снимок преемника.
-                    IplStraddleSessionStore.captureGhostTails(id, mapping.portalId());
-                }
-                enterFrame(id, destinationFrame);
-                IplStraddleRenderCache.invalidateActivePasses();
-                LOG.debug("[IPL-PARENT-SYNC] move {} {} -> {} (ghost={})", id, fromDimensionId,
-                    toDimensionId, old != null);
-            } catch (RuntimeException t) {
-                LOG.error("[IPL-PARENT-SYNC] invalid move for {}", subLevelUuid, t);
+            ResourceKey<Level> from = dimensionKey(fromDimensionId);
+            ClientSubLevel old = IplClientProjections.findClientSub(id, from);
+            if (old != null) {
+                PortalMapping mapping = PortalMapping.decode(portalTransform);
+                Portal surrogate = IplStraddleSessionStore.resolveHandoffPortal(
+                    mapping.portalId(), portalNbtB64, old.getLevel());
+                IplClientVisualTransitLatch.clear(id);
+                ResourceKey<Level> to = dimensionKey(toDimensionId);
+                Ghost ghost = new Ghost(old, to, mapping, surrogate, System.currentTimeMillis());
+                GHOSTS.put(id, ghost);
+                // Смена кадра ниже стирает цепочки старого кадра; призрак дорисовывает их,
+                // пока не придёт первый снимок преемника.
+                IplStraddleSessionStore.captureGhostTails(id, mapping.portalId());
             }
+            enterFrame(id, destinationFrame);
+            IplStraddleRenderCache.invalidateActivePasses();
+            LOG.debug("[IPL-PARENT-SYNC] move {} {} -> {} (ghost={})", id, fromDimensionId,
+                toDimensionId, old != null);
         }
 
         /** Ordered channel: earlier same-dimension flips must land before a move. */
         private static void drainHandoffsNow(UUID id) {
-            java.util.ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.remove(id);
+            ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.remove(id);
             if (pending == null) return;
-            for (PendingHandoff handoff : pending) {
-                try {
-                    applyHandoffWhenVisuallyClear(id, handoff, true);
-                } catch (Throwable t) {
-                    LOG.error("[IPL-PARENT-SYNC] forced handoff failed for {}", id, t);
-                }
-            }
+            for (PendingHandoff handoff : pending) applyHandoffWhenVisuallyClear(id, handoff, true);
         }
 
         private static boolean applyHandoffWhenVisuallyClear(UUID id, PendingHandoff handoff, boolean force) {
@@ -660,7 +526,7 @@ public final class IplParentDimSync {
             clientSubLevel.forceUpdateBounds();
             var bounds = clientSubLevel.getPlot().getBoundingBox();
             if (bounds != null) {
-                var swept = (dev.ryanhcode.sable.companion.math.BoundingBox3d) clientSubLevel.boundingBox();
+                var swept = (BoundingBox3d) clientSubLevel.boundingBox();
                 for (int i = 0; i < 8; i++) {
                     Vec3 corner = mappedLastPose.transformPosition(new Vec3(
                         (i & 1) == 0 ? bounds.minX() : bounds.maxX() + 1.0,
@@ -692,11 +558,11 @@ public final class IplParentDimSync {
          * that entity being in the client's render list.
          */
         public record PortalMapping(
-            net.minecraft.world.phys.Vec3 origin,
-            net.minecraft.world.phys.Vec3 destination,
+            Vec3 origin,
+            Vec3 destination,
             Quaterniond rotation,
             double scale,
-            net.minecraft.world.phys.Vec3 sourceNormal,
+            Vec3 sourceNormal,
             UUID portalId
         ) {
             public static PortalMapping decode(String encoded) {
@@ -709,10 +575,10 @@ public final class IplParentDimSync {
                     decoded[i] = Double.valueOf(values[i]);
                 }
                 return new PortalMapping(
-                    new net.minecraft.world.phys.Vec3(decoded[0], decoded[1], decoded[2]),
-                    new net.minecraft.world.phys.Vec3(decoded[3], decoded[4], decoded[5]),
+                    new Vec3(decoded[0], decoded[1], decoded[2]),
+                    new Vec3(decoded[3], decoded[4], decoded[5]),
                     new Quaterniond(decoded[6], decoded[7], decoded[8], decoded[9]), decoded[10],
-                    new net.minecraft.world.phys.Vec3(decoded[11], decoded[12], decoded[13]),
+                    new Vec3(decoded[11], decoded[12], decoded[13]),
                     UUID.fromString(values[14])
                 );
             }

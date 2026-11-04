@@ -1,26 +1,29 @@
 package ipl.sable.render;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import ipl.sable.client.IplStraddleRenderCache;
+import ipl.sable.client.IplStraddleRenderState;
+import ipl.sable.client.IplStraddleSessionStore;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.my_util.Plane;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * For a given client-side sub-level, the portal whose plane it currently straddles —
  * so {@link ChunkedRenderDataMixin} can install a clip plane that culls the geometry on
  * the dest side, and so client collision/interaction can select frames consistently.
  *
- * <p><b>Server-authoritative since the session sync:</b> which half of a straddling
- * ship is "still here" is historical state (a ship 60% through is geometrically
- * identical to one 40% through the other way), so this class no longer guesses it from
- * geometry. The straddle portal comes from {@code IplStraddleSessionStore} — the client
- * mirror of the transit controller's latch — and only the plane GEOMETRY is derived
- * per frame from that portal entity's current transform (moving portals stay smooth;
- * parity switches exactly when the server's latch does). The former heuristics
- * (orient-toward-center, contact-normal locking, crossing latches with expiry
- * deadlines) are gone with their failure modes: parked-ship false clips, halfway
- * parity flips on bi-faced portals, stale locks across same-dimension handoffs.
+ * <p><b>Server-authoritative:</b> which half of a straddling ship is "still here" is
+ * history, not geometry (a ship 60% through is geometrically identical to one 40% through
+ * the other way), so nothing is guessed from geometry. The straddle portal comes from
+ * {@code IplStraddleSessionStore} — the client mirror of the transit controller's latch —
+ * and only the plane GEOMETRY is derived per frame from that portal entity's current
+ * transform (moving portals stay smooth; parity switches exactly when the server's latch
+ * does).
  */
 public final class IplClipPortalFinder {
 
@@ -41,37 +44,24 @@ public final class IplClipPortalFinder {
         // driver has already computed the complementary plane — install that instead of
         // searching. This makes the legacy bracket the single clip installer for both
         // sides of a partial crossing.
-        qouteall.q_misc_util.my_util.Plane projectionPlane =
-            ipl.sable.client.IplStraddleRenderState.getPlaneFor(sub);
+        Plane projectionPlane =
+            IplStraddleRenderState.getPlaneFor(sub);
         if (projectionPlane != null) {
-            // IPL fix (rim): do NOT widen the projection's kept half.
-            //
-            // The source bracket keeps `n·(p-pos) >= 0` exactly on the mathematical
-            // portal plane, and the projection keeps the complementary half. Those two
-            // halves already tile the sub-level perfectly. The previous
-            // `move(-FrontClipping.ADJUSTMENT)` pushed the projection's cut 0.01 blocks
-            // PAST the plane, so a 1cm slab of the ship was inside BOTH kept halves and
-            // was therefore drawn twice -- once by the source draw and once by the
-            // mapped projection. That doubly-drawn slab is the sub-pixel "ободок"
-            // visible along the outer contour of anything poking through the portal
-            // (most obvious on a long thin 1x4 stick, whose silhouette is nearly all
-            // contour).
-            //
-            // FrontClipping.ADJUSTMENT (0.01) is IP's z-fighting guard for its own
-            // DESTINATION TERRAIN pass -- terrain and the sub-level are different
-            // geometry, so inheriting that offset here never prevented a gap between
-            // the sub-level's two halves; it only created an overlap in the sub-level
-            // itself. Cutting both halves on the identical plane is the exact,
-            // gap-free and overlap-free split.
+            // The projection's kept half is NOT widened. The source bracket keeps
+            // `n·(p-pos) >= 0` exactly on the mathematical portal plane and the projection
+            // keeps the complementary half, so the two halves tile the sub-level exactly.
+            // Shifting the cut by FrontClipping.ADJUSTMENT (IP's z-fighting guard for its
+            // destination TERRAIN pass) would put a 1 cm slab inside BOTH halves and draw it
+            // twice — a sub-pixel rim along the contour of anything poking through.
             return new ClipDecision(
-                ipl.sable.client.IplStraddleRenderState.getPortalFor(sub), projectionPlane);
+                IplStraddleRenderState.getPortalFor(sub), projectionPlane);
         }
 
-        if (ipl.sable.client.IplStraddleRenderCache.hasDecision(sub)) {
-            return ipl.sable.client.IplStraddleRenderCache.decision(sub);
+        if (IplStraddleRenderCache.hasDecision(sub)) {
+            return IplStraddleRenderCache.decision(sub);
         }
         ClipDecision decision = ipl$findAuthoritative(sub);
-        ipl.sable.client.IplStraddleRenderCache.cacheDecision(sub, decision);
+        IplStraddleRenderCache.cacheDecision(sub, decision);
         return decision;
     }
 
@@ -83,7 +73,7 @@ public final class IplClipPortalFinder {
      */
     @Nullable
     private static ClipDecision ipl$findAuthoritative(ClientSubLevel sub) {
-        Portal portal = ipl.sable.client.IplStraddleSessionStore.resolveRenderPortal(sub);
+        Portal portal = IplStraddleSessionStore.resolveRenderPortal(sub);
         if (portal == null) return null;
 
         Vec3 origin = portal.getOriginPos();
@@ -96,17 +86,16 @@ public final class IplClipPortalFinder {
      *
      * <p>Пока армирована проекция — это её {@code exclude} (вход в следующий портал цепочки
      * или перенесённый выход предыдущего), иначе — плоскость второго корневого портала
-     * (корабль одновременно в двух порталах). Раньше каждый вызывающий решал это сам и
-     * для проекций вторая плоскость всегда была null, поэтому кусок проекции не обрезался
-     * на входе в следующий портал.
+     * (корабль одновременно в двух порталах). Один метод для всех вызывающих: кусок проекции
+     * обрезается и на входе в следующий портал.
      */
     @Nullable
     public static Plane secondPlaneFor(ClientSubLevel sub) {
         if (sub == null) return null;
-        if (ipl.sable.client.IplStraddleRenderState.getPlaneFor(sub) != null) {
-            return ipl.sable.client.IplStraddleRenderState.getPlane2For(sub);
+        if (IplStraddleRenderState.getPlaneFor(sub) != null) {
+            return IplStraddleRenderState.getPlane2For(sub);
         }
-        java.util.List<ClipDecision> all = findStraddlingPortalPlanes(sub);
+        List<ClipDecision> all = findStraddlingPortalPlanes(sub);
         return all.size() > 1 ? all.get(1).plane() : null;
     }
 
@@ -117,22 +106,22 @@ public final class IplClipPortalFinder {
      * the first two (more than two simultaneous straddles logs and clips the rest as
      * best-effort with the first pair).
      */
-    public static java.util.List<ClipDecision> findStraddlingPortalPlanes(ClientSubLevel sub) {
-        if (sub == null) return java.util.List.of();
-        var cached = ipl.sable.client.IplStraddleRenderCache.allDecisions(sub);
+    public static List<ClipDecision> findStraddlingPortalPlanes(ClientSubLevel sub) {
+        if (sub == null) return List.of();
+        var cached = IplStraddleRenderCache.allDecisions(sub);
         if (cached != null) return cached;
-        java.util.List<Portal> portals =
-            ipl.sable.client.IplStraddleSessionStore.resolveAllRenderPortals(sub);
+        List<Portal> portals =
+            IplStraddleSessionStore.resolveAllRenderPortals(sub);
         if (portals.isEmpty()) {
-            ipl.sable.client.IplStraddleRenderCache.cacheAllDecisions(sub,java.util.List.of());
-            return java.util.List.of();
+            IplStraddleRenderCache.cacheAllDecisions(sub, List.of());
+            return List.of();
         }
-        java.util.List<ClipDecision> out = new java.util.ArrayList<>(portals.size());
+        List<ClipDecision> out = new ArrayList<>(portals.size());
         for (Portal portal : portals) {
             out.add(new ClipDecision(portal, new Plane(portal.getOriginPos(), portal.getNormal())));
         }
-        var result = java.util.List.copyOf(out);
-        ipl.sable.client.IplStraddleRenderCache.cacheAllDecisions(sub,result);
+        var result = List.copyOf(out);
+        IplStraddleRenderCache.cacheAllDecisions(sub, result);
         return result;
     }
 }

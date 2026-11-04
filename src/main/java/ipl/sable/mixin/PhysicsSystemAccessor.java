@@ -18,12 +18,12 @@ import java.util.Collection;
 @Mixin(value = SubLevelPhysicsSystem.class, remap = false)
 public interface PhysicsSystemAccessor {
 
-    @Accessor(value = "currentSubstep", remap = false)
+    @Accessor(value = "currentSubstep")
     void ipl$setCurrentSubstep(int substep);
 
-    @Accessor(value = "queuedWakeUps", remap = false)
+    @Accessor(value = "queuedWakeUps")
     Collection<ArbitraryPhysicsObject> ipl$queuedWakeUps();
 
-    @Invoker(value = "updateAllPoses", remap = false)
+    @Invoker(value = "updateAllPoses")
     void ipl$updateAllPoses(ServerSubLevelContainer container);
 }

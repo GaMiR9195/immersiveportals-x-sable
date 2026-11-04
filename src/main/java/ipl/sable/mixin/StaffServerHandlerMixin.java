@@ -1,9 +1,12 @@
 package ipl.sable.mixin;
 
-import ipl.sable.transit.IplGrabChain;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import ipl.sable.duck.IplStaffDragSessionControl;
+import ipl.sable.transit.IplGrabChain;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.player.Player;
 import org.joml.Quaterniond;
 import org.joml.Quaterniondc;
 import org.joml.Vector3dc;
@@ -17,31 +20,30 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.UUID;
 
-/** Hook actual drag-session writes, after routing made `level` the hosting level. */
+/** Hook actual drag-session writes, after routing made {@code level} the body's level. */
 @Pseudo
 @Mixin(targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler", remap = false)
 public abstract class StaffServerHandlerMixin {
 
-    @Shadow(remap = false) private ServerLevel level;
+    @Shadow private ServerLevel level;
     /**
      * The handler of the body's level may serve a player standing in another dimension
      * (grab through a portal); resolve the player server-wide instead of dropping the session.
      */
-    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+    @WrapOperation(
         method = "tick",
         at = @At(value = "INVOKE",
-            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;"),
-        require = 0
+            target = "Lnet/minecraft/server/level/ServerLevel;getPlayerByUUID(Ljava/util/UUID;)Lnet/minecraft/world/entity/player/Player;")
     )
-    private net.minecraft.world.entity.player.Player ipl$serverWidePlayer(
+    private Player ipl$serverWidePlayer(
         ServerLevel level, UUID id,
-        com.llamalad7.mixinextras.injector.wrapoperation.Operation<net.minecraft.world.entity.player.Player> original
+        Operation<Player> original
     ) {
-        net.minecraft.world.entity.player.Player player = original.call(level, id);
+        Player player = original.call(level, id);
         return player != null || level.getServer() == null ? player : level.getServer().getPlayerList().getPlayer(id);
     }
 
-    @Inject(method = "drag", at = @At("HEAD"), require = 0)
+    @Inject(method = "drag", at = @At("HEAD"))
     private void ipl$beginFrame(
         UUID playerId, UUID subId, Vector3dc playerRelativeGoal, Vector3dc localAnchor,
         Quaterniondc orientation, CallbackInfo ci
@@ -56,7 +58,7 @@ public abstract class StaffServerHandlerMixin {
      * stomp the server-side reframe for a tick. Premultiply those packets by the pending
      * transit rotations until the client acknowledges — exact via TCP ordering.
      */
-    @ModifyVariable(method = "drag", at = @At("HEAD"), argsOnly = true, require = 0)
+    @ModifyVariable(method = "drag", at = @At("HEAD"), argsOnly = true)
     private Quaterniondc ipl$compensateUnackedTransits(
         Quaterniondc orientation,
         UUID playerId, UUID subId, Vector3dc playerRelativeGoal, Vector3dc localAnchor,
@@ -65,7 +67,7 @@ public abstract class StaffServerHandlerMixin {
         return IplGrabChain.adjustIncomingOrientation(playerId, new Quaterniond(orientation));
     }
 
-    @Inject(method = "stopDragging", at = @At("HEAD"), require = 0)
+    @Inject(method = "stopDragging", at = @At("HEAD"))
     private void ipl$endFrame(UUID playerId, CallbackInfo ci) {
         Object session = ((StaffServerHandlerAccessor) (Object) this)
             .ipl$getDraggingSessions().get(playerId);

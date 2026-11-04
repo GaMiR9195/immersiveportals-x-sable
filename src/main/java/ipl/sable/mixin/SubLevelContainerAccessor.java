@@ -10,9 +10,9 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 @Mixin(value = SubLevelContainer.class, remap = false)
 public interface SubLevelContainerAccessor {
 
-    @Accessor(value = "originX", remap = false)
+    @Accessor(value = "originX")
     int ipl$originX();
 
-    @Accessor(value = "originZ", remap = false)
+    @Accessor(value = "originZ")
     int ipl$originZ();
 }

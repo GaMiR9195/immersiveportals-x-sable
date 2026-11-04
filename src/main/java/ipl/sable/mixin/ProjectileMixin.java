@@ -15,8 +15,8 @@ import org.spongepowered.asm.mixin.injection.At;
  * from the portal-aware clip) triggers the block in the level that owns the ship: target
  * blocks, bells, buttons, chorus flowers, TNT lit by flaming arrows, decorated pots.
  *
- * <p>Русский комментарий: раньше блок получал уровень снаряда, и любая запись в чужой
- * плот отклонялась — попадание "проходило", но ничего не срабатывало.
+ * <p>В уровне снаряда запись в чужой плот отклоняется, и попадание «проходило» бы, ничего не
+ * включив.
  */
 @Mixin(Projectile.class)
 public abstract class ProjectileMixin {
@@ -26,8 +26,7 @@ public abstract class ProjectileMixin {
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/world/level/block/state/BlockState;onProjectileHit(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/phys/BlockHitResult;Lnet/minecraft/world/entity/projectile/Projectile;)V"
-        ),
-        require = 0
+        )
     )
     private void ipl$projectileHitInOwnerLevel(BlockState self, Level level, BlockState state, BlockHitResult hit,
                                                Projectile projectile, Operation<Void> original) {

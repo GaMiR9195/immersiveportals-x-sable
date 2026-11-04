@@ -4,9 +4,11 @@ import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
+import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
+import ipl.sable.client.IplClientProjections;
+import ipl.sable.client.IplStraddleSessionStore;
 import ipl.sable.transit.IplAtlasStraddleSession;
 import ipl.sable.transit.IplStraddlePoseMap;
-import java.util.BitSet;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
@@ -17,7 +19,12 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+import java.util.ArrayList;
+import java.util.BitSet;
+import java.util.List;
 
 /**
  * Контейнер саб-уровней: чтение участка корабля из другого измерения на время проекции и
@@ -79,7 +86,7 @@ public abstract class SubLevelContainerMixin {
         Level self = this.getLevel();
         if (self == null) return null;
         boolean client = self.isClientSide;
-        if (client ? ipl.sable.client.IplStraddleSessionStore.isIdle() : IplAtlasStraddleSession.isIdle()) {
+        if (client ? IplStraddleSessionStore.isIdle() : IplAtlasStraddleSession.isIdle()) {
             return null;
         }
         boolean[] guard = IPL$BRIDGING.get();
@@ -87,9 +94,9 @@ public abstract class SubLevelContainerMixin {
         guard[0] = true;
         try {
             Iterable<? extends Level> levels = client
-                ? ipl.sable.client.IplClientProjections.clientLevels()
+                ? IplClientProjections.clientLevels()
                 : self instanceof ServerLevel server && server.getServer() != null
-                    ? server.getServer().getAllLevels() : java.util.List.<Level>of();
+                    ? server.getServer().getAllLevels() : List.<Level>of();
             for (Level other : levels) {
                 if (other == self) continue;
                 SubLevelContainer container = SubLevelContainer.getContainer(other);
@@ -113,17 +120,16 @@ public abstract class SubLevelContainerMixin {
      * elsewhere — removing from the wrong container is a no-op that leaves the ship alive.
      * Same-owner calls pass through untouched.
      */
-    @org.spongepowered.asm.mixin.injection.Inject(
+    @Inject(
         method = "removeSubLevel(Ldev/ryanhcode/sable/sublevel/SubLevel;"
             + "Ldev/ryanhcode/sable/sublevel/storage/SubLevelRemovalReason;)V",
         at = @At("HEAD"),
-        cancellable = true,
-        require = 0
+        cancellable = true
     )
     private void ipl$routeRemoveToOwningContainer(
         SubLevel subLevel,
-        dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason reason,
-        org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci
+        SubLevelRemovalReason reason,
+        CallbackInfo ci
     ) {
         Level self = this.getLevel();
         if (self == null || subLevel == null || subLevel.getLevel() == self) return;
@@ -149,15 +155,13 @@ public abstract class SubLevelContainerMixin {
     // </ul>
     // Containers with different grid geometry are skipped (stock behavior for them).
 
-    @Inject(method = "getFirstEmptyPlot", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
+    @Inject(method = "getFirstEmptyPlot", at = @At("HEAD"), cancellable = true)
     private void ipl$firstSlotFreeInAllGrids(CallbackInfoReturnable<Vector2i> cir) {
-        if (!(this.getLevel() instanceof net.minecraft.server.level.ServerLevel self) || self.getServer() == null) {
-            return; // client never allocates fresh slots
-        }
+        if (!(this.getLevel() instanceof ServerLevel self)) return; // client never allocates fresh slots
         SubLevelContainer mine = (SubLevelContainer) (Object) this;
         SubLevelContainerAccessor mineOrigin = (SubLevelContainerAccessor) mine;
-        java.util.List<BitSet> others = new java.util.ArrayList<>(4);
-        for (net.minecraft.server.level.ServerLevel level : self.getServer().getAllLevels()) {
+        List<BitSet> others = new ArrayList<>(4);
+        for (ServerLevel level : self.getServer().getAllLevels()) {
             SubLevelContainer other = SubLevelContainer.getContainer(level);
             if (other == null || other == mine) continue;
             // Identical grid geometry is required for index-aligned occupancy comparison.

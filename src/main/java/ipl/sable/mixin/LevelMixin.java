@@ -12,17 +12,15 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Write guard for the projection plot bridge (server and client).
- *
- * <p>Server writes are ROUTED to the owning level (see below); client writes are rejected.
+ * Write side of the projection plot bridge.
  *
  * <p>{@code SubLevelContainerMixin} lets a level read the plot of a ship that projects into it
- * from another dimension. Writes must never take that path: a {@code setBlock} at those plot
- * coordinates would mutate the other level's chunk with this level's neighbour updates,
- * light engine and packet trackers — the source of duplicated or vanishing blocks when
- * placing/breaking on a cross-dimension image. Such writes are rejected (return {@code false},
- * exactly like a refused placement); the ship's own level edits it normally, and a
- * same-dimension image is the ship itself, so it stays editable.
+ * from another dimension. A {@code setBlock} at those plot coordinates must not mutate the
+ * other level's chunk with this level's neighbour updates, light engine and packet trackers
+ * (duplicated or vanishing blocks on a cross-dimension image). On the server the write is
+ * routed to the level that owns the plot, so every code path that still holds the wrong
+ * level (buckets, explosions, block logic of other mods) edits the real ship. The client
+ * never predicts into another level's plot: the server's block update is authoritative.
  */
 @Mixin(Level.class)
 public abstract class LevelMixin {
@@ -32,7 +30,7 @@ public abstract class LevelMixin {
         at = @At("HEAD"),
         cancellable = true
     )
-    private void ipl$rejectForeignPlotWrite(
+    private void ipl$routeForeignPlotWrite(
         BlockPos pos, BlockState state, int flags, int recursionLeft, CallbackInfoReturnable<Boolean> cir
     ) {
         Level self = (Level) (Object) this;
@@ -43,21 +41,7 @@ public abstract class LevelMixin {
         if (!container.inBounds(chunkX, chunkZ)) return;
         LevelPlot plot = container.getPlot(chunkX, chunkZ);
         SubLevel owner = plot == null ? null : plot.getSubLevel();
-        if (owner != null && owner.getLevel() != self) {
-            Level own = owner.getLevel();
-            if (!self.isClientSide && own != null && !own.isClientSide) {
-                // SERVER: the write goes to the level that owns the plot, with that level's
-                // neighbour updates, light engine, block entities and chunk trackers -- any
-                // code path that still holds the wrong level (buckets, explosions, block
-                // logic of other mods) edits the real ship instead of being dropped.
-                // Русский комментарий: раньше такая запись просто отклонялась, и всё, что
-                // шло не через маршрутизацию по владельцу, на проекции "не работало".
-                cir.setReturnValue(own.setBlock(pos, state, flags, recursionLeft));
-            } else {
-                // CLIENT: never predict into another level's plot; the server's block update
-                // for the owner level is authoritative.
-                cir.setReturnValue(false);
-            }
-        }
+        if (owner == null || owner.getLevel() == self) return;
+        cir.setReturnValue(!self.isClientSide && owner.getLevel().setBlock(pos, state, flags, recursionLeft));
     }
 }

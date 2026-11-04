@@ -114,14 +114,10 @@ public class MixinRenderSystem_Clipping {
                 }
             }
             else {
-                // Iris path: same fix. Under Iris IP previously unconditionally
-                // unset; this assumed shaderpack-side handling would cover
-                // everything but in practice it only covers terrain. For
-                // entities / block entities under Iris we'd still want IP's
-                // slot 0 active. The Iris-rewritten shader names (entities_*)
-                // still need to be in IP's affectedShaders list to declare the
-                // uniform in their GLSL, but that's already handled via our
-                // YAML extension.
+                // Iris path, same rule: shaderpack-side clipping covers only terrain,
+                // so entities and block entities under Iris keep IP's slot 0 as well.
+                // The Iris-renamed shaders (entities_*) declare the uniform because our
+                // YAML extension lists them in IP's affectedShaders.
                 if (FrontClipping.isClippingEnabled) {
                     IplClipEquationCache.refreshFromActive();
                     FrontClipping.updateClippingEquationUniformForCurrentShader(

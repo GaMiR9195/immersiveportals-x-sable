@@ -16,49 +16,154 @@ projections. See `README060NEW.md`.
   image collider of the SAME rigid body registered in the destination level's Atlas chart
   (`image pose = portal isometry × body pose`), plus the same render data drawn at the
   mapped pose. One body, one source of truth; forces on the image act on the real body.
-- Sessions are keyed by the portal path (`StraddleKey`). Chains (an image straddling
-  another portal) open child sessions with composite isometries, depth ≤ 8. Multi-portal
-  straddling works with no extra limits.
+- Sessions are keyed by the portal path (`StraddleKey`). Chains (an image straddling another
+  portal) open child sessions with composite isometries, depth ≤ 16, at most 64 sessions per
+  body. Multi-portal straddling works with no extra limits.
 - Chained straddle detection reuses the existing swept trail mapped through the session
   isometry instead of running a second sweep per image; flips re-process the body in the
   same tick so infinite portal loops stay seamless.
 - Attachment gate: non-Free constraints to the world, joints outside the rigid group and
   ropes keep the session open instead of flipping; jointed groups never change dimension
-  (they keep working through the projection).
+  (they keep working through the projection). Bodies linked by actors (springs, connectors,
+  rope holders, swivel plates) cross together as one transit group of up to 16 bodies.
 - Flip: same-dimension = pose teleport of the live body + client interpolation rebase
   (`handoff`); cross-dimension = native move into the destination level, keeping the same
-  global plot slot when free, with a client "ghost" until the successor is compiled
-  (3 s timeout).
-- Plot allocation uses the union of all levels' plots, so plot-local coordinates stay
-  unique across dimensions. Plot reads fall back to a foreign level's plot only when its
-  owner is projected into the querying level; writes into a foreign level's plot are
-  rejected (no dupes from projected edits).
+  global plot slot when free, with a client "ghost" until the successor is compiled (3 s
+  timeout).
+- Physics stepping (`atlas/IplFusedStep`): with IPSable natives one fused step per server
+  tick drives every level, and levels that do not drive it update `lastPose` before the
+  step; with stock natives every level steps its own world in its own tick, as in Sable.
+  Ship-anchored portals follow their ships after the step in both modes.
+- Plot allocation uses the union of all levels' plots, so plot-local coordinates stay unique
+  across dimensions. Plot reads fall back to a foreign level's plot only when its owner is
+  projected into the querying level. Server writes into a foreign level's plot run in the
+  owner level (neighbour updates, light, block entities, chunk tracking); client writes are
+  rejected.
 - Physics staff, picks and outlines route to the owner level of the projected sub-level.
-- Cross-dimension tracking: players near a projection in another level receive the
-  sub-level (TCP, dimension-stamped removal packets).
-- Custom natives: loader picks `sable_rapier_<x86_64|aarch64>_<windows.dll|linux.so|macos.dylib>`
-  like stock Sable, falls back to stock natives (single INFO line) when missing; kill switch
+- Cross-dimension tracking follows what IP streams to the player: any loaded chunk under the
+  ship's world bounds, from any level and through any portal, or proximity to its image.
+  Sub-level packets are dimension-tagged; players who see another level and the singleplayer
+  host get movement over TCP.
+- Client: the sub-level containers of all IP client levels tick once per client tick, at the
+  point where Sable ticks the current level, and not while paused.
+- One snapshot timeline: every dimension stamps pose snapshots, clock packets and
+  start-tracking with the same server-wide tick number (`IplTimeline`) instead of a per-level
+  counter. The client runs one interpolation clock for all levels (`IplSharedClock`,
+  `ClientSubLevelContainerMixin`), advanced once per client tick. Clock packets of all levels
+  are merged (`SnapshotInfoPacketMixin`): the clock runs while any level reports motion, stops
+  only when all have stopped, restarts like Sable after every level went quiet, and resumes in
+  phase when it stopped at most 3 ticks ago.
+- Create: Pocket Sized: its client scale handshake covers the sub-levels of all IP client
+  levels (`PocketScaleHandshakeMixin`), and a scale sync that repeats the scale the client
+  already holds no longer resets the sub-level's interpolation (`PocketScaleStateMixin`).
+  Its frustum filter for sub-level draws tests the drawn box (the mapped pose for a
+  projection) against the frustum of the current pass (`PocketRenderFrameMixin`).
+- The ghost of a cross-dimension move follows its successor's pose mapped back through the
+  portal.
+- Custom natives: loader picks
+  `sable_rapier_<x86_64|aarch64>_<windows.dll|linux.so|macos.dylib>` like stock Sable, falls
+  back to stock natives (single INFO line) when missing; kill switch
   `-Dipl.sable.customNatives=false`. New `natives/build-linux.sh` (Linux/macOS); any
   `sable_rapier_*` library at the project root is bundled into the jar.
-- Natives are packed like Sable's: one `natives_ipl/sable_rapier_binaries.zip.l4z` in the jar,
-  the platform's library extracted to `.sable/natives-ipl/`.
+- Natives are packed like Sable's: one `natives_ipl/sable_rapier_binaries.zip.l4z` in the
+  jar, the platform's library extracted to `.sable/natives-ipl/`.
 - Release jars bundle natives for Windows, Linux and macOS (x86_64 and aarch64), built by
   the GitHub release workflow (`natives/build-cross.sh`).
-- Much less console spam: per-event logs moved to DEBUG.
+- Much less console spam: per-event logs moved to DEBUG; per-draw diagnostics only with
+  `-Dipl.portalDiagnostics=true`.
+- Code cleanup: redundant `require = 0` (the config default) and member-level
+  `remap = false` dropped, imports instead of fully qualified names, accessors instead of
+  reflection (`StaffActionPacketAccessor`, `SectionOcclusionGraphAccessor`),
+  `catch (Throwable)` narrowed to `RuntimeException` and kept only at native, optional-mod,
+  persisted-data and per-tick isolation boundaries, no blanket try/catch around RPC
+  handlers. `IplClipUniformPatcher.patchForSubLevel` enables both sub-level clip slots
+  itself. Comments describe current behavior. Moved, merged and removed classes:
+  `docs/renames-0.6.0.md`.
 
 ### Removed
 
-- `ipl_sable:sublevels` dimension, its datapack, hosting/clone/pin/UUID-bridge code and
-  ~70 related classes/mixins.
+- `ipl_sable:sublevels` dimension, its datapack, hosting/clone/pin/UUID-bridge code and ~70
+  related classes/mixins.
+- `IplDimSwitchGuard`: display-pose smoothing, skylight hold and `[IPL-DIM]` logs after a
+  dimension switch. It masked the cross-dimension stall that is now fixed at its cause.
+- Rope portal seam (`IplRopePortalSeam`, `RopeObjectAccessor`, properties
+  `ipl.sable.ropePortalSeam` and `ipl.sable.ropeBreakStretch`): ropes hold the flip, so the
+  seam never ran.
+- No-op portal rim stubs (`IplPortalRimManager`, `IplStraddlePortalRim`), unused
+  `IplSubLevelUniformRegistry`, unused native declarations, `IplTransitOps.executeTransit`
+  and pass-through wrappers, the unused shape argument of the entering-volume overlay RPC.
+- `-Dipl.sable.clip.forceAll` and debug logging in per-draw render paths.
+- `IplTrackingStamp` and the clock offset argument of the `move` RPC, clock alignment of the
+  destination level and ghost extrapolation: one timeline makes them unnecessary.
+- Native JNI exports Java never called (`createPortalRim`, `removePortalRim`,
+  `setPortalRimTransform`, `remapRope`, `overstretchedRopes`, `setRopePortalPrefix`,
+  `setBodyDormant`, `setBodyPairExclusion`, `setParentFrame`) with their scene state and the
+  dispatcher and hook checks that read it; unused Rust helpers `get_rigid_body` and
+  `ChartData::get_octree_chunk(_mut)`.
+
+### Fixed
+
+- A ship moving to another dimension stopped at the exit for a tick and then jerked to catch
+  up, on every portal pass; seen by players in the destination dimension and by players
+  entering it. The successor now starts from the pre-step pose only when the destination
+  physics still steps in this server tick (stock natives, a level that ticks later),
+  otherwise from the current pose, and its previous pose is mapped through the portal as
+  well.
+- A ship leaving a portal into another dimension skipped ahead and then slowed down for a
+  tick when its successor reached the client: Sable holds a new client object at the
+  server's previous pose until its first tick and then samples its two start snapshots,
+  while the transit ghost already follows that object. The successor now starts from the
+  poses the ghost shows, mapped through the portal.
+- A fast ship leaving a portal into another dimension was pulled ahead or hung at the exit and
+  then lost pace for a few ticks, as if idling. Every client level had its own Sable
+  interpolation clock with its own delay, so the ship changed time at the portal: an idle
+  destination clock restarted on the successor's first packet, a running one stood at another
+  phase. All levels now share one snapshot timeline and one clock (see Changed), and the
+  successor also takes the ghost's older snapshots: the ship keeps its time and pace across the
+  portal, whatever else moves in either dimension.
+- Levels that did not drive the fused step kept `lastPose == pose` for their whole tick:
+  entities on moving ships there were not carried, and start-tracking sent a frozen first
+  interval.
+- With stock natives only the last level's physics stepped; ships in the other dimensions
+  froze.
+- Dedicated servers: movement for players who see another level went over Sable's UDP path
+  without the dimension tag and could land in the wrong client container after a dimension
+  switch.
+- Ship sections compiled during another level's portal pass took Sable's sub-level shading
+  flag from the wrong level and rendered twice as dark until rebuilt (black blink when
+  entering a dimension or passing a portal).
+- With Create: Pocket Sized, a ship that finished leaving a portal into another dimension
+  stopped in place and jerked once or twice for players in the destination dimension: the
+  successor's full sync and the reply to Pocket's scale handshake each reset its
+  interpolation, throwing it to its newest snapshot and holding it there until Sable's clock
+  caught up.
+- With Create: Pocket Sized, a ship moving in another dimension appeared further along, froze
+  and then moved on, hitbox included, when the player entered that dimension: Pocket's scale
+  handshake forgot the ships of every level but the current one and asked again on each
+  return, and the reply reset their interpolation.
+- With Create: Pocket Sized, a projection was invisible from some distances and angles: Pocket
+  culled it by its source box, and after a portal pass the rest of the view by that portal's
+  frustum.
+- Ships scaled by Create: Pocket Sized, vanilla shaders (no Iris shader pack): the portal cuts
+  of their chunk geometry were shifted by `(1 - s²)` times the camera's distance to the plane,
+  because the plane normal was divided by the scale instead of multiplied; a shrunk ship's
+  projection or kept half disappeared depending on where the camera stood.
+- `tests/render` and `tests/gl` fixtures follow the production API again; all four test
+  suites pass.
 
 ### Known limitations
 
 - Worlds saved with ships inside `ipl_sable:sublevels` are NOT migrated: disassemble or
   remove such ships with 0.5.x before upgrading.
-- Block edits on a cross-dimension projection are blocked (same-dimension edits work);
-  chained images are view-only for picks/staff.
+- Chained images (depth ≥ 2) cannot be dragged with the physics staff; picks and block
+  interaction work.
 - Self-collision through a portal is not implemented (image and body are the same Rapier
   body; Rapier filters same-body pairs).
+- `sable_rapier_x86_64_windows.dll` in the source tree predates the native ABI probe: local
+  builds that bundle it clip images in ABI-1 mode (exclusion regions only, coarse
+  multi-portal and chain collisions). Release builds compile fresh natives in CI.
+- Verified by compiling against the real dependencies (`cargo check` for the natives) and by
+  the four test suites in `tests/`; not tested in game.
 
 ## [0.5.3]
 

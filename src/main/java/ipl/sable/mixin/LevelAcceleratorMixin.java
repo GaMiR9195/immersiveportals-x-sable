@@ -17,7 +17,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * Block reads of a chunk that belongs to ANOTHER level (a bridged plot chunk, see
  * {@link SubLevelContainerMixin}) use that chunk's own section layout.
  *
- * <p>Русский: {@code LevelAccelerator.getBlockState(LevelChunk, BlockPos)} считает индекс
+ * <p>{@code LevelAccelerator.getBlockState(LevelChunk, BlockPos)} считает индекс
  * секции и границы высоты по СВОЕМУ уровню. Коллизия сущностей строит акселератор по
  * уровню сущности, а проекция корабля из другого измерения читает чанк плота уровня-
  * владельца: у Overworld minSection = -4, у Nether/End = 0 — читалась чужая секция (воздух),
@@ -36,8 +36,7 @@ public abstract class LevelAcceleratorMixin {
         method = "getBlockState(Lnet/minecraft/world/level/chunk/LevelChunk;Lnet/minecraft/core/BlockPos;)"
             + "Lnet/minecraft/world/level/block/state/BlockState;",
         at = @At("HEAD"),
-        cancellable = true,
-        require = 0
+        cancellable = true
     )
     private void ipl$readForeignChunk(LevelChunk chunk, BlockPos pos, CallbackInfoReturnable<BlockState> cir) {
         if (chunk != null && chunk.getLevel() != this.level) cir.setReturnValue(chunk.getBlockState(pos));

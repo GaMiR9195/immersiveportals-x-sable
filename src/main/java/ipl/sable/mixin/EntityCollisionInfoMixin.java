@@ -36,14 +36,13 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
  *     ...
  * </pre>
  *
- * <p>We hit this when {@code IplTransitOps.teleportRiders} sends an idle animal
- * (e.g., a pig riding the airship deck) through a portal. NeoForge's
- * {@code changeEntityDimension} constructs a new {@code Entity} instance on the
- * destination side; that fresh instance has the {@code @Unique} field at its
- * default {@code null}, and the first tick where {@code travel()} computes zero
- * movement immediately NPEs.
+ * <p>A typical trigger is an idle animal (e.g. a pig on an airship deck) carried through a
+ * portal: NeoForge's {@code changeEntityDimension} constructs a new {@code Entity}
+ * instance on the destination side; that fresh instance has the {@code @Unique} field at
+ * its default {@code null}, and the first tick where {@code travel()} computes zero
+ * movement NPEs.
  *
- * <p><b>The fix:</b> at HEAD of {@code Entity.move}, before vanilla's
+ * <p><b>Workaround:</b> at HEAD of {@code Entity.move}, before vanilla's
  * lengthSqr check, if the entity is not noPhysics, not a passenger, the movement
  * is below vanilla's threshold, AND {@code sable$collisionInfo} is still null,
  * substitute a sub-millimeter downward drift {@code (0, -5e-4, 0)} (lengthSqr ~=
@@ -59,8 +58,8 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
  * Our {@code @ModifyVariable} runs before Sable sees the {@code movement} arg, so
  * Sable's downstream redirects/wraps see our bumped value.
  *
- * <p>This should be reported upstream to Sable -- our compat layer is patching a
- * bug that affects all Sable users, not just IP+Sable. TODO file a Sable issue.
+ * <p>The bug is Sable's own (it affects every Sable user); this mixin can go once Sable
+ * initializes the field.
  */
 @Mixin(value = Entity.class, priority = 900)
 public abstract class EntityCollisionInfoMixin {
@@ -68,8 +67,7 @@ public abstract class EntityCollisionInfoMixin {
     @ModifyVariable(
         method = "move(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V",
         at = @At("HEAD"),
-        argsOnly = true,
-        require = 0  // best-effort: if the method signature changes, fall back to no-op
+        argsOnly = true
     )
     private Vec3 ipl$bumpMovementToInitSableCollisionInfo(Vec3 movement) {
         Entity self = (Entity) (Object) this;
@@ -134,8 +132,7 @@ public abstract class EntityCollisionInfoMixin {
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/world/entity/Entity;setOnGroundWithMovement(ZLnet/minecraft/world/phys/Vec3;)V"
-        ),
-        require = 0  // best-effort
+        )
     )
     private void ipl$safeguardSableWrapAgainstNullCollisionInfo(
         Entity instance, boolean onGround, Vec3 collided, Operation<Void> original

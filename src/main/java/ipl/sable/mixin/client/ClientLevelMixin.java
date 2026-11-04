@@ -16,12 +16,8 @@ import org.spongepowered.asm.mixin.Mixin;
  * <p>Merged-override pattern: Sable's overlay lives in the interface default's bytecode
  * ({@code BlockGetterMixin} overwrite), so {@code BlockGetter.super.clip} is the stock
  * result. Straddling/foreign ships are masked out of that stock pass and cast per frame;
- * nested frame casts carry {@code doNotProject} and fall straight through to stock.
- *
- * <p>Русский комментарий: раньше здесь было два прохода (выкинуть "проходную" половину
- * из стокового результата + отдельный пик прямых проекций) — цепочки и несколько
- * порталов не поддерживались. Теперь вся логика в общем классе, тот же код работает на
- * сервере ({@code ServerLevelMixin}).
+ * nested frame casts carry {@code doNotProject} and fall straight through to stock. The
+ * same algorithm serves the server ({@code ServerLevelMixin}).
  */
 @Mixin(value = ClientLevel.class, priority = 1200)
 public abstract class ClientLevelMixin implements BlockGetter {

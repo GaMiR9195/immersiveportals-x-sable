@@ -1,22 +1,23 @@
 package ipl.sable.client;
 
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.Camera;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderStateShard;
 import net.minecraft.client.renderer.RenderType;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL32C;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -120,10 +121,6 @@ public final class IplEnteringVolumeRenderer {
         if (draw && volume.portal() != null) renderPortal(vertices, matrix, volume);
         poseStack.popPose();
         buffers.endBatch(FOG_RENDER_TYPE);
-    }
-
-    public static RenderType fillRenderType() {
-        return FOG_RENDER_TYPE;
     }
 
     /**
@@ -342,16 +339,12 @@ public final class IplEnteringVolumeRenderer {
     }
 
     public static final class RemoteCallables {
-        public static void setMode(String value, String ignoredShipId, String encodedShape) {
+        public static void setMode(String value, String shipId) {
             mode = Mode.valueOf(value);
-            selectedShip = mode == Mode.OFF || ignoredShipId == null || ignoredShipId.isEmpty()
-                ? null : UUID.fromString(ignoredShipId);
-            // Turning the overlay ON no longer wipes the mesh: the server always follows
-            // this call with the chunked shapePart/blocksPart stream, and clearing here
-            // meant that any part which failed to land left the overlay showing a
-            // partially accumulated -- i.e. visibly truncated -- mesh with nothing to
-            // fall back on. Only OFF clears. The incoming buffers are still reset so a
-            // half-received stream from a previous session cannot prefix the new one.
+            selectedShip = mode == Mode.OFF || shipId.isEmpty() ? null : UUID.fromString(shipId);
+            // Only OFF clears the mesh: ON is always followed by the chunked shapePart/blocksPart
+            // stream, and until it lands the previous mesh stays instead of a truncated one.
+            // The incoming buffers are reset so a half-received stream cannot prefix the new one.
             if (mode == Mode.OFF) {
                 shape = List.of();
                 blocks = List.of();
@@ -363,20 +356,15 @@ public final class IplEnteringVolumeRenderer {
             volumeExpiresAt = 0L;
         }
 
-        /** Replaces the selected ship's occupied-cube exterior after an edit. */
-        public static void shape(String encodedShape) {
-            shape = decodeShape(encodedShape);
-            shapeShip = selectedShip;
-        }
-
         /** Appends one packet-safe part of server's selected-ship exterior mesh. */
         public static void shapePart(String piece, boolean last) {
             if (!INCOMING_SHAPE.isEmpty() && !piece.isEmpty()) INCOMING_SHAPE.append(';');
             INCOMING_SHAPE.append(piece);
             if (!last) return;
-            shape = decodeShape(INCOMING_SHAPE.toString());
-            shapeShip = selectedShip;
+            String encoded = INCOMING_SHAPE.toString();
             INCOMING_SHAPE.setLength(0);
+            shape = decodeShape(encoded);
+            shapeShip = selectedShip;
         }
 
         /** Appends packet-safe occupied block records for the 1x1 retained-pose buffer. */
@@ -384,71 +372,60 @@ public final class IplEnteringVolumeRenderer {
             if (!INCOMING_BLOCKS.isEmpty() && !piece.isEmpty()) INCOMING_BLOCKS.append(';');
             INCOMING_BLOCKS.append(piece);
             if (!last) return;
-            blocks = decodeBlocks(INCOMING_BLOCKS.toString());
+            String encoded = INCOMING_BLOCKS.toString();
             INCOMING_BLOCKS.setLength(0);
+            blocks = decodeBlocks(encoded);
         }
 
         /** `ship,phase,dimension,previous/current~hit~direction~portal~nether~mapping~buffer`, pipe-separated. */
         public static void volumes(String payload) {
-            if (payload == null || payload.isEmpty()) {
-                // A portal pass may receive the clear before the next server-tick payload.
-                // Keep the exact prior A/B shell briefly instead of flashing it for one frame.
-                return;
+            // An empty tick payload keeps the prior A/B shell until it expires instead of
+            // flashing it off for one frame.
+            if (payload.isEmpty()) return;
+            Map<UUID, Volume> next = new HashMap<>();
+            for (String entry : payload.split("\\|")) {
+                String[] fields = entry.split(",", 4);
+                String[] detail = fields[3].split("~", 7);
+                String[] transforms = detail[0].split("/", 2);
+                UUID id = UUID.fromString(fields[0]);
+                Volume target = new Volume(ResourceLocation.parse(fields[2]), Phase.valueOf(fields[1]),
+                    decodeTransform(transforms[0]), decodeTransform(transforms[1]),
+                    detail.length > 1 && "1".equals(detail[1]),
+                    detail.length > 2 && "1".equals(detail[2]),
+                    detail.length > 3 && !detail[3].isEmpty() ? decodePortal(detail[3]) : null,
+                    detail.length > 4 && "1".equals(detail[4]),
+                    detail.length > 5 && !detail[5].isEmpty() ? decodeTransform(detail[5]) : null,
+                    detail.length > 6 && !detail[6].isEmpty() ? decodeTransform(detail[6]) : null);
+                // The debug geometry must be the detector's exact server-tick A->B sweep.
+                // Interpolating endpoint transforms turns it into a different, invented segment.
+                next.put(id, target);
             }
-            try {
-                Map<UUID, Volume> next = new java.util.HashMap<>();
-                for (String entry : payload.split("\\|")) {
-                    String[] fields = entry.split(",", 4);
-                    String[] detail = fields[3].split("~", 7);
-                    String[] transforms = detail[0].split("/", 2);
-                    UUID id = UUID.fromString(fields[0]);
-                    Volume target = new Volume(ResourceLocation.parse(fields[2]), Phase.valueOf(fields[1]),
-                        decodeTransform(transforms[0]), decodeTransform(transforms[1]),
-                        detail.length > 1 && "1".equals(detail[1]),
-                        detail.length > 2 && "1".equals(detail[2]),
-                        detail.length > 3 && !detail[3].isEmpty() ? decodePortal(detail[3]) : null,
-                        detail.length > 4 && "1".equals(detail[4]),
-                        detail.length > 5 && !detail[5].isEmpty() ? decodeTransform(detail[5]) : null,
-                        detail.length > 6 && !detail[6].isEmpty() ? decodeTransform(detail[6]) : null);
-                    // The debug geometry must be the detector's exact server-tick A->B sweep.
-                    // Interpolating endpoint transforms turns it into a different, invented segment.
-                    next.put(id, target);
-                }
-                volumes = Map.copyOf(next);
-                volumeExpiresAt = System.nanoTime() + 250_000_000L;
-            } catch (RuntimeException ignored) {}
+            volumes = Map.copyOf(next);
+            volumeExpiresAt = System.nanoTime() + 250_000_000L;
         }
     }
 
     private static List<Face> decodeShape(String encoded) {
-        if (encoded == null || encoded.isEmpty()) return List.of();
-        try {
-            List<Face> faces = new ArrayList<>();
-            for (String encodedFace : encoded.split(";")) {
-                String[] encodedVertices = encodedFace.split("\\|");
-                if (encodedVertices.length < 3) continue;
-                Vec3[] vertices = new Vec3[encodedVertices.length];
-                for (int i = 0; i < vertices.length; i++) vertices[i] = decodePoint(encodedVertices[i]);
-                faces.add(new Face(vertices));
-            }
-            return List.copyOf(faces);
-        } catch (RuntimeException ignored) {
-            return List.of();
+        if (encoded.isEmpty()) return List.of();
+        List<Face> faces = new ArrayList<>();
+        for (String encodedFace : encoded.split(";")) {
+            String[] encodedVertices = encodedFace.split("\\|");
+            if (encodedVertices.length < 3) continue;
+            Vec3[] vertices = new Vec3[encodedVertices.length];
+            for (int i = 0; i < vertices.length; i++) vertices[i] = decodePoint(encodedVertices[i]);
+            faces.add(new Face(vertices));
         }
+        return List.copyOf(faces);
     }
 
     private static List<BlockPos> decodeBlocks(String encoded) {
-        if (encoded == null || encoded.isEmpty()) return List.of();
-        try {
-            List<BlockPos> blocks = new ArrayList<>();
-            for (String entry : encoded.split(";")) {
-                String[] xyz = entry.split(",");
-                blocks.add(new BlockPos(Integer.parseInt(xyz[0]), Integer.parseInt(xyz[1]), Integer.parseInt(xyz[2])));
-            }
-            return List.copyOf(blocks);
-        } catch (RuntimeException ignored) {
-            return List.of();
+        if (encoded.isEmpty()) return List.of();
+        List<BlockPos> blocks = new ArrayList<>();
+        for (String entry : encoded.split(";")) {
+            String[] xyz = entry.split(",");
+            blocks.add(new BlockPos(Integer.parseInt(xyz[0]), Integer.parseInt(xyz[1]), Integer.parseInt(xyz[2])));
         }
+        return List.copyOf(blocks);
     }
 
     private static Transform decodeTransform(String encoded) {

@@ -2,6 +2,7 @@ package ipl.sable.mixin;
 
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
+import ipl.sable.transit.IplPortalVolumeCache;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
@@ -13,10 +14,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(LevelPlot.class)
 public abstract class LevelPlotMixin {
 
-    @Inject(method = "onBlockChange", at = @At("TAIL"), require = 0)
+    @Inject(method = "onBlockChange", at = @At("TAIL"))
     private void ipl$invalidatePortalVolume(BlockPos pos, BlockState state, CallbackInfo ci) {
         if (((LevelPlot) (Object) this).getSubLevel() instanceof ServerSubLevel ship) {
-            ipl.sable.transit.IplPortalVolumeCache.invalidate(ship);
+            IplPortalVolumeCache.invalidate(ship);
         }
     }
 }

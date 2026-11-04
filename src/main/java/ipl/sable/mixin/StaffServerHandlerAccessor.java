@@ -11,6 +11,6 @@ import java.util.UUID;
 @Pseudo
 @Mixin(targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler", remap = false)
 public interface StaffServerHandlerAccessor {
-    @Accessor(value = "draggingSessions", remap = false)
+    @Accessor(value = "draggingSessions")
     Map<UUID, Object> ipl$getDraggingSessions();
 }

@@ -9,11 +9,14 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Quaterniond;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,13 +55,12 @@ public final class IplAtlasStraddleSession {
     /**
      * Боковой размер "широкой" области (полупространство, ограниченное только глубиной).
      *
-     * <p>Русский комментарий (почему): трубки по проёму (+0.25) были верны только пока
-     * корабль идёт строго по оси портала. Стоило ему наклониться/просесть (пол в Незере
-     * ниже нижней кромки проёма), прошедшая часть выходила из трубки: её контакты с полом
-     * назначения обрезались ("образ игнорирует мир"), а та же часть в исходном мире
-     * (за плоскостью, но вне трубки) снова сталкивалась с землёй за порталом ("половина не
-     * проходит сквозь землю"). Рендер же режет бесконечной плоскостью — физика и картинка
-     * расходились. Если вход доказан и ВСЕ сечения тела на плоскости лежат в проёме
+     * <p>Трубка по проёму (+0.25) верна, только пока корабль идёт строго по оси портала. Если
+     * он наклонился или просел (пол в Незере ниже нижней кромки проёма), прошедшая часть выходит
+     * из трубки: её контакты с полом назначения обрезаются («образ игнорирует мир»), а та же
+     * часть в исходном мире (за плоскостью, но вне трубки) снова сталкивается с землёй за
+     * порталом («половина не проходит сквозь землю»). Рендер же режет бесконечной плоскостью, и
+     * физика расходится с картинкой. Если вход доказан и ВСЕ сечения тела на плоскости лежат в проёме
      * (retainsAdmittedSession) — либо тело уже целиком за плоскостью (completed) — то всё,
      * что за плоскостью, связано с остальным телом только через проём, то есть физически
      * находится в мире назначения. Тогда правильная область — полупространство.
@@ -70,18 +72,18 @@ public final class IplAtlasStraddleSession {
     /**
      * Recursion guard for projection-of-projection chains.
      *
-     * <p>Русский комментарий (почему 16, а не 8): в ряду порталов со сдвигом на блок длинный
+     * <p>Почему 16, а не 8: в ряду порталов со сдвигом на блок длинный
      * корабль честно стоит в стольких порталах, сколько блоков в нём помещается между ними;
-     * при 8 кусок за восьмым порталом не нарезался вовсе и торчал сквозь грань. Фантомные
-     * сессии теперь отсекает область куска, так что предел — только защита от разгона.
+     * при 8 кусок за восьмым порталом не нарезался бы вовсе и торчал сквозь грань. Фантомные
+     * сессии отсекает область куска, так что предел — только защита от разгона.
      */
     public static final int MAX_CHAIN_DEPTH = 16;
     /**
-     * Жёсткий предел сессий на одно тело. Цепочки однонаправленных порталов подряд
-     * раньше плодили фантомные сессии комбинаторно (каждая — образ в Rapier и запись в
-     * снапшоте), что и роняло соединение. Нормальный проход через N порталов — это
-     * N сессий; после ограничения тестов областью куска фантомов нет, и 64 — лишь
-     * страховка (≈30 КБ снапшота), а не рабочий предел нарезки.
+     * Жёсткий предел сессий на одно тело. Без ограничения тестов областью куска цепочки
+     * однонаправленных порталов подряд плодили бы фантомные сессии комбинаторно (каждая —
+     * образ в Rapier и запись в снапшоте) и роняли соединение. Нормальный проход через
+     * N порталов — это N сессий, так что 64 — лишь страховка (≈30 КБ снапшота), а не рабочий
+     * предел нарезки.
      */
     public static final int MAX_SESSIONS_PER_SHIP = 64;
 
@@ -152,8 +154,8 @@ public final class IplAtlasStraddleSession {
      * (see {@link #WIDE_EXTENT}).
      */
     public static void onStraddleTick(ServerSubLevel sub, Portal portal, Vec3 sourceToDest, boolean wide) {
-        if (!(sub.getLevel() instanceof ServerLevel level) || portal.level() != level) return;
-        ensure(new StraddleKey(sub.getUniqueId(), portal.getUUID()), null, sub, portal, sourceToDest, level, wide);
+        if (portal.level() != sub.getLevel()) return;
+        ensure(new StraddleKey(sub.getUniqueId(), portal.getUUID()), null, sub, portal, sourceToDest, sub.getLevel(), wide);
     }
 
     /** Opens or refreshes a CHAINED session: the image of {@code parentKey} straddles {@code portal}. */
@@ -199,7 +201,7 @@ public final class IplAtlasStraddleSession {
             }
             return;
         }
-        long bodyScene = IplScenes.sceneHandle((ServerLevel) sub.getLevel());
+        long bodyScene = IplScenes.sceneHandle(sub.getLevel());
         long destScene = IplScenes.sceneHandle(dest);
         if (bodyScene == 0 || destScene == 0) return;
         Session session = new Session(key, sub, portal, source, dest, bodyScene, destScene);
@@ -208,13 +210,9 @@ public final class IplAtlasStraddleSession {
         session.sourceToDest = sourceToDest;
         session.wideRequested = wide;
         Vec3 shift = mapping.shift();
-        org.joml.Quaterniond rot = mapping.mapQuat(new org.joml.Quaterniond());
-        try {
-            session.imageHandle = IplRapierNatives.createImageCollider(
-                destScene, session.realId, shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
-        } catch (UnsatisfiedLinkError e) {
-            session.imageHandle = -1;
-        }
+        Quaterniond rot = mapping.mapQuat(new Quaterniond());
+        session.imageHandle = IplRapierNatives.createImageCollider(
+            destScene, session.realId, shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
         if (session.imageHandle < 0) {
             LOG.warn("[IPL-IMAGE] image collider creation failed for ship {} portal {}",
                 sub.getUniqueId(), portal.getUUID());
@@ -239,7 +237,7 @@ public final class IplAtlasStraddleSession {
         s.sourceToDest = sourceToDest;
         if (moved) {
             Vec3 shift = mapping.shift();
-            org.joml.Quaterniond rot = mapping.mapQuat(new org.joml.Quaterniond());
+            Quaterniond rot = mapping.mapQuat(new Quaterniond());
             IplRapierNatives.setImagePrefix(s.destScene, s.imageHandle,
                 shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
         }
@@ -247,7 +245,7 @@ public final class IplAtlasStraddleSession {
         boolean oldWide = s.wide;
         computeRegions(s, parent);
         if (oldWide != s.wide) IplProjectionTree.invalidate();
-        if (!java.util.Arrays.equals(oldBeyond, s.beyondRegion)) {
+        if (!Arrays.equals(oldBeyond, s.beyondRegion)) {
             if (s.key.isRoot()) applyRealClipRegions(s.sub);
             if (parent != null) applyImageRegions(parent);
             // Siblings (and their chains) yield to this region or are yielded to by it.
@@ -263,7 +261,7 @@ public final class IplAtlasStraddleSession {
         boolean anyRoot = false;
         for (Session s : List.copyOf(SESSIONS.values())) {
             if (s.sub != sub) continue;
-            Session parent = s.key.isRoot() ? null : SESSIONS.get(parentKeyOf(s.key));
+            Session parent = s.key.isRoot() ? null : SESSIONS.get(s.key.parent());
             if (!s.key.isRoot() && parent == null) continue;
             computeRegions(s, parent);
             anyRoot |= s.key.isRoot();
@@ -296,14 +294,14 @@ public final class IplAtlasStraddleSession {
      * to the lower path. Images exclude the space they yield; the real body's exclusion is the
      * union of all root regions and needs no priority.
      *
-     * <p>Русский комментарий: раньше широкая область схлопывалась в трубку, как только у тела
-     * появлялась вторая сессия («единственный сосед»), и всё, что прошло портал, но лежит вне
-     * трубки, мгновенно возвращалось в исходный мир — куски пропадали при открытии/закрытии
-     * соседних сессий. Теперь форма области от соседей не зависит: спорное пространство
-     * просто отдаётся по фиксированному приоритету, одинаково в физике, дереве и рейкастах.
+     * <p>Форма области от соседних сессий не зависит: если бы широкая область схлопывалась
+     * в трубку при появлении второй сессии, всё, что прошло портал, но лежит вне трубки,
+     * мгновенно возвращалось бы в исходный мир, и куски пропадали бы при открытии/закрытии
+     * соседних сессий. Спорное пространство отдаётся по фиксированному приоритету, одинаково
+     * в физике, дереве и рейкастах.
      * Первым в приоритете стоит геометрия: без него трубка портала, стоящего ЗА плоскостью
-     * другого (ряд {@code ->|  |}), перебивала широкую область переднего и забирала его кусок —
-     * образ этого куска толкал тело из чужого мира, а клиент рисовал его в чужом портале.
+     * другого (ряд {@code ->|  |}), перебивала бы широкую область переднего и забирала его кусок —
+     * образ этого куска толкал бы тело из чужого мира, а клиент рисовал бы его в чужом портале.
      */
     static boolean outranks(Session a, Session b) {
         int ra = upstreamRank(a);
@@ -350,7 +348,7 @@ public final class IplAtlasStraddleSession {
      */
     private static List<double[]> yieldedRegions(Session s) {
         List<double[]> out = new ArrayList<>(2);
-        Session parent = s.key.isRoot() ? null : SESSIONS.get(parentKeyOf(s.key));
+        Session parent = s.key.isRoot() ? null : SESSIONS.get(s.key.parent());
         if (parent != null) {
             for (double[] r : yieldedRegions(parent)) out.add(transform(r, parent.local));
         }
@@ -402,7 +400,7 @@ public final class IplAtlasStraddleSession {
             (box.minY() + box.maxY() + 1.0) * .5,
             (box.minZ() + box.maxZ() + 1.0) * .5));
         // Chained portals live in a projected frame: measure from the mapped centre.
-        Session parent = s.key.isRoot() ? null : SESSIONS.get(parentKeyOf(s.key));
+        Session parent = s.key.isRoot() ? null : SESSIONS.get(s.key.parent());
         if (parent != null) center = parent.mapping.mapPoint(center);
         double normalDistance = Math.abs(center.subtract(s.portal.getOriginPos()).dot(s.portal.getNormal()));
         return diagonal + normalDistance + APERTURE_MARGIN;
@@ -465,8 +463,8 @@ public final class IplAtlasStraddleSession {
             realId = s.realId;
         }
         if (realId < 0) {
-            if (ship.isRemoved() || !(ship.getLevel() instanceof ServerLevel level)) return;
-            scene = IplScenes.sceneHandle(level);
+            if (ship.isRemoved()) return;
+            scene = IplScenes.sceneHandle(ship.getLevel());
             realId = Rapier3D.getID(ship);
             if (scene == 0) return;
         }
@@ -502,20 +500,13 @@ public final class IplAtlasStraddleSession {
         }
         for (double[] yielded : yieldedRegions(s)) regions.add(transform(yielded, s.local));
         double[] flat = v2 ? flatten(regions) : flattenLegacy(regions);
-        if (java.util.Arrays.equals(flat, s.lastImageRegions)) return;
+        if (Arrays.equals(flat, s.lastImageRegions)) return;
         s.lastImageRegions = flat;
         if (v2) {
             IplRapierNatives.setImageClipRegionsV2(s.destScene, s.realId, s.imageHandle, flat);
         } else {
             IplRapierNatives.setImageClipRegions(s.destScene, s.realId, s.imageHandle, flat);
         }
-    }
-
-    private static StraddleKey parentKeyOf(StraddleKey key) {
-        String via = key.via();
-        int split = via.lastIndexOf('>');
-        UUID portal = UUID.fromString(split < 0 ? via : via.substring(split + 1));
-        return new StraddleKey(key.subLevelUuid(), portal, split < 0 ? "" : via.substring(0, split));
     }
 
     /** Ends a session and every chained session below it. */
@@ -539,7 +530,7 @@ public final class IplAtlasStraddleSession {
             // Уступленное соседям пространство изменилось (и широкая область могла освободиться).
             if (hasSession(key.subLevelUuid())) rebuildShip(session.sub);
             else if (!key.isRoot()) {
-                Session parent = SESSIONS.get(parentKeyOf(key));
+                Session parent = SESSIONS.get(key.parent());
                 if (parent != null) applyImageRegions(parent);
             }
         }
@@ -559,10 +550,10 @@ public final class IplAtlasStraddleSession {
      * Sessions below the root {@code root} as they look AFTER the body flipped through its
      * portal, parents first.
      *
-     * <p>Русский комментарий (почему): флип закрывает все сессии тела. Когда выход P1
+     * <p>Флип закрывает все сессии тела. Когда выход P1
      * совпадает с входом P2 (ряд порталов) или тело во время флипа ещё стоит в P2, его
-     * часть уже прошла P2 — а без сессии после флипа она оказывалась в исходном мире "за"
-     * плоскостью P2 (и тело не проходило ряд дальше). Дочерние сессии P1>... повышаются в
+     * часть уже прошла P2 — а без сессии после флипа она оказалась бы в исходном мире «за»
+     * плоскостью P2 (и тело не прошло бы ряд дальше). Дочерние сессии P1>... повышаются в
      * корневые/цепочки нового кадра вместе с флагами admitted/completed/wide, и в том же
      * тике следующий раунд контроллера честно продолжает переход через P2, P3, ...
      */
@@ -579,13 +570,14 @@ public final class IplAtlasStraddleSession {
             else continue;
             out.add(new Promotion(newVia, s.portal, s.sourceToDest, s.admitted, s.completed, s.wideRequested));
         }
-        out.sort(java.util.Comparator.comparingInt(p -> p.via().isEmpty() ? 0 : 1 + p.via().split(">").length));
+        out.sort(Comparator.comparingInt(p -> p.via().isEmpty() ? 0 : 1 + p.via().split(">").length));
         return out;
     }
 
     /** Re-opens promoted sessions for the live body (after the flip); returns how many opened. */
     public static int promote(ServerSubLevel live, List<Promotion> promotions) {
-        if (promotions.isEmpty() || live.isRemoved() || !(live.getLevel() instanceof ServerLevel level)) return 0;
+        if (promotions.isEmpty() || live.isRemoved()) return 0;
+        ServerLevel level = live.getLevel();
         int opened = 0;
         for (Promotion p : promotions) {
             if (p.portal().isRemoved()) continue;
@@ -594,7 +586,7 @@ public final class IplAtlasStraddleSession {
                 if (p.portal().level() != level) continue;
                 ensure(key, null, live, p.portal(), p.sourceToDest(), level, p.wide());
             } else {
-                Session parent = SESSIONS.get(parentKeyOf(key));
+                Session parent = SESSIONS.get(key.parent());
                 if (parent == null || p.portal().level() != parent.dest || key.depth() > MAX_CHAIN_DEPTH) continue;
                 ensure(key, parent, live, p.portal(), p.sourceToDest(), parent.dest, p.wide());
             }
@@ -723,14 +715,6 @@ public final class IplAtlasStraddleSession {
         return null;
     }
 
-    @Nullable
-    public static Portal getSessionPortalInto(SubLevel sub, Level level) {
-        for (Session s : SESSIONS.values()) {
-            if (s.dest == level && s.sub.getUniqueId().equals(sub.getUniqueId())) return s.portal;
-        }
-        return null;
-    }
-
     /** Every projection of {@code sub} into {@code level}: (last portal, composite mapping). */
     public static void forEachSessionInto(
         SubLevel sub, Level level, BiConsumer<Portal, IplStraddlePoseMap.StraddleMapping> visitor
@@ -751,16 +735,6 @@ public final class IplAtlasStraddleSession {
                 visitor.accept(s.portal, s.mapping);
             }
         }
-    }
-
-    @Nullable
-    public static Portal getSessionPortalFrom(SubLevel sub, Level level) {
-        for (Session s : SESSIONS.values()) {
-            if (s.key.isRoot() && s.source == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
-                return s.portal;
-            }
-        }
-        return null;
     }
 
     public static boolean isInMappedHalf(SubLevel sub, Level level, Vec3 position) {

@@ -11,14 +11,15 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.entity_collision.SubLevelEntityCollision;
 import ipl.sable.transit.IplStraddleCollisionClip;
 import ipl.sable.transit.IplStraddlePoseMap;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
+
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.function.Predicate;
 
 /**
  * Столкновения сущностей с кораблём, пересекающим портал: блоки режутся по плоскости портала,
@@ -33,9 +34,9 @@ public abstract class SubLevelEntityCollisionMixin {
     // gameplay-collision counterpart of the native solver contact clip (spec §2.5).
     //
     // <p>{@code SubLevelEntityCollision.collide} SATs the entity's OBB against every ship
-    // block near it, oblivious to the portal: from the source side an entity kept colliding
+    // block near it, oblivious to the portal: from the source side an entity would collide
     // with the through-part (rendered and physically present dest-side only), and via the
-    // mapped image it would collide with the not-yet-through part. This wrap filters the
+    // mapped image with the not-yet-through part. This wrap filters the
     // candidate block iterable so blocks on the wrong side of the portal plane simply don't
     // exist for collision — the same iterable feeds the main
     // SAT loop, step-up probing, and the tracking check, so all stay consistent.
@@ -46,11 +47,10 @@ public abstract class SubLevelEntityCollisionMixin {
     // are identical.
     //
     // <p><b>Sub-block precision.</b> The position filter alone can only work in whole
-    // blocks, so the physical boundary used to land on the sub-level's block lattice instead
-    // of on the portal plane: a ship that was only partly through the portal got cut along
-    // block divisions, leaving up to half a block of phantom material behind the plane (the
-    // "one block past the portal" you could stand on) or a matching hole in front of it. The
-    // filter is therefore deliberately generous — it keeps a block if ANY part of its cube
+    // blocks, so the physical boundary would land on the sub-level's block lattice instead
+    // of on the portal plane: a ship only partly through the portal would be cut along
+    // block divisions, leaving up to half a block of phantom material behind the plane or a
+    // matching hole in front of it. The filter is therefore deliberately generous — it keeps a block if ANY part of its cube
     // is still on the kept side — and the second wrap below trims what survives, clipping
     // each individual collision box against the same half-space via
     // {@link IplStraddleCollisionClip}. Both loops that consume these boxes
@@ -63,8 +63,7 @@ public abstract class SubLevelEntityCollisionMixin {
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/core/BlockPos;betweenClosed(Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/BlockPos;)Ljava/lang/Iterable;"
-        ),
-        require = 0
+        )
     )
     private static Iterable<BlockPos> ipl$dropWrongHalfBlocks(
         BlockPos min, BlockPos max, Operation<Iterable<BlockPos>> original,
@@ -104,8 +103,7 @@ public abstract class SubLevelEntityCollisionMixin {
         at = @At(
             value = "INVOKE",
             target = "Ldev/ryanhcode/sable/mixinterface/voxel_shape_iteration/FastVoxelShapeIterable;sable$allBoxes()Ljava/util/Iterator;"
-        ),
-        require = 0
+        )
     )
     private static Iterator<BoundingBox3dc> ipl$clipBoxesAtPortalPlane(
         FastVoxelShapeIterable shape, Operation<Iterator<BoundingBox3dc>> original
@@ -152,8 +150,8 @@ public abstract class SubLevelEntityCollisionMixin {
     // Entity collision against the THROUGH-PORTAL portion of a straddling sub-level.
     //
     // <p>{@code SubLevelEntityCollision.collide} gathers candidates via
-    // {@code Sable.HELPER.getAllIntersecting} (which now includes foreign straddlers with
-    // portal-MAPPED bounds — see {@code IplHostedIntersectionMixin}) and then reads
+    // {@code Sable.HELPER.getAllIntersecting} (which includes foreign straddlers with
+    // portal-MAPPED bounds — see {@code CompanionIntersectMixin}) and then reads
     // {@code logicalPose()}/{@code lastPose()} directly. For a ship whose parent is ANOTHER
     // dimension straddling into the entity's dimension, those poses are in the wrong frame —
     // this wrap substitutes the portal-mapped poses, so an entity on the dest side stands on /
@@ -169,8 +167,7 @@ public abstract class SubLevelEntityCollisionMixin {
         at = @At(
             value = "INVOKE",
             target = "Ldev/ryanhcode/sable/sublevel/SubLevel;logicalPose()Ldev/ryanhcode/sable/companion/math/Pose3d;"
-        ),
-        require = 0
+        )
     )
     private static Pose3d ipl$mapLogicalPoseForForeignStraddler(
         SubLevel sub, Operation<Pose3d> original,
@@ -187,8 +184,7 @@ public abstract class SubLevelEntityCollisionMixin {
         at = @At(
             value = "INVOKE",
             target = "Ldev/ryanhcode/sable/sublevel/SubLevel;lastPose()Ldev/ryanhcode/sable/companion/math/Pose3dc;"
-        ),
-        require = 0
+        )
     )
     private static Pose3dc ipl$mapLastPoseForForeignStraddler(
         SubLevel sub, Operation<Pose3dc> original,

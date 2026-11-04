@@ -5,8 +5,9 @@ import dev.ryanhcode.sable.companion.math.Pose3d;
 import net.minecraft.world.phys.Vec3;
 import qouteall.imm_ptl.core.portal.Portal;
 
-/** Runs the actual production detector with explicitly bounded game API fixtures.
- * This is not a Minecraft/native/integration test; see README-PORTAL-FIX.md.
+/**
+ * Runs the production detector against explicitly bounded game API fixtures.
+ * Not a Minecraft, native or integration test.
  */
 public class PortalCrossingDetectorFixtureTest {
     private static final Vec3 FORWARD=new Vec3(0,0,1);

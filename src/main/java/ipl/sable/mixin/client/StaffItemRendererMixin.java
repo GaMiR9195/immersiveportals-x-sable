@@ -53,10 +53,8 @@ public abstract class StaffItemRendererMixin {
         method = "render",
         at = @At(
             value = "INVOKE",
-            target = "Ldev/ryanhcode/sable/companion/math/Pose3dc;transformPosition(Lorg/joml/Vector3d;)Lorg/joml/Vector3d;",
-            remap = false
-        ),
-        require = 0
+            target = "Ldev/ryanhcode/sable/companion/math/Pose3dc;transformPosition(Lorg/joml/Vector3d;)Lorg/joml/Vector3d;"
+        )
     )
     private Vector3d ipl$aimAlongBeam(Pose3dc pose, Vector3d local, Operation<Vector3d> original) {
         PhysicsStaffClientHandler handler = SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;

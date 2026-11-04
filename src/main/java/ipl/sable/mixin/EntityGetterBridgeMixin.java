@@ -26,12 +26,6 @@ import qouteall.imm_ptl.core.mixin.common.mc_util.IELevelEntityGetterAdapter;
  * entities). That wrapper class does NOT implement IP's duck interface -> the cast throws
  * {@link ClassCastException} on the first render frame after world join.
  *
- * <p>This was previously provided by the now-discarded IPLSableBridge mod's mixin of the
- * same name. Without it, IP and Sable cannot coexist regardless of whether the audit's
- * 5 mixin conflicts are resolved -- this is the 6th conflict, missed by the Sable<>IP
- * mixin overlap audit because the original adapter mixin lived in a third (bridge) mod
- * rather than in either Sable or IP.
- *
  * <p>The {@code @Pseudo} annotation makes this a soft mixin: if Sable's class isn't on
  * the runtime classpath (Sable not installed), Mixin silently skips application instead
  * of crashing. Combined with the rest of our soft-dep design ({@link ipl.sable.SableBridge}

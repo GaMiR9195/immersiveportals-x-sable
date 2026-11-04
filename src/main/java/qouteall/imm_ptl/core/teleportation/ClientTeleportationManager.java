@@ -523,9 +523,6 @@ public class ClientTeleportationManager {
         FogRendererContext.onPlayerTeleport(fromDimension, toDimension);
         
         O_O.onPlayerChangeDimensionClient(fromDimension, toDimension);
-
-        // IPL-Sable: окно непрерывности поз и света саб-уровней + строки [IPL-DIM] в логе.
-        ipl.sable.client.IplDimSwitchGuard.onPlayerChangedDimension(fromWorld, toWorld);
     }
     
     private static void changePlayerMotionIfCollidingWithPortal() {

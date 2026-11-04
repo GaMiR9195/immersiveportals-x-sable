@@ -7,17 +7,17 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL41;
-import qouteall.imm_ptl.core.render.FrontClipping;
-import qouteall.imm_ptl.core.ducks.IEShader;
 import qouteall.imm_ptl.core.IPGlobal;
+import qouteall.imm_ptl.core.ducks.IEShader;
+import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
+
 import java.util.HashMap;
 import java.util.Map;
 
 /** Render-thread upload to the program actually used by a draw, never a registry broadcast. */
 public final class IplProgramBindHook {
     private static final Map<Integer, int[]> LOCATIONS = new HashMap<>();
-    private static boolean latePortalClipEnabled;
     private IplProgramBindHook() {}
 
     private static int[] locations(int program) {
@@ -39,27 +39,17 @@ public final class IplProgramBindHook {
         boolean portalPass = PortalRendering.isRendering();
         boolean subClip = IplClipUniformPatcher.getCurrentSubLevelEqWorld() != null;
         if (!portalClip && !portalPass) {
-            // A late bind can re-enable slot 0 while FrontClipping's flag is
-            // false. FrontClipping.disableClipping() cannot clear that raw GL
-            // state; explicitly release it on return to the root pass.
-            //
-            // Раньше это делалось только если слот 0 включили МЫ (latePortalClipEnabled).
-            // Но IP сам включает GL_CLIP_PLANE0 в MixinRenderSystem_Clipping
-            // (ip$writeCachedEquation) во время портального прохода, не поднимая флаг
-            // FrontClipping, а disableClipping() его потом не гасит. В корневом проходе
-            // такой «забытый» слот 0 со старым уравнением отсекал существ/BE возле портала
-            // в зависимости от положения камеры. Вне портального прохода и без активного
-            // FrontClipping слот 0 никому не нужен — гасим всегда (дешёвый вызов).
+            // Вне портального прохода и без активного FrontClipping слот 0 не нужен никому, а
+            // включённым его оставляет и поздний bind, и сам IP: MixinRenderSystem_Clipping
+            // включает GL_CLIP_PLANE0, не поднимая флаг FrontClipping, и disableClipping() это
+            // состояние не гасит. Забытый слот со старым уравнением отсекал бы существ и BE
+            // возле портала в зависимости от положения камеры, поэтому он гасится всегда.
             GL11.glDisable(GL11.GL_CLIP_PLANE0);
-            latePortalClipEnabled = false;
         }
         if (!portalClip && !portalPass && !subClip) return;
         int[] locs = locations(program);
         if (portalClip) IplClipEquationCache.refreshFromActive();
-        if (portalClip || portalPass) {
-            GL11.glEnable(GL11.GL_CLIP_PLANE0);
-            if (!portalClip) latePortalClipEnabled = true;
-        }
+        if (portalClip || portalPass) GL11.glEnable(GL11.GL_CLIP_PLANE0);
         if (locs[0] >= 0 && (portalClip || portalPass)) {
             double[] eq = portalEquation(program);
             if (eq != null) GL41.glProgramUniform4f(program, locs[0],

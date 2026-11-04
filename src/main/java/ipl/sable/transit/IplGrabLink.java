@@ -1,13 +1,14 @@
 package ipl.sable.transit;
 
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
-import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.portal.PortalExtension;
 import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.ArrayList;
@@ -77,7 +78,7 @@ public record IplGrabLink(
         Quaterniond rotation = rotationOf(portal);
         Quaterniond inverseRotation = new Quaterniond(rotation).conjugate();
         UUID id = portal.getUUID();
-        Portal reverse = qouteall.imm_ptl.core.portal.PortalExtension.get(portal).reversePortal;
+        Portal reverse = PortalExtension.get(portal).reversePortal;
         if (reverse != null && !reverse.isRemoved()) {
             id = reverse.getUUID();
         }
@@ -124,12 +125,6 @@ public record IplGrabLink(
         new Quaterniond(rotation).conjugate().transform(local);
         double inv = scale == 0.0 ? 1.0 : 1.0 / scale;
         return new Vec3(origin.x + local.x * inv, origin.y + local.y * inv, origin.z + local.z * inv);
-    }
-
-    public Vec3 transformDirection(Vec3 direction) {
-        Vector3d v = new Vector3d(direction.x, direction.y, direction.z);
-        rotation.transform(v);
-        return new Vec3(v.x, v.y, v.z);
     }
 
     /** True when applying {@code this} then {@code next} is the identity map. */
@@ -184,15 +179,6 @@ public record IplGrabLink(
         return mapped;
     }
 
-    /** Fold a direction through the whole chain's rotations. */
-    public static Vec3 foldDirection(List<IplGrabLink> chain, Vec3 direction) {
-        Vec3 mapped = direction;
-        for (IplGrabLink link : chain) {
-            mapped = link.transformDirection(mapped);
-        }
-        return mapped;
-    }
-
     // ------------------------------------------------------------------
     // Wire encoding (exact hex doubles, matching the handoff RPC style).
     // ------------------------------------------------------------------
@@ -217,33 +203,27 @@ public record IplGrabLink(
         );
     }
 
-    @Nullable
+    /** Inverse of {@link #encode()}. */
     public static IplGrabLink decode(String encoded) {
         String[] parts = encoded.split(FIELD_SEPARATOR, -1);
-        if (parts.length != 25) return null;
-        try {
-            double[] d = new double[22];
-            for (int i = 0; i < 22; i++) {
-                d[i] = Double.valueOf(parts[i + 3]);
-            }
-            return new IplGrabLink(
-                UUID.fromString(parts[0]),
-                ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION,
-                    ResourceLocation.parse(parts[1])),
-                ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION,
-                    ResourceLocation.parse(parts[2])),
-                new Vec3(d[0], d[1], d[2]),
-                new Vec3(d[3], d[4], d[5]),
-                new Quaterniond(d[6], d[7], d[8], d[9]),
-                d[10],
-                new Vec3(d[11], d[12], d[13]),
-                new Vec3(d[14], d[15], d[16]),
-                new Vec3(d[17], d[18], d[19]),
-                d[20], d[21]
-            );
-        } catch (RuntimeException e) {
-            return null;
+        if (parts.length != 25) throw new IllegalArgumentException("grab link with " + parts.length + " fields");
+        double[] d = new double[22];
+        for (int i = 0; i < 22; i++) {
+            d[i] = Double.parseDouble(parts[i + 3]);
         }
+        return new IplGrabLink(
+            UUID.fromString(parts[0]),
+            ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(parts[1])),
+            ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(parts[2])),
+            new Vec3(d[0], d[1], d[2]),
+            new Vec3(d[3], d[4], d[5]),
+            new Quaterniond(d[6], d[7], d[8], d[9]),
+            d[10],
+            new Vec3(d[11], d[12], d[13]),
+            new Vec3(d[14], d[15], d[16]),
+            new Vec3(d[17], d[18], d[19]),
+            d[20], d[21]
+        );
     }
 
     public static String encodeChain(List<IplGrabLink> chain) {
@@ -256,13 +236,9 @@ public record IplGrabLink(
     }
 
     public static List<IplGrabLink> decodeChain(String encoded) {
-        if (encoded == null || encoded.isEmpty()) return List.of();
+        if (encoded.isEmpty()) return List.of();
         List<IplGrabLink> out = new ArrayList<>(4);
-        for (String part : encoded.split("\\" + LINK_SEPARATOR)) {
-            IplGrabLink link = decode(part);
-            if (link == null) return List.of(); // reject the whole chain, never half-apply
-            out.add(link);
-        }
+        for (String part : encoded.split("\\" + LINK_SEPARATOR)) out.add(decode(part));
         return List.copyOf(out);
     }
 }

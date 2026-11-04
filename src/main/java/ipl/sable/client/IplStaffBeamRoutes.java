@@ -16,9 +16,12 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.WeakHashMap;
 
@@ -31,15 +34,14 @@ import java.util.WeakHashMap;
  * visible representation is the portal IMAGE, so the route gains that session link and
  * targets the image. Both facts are event-sourced (chain) or server-synced (session
  * store); nothing is chosen by comparing distances, latching first-seen portals, or
- * testing which side the player "probably" works from. The old implementation's
- * SESSION_PIN latch, per-frame length comparisons, and transit-frame plumbing are gone.
+ * testing which side the player "probably" works from.
  *
  * <p>Route transitions are continuous by construction: a chain link appears exactly when
  * a teleport/transit event maps the endpoint through that same portal, and the image
  * refinement toggles exactly at the session plane, where native and image coincide.
  *
- * <p>Kept from the previous implementation because they are exact, not heuristic:
- * aperture clamping (a beam may bend at a portal edge but never vanish), segment
+ * <p>Exact, non-heuristic helpers on top of that: aperture clamping (a beam may bend at a
+ * portal edge but never vanish), segment
  * cutting with shared fractions (noise animates continuously across worlds), and short
  * retention across transient resolution gaps (session snapshot latency).
  */
@@ -52,7 +54,7 @@ public final class IplStaffBeamRoutes {
      * Owner -> set of session portals whose IMAGE representation the beam is currently
      * targeting. Purely a hysteresis memory; it never decides anything on its own.
      */
-    private static final Map<UUID, java.util.Set<UUID>> IMAGE_LATCH = new HashMap<>();
+    private static final Map<UUID, Set<UUID>> IMAGE_LATCH = new HashMap<>();
 
     /**
      * Dead band, in blocks, around a session plane inside which the native/image choice is
@@ -139,19 +141,18 @@ public final class IplStaffBeamRoutes {
             || !visualChain(owner, sub.getUniqueId()).equals(kept.chain())) {
             LAST.remove(owner);
             LENGTHS.remove(owner);
-            // The image/plane latch is per (owner, portal) memory of a route that no
-            // longer exists. Keeping it across a chain change is what made a new grab
-            // start out in the previous grab's image frame -- the construction that
-            // stays visually split until the world is rejoined.
+            // The image/plane latch is per (owner, portal) memory of a route that does not
+            // exist anymore. Kept across a chain change, it would start a new grab in the
+            // previous grab's image frame and leave the beam visually split until rejoin.
             IMAGE_LATCH.remove(owner);
             return null;
         }
         if (now - kept.gameTime() > RETENTION_TICKS
             || kept.route().staffLevel() != staffLevel) {
             LAST.remove(owner);
-            // The published length belongs to the route that just died. Leaving it behind
-            // let the beam keep a stale node density (and therefore keep drawing at the
-            // old portal distance) until the owner was forgotten entirely.
+            // The published length belongs to the route that just died. Left behind, it
+            // would keep a stale node density (and therefore keep drawing at the old portal
+            // distance) until the owner is forgotten entirely.
             LENGTHS.remove(owner);
             IMAGE_LATCH.remove(owner);
             return null;
@@ -171,9 +172,8 @@ public final class IplStaffBeamRoutes {
     public static void clearAll() {
         LAST.clear();
         LENGTHS.clear();
-        // Owners were previously left behind here, so a beam object that outlived its
-        // grab could still resolve a length (and therefore keep drawing) after the
-        // session was torn down.
+        // Owners go too: a beam object that outlived its grab must not resolve a length
+        // (and keep drawing) after the session was torn down.
         BEAM_OWNERS.clear();
         IMAGE_LATCH.clear();
     }
@@ -190,11 +190,11 @@ public final class IplStaffBeamRoutes {
      */
     private static boolean isPastPlaneSticky(UUID owner, Portal portal, Vec3 point) {
         double signed = point.subtract(portal.getOriginPos()).dot(portal.getNormal());
-        java.util.Set<UUID> latched =
-            IMAGE_LATCH.computeIfAbsent(owner, key -> new java.util.HashSet<>());
+        Set<UUID> latched =
+            IMAGE_LATCH.computeIfAbsent(owner, key -> new HashSet<>());
         UUID id = portal.getUUID();
-        boolean previously = latched.contains(id);
-        boolean now = previously ? signed < IMAGE_HYSTERESIS : signed < -IMAGE_HYSTERESIS;
+        boolean wasPast = latched.contains(id);
+        boolean now = wasPast ? signed < IMAGE_HYSTERESIS : signed < -IMAGE_HYSTERESIS;
         if (now) {
             latched.add(id);
         } else {
@@ -517,7 +517,7 @@ public final class IplStaffBeamRoutes {
             vertices.add(new Vertex(
                 path.get(path.size() - 1), endFraction,
                 new Quaterniond(noiseRotation), i < count));
-            vertices.sort(java.util.Comparator.comparingDouble(Vertex::fraction));
+            vertices.sort(Comparator.comparingDouble(Vertex::fraction));
             out.add(new Run(dim, List.copyOf(vertices), total));
 
             before += lengths[i];

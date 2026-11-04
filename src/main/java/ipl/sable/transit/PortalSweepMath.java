@@ -1,5 +1,7 @@
 package ipl.sable.transit;
 
+import java.util.Arrays;
+
 /** Dependency-free continuous SAT for a moving block OBB and a finite portal plate.
  * Exact for translation with fixed basis. Curved motion is subdivided by the caller,
  * which supplies a bound on the deviation of every vertex from its endpoint chord.
@@ -21,7 +23,7 @@ final class PortalSweepMath {
             halfW, halfH, n, thickness, curvature)
             || !clip(interval, a, b, basisA, basisB, origin, w, h, n,
             halfW, halfH, n, thickness, curvature)) return null;
-        boolean sameBasis = java.util.Arrays.deepEquals(basisA, basisB);
+        boolean sameBasis = Arrays.deepEquals(basisA, basisB);
         for (int i = 0; i < (sameBasis ? 1 : 2); i++) {
             double[][] basis = i == 0 ? basisA : basisB;
             for (double[] edge : basis) {

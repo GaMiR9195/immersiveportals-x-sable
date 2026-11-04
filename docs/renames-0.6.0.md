@@ -1,6 +1,9 @@
-# Переименования 0.6.0 (r3)
+# Переименования и удаления 0.6.0
 
-Миксины названы по целевому классу, мелкие миксины одного класса объединены. Таблица — для переноса локальных правок.
+Таблицы — для переноса локальных правок на текущий код. Миксины названы по целевому классу, мелкие
+миксины одного класса объединены.
+
+## Миксины и классы
 
 | Было | Стало |
 |---|---|
@@ -111,3 +114,21 @@
 | `IplPerLevelSubLevelRenderDispatcher` | `IplLevelRenderDispatcher` |
 | `SubLevelBlockEntityRenderScope` | `IplBlockEntityRenderScope` |
 | `SubLevelClipUniformPatcher` | `IplClipUniformPatcher` |
+
+## Перенесённые, объединённые и удалённые
+
+| Было | Стало |
+|---|---|
+| `transit/IplTrackingStamp`, `duck/IplTrackingStamp` | удалён: снимки всех уровней штампуются одной меткой `IplTimeline`, клиент держит одни часы интерполяции `client/IplSharedClock` |
+| RPC `IplParentDimSync.RemoteCallables.move(…, inverseGrabLink, clockOffset)` | `move(…, inverseGrabLink)`: при общей метке разница часов не нужна |
+| `IplParentDimSync.onSuccessorTracked` | `IplParentDimSync.continueFromGhost`: преемник продолжает призрака — его позы и более старые снимки с теми же метками |
+| `IplStaffPortalBeamRenderer.findHostedSubLevel` | `IplClientProjections.findSubLevelAtPlot` |
+| `IplTransitOps.findFirstEmptyPlotForMirror` | `IplTransitOps.findFirstEmptyPlot` |
+| `IplTransitOps.copyPlotBlocksPublic` | `IplTransitOps.copyPlotBlocks` |
+| `IplTransitOps.executeTransit` | удалён, переезд выполняет `IplShipFlip` |
+| RPC `IplEnteringVolumeRenderer.RemoteCallables.setMode(value, ignoredShipId, encodedShape)` | `setMode(value, shipId)`, форма приходит через `shapePart` |
+| `IplDimSwitchGuard` | удалён: сглаживание позы и удержание света при смене измерения не нужны, причина рывка исправлена в шаге физики и переезде |
+| `IplRopePortalSeam`, `RopeObjectAccessor` | удалены вместе со швом верёвок через портал и свойствами `ipl.sable.ropePortalSeam`, `ipl.sable.ropeBreakStretch` |
+| `IplPortalRimManager`, `IplStraddlePortalRim` | удалены, рамки портала были отключены и ничего не делали |
+| `IplSubLevelUniformRegistry` | удалён, не использовался |
+| JNI `createPortalRim`, `removePortalRim`, `setPortalRimTransform`, `remapRope`, `overstretchedRopes`, `setRopePortalPrefix`, `setBodyDormant`, `setBodyPairExclusion`, `setParentFrame` | удалены из `natives/` вместе с состоянием сцены и проверками в диспетчере и хуках, Java их не вызывала |

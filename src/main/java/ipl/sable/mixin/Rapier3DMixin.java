@@ -1,7 +1,11 @@
 package ipl.sable.mixin;
 
 import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
+import ipl.sable.natives.IplRapierNatives;
 import net.jpountz.lz4.LZ4FrameInputStream;
+import net.neoforged.fml.loading.FMLPaths;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
@@ -13,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -40,16 +45,16 @@ import java.util.zip.ZipInputStream;
 @Mixin(value = Rapier3D.class, remap = false)
 public abstract class Rapier3DMixin {
 
-    @Inject(method = "loadLibrary", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
+    @Inject(method = "loadLibrary", at = @At("HEAD"), cancellable = true)
     private static void ipl$loadCustomNatives(CallbackInfo ci) {
         if ("false".equalsIgnoreCase(System.getProperty("ipl.sable.customNatives", "true"))) {
             return;
         }
-        org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger("ipl-natives");
+        Logger log = LoggerFactory.getLogger("ipl-natives");
 
         String archProperty = System.getProperty("os.arch", "");
         String arch = archProperty.equals("arm") || archProperty.startsWith("aarch64") ? "aarch64" : "x86_64";
-        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         String suffix = os.contains("win") ? "windows.dll"
             : os.contains("mac") || os.contains("darwin") ? "macos.dylib"
             : "linux.so";
@@ -60,9 +65,9 @@ public abstract class Rapier3DMixin {
         // resource encapsulation can still null it, so fall back to the classloader view.
         String resource = "natives_ipl/sable_rapier_binaries.zip.l4z";
         try {
-            InputStream in = ipl.sable.natives.IplRapierNatives.class.getResourceAsStream("/" + resource);
+            InputStream in = IplRapierNatives.class.getResourceAsStream("/" + resource);
             if (in == null) {
-                in = ipl.sable.natives.IplRapierNatives.class.getClassLoader().getResourceAsStream(resource);
+                in = IplRapierNatives.class.getClassLoader().getResourceAsStream(resource);
             }
             byte[] bytes = null;
             if (in != null) {
@@ -82,7 +87,7 @@ public abstract class Rapier3DMixin {
             }
 
             // Same base as Sable's resolveNativeDir: the game directory, else user.dir.
-            Path gameDir = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get();
+            Path gameDir = FMLPaths.GAMEDIR.get();
             Path dir = (gameDir != null ? gameDir : Paths.get(System.getProperty("user.dir", ".")))
                 .resolve(".sable").resolve("natives-ipl").normalize();
             Files.createDirectories(dir);
@@ -93,10 +98,10 @@ public abstract class Rapier3DMixin {
                 Files.write(lib, bytes);
             }
             System.load(lib.toAbsolutePath().toString());
-            ipl.sable.natives.IplRapierNatives.markAvailable();
+            IplRapierNatives.markAvailable();
             log.info("[IPL-NATIVES] loaded IPSable-built sable_rapier natives from {}", lib.toAbsolutePath());
             ci.cancel();
-        } catch (Throwable t) {
+        } catch (Exception | LinkageError t) {
             log.error("[IPL-NATIVES] failed to load custom natives, falling back to sable's bundled build", t);
             // fall through: stock loadLibrary proceeds
         }

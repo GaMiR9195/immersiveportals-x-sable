@@ -19,9 +19,7 @@ public abstract class FlywheelVisualizationManagerMixin {
     @Inject(
         method = "supportsVisualization(Lnet/minecraft/world/level/LevelAccessor;)Z",
         at = @At("HEAD"),
-        cancellable = true,
-        remap = false,
-        require = 0
+        cancellable = true
     )
     private static void ipl$forceVanillaBlockEntityRender(
         LevelAccessor level, CallbackInfoReturnable<Boolean> cir

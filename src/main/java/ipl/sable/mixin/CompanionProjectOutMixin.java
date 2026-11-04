@@ -1,15 +1,19 @@
 package ipl.sable.mixin;
 
 import dev.ryanhcode.sable.ActiveSableCompanion;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.transit.IplProjectionTree;
 import net.minecraft.core.Position;
+import net.minecraft.core.SectionPos;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
@@ -25,11 +29,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * clamp ({@code GameRenderer.pick}/{@code filterHitResult}), interaction distance, Jade's
  * ray, sound positions, rider eye positions, IP's cross-portal reach validation.
  *
- * <p>Русский комментарий: раньше решение "через какую половину" принималось по одной
- * плоскости первого портала, а для чужих кораблей поза подменялась "первым отображением в
- * уровень" (CompanionIntersectMixin). Для нескольких порталов и цепочек это давало
- * точку не того куска — отсюда "слишком далеко" и отказ взаимодействия после выхода из
- * второго портала. Теперь кадр выбирает дерево проекций — та же геометрия, что и в физике.
+ * <p>Кадр выбирает дерево проекций — та же геометрия, что и в физике. Одной плоскости первого
+ * портала для этого мало: с несколькими порталами и цепочками она даёт точку не того куска
+ * («слишком далеко», отказ взаимодействия после выхода из второго портала).
  */
 @Pseudo
 @Mixin(value = ActiveSableCompanion.class, remap = false)
@@ -38,9 +40,7 @@ public abstract class CompanionProjectOutMixin {
     @Inject(
         method = "distanceSquaredWithSubLevels(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/Position;Lnet/minecraft/core/Position;)D",
         at = @At("RETURN"),
-        cancellable = true,
-        remap = false,
-        require = 0
+        cancellable = true
     )
     private void ipl$frameAwareDistance(
         Level level, Position a, Position b, CallbackInfoReturnable<Double> cir
@@ -61,21 +61,19 @@ public abstract class CompanionProjectOutMixin {
         cir.setReturnValue(worldA.distanceSquared(worldB));
     }
 
-    @org.spongepowered.asm.mixin.Unique
+    @Unique
     private static boolean ipl$isPlotPosition(Level level, double x, double z) {
-        if (!(level instanceof net.minecraft.server.level.ServerLevel serverLevel)) return true;
-        var hosting = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(serverLevel);
-        if (hosting == null) return false;
-        int chunkX = net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(x));
-        int chunkZ = net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(z));
-        return hosting.inBounds(chunkX, chunkZ) && hosting.getPlot(chunkX, chunkZ) != null;
+        if (!(level instanceof ServerLevel serverLevel)) return true;
+        var container = SubLevelContainer.getContainer(serverLevel);
+        if (container == null) return false;
+        int chunkX = SectionPos.blockToSectionCoord((int) Math.floor(x));
+        int chunkZ = SectionPos.blockToSectionCoord((int) Math.floor(z));
+        return container.inBounds(chunkX, chunkZ) && container.getPlot(chunkX, chunkZ) != null;
     }
 
     @Inject(
         method = "projectOutOfSubLevel(Lnet/minecraft/world/level/Level;Lorg/joml/Vector3dc;Lorg/joml/Vector3d;)Lorg/joml/Vector3d;",
-        at = @At("RETURN"),
-        remap = false,
-        require = 0
+        at = @At("RETURN")
     )
     private void ipl$remapToPiece(
         Level level, Vector3dc pos, Vector3d dest, CallbackInfoReturnable<Vector3d> cir
@@ -92,9 +90,7 @@ public abstract class CompanionProjectOutMixin {
     @Inject(
         method = "projectOutOfSubLevel(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/Position;)Lnet/minecraft/world/phys/Vec3;",
         at = @At("RETURN"),
-        cancellable = true,
-        remap = false,
-        require = 0
+        cancellable = true
     )
     private void ipl$remapToPieceVec(
         Level level, Position pos, CallbackInfoReturnable<Vec3> cir

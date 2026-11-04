@@ -9,23 +9,14 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * Guard the section-compiled occlusion notification against an uninitialized graph.
+ * Skips the section-compiled occlusion notification while the renderer has no occlusion graph.
  *
- * <p>IP's secondary-world renderers (non-active client worlds seen through portals) receive
- * section lifecycle traffic BEFORE their first render pass: on (re)join, a sub-level's
- * finalize packet triggers
- * {@code ClientSubLevel.updateRenderData}, whose {@code close()} of the previous render
- * data finalizes sections — and {@code SectionOcclusionGraph.onSectionCompiled}
- * dereferences update state that only exists after the renderer's first occlusion
- * update. Result: the long-standing removal/rejoin NPE ("Cannot read field events
- * because AtomicReference.get() is null"), disconnecting the client.
- *
- * <p>The notification is a best-effort refresh hint: a renderer whose graph state is
- * null computes the FULL occlusion graph on its first real render anyway, so dropping
- * the hint for that window is precisely the behavior it would have had. Guarded with a
- * scoped catch rather than a field peek — the null lives in a private atomic whose
- * initialization timing is vanilla's business, and any failure mode here reduces to
- * "skip the hint".
+ * <p>IP's secondary-world renderers (client levels seen through portals) receive section
+ * lifecycle traffic before their first render pass: on (re)join, a sub-level's finalize packet
+ * triggers {@code ClientSubLevel.updateRenderData}, whose {@code close()} of the previous render
+ * data finalizes sections. {@code SectionOcclusionGraph.onSectionCompiled} dereferences the graph
+ * state, which exists only once the renderer has a view area: an NPE that disconnects the client.
+ * Without a graph there is nothing to notify — the first render builds the full graph anyway.
  */
 @Mixin(LevelRenderer.class)
 public abstract class LevelRendererOcclusionMixin {
@@ -35,18 +26,14 @@ public abstract class LevelRendererOcclusionMixin {
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/client/renderer/SectionOcclusionGraph;onSectionCompiled(Lnet/minecraft/client/renderer/chunk/SectionRenderDispatcher$RenderSection;)V"
-        ),
-        require = 0
+        )
     )
-    private void ipl$guardUninitializedGraph(
+    private void ipl$skipWithoutGraph(
         SectionOcclusionGraph graph, SectionRenderDispatcher.RenderSection section,
         Operation<Void> original
     ) {
-        try {
+        if (((SectionOcclusionGraphAccessor) graph).ipl$getCurrentGraph().get() != null) {
             original.call(graph, section);
-        } catch (NullPointerException e) {
-            // Pre-first-render notification on a secondary-world renderer: the graph
-            // will be built whole on first render; the hint is safely droppable.
         }
     }
 }

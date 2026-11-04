@@ -1,8 +1,8 @@
 package ipl.sable.mixin;
 
+import dev.ryanhcode.sable.api.physics.PhysicsPipeline;
 import dev.ryanhcode.sable.api.physics.constraint.ConstraintJointAxis;
 import dev.ryanhcode.sable.api.physics.constraint.PhysicsConstraintHandle;
-import dev.ryanhcode.sable.api.physics.PhysicsPipeline;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
@@ -11,8 +11,11 @@ import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
 import dev.simulated_team.simulated.config.server.physics.SimPhysics;
 import dev.simulated_team.simulated.service.SimConfigService;
+import ipl.sable.duck.IplStaffDragSessionControl;
+import ipl.sable.transit.IplGrabChain;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
+import net.minecraft.world.phys.Vec3;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import org.spongepowered.asm.mixin.Final;
@@ -20,54 +23,58 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
-import ipl.sable.duck.IplStaffDragSessionControl;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.q_misc_util.my_util.DQuaternion;
+
+import java.util.UUID;
 
 /**
- * Simulated's original motor gains, target and per-substep joint lifecycle, with
- * player lookup and target mapping adapted to the hosted/portal coordinate chart.
+ * Simulated's original motor gains, target and per-substep joint lifecycle; only the
+ * target is mapped through the grab chain into the body's coordinate chart.
  */
 @Pseudo
 @Mixin(targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler$DragSession", remap = false)
 public abstract class StaffDragSessionMixin implements IplStaffDragSessionControl {
 
-    @Shadow(remap = false) @Final private java.util.UUID playerUUID;
-    @Shadow(remap = false) @Final private Vector3d plotAnchor;
-    @Shadow(remap = false) @Final private Vector3d playerRelativeGoal;
-    @Shadow(remap = false) @Final private Vector3d localGoal;
-    @Shadow(remap = false) @Final private Quaterniond orientation;
-    @Shadow(remap = false) @Final private ServerSubLevel subLevel;
-    @Shadow(remap = false) private PhysicsConstraintHandle constraint;
-    @Shadow(remap = false) private void attachConstraint(SubLevelPhysicsSystem physicsSystem) {}
+    @Shadow @Final private UUID playerUUID;
+    @Shadow @Final private Vector3d plotAnchor;
+    @Shadow @Final private Vector3d playerRelativeGoal;
+    @Shadow @Final private Vector3d localGoal;
+    @Shadow @Final private Quaterniond orientation;
+    @Shadow @Final private ServerSubLevel subLevel;
+    @Shadow private PhysicsConstraintHandle constraint;
+    @Shadow private void attachConstraint(SubLevelPhysicsSystem physicsSystem) {}
 
-    @org.spongepowered.asm.mixin.Unique
+    @Unique
     private final Vector3d ipl$playerEyeInterpolationStart = new Vector3d();
-    @org.spongepowered.asm.mixin.Unique
+    @Unique
     private boolean ipl$hasPlayerEyeInterpolationStart;
 
     /**
      * @author IPL-Sable
-     * @reason Preserve stock motor behavior while mapping the cursor into the hosted body frame.
+     * @reason Preserve stock motor behavior while mapping the cursor through the grab chain.
      */
-    @Overwrite(remap = false)
+    @Overwrite
     private void physicsTick(SubLevelPhysicsSystem physicsSystem) {
         if (this.subLevel.isRemoved()) return;
 
-        net.minecraft.server.level.ServerLevel hosting =
-            (net.minecraft.server.level.ServerLevel) this.subLevel.getLevel();
         // Preserve Simulated's substep lifecycle, including its fresh motor impulse state.
         // Keeping and retargeting a warmed-up joint is NOT behaviorally equivalent.
         this.ipl$removeConstraint();
         this.attachConstraint(physicsSystem);
-        // Русский комментарий (почему пивот был в центре): addFreeConstraint создаёт сустав
-        // с НУЛЕВЫМИ якорями, точку хвата (plotAnchor − центр масс) пишет только
-        // joints::tick внутри Rapier3D.step. Под Atlas шаг один на все измерения и
-        // «вооружён» только у последнего уровня, а tick фильтровал суставы по его карте —
-        // в остальных измерениях сустав, пересоздаваемый каждый подшаг, так и оставался в
-        // центре масс. Натив теперь обновляет суставы всех карт (joints::tick_all), а здесь
-        // якоря ставятся сразу при создании: пивот верен и со старой DLL.
+        // Якоря ставятся сразу при создании: addFreeConstraint создаёт сустав с НУЛЕВЫМИ
+        // якорями, а точку хвата (plotAnchor − центр масс) пишет только joints::tick внутри
+        // Rapier3D.step. Слитый шаг Atlas «вооружён» только у одного уровня, и сустав,
+        // пересоздаваемый каждый подшаг, в остальных измерениях стоял бы в центре масс.
+        // Натив обновляет суставы всех карт (joints::tick_all); установка здесь делает пивот
+        // верным и со старой DLL.
         this.ipl$setMotorFrame(physicsSystem.getPipeline());
 
-        ServerPlayer player = hosting.getServer().getPlayerList().getPlayer(this.playerUUID);
+        ServerPlayer player = this.subLevel.getLevel().getServer().getPlayerList().getPlayer(this.playerUUID);
         if (player == null || this.constraint == null) return;
 
         SimPhysics config = SimConfigService.INSTANCE.server().physics;
@@ -104,8 +111,8 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
         // grab chain (the event-sourced portal path between player and body) into the
         // body's parent frame, immediately before Simulated converts world space into
         // its constraint-local motor target.
-        net.minecraft.world.phys.Vec3 goal = ipl.sable.transit.IplGrabChain.mapGoal(
-            player, this.subLevel, new net.minecraft.world.phys.Vec3(
+        Vec3 goal = IplGrabChain.mapGoal(
+            player, this.subLevel, new Vec3(
                 this.localGoal.x, this.localGoal.y, this.localGoal.z
             )
         );
@@ -130,7 +137,7 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
      * portals with identity rotation.
      */
     @Override
-    public void ipl$reframeAfterTransit(qouteall.imm_ptl.core.portal.Portal portal) {
+    public void ipl$reframeAfterTransit(Portal portal) {
         if (this.subLevel.isRemoved()) return;
 
         // localGoal is the live motor target in the old orientation basis. Recover its world
@@ -138,9 +145,9 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
         // basis before another solver substep can see a stale target.
         Vector3d target = new Vector3d(this.localGoal);
         this.orientation.transform(target);
-        net.minecraft.world.phys.Vec3 mapped = portal.transformPoint(
-            new net.minecraft.world.phys.Vec3(target.x, target.y, target.z));
-        qouteall.q_misc_util.my_util.DQuaternion rotation = portal.getRotationD();
+        Vec3 mapped = portal.transformPoint(
+            new Vec3(target.x, target.y, target.z));
+        DQuaternion rotation = portal.getRotationD();
         if (rotation != null) {
             this.orientation.set(new Quaterniond(rotation.x, rotation.y, rotation.z, rotation.w)
                 .mul(this.orientation));
@@ -159,9 +166,7 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
         // spring extension and its derivative are unchanged. The next ordinary CPS
         // physicsTick may then replace this joint at its usual point, exactly as stock does.
         if (this.constraint == null || !this.constraint.isValid()) return;
-        net.minecraft.server.level.ServerLevel hosting =
-            (net.minecraft.server.level.ServerLevel) this.subLevel.getLevel();
-        ServerSubLevelContainer container = SubLevelContainer.getContainer(hosting);
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(this.subLevel.getLevel());
         if (container == null) return;
         this.ipl$setMotorFrame(container.physicsSystem().getPipeline());
 
@@ -179,17 +184,17 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
      */
     @Override
     public void ipl$reframePlayerGoal(
-        qouteall.imm_ptl.core.portal.Portal portal,
-        net.minecraft.world.phys.Vec3 previousEyePosition
+        Portal portal,
+        Vec3 previousEyePosition
     ) {
-        net.minecraft.world.phys.Vec3 mapped = portal.transformLocalVecNonScale(
-            new net.minecraft.world.phys.Vec3(
+        Vec3 mapped = portal.transformLocalVecNonScale(
+            new Vec3(
                 this.playerRelativeGoal.x, this.playerRelativeGoal.y, this.playerRelativeGoal.z
             )
         );
         this.playerRelativeGoal.set(mapped.x, mapped.y, mapped.z);
 
-        net.minecraft.world.phys.Vec3 mappedPreviousEye =
+        Vec3 mappedPreviousEye =
             portal.transformPoint(previousEyePosition);
         this.ipl$playerEyeInterpolationStart.set(
             mappedPreviousEye.x, mappedPreviousEye.y, mappedPreviousEye.z
@@ -230,18 +235,13 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
      * Simulated removes sessions without stopDragging when the player logs off or stops
      * holding the staff; the grab chain must die with its session, never outlive it.
      */
-    @org.spongepowered.asm.mixin.injection.Inject(
-        method = "onRemoved", at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
-        remap = false, require = 0
+    @Inject(
+        method = "onRemoved", at = @At("HEAD")
     )
     private void ipl$endChainOnRemoval(
-        org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci
+        CallbackInfo ci
     ) {
         this.ipl$removeConstraint();
-        net.minecraft.server.level.ServerLevel hosting =
-            (net.minecraft.server.level.ServerLevel) this.subLevel.getLevel();
-        if (hosting != null && hosting.getServer() != null) {
-            ipl.sable.transit.IplGrabChain.end(hosting.getServer(), this.playerUUID);
-        }
+        IplGrabChain.end(this.subLevel.getLevel().getServer(), this.playerUUID);
     }
 }

@@ -7,15 +7,17 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.SubLevelRenderDispatcher;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.VanillaSubLevelRenderDispatcher;
-import ipl.sable.render.IplSubLevelBlockEntityPass;
-import ipl.sable.render.IplClipPortalFinder;
 import ipl.sable.render.IplBlockEntityRenderScope;
+import ipl.sable.render.IplClipPortalFinder;
 import ipl.sable.render.IplClipUniformPatcher;
+import ipl.sable.render.IplSubLevelBlockEntityPass;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL30;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
@@ -48,9 +50,6 @@ import java.util.Collection;
  * per-sub-level equation we use for chunks via {@link IplClipPortalFinder},
  * so block entities follow the chunks visually.
  *
- * <p>{@code @Pseudo} because Sable's class isn't on the compile classpath at
- * mixin-validation time.
- *
  * <p>We wrap both {@code renderBlockEntities(Collection,...)} and
  * {@code renderSingleBE(...)} since Sable dispatches to either depending on the
  * sub-level's render data type.
@@ -68,10 +67,8 @@ public abstract class RenderDispatcherBlockEntityClipMixin {
      */
     @Inject(
         method = "renderBlockEntities(Ljava/lang/Iterable;Ldev/ryanhcode/sable/sublevel/render/dispatcher/SubLevelRenderDispatcher$BlockEntityRenderer;DDDF)V",
-        at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
-        cancellable = true,
-        remap = false,
-        require = 0
+        at = @At("HEAD"),
+        cancellable = true
     )
     private void ipl$routeBlockEntities(
         Iterable<ClientSubLevel> subLevels,
@@ -87,13 +84,10 @@ public abstract class RenderDispatcherBlockEntityClipMixin {
 
     @WrapOperation(
         method = "renderBlockEntities",
-        at = @org.spongepowered.asm.mixin.injection.At(
+        at = @At(
             value = "INVOKE",
-            target = "Ldev/ryanhcode/sable/sublevel/render/dispatcher/SubLevelRenderDispatcher$BlockEntityRenderer;renderBlockEntities(Ljava/util/Collection;Lcom/mojang/blaze3d/vertex/PoseStack;FDDD)V",
-            remap = false
-        ),
-        remap = false,
-        require = 0
+            target = "Ldev/ryanhcode/sable/sublevel/render/dispatcher/SubLevelRenderDispatcher$BlockEntityRenderer;renderBlockEntities(Ljava/util/Collection;Lcom/mojang/blaze3d/vertex/PoseStack;FDDD)V"
+        )
     )
     private void ipl$wrapRenderBEs(
         SubLevelRenderDispatcher.BlockEntityRenderer renderer,
@@ -109,13 +103,10 @@ public abstract class RenderDispatcherBlockEntityClipMixin {
 
     @WrapOperation(
         method = "renderBlockEntities",
-        at = @org.spongepowered.asm.mixin.injection.At(
+        at = @At(
             value = "INVOKE",
-            target = "Ldev/ryanhcode/sable/sublevel/render/dispatcher/SubLevelRenderDispatcher$BlockEntityRenderer;renderSingleBE(Lnet/minecraft/world/level/block/entity/BlockEntity;Lcom/mojang/blaze3d/vertex/PoseStack;FDDD)V",
-            remap = false
-        ),
-        remap = false,
-        require = 0
+            target = "Ldev/ryanhcode/sable/sublevel/render/dispatcher/SubLevelRenderDispatcher$BlockEntityRenderer;renderSingleBE(Lnet/minecraft/world/level/block/entity/BlockEntity;Lcom/mojang/blaze3d/vertex/PoseStack;FDDD)V"
+        )
     )
     private void ipl$wrapRenderSingleBE(
         SubLevelRenderDispatcher.BlockEntityRenderer renderer,
@@ -132,36 +123,16 @@ public abstract class RenderDispatcherBlockEntityClipMixin {
     /**
      * Install our per-sub-level clip plane for the duration of {@code body.run()}.
      * Resolves the straddling portal for {@code sub}, writes the equation to our
-     * slot-1 uniform, runs the operation, then restores state. Skips bracketing if
-     * the sub-level isn't straddling any portal (no clip needed) so we don't pay
-     * the cost on non-portal-adjacent sub-levels.
+     * slot-1/slot-2 uniforms, runs the operation, then restores state. Skips bracketing
+     * if the sub-level isn't straddling any portal or is already inside
+     * {@link IplBlockEntityRenderScope}.
      */
-    /** Per-distinct-sub-level last-log-time, so high-FPS sessions don't spam. */
-    @org.spongepowered.asm.mixin.Unique
-    private static final java.util.concurrent.ConcurrentHashMap<java.util.UUID, Long> IPL$LAST_LOG_NS =
-        new java.util.concurrent.ConcurrentHashMap<>();
-
-    @org.spongepowered.asm.mixin.Unique
-    private static final org.slf4j.Logger IPL$DIAG =
-        org.slf4j.LoggerFactory.getLogger("ipl-sable-be-coll");
-
+    @Unique
     private static void ipl$withClip(ClientSubLevel sub, Runnable body) {
         if (IplBlockEntityRenderScope.isActiveFor(sub)) {
             body.run();
             return;
         }
-
-        // DIAGNOSTIC: log per-sub-level, rate-limited to once / 5s, to confirm
-        // this wrap fires for cog scenes. If absent from latest.log during a
-        // cog repro, the wrap target doesn't match Sable's actual call site.
-        java.util.UUID id = sub != null ? sub.getUniqueId() : null;
-        long now = System.nanoTime();
-        Long last = id == null ? null : IPL$LAST_LOG_NS.get(id);
-        if (last == null || now - last > 5_000_000_000L) {
-            if (id != null) IPL$LAST_LOG_NS.put(id, now);
-            IPL$DIAG.debug("[IPL-COLL-BRACKET-FIRED] sub={}", id);
-        }
-
         IplClipPortalFinder.ClipDecision decision =
             IplClipPortalFinder.findStraddlingPortalPlane(sub);
         if (decision == null) {
@@ -173,22 +144,10 @@ public abstract class RenderDispatcherBlockEntityClipMixin {
         IplClipUniformPatcher.patchForSubLevel(
             sub, decision.plane(), IplClipPortalFinder.secondPlaneFor(sub));
 
-        // Manage GL_CLIP_DISTANCE1 carefully: respect IP's portal-through state
-        // when restoring on cleanup, since IP may want it on for subsequent
-        // entity / vanilla terrain draws in the same pass.
-        GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
-        // Second sub-level cut now has its own clip distance instead of being
-        // min()'d into slot 1 (linear interpolation of min() straightened the
-        // crease and bent the cut near the portal plane).
-        GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
-
         try {
             body.run();
         } finally {
-            // Always disable CD1 on bracket exit -- see ChunkedRenderDataMixin's
-            // matching cleanup for the rationale. The prior FrontClipping
-            // conditional confused IP's slot-0 enable for our slot-1 and let
-            // stale sub-level equations leak into portal-through draws.
+            // Slots 1 and 2 are always disabled on exit (see ChunkedRenderDataMixin).
             GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
             GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
             IplClipUniformPatcher.clearAndUpload();

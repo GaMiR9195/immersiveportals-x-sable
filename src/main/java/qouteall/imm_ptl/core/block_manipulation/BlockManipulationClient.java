@@ -114,7 +114,7 @@ public class BlockManipulationClient {
      * seen through the portal, unfolded. The outline stays on the hit either way; the
      * piece-aware outline renderer draws it only in the pass where that piece lives.
      *
-     * <p>Русский комментарий: раньше клик по проекции корабля из другого измерения шёл
+     * <p>Раньше клик по проекции корабля из другого измерения шёл
      * ванильным путём в уровень игрока: чтение блоков работало (мост плотов), а любая
      * запись отклонялась — "взаимодействие частично работает".
      */

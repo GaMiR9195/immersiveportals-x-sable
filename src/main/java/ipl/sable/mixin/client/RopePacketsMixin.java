@@ -22,7 +22,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 }, remap = false)
 public abstract class RopePacketsMixin {
 
-    @Inject(method = "handle", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
+    @Inject(method = "handle", at = @At("HEAD"), cancellable = true)
     private void ipl$routeToOwningLevel(ClientPacketContext context, CallbackInfo ci) {
         Object self = this;
         if (self instanceof ClientboundRopeDataPacket packet) {

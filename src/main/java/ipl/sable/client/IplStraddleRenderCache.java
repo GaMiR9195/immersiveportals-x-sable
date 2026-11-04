@@ -7,8 +7,11 @@ import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /** Per-render-pass cache for straddle projection lists and clip decisions. */
@@ -27,8 +30,8 @@ public final class IplStraddleRenderCache {
         final IdentityHashMap<Portal, Boolean> canonicalPortalFaces;
         final IdentityHashMap<ClientSubLevel, IplClipPortalFinder.ClipDecision> decisions =
             new IdentityHashMap<>();
-        final java.util.Set<ClientSubLevel> noDecision =
-            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        final Set<ClientSubLevel> noDecision =
+            Collections.newSetFromMap(new IdentityHashMap<>());
 
         Pass(ClientLevel level, @Nullable Pass root) {
             this.level = level;
@@ -68,11 +71,11 @@ public final class IplStraddleRenderCache {
             passes.removeLast();
         } else {
             // A nested pass that threw, or a mod that renders a level without our HEAD hook,
-            // used to leave its Pass on the stack forever: every later frame then answered
-            // from that dead pass's cache and the frame counter stopped advancing, which is
-            // exactly the state that made the visual latch compare a pose against itself.
-            // Drop the innermost pass belonging to this level instead.
-            java.util.Iterator<Pass> it = passes.descendingIterator();
+            // would leave its Pass on the stack forever: every later frame would answer from
+            // that dead pass's cache and the frame counter would stop advancing (the visual
+            // latch would compare a pose against itself). Drop the innermost pass belonging
+            // to this level instead.
+            Iterator<Pass> it = passes.descendingIterator();
             while (it.hasNext()) {
                 if (it.next().level == level) {
                     it.remove();
@@ -95,22 +98,25 @@ public final class IplStraddleRenderCache {
 
     @Nullable
     public static Boolean visibility(ClientSubLevel sub, Object pose) {
-        Pass pass=current(null);
-        var instances=pass==null?null:pass.visibility.get(sub);
-        return instances==null?null:instances.get(pose);
+        Pass pass = current(null);
+        var instances = pass == null ? null : pass.visibility.get(sub);
+        return instances == null ? null : instances.get(pose);
     }
-    public static void cacheVisibility(ClientSubLevel sub,Object pose,boolean visible) {
-        Pass pass=current(null);
-        if (pass!=null) pass.visibility.computeIfAbsent(sub,s->new IdentityHashMap<>()).put(pose,visible);
+
+    public static void cacheVisibility(ClientSubLevel sub, Object pose, boolean visible) {
+        Pass pass = current(null);
+        if (pass != null) pass.visibility.computeIfAbsent(sub, s -> new IdentityHashMap<>()).put(pose, visible);
     }
+
     @Nullable
     public static List<IplClipPortalFinder.ClipDecision> allDecisions(ClientSubLevel sub) {
-        Pass pass=current(null);
-        return pass==null?null:pass.allDecisions.get(sub);
+        Pass pass = current(null);
+        return pass == null ? null : pass.allDecisions.get(sub);
     }
-    public static void cacheAllDecisions(ClientSubLevel sub,List<IplClipPortalFinder.ClipDecision> decisions) {
-        Pass pass=current(null);
-        if (pass!=null) pass.allDecisions.put(sub,decisions);
+
+    public static void cacheAllDecisions(ClientSubLevel sub, List<IplClipPortalFinder.ClipDecision> decisions) {
+        Pass pass = current(null);
+        if (pass != null) pass.allDecisions.put(sub, decisions);
     }
 
     /** Null is a cache miss; an empty list is a cached negative result. */

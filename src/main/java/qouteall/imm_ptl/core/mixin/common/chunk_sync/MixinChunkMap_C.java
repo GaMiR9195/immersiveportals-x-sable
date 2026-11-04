@@ -79,10 +79,10 @@ public abstract class MixinChunkMap_C implements IEChunkMap {
     }
 
     /**
-     * Originally @Overwrite (credit Nick1st: "otherwise an empty list will always be returned here").
-     * Replaced with @Inject HEAD cancellable to coexist with Sable's @Inject HEAD cancellable
-     * at sable.mixins.json:plot.ChunkMapMixin#sable$getPlayers, which previously couldn't bind
-     * because the @Overwrite erased the method body (conflict #3 of 5 in audit/phase4_classified.md).
+     * Cancellable HEAD inject instead of IP's original @Overwrite (credit Nick1st: "otherwise an
+     * empty list will always be returned here"), so Sable's own cancellable HEAD inject
+     * sable.mixins.json:plot.ChunkMapMixin#sable$getPlayers binds as well; an @Overwrite would
+     * erase the method body it targets.
      *
      * The Sable guard makes the two paths mutually exclusive by chunk position:
      *   - Plot chunks (inside Sable's sub-level plot grid, far out at ~10000 chunks origin):

@@ -24,7 +24,9 @@ public final class RenderCacheTest {
         IplStraddleRenderCache.cacheCanonicalPortalFace(portal, true);
         IplStraddleRenderCache.cacheDecision(ship, decision);
         IplStraddleRenderCache.cacheRenderPortals(ship, List.of(portal));
-        IplStraddleRenderCache.hosted(source, () -> List.of(ship));
+        var projection = new IplClientProjections.StraddleProjection();
+        IplStraddleRenderCache.projections(source, () -> List.of(projection));
+        check(IplStraddleRenderCache.projections(source, List::of).getFirst() == projection, "projection list cached per pass");
         check(IplStraddleRenderCache.renderPortals(ship).size() == 1, "source session cached");
         IplStraddleRenderCache.cacheVisibility(ship,sourcePose,true);
         IplStraddleRenderCache.cacheVisibility(ship,mappedPose,false);
@@ -57,7 +59,7 @@ public final class RenderCacheTest {
         check(IplStraddleRenderCache.allDecisions(ship)==null,"outer cuts invalidated");
         check(IplStraddleRenderCache.renderPortals(ship) == null, "invalidation also clears outer session list");
         check(!IplStraddleRenderCache.hasDecision(ship), "invalidation also clears outer decision");
-        check(IplStraddleRenderCache.hosted(source, List::of).isEmpty(), "invalidation also clears outer hosted list");
+        check(IplStraddleRenderCache.projections(source, List::of).isEmpty(), "invalidation also clears outer projection list");
         IplStraddleRenderCache.end(source);
         IplStraddleRenderCache.begin(source);
         check(IplStraddleRenderCache.frameId() == frame + 1, "next frame advances");

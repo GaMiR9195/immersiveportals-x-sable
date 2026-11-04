@@ -12,9 +12,8 @@ import java.util.Set;
  * лебёдки, маяки…).
  *
  * <p>Зачем: такие BE НЕ попадают в {@code CompiledSection.getRenderableBlockEntities()},
- * их рисует только общий цикл {@code LevelRenderer.globalBlockEntities}. Для саб-уровней это
- * ломалось в двух местах: (1) общий цикл рисует их настоящей позой и без плоскостей куска;
- * (2) проекции через портал вообще не видели глобальных BE. Теперь
+ * их рисует только общий цикл {@code LevelRenderer.globalBlockEntities} — настоящей позой,
+ * без плоскостей куска и без проекций через портал. Поэтому
  * {@link ipl.sable.render.IplSubLevelBlockEntityPass} рисует их сам — в проходе своего
  * саб-уровня, с его плоскостями отсечения и (для проекций) с отображённой матрицей.
  * Набор синхронизирован ванилью ({@code synchronized (globalBlockEntities)}) — читаем так же.

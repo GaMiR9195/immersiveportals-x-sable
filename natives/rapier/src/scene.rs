@@ -60,21 +60,6 @@ impl ChunkAccess for ChartData {
     }
 }
 
-impl ChartData {
-    pub fn get_octree_chunk(&self, x: i32, y: i32, z: i32) -> Option<&OctreeChunkSection> {
-        self.octree_chunks.get(&pack_section_pos(x, y, z))
-    }
-
-    pub fn get_octree_chunk_mut(
-        &mut self,
-        x: i32,
-        y: i32,
-        z: i32,
-    ) -> Option<&mut OctreeChunkSection> {
-        self.octree_chunks.get_mut(&pack_section_pos(x, y, z))
-    }
-}
-
 /// IPL fix: this was `RefCell<Vec>` with an `unsafe impl Sync` — but the event handler
 /// extends it from rapier's PARALLEL island solver threads (the `parallel` feature is
 /// on), so concurrent pushes raced and corrupted the Vec (0xc0000005 JVM death under
@@ -128,11 +113,6 @@ pub struct SableSceneData {
     /// Real dynamic Sable bodies indexed by their owning chart. Atlas views share the
     /// maps above, but buoyancy must not scan every world's ships from every chart tick.
     pub bodies_by_chart: HashMap<ChartId, HashSet<LevelColliderID>>,
-
-    /// IPL: body pairs (normalized id order) that must never generate contacts. Portal
-    /// rims use this to exempt an anchored portal carrier from its containment body.
-    pub ipl_excluded_pairs: HashSet<(LevelColliderID, LevelColliderID)>,
-
 }
 
 impl SableSceneData {

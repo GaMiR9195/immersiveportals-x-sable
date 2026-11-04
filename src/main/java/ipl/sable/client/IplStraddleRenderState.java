@@ -6,6 +6,8 @@ import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.my_util.Plane;
 
+import java.util.ArrayDeque;
+
 /**
  * Render-thread state for drawing a straddling sub-level's DEST-SIDE projection.
  *
@@ -23,7 +25,7 @@ public final class IplStraddleRenderState {
     @Nullable private static Portal activePortal;
     /** Вторая плоскость куска проекции (выход в следующий портал цепочки), или null. */
     @Nullable private static Plane activePlane2;
-    private static final java.util.ArrayDeque<State> suspended = new java.util.ArrayDeque<>();
+    private static final ArrayDeque<State> suspended = new ArrayDeque<>();
     /**
      * Глубина «приостановки» подмены позы. Пока &gt; 0, {@link #getPoseFor} отдаёт null,
      * т.е. {@code renderPose()} снова возвращает НАСТОЯЩУЮ позу саб-уровня, а плоскости
@@ -104,12 +106,6 @@ public final class IplStraddleRenderState {
     @Nullable
     public static Pose3dc getPoseFor(@Nullable Object sub) {
         return poseSuspendDepth == 0 && isActiveFor(sub) ? activePose : null;
-    }
-
-    /** Отображённая поза активной проекции НЕЗАВИСИМО от приостановки (для расчёта матриц). */
-    @Nullable
-    public static Pose3dc getMappedPoseFor(@Nullable Object sub) {
-        return isActiveFor(sub) ? activePose : null;
     }
 
     @Nullable

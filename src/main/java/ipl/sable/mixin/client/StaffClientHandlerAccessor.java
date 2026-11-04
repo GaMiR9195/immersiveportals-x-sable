@@ -16,12 +16,12 @@ import java.util.UUID;
 @Mixin(targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler", remap = false)
 public interface StaffClientHandlerAccessor {
 
-    @Accessor(value = "beams", remap = false)
+    @Accessor(value = "beams")
     Object2ObjectMap<UUID, Object> ipl$getBeams();
 
-    @Invoker(value = "isRotating", remap = false)
+    @Invoker(value = "isRotating")
     boolean ipl$isRotating();
 
-    @Invoker(value = "stopDragging", remap = false)
+    @Invoker(value = "stopDragging")
     void ipl$stopDragging();
 }

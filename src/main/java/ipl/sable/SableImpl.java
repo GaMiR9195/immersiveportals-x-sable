@@ -3,17 +3,31 @@ package ipl.sable;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3d;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.entity_collision.SubLevelEntityCollision;
+import ipl.sable.atlas.IplScenes;
+import ipl.sable.client.IplClientProjections;
+import ipl.sable.transit.IplProjectionEntities;
+import ipl.sable.transit.IplProjectionTree;
+import ipl.sable.transit.IplShipPortalAnchor;
+import ipl.sable.transit.IplStraddlePoseMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Quaterniondc;
+import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.q_misc_util.my_util.DQuaternion;
 
 /**
  * Internal implementation class for {@link SableBridge}. This file references Sable types
@@ -77,12 +91,12 @@ final class SableImpl {
         if (info == null || info.trackingSubLevel == null || !info.verticalCollisionBelow) {
             return false;
         }
-        return ipl.sable.transit.IplStraddlePoseMap.isStraddling(
+        return IplStraddlePoseMap.isStraddling(
             info.trackingSubLevel, entity.level());
     }
 
     @Nullable
-    static net.minecraft.resources.ResourceKey<Level> subLevelDimensionOfVehicle(Entity vehicle) {
+    static ResourceKey<Level> subLevelDimensionOfVehicle(Entity vehicle) {
         if (vehicle == null) return null;
         SubLevel containing = Sable.HELPER.getContaining(vehicle);
         if (containing == null) return null;
@@ -94,44 +108,43 @@ final class SableImpl {
      * level (a projected ship's plot may be read from another dimension), else
      * {@code context}.
      */
-    static net.minecraft.server.level.ServerLevel plotOwnerLevel(
-        net.minecraft.server.level.ServerLevel context, BlockPos pos
+    static ServerLevel plotOwnerLevel(
+        ServerLevel context, BlockPos pos
     ) {
-        dev.ryanhcode.sable.sublevel.ServerSubLevel sub = subLevelAtPlotPos(context, pos);
-        return sub != null && sub.getLevel() instanceof net.minecraft.server.level.ServerLevel owner
-            ? owner : context;
+        ServerSubLevel sub = subLevelAtPlotPos(context, pos);
+        return sub != null ? sub.getLevel() : context;
     }
 
     static boolean isProjectedBlockWithinReach(
-        net.minecraft.server.level.ServerPlayer player,
-        net.minecraft.resources.ResourceKey<Level> dimension, BlockPos pos, double distanceSquare
+        ServerPlayer player,
+        ResourceKey<Level> dimension, BlockPos pos, double distanceSquare
     ) {
-        net.minecraft.server.level.ServerLevel owner = player.server.getLevel(dimension);
+        ServerLevel owner = player.server.getLevel(dimension);
         if (owner == null) return false;
-        dev.ryanhcode.sable.sublevel.ServerSubLevel sub = subLevelAtPlotPos(owner, pos);
+        ServerSubLevel sub = subLevelAtPlotPos(owner, pos);
         if (sub == null || sub.getLevel() != owner) return false;
         Vec3 center = Vec3.atCenterOf(pos);
         Vec3 at = player.position();
         boolean[] ok = {false};
         // Every frame through which the ship exists in the player's level (its native frame
         // when native there, plus every portal image into it, chains included).
-        ipl.sable.transit.IplProjectionTree.forEachFrameIn(sub, player.level(), node -> {
+        IplProjectionTree.forEachFrameIn(sub, player.level(), node -> {
             if (ok[0]) return;
-            Vec3 world = ipl.sable.transit.IplProjectionEntities.framePose(sub, node).transformPosition(center);
+            Vec3 world = IplProjectionEntities.framePose(sub, node).transformPosition(center);
             if (world.distanceToSqr(at) < distanceSquare) ok[0] = true;
         });
         return ok[0];
     }
 
     @Nullable
-    static net.minecraft.resources.ResourceKey<Level> clientPlotOwnerDimension(BlockPos pos) {
-        SubLevel sub = ipl.sable.client.IplClientProjections.findSubLevelAtPlot(Vec3.atCenterOf(pos));
+    static ResourceKey<Level> clientPlotOwnerDimension(BlockPos pos) {
+        SubLevel sub = IplClientProjections.findSubLevelAtPlot(Vec3.atCenterOf(pos));
         Level level = sub == null ? null : sub.getLevel();
         return level == null ? null : level.dimension();
     }
 
     /** Whether {@code pos} lies in a live ship plot (own grid first, then other levels). */
-    static boolean isPlotPos(net.minecraft.server.level.ServerLevel context, BlockPos pos) {
+    static boolean isPlotPos(ServerLevel context, BlockPos pos) {
         return subLevelAtPlotPos(context, pos) != null;
     }
 
@@ -141,46 +154,45 @@ final class SableImpl {
      * ({@code SubLevelContainerMixin}), so the cross-level fallback is unambiguous.
      */
     @Nullable
-    static dev.ryanhcode.sable.sublevel.ServerSubLevel subLevelAtPlotPos(
-        net.minecraft.server.level.ServerLevel any, BlockPos plotPos
+    static ServerSubLevel subLevelAtPlotPos(
+        ServerLevel any, BlockPos plotPos
     ) {
-        return ipl.sable.atlas.IplScenes.plotOwner(any, plotPos);
+        return IplScenes.plotOwner(any, plotPos);
     }
 
-    static net.minecraft.server.level.ServerLevel effectivePortalGenLevel(
-        net.minecraft.server.level.ServerLevel world, BlockPos pos
+    static ServerLevel effectivePortalGenLevel(
+        ServerLevel world, BlockPos pos
     ) {
-        dev.ryanhcode.sable.sublevel.ServerSubLevel sub = subLevelAtPlotPos(world, pos);
-        if (sub == null) return world;
-        return sub.getLevel() instanceof net.minecraft.server.level.ServerLevel parent ? parent : world;
+        ServerSubLevel sub = subLevelAtPlotPos(world, pos);
+        return sub != null ? sub.getLevel() : world;
     }
 
     @Nullable
-    static Vec3 shipFrameWorldCenter(net.minecraft.server.level.ServerLevel world, BlockPos pos) {
-        dev.ryanhcode.sable.sublevel.ServerSubLevel sub = subLevelAtPlotPos(world, pos);
+    static Vec3 shipFrameWorldCenter(ServerLevel world, BlockPos pos) {
+        ServerSubLevel sub = subLevelAtPlotPos(world, pos);
         if (sub == null) return null;
         return sub.logicalPose().transformPosition(pos.getCenter());
     }
 
-    static void mapShipFramePortalPose(qouteall.imm_ptl.core.portal.Portal portal) {
-        if (!(portal.level() instanceof net.minecraft.server.level.ServerLevel level)) return;
+    static void mapShipFramePortalPose(Portal portal) {
+        if (!(portal.level() instanceof ServerLevel level)) return;
         BlockPos plotPos = BlockPos.containing(portal.getOriginPos());
-        dev.ryanhcode.sable.sublevel.ServerSubLevel sub = subLevelAtPlotPos(level, plotPos);
+        ServerSubLevel sub = subLevelAtPlotPos(level, plotPos);
         if (sub == null) return;
 
-        dev.ryanhcode.sable.companion.math.Pose3dc pose = sub.logicalPose();
-        org.joml.Quaterniondc shipRot = pose.orientation();
-        qouteall.q_misc_util.my_util.DQuaternion shipD =
-            new qouteall.q_misc_util.my_util.DQuaternion(
+        Pose3dc pose = sub.logicalPose();
+        Quaterniondc shipRot = pose.orientation();
+        DQuaternion shipD =
+            new DQuaternion(
                 shipRot.x(), shipRot.y(), shipRot.z(), shipRot.w());
 
-        qouteall.q_misc_util.my_util.DQuaternion o0 = portal.getOrientationRotation();
-        qouteall.q_misc_util.my_util.DQuaternion r0 = portal.getRotation() == null
-            ? qouteall.q_misc_util.my_util.DQuaternion.identity : portal.getRotation();
+        DQuaternion o0 = portal.getOrientationRotation();
+        DQuaternion r0 = portal.getRotation() == null
+            ? DQuaternion.identity : portal.getRotation();
         // D₀ = R₀ ∘ O₀ is the dest frame's orientation; keep it fixed while the
         // origin frame picks up the ship rotation (M6 dest-lock math).
-        qouteall.q_misc_util.my_util.DQuaternion destLock = r0.hamiltonProduct(o0);
-        qouteall.q_misc_util.my_util.DQuaternion oNow = shipD.hamiltonProduct(o0);
+        DQuaternion destLock = r0.hamiltonProduct(o0);
+        DQuaternion oNow = shipD.hamiltonProduct(o0);
 
         portal.setOriginPos(pose.transformPosition(portal.getOriginPos()));
         portal.setOrientationRotation(oNow);
@@ -188,12 +200,12 @@ final class SableImpl {
     }
 
     static void anchorShipFramePortal(
-        qouteall.imm_ptl.core.portal.Portal portal, BlockPos shapeAnchor
+        Portal portal, BlockPos shapeAnchor
     ) {
-        if (!(portal.level() instanceof net.minecraft.server.level.ServerLevel level)) return;
-        dev.ryanhcode.sable.sublevel.ServerSubLevel sub = subLevelAtPlotPos(level, shapeAnchor);
+        if (!(portal.level() instanceof ServerLevel level)) return;
+        ServerSubLevel sub = subLevelAtPlotPos(level, shapeAnchor);
         if (sub == null) return;
-        ipl.sable.transit.IplShipPortalAnchor.anchorToShip(portal, sub);
+        IplShipPortalAnchor.anchorToShip(portal, sub);
     }
 
     static long effectiveTrackingChunkPos(Entity entity) {

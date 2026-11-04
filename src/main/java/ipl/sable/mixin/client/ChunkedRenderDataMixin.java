@@ -2,15 +2,20 @@ package ipl.sable.mixin.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
-import ipl.sable.render.IplProgramRegistry;
 import ipl.sable.render.IplClipDiagnostics;
 import ipl.sable.render.IplClipPortalFinder;
 import ipl.sable.render.IplClipUniformPatcher;
+import ipl.sable.render.IplProgramRegistry;
+import ipl.sable.render.IplRenderCullMath;
+import ipl.sable.render.IplSubLevelRenderVisibility;
+import it.unimi.dsi.fastutil.objects.ObjectList;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
+import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL30;
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
@@ -18,50 +23,37 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import qouteall.imm_ptl.core.CHelper;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.render.FrontClipping;
 
 /**
- * Phase 3a: source-side render clipping for Sable sub-levels straddling a portal.
+ * Clipping of Sable's chunked sub-level draw ({@code renderChunkedSubLevel}).
  *
- * <p>When an airship is mid-crossing a portal, its world-space geometry extends past
- * the portal frame on the destination side. Without intervention the source-dim
- * render draws the whole airship -- the player sees a complete airship that appears
- * to clip through the portal frame instead of cleanly straddling it. The mirror in
- * the dest dim (rendered through the portal-through view) covers the dest side, but
- * the source side over-renders.
+ * <p>A sub-level that straddles a portal must not be drawn past the portal plane in its own
+ * level: that part is drawn by the projection on the other side. Around each straddling draw
+ * this mixin installs the sub-level cut ({@code ipl_subLevelClipEquation} in
+ * {@code gl_ClipDistance[1]} and {@code [2]}, independent of IP's portal slot 0); the kept
+ * half-space faces the source side ({@code normal · p + c > 0}). The projection pass goes
+ * through the same bracket with the complementary plane ({@link IplClipPortalFinder}).
  *
- * <p>This mixin installs IP's {@link FrontClipping} clip plane around Sable's
- * {@code renderChunkedSubLevel} so geometry past the portal plane is discarded.
- * The plane's normal points to the source (camera) side: points where
- * {@code normal · p + c > 0} are kept. IP's
- * {@code MixinShaderInstance + ShaderCodeTransformation} already adds the
- * {@code iportal_ClippingEquation} uniform to the {@code rendertype_solid /
- * rendertype_cutout} shaders Sable uses for chunked rendering, so the clip equation
- * we install propagates into the actual fragment discard.
- *
- * <p>Slot 1 remains active for the mapped projection as well as the normal source
- * draw. IP slot 0 masks the portal aperture; this independent plane cuts the
- * sub-level's own source/destination split.
- *
- * <p>{@code @Pseudo} because Sable's class is a runtime dep, not compile-time.
- * {@code remap = false} because Sable's identifiers aren't part of the MC mappings.
+ * <p>IP's slot-0 equation is camera-relative world space, while Sable's chunk vertices are
+ * plot-local until the model-view matrix rotates and scales them, so inside a portal pass
+ * slot 0 is converted to plot-local space for this draw only and restored on RETURN. Empty
+ * layers, hidden sub-levels ({@link IplSubLevelRenderVisibility}) and draws whose kept region
+ * is empty (portal cut ∩ sub-level cut) are skipped.
  */
 @Pseudo
 @Mixin(value = VanillaChunkedSubLevelRenderData.class, remap = false)
 public abstract class ChunkedRenderDataMixin {
 
-    @Shadow(remap = false)
+    @Shadow
     public abstract ClientSubLevel getSubLevel();
 
-    @Shadow @org.spongepowered.asm.mixin.Final
-    private it.unimi.dsi.fastutil.objects.ObjectList<net.minecraft.client.renderer.chunk.SectionRenderDispatcher.RenderSection> allRenderSections;
+    @Shadow @Final
+    private ObjectList<SectionRenderDispatcher.RenderSection> allRenderSections;
 
-    /**
-     * Was FrontClipping's clip state enabled when we entered? If yes, IP is using it
-     * for something (the entity render path enables clipping briefly even outside
-     * portal-through render in some compat paths); we leave well enough alone. If
-     * no, we owned the slot, so we tear our config down on RETURN.
-     */
+    /** The sub-level cut was installed by this call and must be torn down on RETURN. */
     @Unique
     private boolean ipl$installedClipThisCall;
 
@@ -72,9 +64,7 @@ public abstract class ChunkedRenderDataMixin {
     @Inject(
         method = "renderChunkedSubLevel",
         at = @At("HEAD"),
-        cancellable = true,
-        remap = false,
-        require = 0
+        cancellable = true
     )
     private void ipl$installClipPlaneIfStraddling(
         RenderType type, ShaderInstance shader, Matrix4f modelView,
@@ -90,22 +80,18 @@ public abstract class ChunkedRenderDataMixin {
         for (var section : this.allRenderSections) {
             if (!section.getCompiled().isEmpty(type)) { populated = true; break; }
         }
-        if (!populated || !ipl.sable.render.IplSubLevelRenderVisibility.visible(getSubLevel(),getSubLevel().renderPose())) {
+        if (!populated || !IplSubLevelRenderVisibility.visible(getSubLevel(), getSubLevel().renderPose())) {
             ci.cancel();
             return;
         }
 
-        // The projection-driver branch supplies its own single plane; the source
-        // branch may carry SEVERAL (multi-straddle) — the shader min()s two cuts.
-        qouteall.q_misc_util.my_util.Plane primaryPlane;
-        qouteall.q_misc_util.my_util.Plane secondaryPlane = null;
         IplClipPortalFinder.ClipDecision decision =
             IplClipPortalFinder.findStraddlingPortalPlane(getSubLevel());
         // Sable's vanilla chunk vertices are plot-local until its model-view
-        // matrix rotates them. IP's slot-0 equation is camera-relative world
-        // space, so using it unchanged produces a rotated portal cut whenever
-        // the airship is rotated. Convert only for this scoped Sable draw, then
-        // restore it before the parent world's terrain uses the same shader.
+        // matrix rotates and scales them. IP's slot-0 equation is camera-relative
+        // world space, so using it unchanged cuts a rotated or scaled airship on a
+        // wrong plane. Convert only for this scoped Sable draw, then restore it
+        // before the parent world's terrain uses the same shader.
         if (FrontClipping.isClippingEnabled
             && IplProgramRegistry.isVanillaSubLevelInputShader(shader.getName())) {
             double[] portalEquation = FrontClipping.getActiveClipPlaneEquationBeforeModelView();
@@ -117,14 +103,14 @@ public abstract class ChunkedRenderDataMixin {
         }
 
         if (decision != null && this.ipl$portalClipEquationThisCall != null
-            && !qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface.invoker.isRenderingShadowMap()) {
+            && !IrisInterface.invoker.isRenderingShadowMap()) {
             var n = decision.plane().normal();
-            var delta = decision.plane().pos().subtract(qouteall.imm_ptl.core.CHelper.getCurrentCameraPos());
-            double[] split = {n.x,n.y,n.z,-n.dot(delta)};
+            var delta = decision.plane().pos().subtract(CHelper.getCurrentCameraPos());
+            double[] split = {n.x, n.y, n.z, -n.dot(delta)};
             double[] cut = this.ipl$portalClipEquationThisCall.clone();
             cut[3] -= FrontClipping.ADJUSTMENT;
-            if (ipl.sable.render.IplRenderCullMath.emptyIntersection(cut,split)) {
-                IplClipUniformPatcher.restorePortalClip(shader,this.ipl$portalClipEquationThisCall);
+            if (IplRenderCullMath.emptyIntersection(cut, split)) {
+                IplClipUniformPatcher.restorePortalClip(shader, this.ipl$portalClipEquationThisCall);
                 this.ipl$portalClipEquationThisCall = null;
                 ci.cancel();
                 return;
@@ -134,40 +120,21 @@ public abstract class ChunkedRenderDataMixin {
             IplClipDiagnostics.onVanillaCall(false);
             return;
         }
-        primaryPlane = decision.plane();
-        // Вторая плоскость: у родного куска — второй корневой портал, у куска проекции —
-        // вход в следующий портал цепочки (раньше у проекций её не было вовсе).
-        secondaryPlane = IplClipPortalFinder.secondPlaneFor(getSubLevel());
-
         // Чанковые вершины Sable plot-локальны: только в этой скобке программы
-        // rendertype_* получают обратно повернутую нормаль (см. IplClipUniformPatcher).
+        // rendertype_* получают нормаль в plot-local входе
+        // (IplClipUniformPatcher#chunkInputNormal).
         IplClipUniformPatcher.beginChunkInputSpace();
-        // Independent clip planes: write to our ipl_subLevelClipEquation[2] uniform
-        // (two independent gl_ClipDistance slots 1 and 2), not IP's slot 0.
-        IplClipUniformPatcher.patchForSubLevel(getSubLevel(), primaryPlane, secondaryPlane);
-
-        // Enable hardware respect for gl_ClipDistance[1] writes. GL_CLIP_DISTANCE1
-        // is 0x3001 in modern GL; some IDEs / compat shims expose it as
-        // GL30.GL_CLIP_DISTANCE1 or GL11.GL_CLIP_PLANE1 (same enum value).
-        GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
-        // The second cut now owns gl_ClipDistance[2] instead of being min()'d
-        // into slot 1. min() of two linear functions is only piecewise-linear,
-        // and the rasterizer interpolates each clip distance linearly across a
-        // primitive, so the concave crease between the two planes was replaced
-        // by a straight chord -- the small triangular bend the mesh showed
-        // right next to the portal plane. Two independent slots reproduce the
-        // exact intersection of both half-spaces.
-        GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
-
+        // Вторая плоскость: у родного куска — второй корневой портал, у куска проекции —
+        // вход в следующий портал цепочки. Обе идут в слоты 1 и 2, слот 0 остаётся за IP.
+        IplClipUniformPatcher.patchForSubLevel(
+            getSubLevel(), decision.plane(), IplClipPortalFinder.secondPlaneFor(getSubLevel()));
         this.ipl$installedClipThisCall = true;
         IplClipDiagnostics.onVanillaCall(true);
     }
 
     @Inject(
         method = "renderChunkedSubLevel",
-        at = @At("RETURN"),
-        remap = false,
-        require = 0
+        at = @At("RETURN")
     )
     private void ipl$teardownClipPlane(
         RenderType type, ShaderInstance shader, Matrix4f modelView,
@@ -182,24 +149,13 @@ public abstract class ChunkedRenderDataMixin {
         if (!this.ipl$installedClipThisCall) return;
         this.ipl$installedClipThisCall = false;
 
-        // Always disable GL_CLIP_DISTANCE1 on bracket exit -- it's OUR slot,
-        // not IP's (IP uses CD0 for portal clip). The previous conditional
-        // "leave on if FrontClipping.isClippingEnabled" was a confusion
-        // between slot-0 and slot-1 enable states: FrontClipping is IP's
-        // CD0 plane, and tying our CD1 disable to it caused a regression
-        // where stale sub-level equations stayed live on programs bound
-        // during portal-through (notably iris_gbuffers_terrain rendering
-        // the nether terrain, which inherited the airship plane and
-        // visibly clipped on it).
-        //
-        // With CD1 unconditionally disabled on bracket exit, the bracket's
-        // enable is the SOLE source of "slot-1 active" GL state, and the
-        // GlStateManagerMixin per-bind re-enable is gated on
-        // inSubLevelBracket so it only re-enables while a bracket is live.
+        // Slots 1 and 2 belong to this bracket only (IP owns slot 0), so they are always
+        // disabled on exit: the bracket's enable is the sole source of "sub-level cut active"
+        // GL state, and a stale equation cannot leak into programs bound later in the frame
+        // (e.g. Iris terrain of the destination world inheriting the airship plane).
         GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
         GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
         IplClipUniformPatcher.endChunkInputSpace();
         IplClipUniformPatcher.clearAndUpload();
     }
-
 }

@@ -9,8 +9,8 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 @Pseudo
 @Mixin(targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler$PhysicsBeam$BeamNode", remap = false)
 public interface StaffBeamNodeAccessor {
-    @Accessor(value = "previousPosition", remap = false)
+    @Accessor(value = "previousPosition")
     Vec3 ipl$getPreviousPosition();
-    @Accessor(value = "position", remap = false)
+    @Accessor(value = "position")
     Vec3 ipl$getPosition();
 }

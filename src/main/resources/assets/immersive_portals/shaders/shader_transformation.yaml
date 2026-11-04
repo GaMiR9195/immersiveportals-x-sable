@@ -10,8 +10,8 @@ configs:
       rasterizer reading undefined and letting cog meshes leak.
       Sable's vanilla chunk path leaves `Position + ChunkOffset` in rotated
       plot-local, camera-relative space; its model-view transform applies the
-      sub-level rotation afterward. `IplClipUniformPatcher` therefore
-      uploads the matching inverse-rotated normal for this shader family.
+      sub-level rotation and scale afterward. `IplClipUniformPatcher` therefore
+      uploads the normal taken into that input for this shader family.
       NOTE: previous attempt to add Sable's 'terrain_solid' etc. shaders here
       caused an Iris shader compile error: "undefined variable Position".
       Those shaders use Iris/Veil attribute conventions, not vanilla's

@@ -1,5 +1,6 @@
 package ipl.sable.mixin;
 
+import ipl.sable.SableBridge;
 import ipl.sable.transit.IplEntityFrames;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
@@ -32,7 +33,7 @@ public abstract class ServerGamePacketListenerMixin {
     // normally redirects such packets itself ({@code BlockManipulationClient}); this hook makes
     // the server correct for any client that does not (vanilla path, stale target).
     //
-    // <p>Русский комментарий: перенаправление идёт через тот же механизм IP, что и
+    // <p>Перенаправление идёт через тот же механизм IP, что и
     // взаимодействие "через портал" (контекст мира, перенаправленные пакеты обновления
     // блоков, проверка досягаемости по образу корабля).
 
@@ -46,12 +47,11 @@ public abstract class ServerGamePacketListenerMixin {
             target = "Lnet/minecraft/network/protocol/PacketUtils;ensureRunningOnSameThread(Lnet/minecraft/network/protocol/Packet;Lnet/minecraft/network/PacketListener;Lnet/minecraft/server/level/ServerLevel;)V",
             shift = At.Shift.AFTER
         ),
-        cancellable = true,
-        require = 0
+        cancellable = true
     )
     private void ipl$useItemOnProjectedShip(ServerboundUseItemOnPacket packet, CallbackInfo ci) {
         if (BlockManipulationServer.REDIRECT_CONTEXT.get() != null) return;
-        ServerLevel owner = ipl.sable.SableBridge.foreignPlotOwnerLevel(
+        ServerLevel owner = SableBridge.foreignPlotOwnerLevel(
             this.player.serverLevel(), packet.getHitResult().getBlockPos());
         if (owner == null) return;
         BlockManipulationServer.processUseItemOnIn(owner, this.player, packet);
@@ -65,13 +65,12 @@ public abstract class ServerGamePacketListenerMixin {
             target = "Lnet/minecraft/network/protocol/PacketUtils;ensureRunningOnSameThread(Lnet/minecraft/network/protocol/Packet;Lnet/minecraft/network/PacketListener;Lnet/minecraft/server/level/ServerLevel;)V",
             shift = At.Shift.AFTER
         ),
-        cancellable = true,
-        require = 0
+        cancellable = true
     )
     private void ipl$playerActionOnProjectedShip(ServerboundPlayerActionPacket packet, CallbackInfo ci) {
         if (!BlockManipulationServer.isAttackingAction(packet.getAction())) return;
         if (BlockManipulationServer.REDIRECT_CONTEXT.get() != null) return;
-        ServerLevel owner = ipl.sable.SableBridge.foreignPlotOwnerLevel(this.player.serverLevel(), packet.getPos());
+        ServerLevel owner = SableBridge.foreignPlotOwnerLevel(this.player.serverLevel(), packet.getPos());
         if (owner == null) return;
         BlockManipulationServer.processPlayerActionIn(owner, this.player, packet);
         ci.cancel();

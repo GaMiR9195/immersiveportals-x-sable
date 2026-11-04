@@ -71,7 +71,7 @@ public final class IplVeilCompat {
             // IP regex matches `void main(){` which is a stable anchor; running
             // first means we don't have to worry about other preprocessors
             // having already rewritten the function header into something the
-            // regex no longer recognizes.
+            // regex does not recognize.
             event.addPreprocessorFirst(INSTANCE, false);
         });
     }

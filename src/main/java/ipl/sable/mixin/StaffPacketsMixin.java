@@ -2,6 +2,9 @@ package ipl.sable.mixin;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler;
+import dev.simulated_team.simulated.network.packets.physics_staff.PhysicsStaffDragPacket;
+import ipl.sable.atlas.IplScenes;
 import net.minecraft.server.level.ServerLevel;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
@@ -25,43 +28,26 @@ import java.util.UUID;
 )
 public abstract class StaffPacketsMixin {
 
-    @Unique
-    private static java.lang.reflect.Field ipl$actionSubField;
-
     @WrapOperation(
         method = "handle",
         at = @At(
             value = "INVOKE",
-            target = "Ldev/simulated_team/simulated/content/physics_staff/PhysicsStaffServerHandler;get(Lnet/minecraft/server/level/ServerLevel;)Ldev/simulated_team/simulated/content/physics_staff/PhysicsStaffServerHandler;",
-            remap = false
-        ),
-        require = 0
+            target = "Ldev/simulated_team/simulated/content/physics_staff/PhysicsStaffServerHandler;get(Lnet/minecraft/server/level/ServerLevel;)Ldev/simulated_team/simulated/content/physics_staff/PhysicsStaffServerHandler;"
+        )
     )
-    private dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler ipl$routeToOwner(
+    private PhysicsStaffServerHandler ipl$routeToOwner(
         ServerLevel playerLevel,
-        Operation<dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler> original
+        Operation<PhysicsStaffServerHandler> original
     ) {
-        ServerLevel owner = ipl.sable.atlas.IplScenes.ownerLevel(playerLevel.getServer(), ipl$subLevelId());
+        ServerLevel owner = IplScenes.ownerLevel(playerLevel.getServer(), ipl$subLevelId());
         return original.call(owner == null ? playerLevel : owner);
     }
 
     @Unique
     private UUID ipl$subLevelId() {
         Object self = this;
-        try {
-            if (self instanceof dev.simulated_team.simulated.network.packets.physics_staff.PhysicsStaffDragPacket drag) {
-                return drag.subLevel();
-            }
-            java.lang.reflect.Field field = ipl$actionSubField;
-            if (field == null) {
-                field = dev.simulated_team.simulated.network.packets.physics_staff.PhysicsStaffActionPacket.class
-                    .getDeclaredField("subLevel");
-                field.setAccessible(true);
-                ipl$actionSubField = field;
-            }
-            return field.get(self) instanceof UUID id ? id : null;
-        } catch (ReflectiveOperationException | RuntimeException e) {
-            return null;
-        }
+        return self instanceof PhysicsStaffDragPacket drag
+            ? drag.subLevel()
+            : ((StaffActionPacketAccessor) self).ipl$getSubLevel();
     }
 }

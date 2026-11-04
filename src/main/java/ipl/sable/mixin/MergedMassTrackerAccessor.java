@@ -26,15 +26,15 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 @Mixin(value = MergedMassTracker.class, remap = false)
 public interface MergedMassTrackerAccessor {
 
-    @Accessor(value = "lastCenterOfMass", remap = false)
+    @Accessor(value = "lastCenterOfMass")
     void ipl$setLastCenterOfMass(Vector3d value);
 
-    @Accessor(value = "lastInertiaTensor", remap = false)
+    @Accessor(value = "lastInertiaTensor")
     void ipl$setLastInertiaTensor(Matrix3d value);
 
-    @Accessor(value = "lastMass", remap = false)
+    @Accessor(value = "lastMass")
     void ipl$setLastMass(double value);
 
-    @Accessor(value = "lastCenterOfMass", remap = false)
+    @Accessor(value = "lastCenterOfMass")
     Vector3d ipl$getLastCenterOfMass();
 }

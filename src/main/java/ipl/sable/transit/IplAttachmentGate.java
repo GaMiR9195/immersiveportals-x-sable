@@ -1,29 +1,30 @@
 package ipl.sable.transit;
 
+import dev.ryanhcode.sable.api.block.BlockEntitySubLevelActor;
 import dev.ryanhcode.sable.api.physics.PhysicsPipelineBody;
 import dev.ryanhcode.sable.api.physics.constraint.FreeConstraintConfiguration;
 import dev.ryanhcode.sable.api.physics.constraint.PhysicsConstraintConfiguration;
 import dev.ryanhcode.sable.api.physics.constraint.PhysicsConstraintHandle;
-import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
-import dev.ryanhcode.sable.sublevel.ServerSubLevel;
-import ipl.sable.atlas.IplScenes;
-import ipl.sable.natives.IplRapierNatives;
-import net.minecraft.server.level.ServerLevel;
-import org.jetbrains.annotations.Nullable;
-
-import dev.ryanhcode.sable.api.block.BlockEntitySubLevelActor;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.physics.impl.rapier.Rapier3D;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
+import ipl.sable.atlas.IplScenes;
+import ipl.sable.natives.IplRapierNatives;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import org.jetbrains.annotations.Nullable;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -46,9 +47,9 @@ import java.util.WeakHashMap;
  *   <li>"strange" connections that are NOT native joints: Simulated springs, docking
  *       connectors, rope holders, swivel plates and any other physics actor apply their
  *       coupling as Java-side forces every physics tick. Native joint queries never see
- *       them, so a spring-tethered ship used to flip and leave its partner behind (same
- *       dimension: the spring yanked across the portal distance and snapped; cross
- *       dimension: the partner lookup failed and the spring broke). Three probes:
+ *       them, so without these probes a spring-tethered ship would flip and leave its partner
+ *       behind (same dimension: the spring yanks across the portal distance and snaps; cross
+ *       dimension: the partner lookup fails and the spring breaks). Three probes:
  *       <ol>
  *         <li>Sable's own actor contract: {@code sable$getConnectionDependencies()} and
  *             {@code sable$getLoadingDependencies()} of the group's actors (forward)
@@ -77,27 +78,15 @@ public final class IplAttachmentGate {
         WORLD_LINKS.computeIfAbsent(sub, ignored -> new ArrayList<>(1)).add(handle);
     }
 
-    public static synchronized boolean isWorldAnchored(ServerSubLevel sub) {
+    private static synchronized boolean isWorldAnchored(ServerSubLevel sub) {
         List<PhysicsConstraintHandle> links = WORLD_LINKS.get(sub);
         if (links == null) return false;
-        links.removeIf(handle -> {
-            try {
-                return !handle.isValid();
-            } catch (Throwable t) {
-                return true;
-            }
-        });
+        links.removeIf(handle -> !handle.isValid());
         if (links.isEmpty()) {
             WORLD_LINKS.remove(sub);
             return false;
         }
         return true;
-    }
-
-    /** Reason the group must not flip right now, or null when it may (legacy: mates = native joints). */
-    @Nullable
-    public static String flipBlocker(ServerSubLevel ship, List<ServerSubLevel> mates, boolean crossDimension) {
-        return flipBlocker(ship, mates, !mates.isEmpty(), crossDimension);
     }
 
     /**
@@ -108,31 +97,28 @@ public final class IplAttachmentGate {
      * {@code nativeJointed}: some member has native joints (those cannot follow a level
      * change).
      *
-     * <p>Русский комментарий (почему): раньше любой "актёрный" партнёр (пружина между
-     * двумя под-уровнями) навсегда запрещал флип: прошедший кусок жил проекцией, а
-     * второй — оставался реальным, и пара разваливалась (часть — проекция без
-     * взаимодействия, перетаскивание посохом не работало). Теперь партнёры — члены одной
-     * группы перехода: пока прошли не все, прошедшие держат завершённую (широкую) сессию;
-     * когда прошли все — группа флипается вместе одной изометрией, и пружина видит
-     * прежнюю взаимную геометрию (между измерениями — те же UUID и, при свободном слоте,
-     * те же координаты плотов).
+     * <p>Партнёры по актёрам (пружина между двумя под-уровнями и т. п.) — члены одной группы
+     * перехода: пока прошли не все, прошедшие держат завершённую (широкую) сессию; когда прошли
+     * все, группа флипается вместе одной изометрией, и пружина видит прежнюю взаимную геометрию
+     * (между измерениями — те же UUID и, при свободном слоте, те же координаты плотов). Запрет
+     * флипа из-за партнёра разрывал бы пару: одна часть жила бы проекцией без взаимодействия,
+     * другая оставалась реальной.
      */
     @Nullable
     public static String flipBlocker(ServerSubLevel ship, List<ServerSubLevel> group,
                                      boolean nativeJointed, boolean crossDimension) {
-        List<ServerSubLevel> mates = group;
         if (isWorldAnchored(ship)) return "anchored";
-        for (ServerSubLevel mate : mates) if (isWorldAnchored(mate)) return "anchored";
+        for (ServerSubLevel mate : group) if (isWorldAnchored(mate)) return "anchored";
         if (crossDimension && nativeJointed) return "jointed-group";
-        if (!(ship.getLevel() instanceof ServerLevel level)) return null;
+        ServerLevel level = ship.getLevel();
         String actorReason;
         try {
-            actorReason = actorBlocker(level, ship, mates);
+            actorReason = actorBlocker(level, ship, group);
         } catch (RuntimeException | LinkageError e) {
             // A misbehaving third-party actor must not wedge transit: log once, fall back.
             if (!loggedActorFailure) {
                 loggedActorFailure = true;
-                org.slf4j.LoggerFactory.getLogger("ipl-sable-transit")
+                LoggerFactory.getLogger("ipl-sable-transit")
                     .warn("[IPL-TRANSIT] actor connection probe failed (logged once)", e);
             }
             actorReason = null;
@@ -141,23 +127,19 @@ public final class IplAttachmentGate {
         if (!IplScenes.isEnabled()) return null;
         long scene = IplScenes.sceneHandle(level);
         if (scene == 0) return null;
-        try {
-            // Every native joint partner of every member must be inside the group.
-            Set<Integer> ids = new HashSet<>(1 + mates.size());
-            ids.add(Rapier3D.getID(ship));
-            for (ServerSubLevel mate : mates) ids.add(Rapier3D.getID(mate));
-            List<ServerSubLevel> members = new ArrayList<>(1 + mates.size());
-            members.add(ship);
-            members.addAll(mates);
-            for (ServerSubLevel member : members) {
-                int id = Rapier3D.getID(member);
-                for (int linked : IplRapierNatives.connectedSableBodyIds(scene, id, false)) {
-                    if (!ids.contains(linked)) return "linked";
-                }
-                if (IplRapierNatives.ropesAttachedToSableBody(scene, id).length > 0) return "rope";
+        // Every native joint partner of every member must be inside the group.
+        Set<Integer> ids = new HashSet<>(1 + group.size());
+        ids.add(Rapier3D.getID(ship));
+        for (ServerSubLevel mate : group) ids.add(Rapier3D.getID(mate));
+        List<ServerSubLevel> members = new ArrayList<>(1 + group.size());
+        members.add(ship);
+        members.addAll(group);
+        for (ServerSubLevel member : members) {
+            int id = Rapier3D.getID(member);
+            for (int linked : IplRapierNatives.connectedSableBodyIds(scene, id, false)) {
+                if (!ids.contains(linked)) return "linked";
             }
-        } catch (UnsatisfiedLinkError ignored) {
-            // Older natives without the queries: only the Java-side world links apply.
+            if (IplRapierNatives.ropesAttachedToSableBody(scene, id).length > 0) return "rope";
         }
         return null;
     }
@@ -240,10 +222,10 @@ public final class IplAttachmentGate {
      * sub-level) and, in reverse, actors elsewhere that depend on {@code body}.
      */
     public static List<ServerSubLevel> actorPartners(ServerSubLevel body) {
-        if (!(body.getLevel() instanceof ServerLevel level)) return List.of();
+        ServerLevel level = body.getLevel();
         ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
         if (container == null) return List.of();
-        java.util.LinkedHashSet<ServerSubLevel> out = new java.util.LinkedHashSet<>();
+        LinkedHashSet<ServerSubLevel> out = new LinkedHashSet<>();
         try {
             LevelPlot plot = body.getPlot();
             if (plot != null) {
@@ -270,7 +252,7 @@ public final class IplAttachmentGate {
         } catch (RuntimeException | LinkageError e) {
             if (!loggedActorFailure) {
                 loggedActorFailure = true;
-                org.slf4j.LoggerFactory.getLogger("ipl-sable-transit")
+                LoggerFactory.getLogger("ipl-sable-transit")
                     .warn("[IPL-TRANSIT] actor partner probe failed (logged once)", e);
             }
         }
@@ -278,7 +260,7 @@ public final class IplAttachmentGate {
         return List.copyOf(out);
     }
 
-    private static void addDependencies(java.util.Set<ServerSubLevel> out, @Nullable Iterable<SubLevel> deps,
+    private static void addDependencies(Set<ServerSubLevel> out, @Nullable Iterable<SubLevel> deps,
                                         ServerLevel level) {
         if (deps == null) return;
         for (SubLevel dep : deps) {

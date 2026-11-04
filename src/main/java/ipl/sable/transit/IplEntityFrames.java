@@ -28,7 +28,7 @@ import org.jetbrains.annotations.Nullable;
  * clients need no knowledge of the frame. When the ship is not present in the entity's level
  * through any frame, positions travel as world coordinates and no stick is applied.
  *
- * <p>Русский комментарий: мы не добавляем свой пакет «кадра» — сервер восстанавливает кадр
+ * <p>Мы не добавляем свой пакет «кадра» — сервер восстанавливает кадр
  * сам (ближайший к текущей позиции игрока образ), потому что разные кадры одного корабля
  * разнесены на смещение портала, а за пакет игрок смещается на доли блока.
  */

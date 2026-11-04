@@ -1,5 +1,6 @@
 package ipl.sable.mixin.client;
 
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.simulated_team.simulated.SimulatedClient;
 import dev.simulated_team.simulated.config.client.items.SimItemConfigs;
@@ -31,7 +32,7 @@ public abstract class StaffMouseHandlerMixin {
      * @author IPL-Sable
      * @reason Convert a through-portal pitch axis into the grabbed body's constraint frame.
      */
-    @Overwrite(remap = false)
+    @Overwrite
     public InteractCallback.Result onMouseMove(double yaw, double pitch) {
         Minecraft minecraft = Minecraft.getInstance();
         PhysicsStaffClientHandler handler = SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
@@ -48,7 +49,7 @@ public abstract class StaffMouseHandlerMixin {
 
         Vec3 axis = minecraft.player.calculateViewVector(0.0f, minecraft.player.getYRot() - 90.0f);
         SubLevel sub = session.dragSubLevel();
-        if (sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub) {
+        if (sub instanceof ClientSubLevel clientSub) {
             axis = IplStraddleStaffPick.unmapStaffInputAxis(minecraft.player, clientSub, axis);
         }
 

@@ -24,7 +24,7 @@ public interface IplSubLevelClipShader {
     Uniform ipl$getSubLevelClipUniform();
 
     /**
-     * Element [1] of the (now array) clip-equation uniform — the SECOND cut plane
+     * Element [1] of the clip-equation uniform array — the second cut plane
      * for multi-straddle source rendering. The two equations write separate
      * {@code gl_ClipDistance[1]} and {@code gl_ClipDistance[2]} values. The kept
      * region is their half-space intersection. Neutral value

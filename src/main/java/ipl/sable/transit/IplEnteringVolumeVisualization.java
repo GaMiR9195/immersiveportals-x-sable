@@ -1,5 +1,8 @@
 package ipl.sable.transit;
 
+import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.companion.math.Pose3d;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.core.BlockPos;
@@ -7,16 +10,18 @@ import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.q_misc_util.api.McRemoteProcedureCall;
 
-import java.util.LinkedHashMap;
-import java.util.HashMap;
-import java.util.List;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -30,7 +35,7 @@ public final class IplEnteringVolumeVisualization {
     private static volatile UUID targetShip;
     private static volatile long targetRevision = Long.MIN_VALUE;
     private static final Map<UUID, Snapshot> LIVE = new LinkedHashMap<>();
-    private static final Map<UUID, dev.ryanhcode.sable.companion.math.Pose3d> BUFFERS = new HashMap<>();
+    private static final Map<UUID, Pose3d> BUFFERS = new HashMap<>();
 
     private IplEnteringVolumeVisualization() {}
 
@@ -44,7 +49,7 @@ public final class IplEnteringVolumeVisualization {
         if (next == Mode.ON) {
             HitResult hit = player.pick(64.0, 0.0F, false);
             if (!(hit instanceof BlockHitResult blockHit)) return false;
-            SubLevel sub = dev.ryanhcode.sable.Sable.HELPER.getContaining(player.serverLevel(), blockHit.getLocation());
+            SubLevel sub = Sable.HELPER.getContaining(player.serverLevel(), blockHit.getLocation());
             if (!(sub instanceof ServerSubLevel ship) || ship.isRemoved()) return false;
             selected = ship.getUniqueId();
             selectedShip = ship;
@@ -57,11 +62,9 @@ public final class IplEnteringVolumeVisualization {
         if (next == Mode.OFF) targetRevision = Long.MIN_VALUE;
         if (server == null) return true;
         for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
-            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(viewer,
+            McRemoteProcedureCall.tellClientToInvoke(viewer,
                 "ipl.sable.client.IplEnteringVolumeRenderer.RemoteCallables.setMode",
-                next.name(), selected == null ? "" : selected.toString(), "");
-            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(viewer,
-                "ipl.sable.client.IplEnteringVolumeRenderer.RemoteCallables.volumes", "");
+                next.name(), selected == null ? "" : selected.toString());
         }
         if (selectedShip != null) sendShape(server, selectedShip);
         if (selectedShip != null) sendBlocks(server, selectedShip);
@@ -86,7 +89,7 @@ public final class IplEnteringVolumeVisualization {
     public static void replaceBuffer(ServerSubLevel ship) {
         if (mode != Mode.ON || !ship.getUniqueId().equals(targetShip)) return;
         UUID id = ship.getUniqueId();
-        var next = new dev.ryanhcode.sable.companion.math.Pose3d(ship.logicalPose());
+        var next = new Pose3d(ship.logicalPose());
         // Put replaces old buffer before its reference is released, so render state has
         // no empty interval between a complete portal exit and the next tick.
         BUFFERS.put(id, next);
@@ -139,16 +142,16 @@ public final class IplEnteringVolumeVisualization {
         return new Snapshot(ship.getUniqueId(), phase, level.dimension().location().toString(),
             encodeTransform(ship.lastPose()), encodeTransform(ship.logicalPose()),
             apertureHit, towardDestination, portal == null ? "" : encodePortal(portal),
-            portal != null && (portal.getDestDim().equals(net.minecraft.world.level.Level.NETHER)
-                || level.dimension().equals(net.minecraft.world.level.Level.NETHER)),
+            portal != null && (portal.getDestDim().equals(Level.NETHER)
+                || level.dimension().equals(Level.NETHER)),
             mappedSession && portal != null ? encodeMapping(portal) : "",
             BUFFERS.containsKey(ship.getUniqueId()) ? encodeTransform(BUFFERS.get(ship.getUniqueId())) : "");
     }
 
     private static void replaceBufferAt(
-        ServerSubLevel ship, dev.ryanhcode.sable.companion.math.Pose3dc pose
+        ServerSubLevel ship, Pose3dc pose
     ) {
-        BUFFERS.put(ship.getUniqueId(), new dev.ryanhcode.sable.companion.math.Pose3d(pose));
+        BUFFERS.put(ship.getUniqueId(), new Pose3d(pose));
     }
 
     /**
@@ -176,7 +179,7 @@ public final class IplEnteringVolumeVisualization {
             payload.append(record);
         }
         for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
-            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(viewer,
+            McRemoteProcedureCall.tellClientToInvoke(viewer,
                 "ipl.sable.client.IplEnteringVolumeRenderer.RemoteCallables.volumes", payload.toString());
         }
     }
@@ -187,7 +190,7 @@ public final class IplEnteringVolumeVisualization {
         for (int i = 0; i < pieces.size(); i++) {
             boolean last = i == pieces.size() - 1;
             for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
-                qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(viewer,
+                McRemoteProcedureCall.tellClientToInvoke(viewer,
                     "ipl.sable.client.IplEnteringVolumeRenderer.RemoteCallables.shapePart", pieces.get(i), last);
             }
         }
@@ -199,7 +202,7 @@ public final class IplEnteringVolumeVisualization {
         for (int i = 0; i < pieces.size(); i++) {
             boolean last = i == pieces.size() - 1;
             for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
-                qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(viewer,
+                McRemoteProcedureCall.tellClientToInvoke(viewer,
                     "ipl.sable.client.IplEnteringVolumeRenderer.RemoteCallables.blocksPart", pieces.get(i), last);
             }
         }
@@ -249,7 +252,7 @@ public final class IplEnteringVolumeVisualization {
         return parts;
     }
 
-    private static String encodeTransform(dev.ryanhcode.sable.companion.math.Pose3dc pose) {
+    private static String encodeTransform(Pose3dc pose) {
         return point(pose.transformPosition(Vec3.ZERO)) + ';'
             + point(pose.transformPosition(new Vec3(1, 0, 0))) + ';'
             + point(pose.transformPosition(new Vec3(0, 1, 0))) + ';'

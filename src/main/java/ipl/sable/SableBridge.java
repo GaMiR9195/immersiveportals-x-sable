@@ -2,6 +2,8 @@ package ipl.sable;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
@@ -10,6 +12,7 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qouteall.imm_ptl.core.portal.Portal;
 
 /**
  * Public-facing soft dependency on Sable for the IP-Sable compatibility integration.
@@ -27,20 +30,10 @@ public final class SableBridge {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-bridge");
 
-    /**
-     * {@code true} iff Sable is loadable at the time this class was initialized.
-     */
-    public static final boolean PRESENT;
+    /** {@code true} iff Sable is on the classpath. */
+    public static final boolean PRESENT = isClassPresent("dev.ryanhcode.sable.Sable");
 
     static {
-        boolean p;
-        try {
-            Class.forName("dev.ryanhcode.sable.Sable");
-            p = true;
-        } catch (Throwable t) {
-            p = false;
-        }
-        PRESENT = p;
         if (PRESENT) {
             LOG.info("[IPL-SABLE] Sable detected on classpath; sub-level-aware integration active.");
         } else {
@@ -49,6 +42,15 @@ public final class SableBridge {
     }
 
     private SableBridge() {}
+
+    private static boolean isClassPresent(String name) {
+        try {
+            Class.forName(name, false, SableBridge.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
 
     /**
      * Walks the sub-levels in {@code world} that intersect {@code worldPos} and returns the
@@ -131,8 +133,8 @@ public final class SableBridge {
      *
      * <p>Used by IP's {@code Entity.collide} wrap to decide whether to fold Sable's
      * sub-level collision back in when IP would otherwise take its portal-only
-     * branch -- the fix for "fall through an airship deck the moment it clips the
-     * portal frame." Returns {@code false} when Sable is absent (no-op, upstream IP
+     * branch, so a player does not fall through an airship deck the moment it clips the
+     * portal frame. Returns {@code false} when Sable is absent (no-op, upstream IP
      * behavior preserved).
      */
     public static boolean hasSubLevelFloorThisTick(Entity entity) {
@@ -163,9 +165,9 @@ public final class SableBridge {
      * measurement against plot coordinates (~20M) rejects every ship interaction.
      */
     public static double frameAwareDistanceSqr(
-        net.minecraft.world.level.Level level,
-        net.minecraft.world.phys.Vec3 a,
-        net.minecraft.world.phys.Vec3 b
+        Level level,
+        Vec3 a,
+        Vec3 b
     ) {
         if (!PRESENT) return a.distanceToSqr(b);
         return SableImpl.frameAwareDistanceSqr(level, a, b);
@@ -180,11 +182,10 @@ public final class SableBridge {
      * ({@code ServerPlayerMixin.sable$adjustTeleportPacket}). That packet's
      * coordinates are sub-level-LOCAL ({@code logicalPose().transformPositionInverse}),
      * so the dimension IP resolves them against must be the dimension the
-     * <em>sub-level</em> lives in -- not the player's current dimension. Today those
-     * coincide (you can only mount a same-dim seat), but anchoring on the sub-level
-     * is correct by construction for the future "click/stay-seated across a portal"
-     * cases where the seat's sub-level is in the destination dim while the player is
-     * (still) source-side.
+     * <em>sub-level</em> lives in -- not the player's current dimension. The two coincide
+     * in practice (only a same-dim seat can be mounted), but anchoring on the sub-level
+     * stays correct even if the seat's sub-level is in the destination dim while the
+     * player is still source-side.
      */
     @Nullable
     public static ResourceKey<Level> subLevelDimensionOfVehicle(Entity vehicle) {
@@ -217,12 +218,12 @@ public final class SableBridge {
      * case is exactly where they must compose -- IP's portal-aware visibility must
      * be evaluated <em>at Sable's remapped position</em>.
      *
-     * <p>They don't compose today because IP replaces vanilla's tracking loop
+     * <p>They do not compose on their own: IP replaces vanilla's tracking loop
      * wholesale ({@code MixinChunkMap_E} cancels {@code ChunkMap.tick}; the loop
      * moves into {@code EntitySync}), which silently strands Sable's vanilla-callsite
      * remap ({@code entity_tracking.TrackedEntityMixin} +
      * {@code server_entities_tick.ChunkMapMixin}, both {@code @WrapOperation}s on
-     * callsites that no longer execute). So IP's tracking reads the raw ~20M-block
+     * callsites IP never executes). So IP's tracking reads the raw ~20M-block
      * chunk, finds no watchers, and never tracks the entity -- e.g. a player sitting
      * on a Create seat on an airship never receives the {@code SetPassengers} packet.
      *
@@ -232,18 +233,11 @@ public final class SableBridge {
      * {@link #NO_REMAP} otherwise (caller uses the raw chunk). Routing all of IP's
      * tracking-position reads through this one function keeps the remap consistent
      * (the danger of scattered redirects is remapping some reads but not the
-     * distance math that depends on them).
-     *
-     * <p><b>Eventual convergence:</b> when Sable's and IP's tracking systems are
-     * unified, this becomes the integration contract -- ideally promoted to a real
-     * {@code getEffectiveTrackingPosition()} that vanilla answers with
-     * {@code position()}, Sable overrides, and IP consumes. For now it teaches IP's
-     * replacement the one fact Sable knows that IP doesn't, without merging the two
-     * sources of truth (that merge is the actual rewrite). No-op when Sable is
-     * absent -- IP behaves exactly as upstream.
+     * distance math that depends on them). No-op when Sable is absent -- IP behaves
+     * exactly as upstream.
      */
     public static long effectiveTrackingChunkPos(Entity entity) {
-        if (!PRESENT || entity == null) return NO_REMAP;
+        if (!PRESENT) return NO_REMAP;
         return SableImpl.effectiveTrackingChunkPos(entity);
     }
 
@@ -262,8 +256,8 @@ public final class SableBridge {
      * fills) work from that parent level unchanged. Non-plot positions (or
      * Sable absent) return {@code world} as-is.
      */
-    public static net.minecraft.server.level.ServerLevel effectivePortalGenLevel(
-        net.minecraft.server.level.ServerLevel world, BlockPos pos
+    public static ServerLevel effectivePortalGenLevel(
+        ServerLevel world, BlockPos pos
     ) {
         if (!PRESENT || !isPlotPos(world, pos)) return world;
         return SableImpl.effectivePortalGenLevel(world, pos);
@@ -276,7 +270,7 @@ public final class SableBridge {
      * not the level's regular chunk map).
      */
     public static boolean hasChunkAtFrameAware(
-        net.minecraft.server.level.ServerLevel world, BlockPos pos
+        ServerLevel world, BlockPos pos
     ) {
         if (!PRESENT || !isPlotPos(world, pos)) return world.hasChunkAt(pos);
         return SableImpl.subLevelAtPlotPos(world, pos) != null;
@@ -290,7 +284,7 @@ public final class SableBridge {
      */
     @Nullable
     public static Vec3 shipFrameWorldCenter(
-        net.minecraft.server.level.ServerLevel world, BlockPos pos
+        ServerLevel world, BlockPos pos
     ) {
         if (!PRESENT || !isPlotPos(world, pos)) return null;
         return SableImpl.shipFrameWorldCenter(world, pos);
@@ -304,8 +298,8 @@ public final class SableBridge {
      * ship-portal anchor uses per tick. No-op for world-space portals.
      * Must run on the template BEFORE flipped/reverse portals are derived.
      */
-    public static void mapShipFramePortalPose(qouteall.imm_ptl.core.portal.Portal portal) {
-        if (!PRESENT || portal == null || !(portal.level() instanceof net.minecraft.server.level.ServerLevel level)
+    public static void mapShipFramePortalPose(Portal portal) {
+        if (!PRESENT || portal == null || !(portal.level() instanceof ServerLevel level)
             || !isPlotPos(level, BlockPos.containing(portal.getOriginPos()))) {
             return;
         }
@@ -319,10 +313,10 @@ public final class SableBridge {
      * other members. No-op for world-space shapes.
      */
     public static void anchorShipFramePortal(
-        qouteall.imm_ptl.core.portal.Portal portal, BlockPos shapeAnchor
+        Portal portal, BlockPos shapeAnchor
     ) {
         if (!PRESENT || portal == null || shapeAnchor == null
-            || !(portal.level() instanceof net.minecraft.server.level.ServerLevel level)
+            || !(portal.level() instanceof ServerLevel level)
             || !isPlotPos(level, shapeAnchor)) {
             return;
         }
@@ -337,7 +331,7 @@ public final class SableBridge {
      * how much of the parent-level plot routing a given code path enjoys.
      */
     public static Level plotAwareLevel(Level context, @Nullable BlockPos pos) {
-        if (!PRESENT || pos == null || !(context instanceof net.minecraft.server.level.ServerLevel serverLevel)
+        if (!PRESENT || pos == null || !(context instanceof ServerLevel serverLevel)
             || !isPlotPos(serverLevel, pos)) return context;
         return SableImpl.plotOwnerLevel(serverLevel, pos);
     }
@@ -348,11 +342,11 @@ public final class SableBridge {
      * Null for world blocks and for ships native to {@code here}.
      */
     @Nullable
-    public static net.minecraft.server.level.ServerLevel foreignPlotOwnerLevel(
-        net.minecraft.server.level.ServerLevel here, @Nullable BlockPos pos
+    public static ServerLevel foreignPlotOwnerLevel(
+        ServerLevel here, @Nullable BlockPos pos
     ) {
         if (!PRESENT || here == null || pos == null) return null;
-        net.minecraft.server.level.ServerLevel owner = SableImpl.plotOwnerLevel(here, pos);
+        ServerLevel owner = SableImpl.plotOwnerLevel(here, pos);
         return owner != here ? owner : null;
     }
 
@@ -363,7 +357,7 @@ public final class SableBridge {
      * reverse portal being near the player.
      */
     public static boolean isProjectedBlockWithinReach(
-        net.minecraft.server.level.ServerPlayer player, ResourceKey<Level> dimension,
+        ServerPlayer player, ResourceKey<Level> dimension,
         BlockPos pos, double distanceSquare
     ) {
         if (!PRESENT || player == null || pos == null) return false;
@@ -381,7 +375,7 @@ public final class SableBridge {
     }
 
     /** Plot identity belongs to a live container plot, never a coordinate threshold. */
-    private static boolean isPlotPos(net.minecraft.server.level.ServerLevel context, BlockPos pos) {
+    private static boolean isPlotPos(ServerLevel context, BlockPos pos) {
         return SableImpl.isPlotPos(context, pos);
     }
 }

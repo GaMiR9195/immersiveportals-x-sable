@@ -4,22 +4,33 @@ import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.PortalExtension;
+import qouteall.q_misc_util.api.McRemoteProcedureCall;
 import qouteall.q_misc_util.my_util.DQuaternion;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -27,23 +38,22 @@ import java.util.UUID;
  * Atlas M6 (spec v3 §2.8, "portals on physics structures"): SHIP-ANCHORED PORTALS.
  *
  * <p>An anchored portal's origin end is glued to a sub-level at a ship-local pose.
- * Every server tick, immediately after the fused step publishes fresh physics poses,
- * the portal entity is re-posed from the ship: origin = shipPose(localPos),
- * orientation = shipRot ∘ localOrient. The rotation TRANSFORM is re-derived so the
- * (static) destination end stays fixed: with D₀ = R_t(0) ∘ O(0) locked at anchor
- * time, R_t(now) = D₀ ∘ O(now)⁻¹. {@link PortalExtension#rectifyClusterPortals}
- * then propagates everything to the flipped/reverse/parallel cluster members and
- * syncs clients.
+ * Every server tick, as soon as the ship's physics pose of the tick is final, the portal
+ * entity is re-posed from the ship: origin = shipPose(localPos), orientation =
+ * shipRot ∘ localOrient. The rotation TRANSFORM is re-derived so the (static)
+ * destination end stays fixed: with D₀ = R_t(0) ∘ O(0) locked at anchor time,
+ * R_t(now) = D₀ ∘ O(now)⁻¹. {@link PortalExtension#rectifyClusterPortals} then
+ * propagates everything to the flipped/reverse/parallel cluster members and syncs
+ * clients.
  *
  * <p>Physics follows for free: straddle sessions re-derive their isometry from the
- * portal each tick (M5a) and push it to the image collider; rims re-anchor from the
- * same movement check; the router and entity layers read the refreshed mapping.
- * Within a tick the isometry is frozen — the kinematic-frame fiat (§2.8): traversal
- * impulses do not back-react on the anchor ship.
+ * portal each tick (M5a) and push it to the image collider; the router and entity
+ * layers read the refreshed mapping. Within a tick the isometry is frozen — the
+ * kinematic-frame fiat (§2.8): traversal impulses do not back-react on the anchor ship.
  *
- * <p>V1 scope: origin end on a ship, destination end static; anchors are runtime
- * state (not persisted across restarts); the anchor ship straddling its OWN portal
- * is physics-safe (engine same-parent filter) but not a supported gameplay loop.
+ * <p>Scope: origin end on a ship, destination end static. Anchors persist in the
+ * overworld's SavedData. The anchor ship never traverses or straddles its own portal
+ * (see {@link #isAnchorShip(Portal, UUID)}).
  */
 public final class IplShipPortalAnchor {
 
@@ -94,14 +104,14 @@ public final class IplShipPortalAnchor {
     /** Which server instance the on-disk anchors were restored for. */
     private static MinecraftServer restoredFor = null;
 
-    public static final class AnchorSavedData extends net.minecraft.world.level.saveddata.SavedData {
+    public static final class AnchorSavedData extends SavedData {
 
         /** Parsed-but-not-yet-applied anchor tags from disk (applied on first tickAll). */
-        private net.minecraft.nbt.ListTag loaded = new net.minecraft.nbt.ListTag();
+        private ListTag loaded = new ListTag();
 
         public static AnchorSavedData get(ServerLevel overworld) {
             return overworld.getDataStorage().computeIfAbsent(
-                new net.minecraft.world.level.saveddata.SavedData.Factory<>(
+                new SavedData.Factory<>(
                     AnchorSavedData::new,
                     (nbt, registries) -> {
                         AnchorSavedData data = new AnchorSavedData();
@@ -113,13 +123,13 @@ public final class IplShipPortalAnchor {
         }
 
         @Override
-        public net.minecraft.nbt.CompoundTag save(
-            net.minecraft.nbt.CompoundTag tag, net.minecraft.core.HolderLookup.Provider registries
+        public CompoundTag save(
+            CompoundTag tag, HolderLookup.Provider registries
         ) {
-            net.minecraft.nbt.ListTag list = new net.minecraft.nbt.ListTag();
+            ListTag list = new ListTag();
             for (Map.Entry<UUID, Anchor> entry : ANCHORS.entrySet()) {
                 Anchor a = entry.getValue();
-                net.minecraft.nbt.CompoundTag t = new net.minecraft.nbt.CompoundTag();
+                CompoundTag t = new CompoundTag();
                 t.putUUID("portalId", entry.getKey());
                 t.putUUID("shipId", a.shipId());
                 t.putString("dim", a.portalDim().location().toString());
@@ -140,13 +150,13 @@ public final class IplShipPortalAnchor {
         AnchorSavedData data = AnchorSavedData.get(server.overworld());
         for (int i = 0; i < data.loaded.size(); i++) {
             try {
-                net.minecraft.nbt.CompoundTag t = data.loaded.getCompound(i);
+                CompoundTag t = data.loaded.getCompound(i);
                 UUID portalId = t.getUUID("portalId");
                 ANCHORS.put(portalId, new Anchor(
                     t.getUUID("shipId"),
                     ResourceKey.create(
-                        net.minecraft.core.registries.Registries.DIMENSION,
-                        net.minecraft.resources.ResourceLocation.parse(t.getString("dim"))),
+                        Registries.DIMENSION,
+                        ResourceLocation.parse(t.getString("dim"))),
                     new Vector3d(
                         t.getDouble("plotX"), t.getDouble("plotY"), t.getDouble("plotZ")),
                     getQuat(t, "lo"),
@@ -154,11 +164,12 @@ public final class IplShipPortalAnchor {
                 RESTORE_PENDING.put(portalId, RESTORE_GRACE_TICKS);
                 LOG.debug("[IPL-SHIP-PORTAL] restored anchor for portal {} (ship {}, pending resolve)",
                     portalId, t.getUUID("shipId"));
-            } catch (Throwable th) {
-                LOG.error("[IPL-SHIP-PORTAL] bad persisted anchor entry {}", i, th);
+            } catch (RuntimeException e) {
+                // Saved data may come from an older build: skip the entry, keep the rest.
+                LOG.error("[IPL-SHIP-PORTAL] bad persisted anchor entry {}", i, e);
             }
         }
-        data.loaded = new net.minecraft.nbt.ListTag();
+        data.loaded = new ListTag();
     }
 
     /** Mark the anchor set changed — vanilla persists it at the next save point. */
@@ -167,14 +178,14 @@ public final class IplShipPortalAnchor {
         AnchorSavedData.get(server.overworld()).setDirty();
     }
 
-    private static void putQuat(net.minecraft.nbt.CompoundTag tag, String prefix, DQuaternion q) {
+    private static void putQuat(CompoundTag tag, String prefix, DQuaternion q) {
         tag.putDouble(prefix + "X", q.getX());
         tag.putDouble(prefix + "Y", q.getY());
         tag.putDouble(prefix + "Z", q.getZ());
         tag.putDouble(prefix + "W", q.getW());
     }
 
-    private static DQuaternion getQuat(net.minecraft.nbt.CompoundTag tag, String prefix) {
+    private static DQuaternion getQuat(CompoundTag tag, String prefix) {
         return new DQuaternion(
             tag.getDouble(prefix + "X"), tag.getDouble(prefix + "Y"),
             tag.getDouble(prefix + "Z"), tag.getDouble(prefix + "W"));
@@ -187,6 +198,7 @@ public final class IplShipPortalAnchor {
         ANCHORS.clear();
         RESTORE_PENDING.clear();
         restoredFor = null;
+        lastRebroadcastTick = Integer.MIN_VALUE;
     }
 
     public static boolean isAnchored(UUID portalId) {
@@ -235,8 +247,8 @@ public final class IplShipPortalAnchor {
     }
 
     /** UUIDs of all portals anchored to {@code shipId} (cluster primaries only). */
-    public static java.util.List<UUID> anchoredPortalsOf(UUID shipId) {
-        java.util.List<UUID> out = new java.util.ArrayList<>();
+    public static List<UUID> anchoredPortalsOf(UUID shipId) {
+        List<UUID> out = new ArrayList<>();
         for (Map.Entry<UUID, Anchor> entry : ANCHORS.entrySet()) {
             if (entry.getValue().shipId().equals(shipId)) out.add(entry.getKey());
         }
@@ -308,11 +320,7 @@ public final class IplShipPortalAnchor {
         ANCHORS.put(portal.getUUID(), new Anchor(
             ship.getUniqueId(), level.dimension(), localPos, localOrient, destLock));
         markDirty(level.getServer());
-        applyCarrierSideEffects(portal, ship, true);
-        // A normal command anchor does not need to re-pose an already aligned portal,
-        // so it previously waited for the manager's later scan to get a rim. Weld both
-        // carrier faces now, including a completely stationary ship.
-        followCarrierRims(portal);
+        applyCarrierSideEffects(portal, true);
         syncToClients(level.getServer(), portal.getUUID());
         LOG.debug("[IPL-SHIP-PORTAL] anchored portal {} to ship {} at plot ({}, {}, {})",
             portal.getUUID(), ship.getUniqueId(),
@@ -326,7 +334,7 @@ public final class IplShipPortalAnchor {
         Anchor removed = ANCHORS.remove(portal.getUUID());
         RESTORE_PENDING.remove(portal.getUUID());
         if (removed == null) return "portal was not anchored";
-        applyCarrierSideEffects(portal, null, false);
+        applyCarrierSideEffects(portal, false);
         if (portal.level() instanceof ServerLevel sl) {
             markDirty(sl.getServer());
             syncClearToClients(sl.getServer(), portal.getUUID());
@@ -335,90 +343,58 @@ public final class IplShipPortalAnchor {
     }
 
     /**
-     * Anchored-portal side effects, applied to the whole same-level cluster
-     * (the flipped twin shares the plane and has its own rim):
-     *  - rim-vs-carrier exclusion: the containment rim must never push the hull
-     *    that surrounds the aperture;
-     *  - client lerp: IP's DefaultPortalAnimation eases synced state changes over
-     *    10 ticks — half a second of aperture lag on a moving ship. Anchored
-     *    portals get 1 tick (smooth at 20 TPS updates, no visible delay);
-     *    restored to the IP default on unanchor.
+     * Client lerp of an anchored portal and its same-level flipped face: IP's
+     * DefaultPortalAnimation eases synced state changes over 10 ticks, half a second of
+     * aperture lag on a moving ship. Anchored portals get 1 tick (smooth at 20 TPS updates);
+     * the IP default returns on unanchor. The flipped face is resolved by its persisted UUID
+     * as well: on a restored anchor the entity refs may still be unbound.
      */
-    private static void applyCarrierSideEffects(Portal portal, ServerSubLevel ship, boolean on) {
-        int carrierId = on ? dev.ryanhcode.sable.physics.impl.rapier.Rapier3D.getID(ship) : -1;
-        java.util.function.Consumer<Portal> perPortal = p -> {
-            if (p.level() != portal.level()) return; // reverse/parallel sit at the dest
-            if (on) {
-                IplPortalRimManager.setCarrierExclusion(p.getUUID(), carrierId, true);
-                p.animation.defaultAnimation.durationTicks = 1;
-            } else {
-                IplPortalRimManager.setCarrierExclusion(p.getUUID(), -1, false);
-                p.animation.defaultAnimation.durationTicks = 10;
-            }
-        };
-        perPortal.accept(portal);
-        // Resolve the flipped face by persisted UUID, not just the lazy entity ref:
-        // on a restored anchor the refs may still be unbound, and a missed flipped
-        // face here leaves its rim WITHOUT the carrier exclusion — permanent
-        // rim-vs-hull wobble after rejoin.
+    private static void applyCarrierSideEffects(Portal portal, boolean on) {
+        int durationTicks = on ? 1 : 10;
+        portal.animation.defaultAnimation.durationTicks = durationTicks;
+        Portal flipped = sameLevelFlippedFace(portal);
+        if (flipped != null) flipped.animation.defaultAnimation.durationTicks = durationTicks;
+    }
+
+    @Nullable
+    private static Portal sameLevelFlippedFace(Portal portal) {
         PortalExtension ext = PortalExtension.get(portal);
         Portal flipped = ext.flippedPortal;
         if (flipped == null && ext.flippedPortalId != null
-            && portal.level() instanceof ServerLevel sl
-            && sl.getEntity(ext.flippedPortalId) instanceof Portal boundByUuid) {
+            && portal.level() instanceof ServerLevel level
+            && level.getEntity(ext.flippedPortalId) instanceof Portal boundByUuid) {
             flipped = boundByUuid;
         }
-        if (flipped != null) perPortal.accept(flipped);
+        return flipped != null && flipped.level() == portal.level() ? flipped : null;
     }
 
-    /**
-     * Is this portal — or any persisted cluster member — anchored to ANY ship?
-     * Used by the rim manager to hold off rim creation until the anchor's carrier
-     * exclusion has been applied (restored anchors resolve their ship ticks after
-     * the portal loads; a rim spawned in that window grinds against its own hull).
-     */
-    public static boolean isAnchoredCluster(Portal portal) {
-        if (ANCHORS.containsKey(portal.getUUID())) return true;
-        PortalExtension ext = PortalExtension.get(portal);
-        return (ext.flippedPortalId != null && ANCHORS.containsKey(ext.flippedPortalId))
-            || (ext.reversePortalId != null && ANCHORS.containsKey(ext.reversePortalId))
-            || (ext.parallelPortalId != null && ANCHORS.containsKey(ext.parallelPortalId))
-            || (ext.flippedPortal != null && ANCHORS.containsKey(ext.flippedPortal.getUUID()))
-            || (ext.reversePortal != null && ANCHORS.containsKey(ext.reversePortal.getUUID()))
-            || (ext.parallelPortal != null && ANCHORS.containsKey(ext.parallelPortal.getUUID()));
-    }
+    /** Late-joiner bootstrap: the anchor payload is tiny, so it is rebroadcast on a slow cadence. */
+    private static final int REBROADCAST_INTERVAL_TICKS = 100;
+    private static int lastRebroadcastTick = Integer.MIN_VALUE;
 
-    /**
-     * True for the anchored origin face and its same-level flipped face. These are the
-     * carrier's physical aperture faces; reverse and parallel faces are destination-world
-     * portals and keep their ordinary world block frame.
-     */
-    public static boolean isCarrierPortalFace(Portal portal) {
-        Anchor direct = ANCHORS.get(portal.getUUID());
-        if (direct != null) return true;
-        PortalExtension ext = PortalExtension.get(portal);
-        Anchor flipped = ext.flippedPortalId == null ? null : ANCHORS.get(ext.flippedPortalId);
-        if (flipped == null && ext.flippedPortal != null) {
-            flipped = ANCHORS.get(ext.flippedPortal.getUUID());
-        }
-        return flipped != null && portal.level().dimension().equals(flipped.portalDim());
-    }
-
-    /**
-     * Drive all anchored portals from their ships' fresh physics poses. Called at the
-     * end of the fused step (IplFusedStep), when this tick's poses are final.
-     */
-    private static int syncCounter = 0;
-
+    /** After the fused step: every anchored portal follows its ship's pose of this tick. */
     public static void tickAll(MinecraftServer server) {
+        tick(server, null);
+    }
+
+    /** After {@code level}'s own step (stock natives): its anchored portals follow the new poses. */
+    public static void tickLevel(ServerLevel level) {
+        tick(level.getServer(), level.dimension());
+    }
+
+    /**
+     * Drives every anchored portal (of {@code onlyDim}, if given) whose ship moved since the
+     * portal was last posed, as soon as the ship's pose of this tick is final.
+     */
+    private static void tick(MinecraftServer server, @Nullable ResourceKey<Level> onlyDim) {
         if (PERSISTENCE_ENABLED && restoredFor != server) {
             restoredFor = server;
             restoreFromDisk(server);
         }
         if (ANCHORS.isEmpty()) return;
-        // Late-joiner bootstrap: the anchor payload is tiny; rebroadcast on a slow
-        // cadence instead of tracking per-player join state.
-        if ((syncCounter++ % 100) == 0) {
+        int tick = server.getTickCount();
+        if (tick % REBROADCAST_INTERVAL_TICKS == 0 && tick != lastRebroadcastTick) {
+            lastRebroadcastTick = tick;
             for (UUID portalId : ANCHORS.keySet().toArray(new UUID[0])) {
                 syncToClients(server, portalId);
             }
@@ -428,6 +404,7 @@ public final class IplShipPortalAnchor {
         while (it.hasNext()) {
             Map.Entry<UUID, Anchor> entry = it.next();
             Anchor a = entry.getValue();
+            if (onlyDim != null && a.portalDim() != onlyDim) continue;
 
             ServerLevel level = server.getLevel(a.portalDim());
             if (level == null) continue;
@@ -451,7 +428,7 @@ public final class IplShipPortalAnchor {
                 RESTORE_PENDING.remove(entry.getKey());
                 LOG.debug("[IPL-SHIP-PORTAL] ship {} gone — portal {} released",
                     a.shipId(), entry.getKey());
-                applyCarrierSideEffects(portal, null, false);
+                applyCarrierSideEffects(portal, false);
                 syncClearToClients(server, entry.getKey());
                 it.remove();
                 markDirty(server);
@@ -463,7 +440,7 @@ public final class IplShipPortalAnchor {
                 LOG.debug("[IPL-SHIP-PORTAL] ship {} changed dimension — portal {} released",
                     a.shipId(), entry.getKey());
                 RESTORE_PENDING.remove(entry.getKey());
-                applyCarrierSideEffects(portal, null, false);
+                applyCarrierSideEffects(portal, false);
                 syncClearToClients(server, entry.getKey());
                 it.remove();
                 markDirty(server);
@@ -473,7 +450,7 @@ public final class IplShipPortalAnchor {
                 // Restored anchor's ship just resolved: finish what anchorToShip
                 // would have done live (deferred — the physics scene and container
                 // aren't available during entity NBT read at boot).
-                applyCarrierSideEffects(portal, ship, true);
+                applyCarrierSideEffects(portal, true);
                 syncToClients(server, entry.getKey());
                 LOG.debug("[IPL-SHIP-PORTAL] restored anchor {} resolved to ship {}",
                     entry.getKey(), a.shipId());
@@ -511,25 +488,8 @@ public final class IplShipPortalAnchor {
         portal.setOrientationRotation(oNow);
         portal.setRotation(rtNow);
         portal.reloadAndSyncToClientNextTick();
+        // Rectification moves the same-level flipped face and the far-side faces too.
         PortalExtension.get(portal).rectifyClusterPortals(portal, true);
-        // Weld the physical rim at the same point that welds the portal aperture to
-        // the ship. Rectification moves the same-level flipped face too.
-        followCarrierRims(portal);
-    }
-
-    /** Create/update both same-level carrier-face rims from their rectified portal poses. */
-    private static void followCarrierRims(Portal portal) {
-        if (!(portal.level() instanceof ServerLevel level)) return;
-        IplPortalRimManager.followDrivenPortal(level, portal);
-        PortalExtension ext = PortalExtension.get(portal);
-        Portal flipped = ext.flippedPortal;
-        if (flipped == null && ext.flippedPortalId != null
-            && level.getEntity(ext.flippedPortalId) instanceof Portal byId) {
-            flipped = byId;
-        }
-        if (flipped != null && flipped.level() == portal.level()) {
-            IplPortalRimManager.followDrivenPortal(level, flipped);
-        }
     }
 
     // ------------------------------------------------------------------
@@ -537,8 +497,8 @@ public final class IplShipPortalAnchor {
     /**
      * Acceptance margin (blocks) between the portal origin and the ship's BOUNDS —
      * measured to the box surface, not the center, so large hulls qualify. Generous
-     * by default: a deck-mounted portal floats a rim's width above the hull, and the
-     * origin of a wand-made portal can sit a few blocks off the frame.
+     * by default: a deck-mounted portal floats above the hull, and the origin of a
+     * wand-made portal can sit a few blocks off the frame.
      */
     private static final double ANCHOR_MARGIN =
         Double.parseDouble(System.getProperty("ipl.sable.shipPortal.anchorMargin", "8.0"));
@@ -566,9 +526,9 @@ public final class IplShipPortalAnchor {
             + a.localOrient().getZ() + "," + a.localOrient().getW();
         String destLock = a.destLock().getX() + "," + a.destLock().getY() + ","
             + a.destLock().getZ() + "," + a.destLock().getW();
-        for (net.minecraft.server.level.ServerPlayer player
+        for (ServerPlayer player
                 : server.getPlayerList().getPlayers()) {
-            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+            McRemoteProcedureCall.tellClientToInvoke(
                 player,
                 "ipl.sable.client.IplClientShipPortalAnchor.RemoteCallables.set",
                 portalId.toString(), flippedId, reverseId, parallelId,
@@ -578,9 +538,9 @@ public final class IplShipPortalAnchor {
 
     private static void syncClearToClients(MinecraftServer server, UUID portalId) {
         if (server == null) return;
-        for (net.minecraft.server.level.ServerPlayer player
+        for (ServerPlayer player
                 : server.getPlayerList().getPlayers()) {
-            qouteall.q_misc_util.api.McRemoteProcedureCall.tellClientToInvoke(
+            McRemoteProcedureCall.tellClientToInvoke(
                 player,
                 "ipl.sable.client.IplClientShipPortalAnchor.RemoteCallables.clear",
                 portalId.toString());

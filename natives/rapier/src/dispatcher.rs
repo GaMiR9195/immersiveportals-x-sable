@@ -190,21 +190,6 @@ where
                 // did not collide with the destination ground.
                 self.world_vs_world::<ContactData>(&pos12.inverse(), g2, g1, prediction, manifolds, true);
             } else if !g1.is_static && !g2.is_static {
-                // Portal rims can exclude a registered pair from contacts. Clear rather
-                // than keep persisted manifolds: stale contacts must not survive exclusion.
-                if let (Some(id1), Some(id2)) = (g1.id, g2.id) {
-                    let key = if id1 <= id2 { (id1, id2) } else { (id2, id1) };
-                    if self
-                        .sable_data
-                        .read()
-                        .unwrap()
-                        .ipl_excluded_pairs
-                        .contains(&key)
-                    {
-                        manifolds.clear();
-                        return Ok(());
-                    }
-                }
                 let swap = {
                     let sable_data = self.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
                     // IPL defensive: a pair can outlive one body by a beat during teardown
@@ -222,27 +207,6 @@ where
                         manifolds.clear();
                         return Ok(());
                     };
-                    // IPL atlas cross-parent guard: real hosted bodies share the
-                    // hosting chart at their own parents' coordinates, so numeric
-                    // overlap between different parent frames is meaningless. A
-                    // shape whose chart matches its body info is the NATIVE
-                    // collider (images carry the far chart on the shape) — drop
-                    // native-vs-native pairs with differing nonzero frames, stale
-                    // manifolds included, like the chart guard in world_vs_world.
-                    // Image shapes skip this on purpose: an image pair meeting in
-                    // a shared far chart is a legitimate portal-mediated contact
-                    // (straddle into the other ship's dimension) regardless of
-                    // parents, and cross-chart image pairs are already dropped by
-                    // the chart guard. 0 = untagged, collides with everything.
-                    if g1.chart == body_1.chart
-                        && g2.chart == body_2.chart
-                        && body_1.ipl_parent_frame != 0
-                        && body_2.ipl_parent_frame != 0
-                        && body_1.ipl_parent_frame != body_2.ipl_parent_frame
-                    {
-                        manifolds.clear();
-                        return Ok(());
-                    }
                     let (Some(min_1), Some(max_1), Some(min_2), Some(max_2)) = (
                         body_1.local_bounds_min,
                         body_1.local_bounds_max,

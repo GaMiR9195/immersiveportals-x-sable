@@ -7,47 +7,20 @@ import ipl.sable.render.IplProgramBindHook;
 import org.joml.Matrix4f;
 import org.lwjgl.system.MemoryUtil;
 import org.spongepowered.asm.mixin.Final;
-import org.spongepowered.asm.mixin.Shadow;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.concurrent.atomic.AtomicBoolean;
-
 /**
- * Catch Flywheel's per-embedded-environment program binds that miss BOTH
- * our {@code GlStateManager._glUseProgram} AND
- * {@code ProgramManager.glUseProgram} hooks.
+ * Встроенные окружения Flywheel, которыми Sable рисует визуалы саб-уровней (шестерни и валы
+ * Create через {@code BlockEntityStorageMixin.sable$createVisual}).
  *
- * <p><b>The path we're catching:</b> Sable wires Create
- * {@code BracketedKineticBlockEntity} (cogs) to Flywheel
- * {@code BlockEntityVisualizer} via
- * {@code BlockEntityStorageMixin.sable$createVisual}, embedding the cog
- * into a per-sub-level Flywheel {@code VisualEmbedding}. The cog is
- * rendered by {@link EmbeddedEnvironment#setupDraw(GlProgram)} which
- * calls Flywheel's own {@code GlProgram.bind} ->
- * {@code GL20C.glUseProgram} directly, bypassing all Mojang/Iris
- * wrappers.
- *
- * <p>Critical insight (user-reported): Flywheel's MAIN backend may have
- * fallen back to "off" globally under Iris+shaderpack, but per-sub-level
- * Flywheel embeddings stay active -- that's the whole point of Sable's
- * BlockEntityStorageMixin wiring. Empirical: sub-level cogs cast no
- * shadows (Flywheel path), main-world cogs DO cast shadows (vanilla BER
- * path). So `EmbeddedEnvironment.setupDraw` IS firing for sub-level
- * cogs in this config.
- *
- * <p>An earlier @Pseudo+targets-string attempt silently no-op'd --
- * mixin without compile-time class info couldn't bind the inject. This
- * version uses a direct class reference (compileOnly Flywheel dep added
- * in allProjects.gradle).
- *
- * <p>Registers Flywheel-owned program handles with the normal bind hook.
- * Clipping remains scoped to Sable's individual sub-level draw brackets.
+ * <p>{@link EmbeddedEnvironment#setupDraw(GlProgram)} привязывает программу собственным
+ * {@code GlProgram.bind} → {@code GL20C.glUseProgram}, минуя хуки {@code GlStateManager} и
+ * {@code ProgramManager}, поэтому уравнения отсечения сюда передаются отдельно. Встройки
+ * саб-уровней активны даже тогда, когда основной backend Flywheel выключен (Iris с шейдерпаком).
  */
 @Mixin(value = EmbeddedEnvironment.class, remap = false)
 public class FlywheelEmbeddedEnvironmentMixin {
@@ -64,10 +37,10 @@ public class FlywheelEmbeddedEnvironmentMixin {
      * скрыт) схлопываются тоже. {@code flush} пересчитывает матрицу каждый кадр, так что
      * окружение возвращается само, как только саб-уровень отходит от портала.
      */
-    @Inject(method = "flush(J)V", at = @At("TAIL"), remap = false, require = 0)
+    @Inject(method = "flush(J)V", at = @At("TAIL"))
     private void ipl$collapseHiddenEnvironment(long ptr, CallbackInfo ci) {
-        EmbeddedEnvironment env = (EmbeddedEnvironment) (Object) this;
-        for (int depth = 0; env != null && depth < 16; depth++) {
+        for (EmbeddedEnvironment env = (EmbeddedEnvironment) (Object) this; env != null;
+             env = ((FlywheelEmbeddedEnvironmentMixin) (Object) env).parent) {
             if (IplFlywheelFallback.isHiddenEnvironment(env)) {
                 this.poseComposed.zero().m33(1.0f);
                 MemoryUtil.memSet(ptr, 0, 64);
@@ -75,35 +48,12 @@ public class FlywheelEmbeddedEnvironmentMixin {
                 MemoryUtil.memPutFloat(ptr + 60L, 1.0f);
                 return;
             }
-            env = ((FlywheelEmbeddedEnvironmentMixin) (Object) env).parent;
         }
     }
 
-    @Unique
-    private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-flywheel-embedded-clip");
-
-    @Unique
-    private static final AtomicBoolean IPL$LOGGED_FIRST_FIRE = new AtomicBoolean(false);
-
-    @Inject(
-        method = "setupDraw",
-        at = @At("HEAD"),
-        remap = false
-    )
+    /** Уравнения отсечения — только для этой программы Flywheel, тем же путём, что и обычный bind. */
+    @Inject(method = "setupDraw", at = @At("HEAD"))
     private void ipl$onSetupDraw(GlProgram program, CallbackInfo ci) {
-        if (IPL$LOGGED_FIRST_FIRE.compareAndSet(false, true)) {
-            IPL$LOG.debug("[IPL-FLYWHEEL-EMBED-FIRED] FIRST-FIRE program={} class={}",
-                program, program != null ? program.getClass().getName() : "null");
-        }
-
-        if (program == null) return;
-        int progId = program.handle();
-        if (progId <= 0) return;
-
-        // Update only this Flywheel-owned program, using the same scoped bind path.
-        IplProgramBindHook.onBind(progId);
-
-        // Flywheel draws after Sable's scoped bracket. Reusing the last projection
-        // equation here makes source and destination projections clip each other.
+        IplProgramBindHook.onBind(program.handle());
     }
 }

@@ -1,5 +1,6 @@
 package ipl.sable.mixin;
 
+import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.transit.IplProjectionTree;
@@ -37,12 +38,12 @@ public abstract class PlayerMixin {
     @Shadow
     public abstract double blockInteractionRange();
 
-    @Inject(method = "canInteractWithBlock", at = @At("HEAD"), cancellable = true, require = 0)
+    @Inject(method = "canInteractWithBlock", at = @At("HEAD"), cancellable = true)
     private void ipl$canInteractWithPieceBlock(
         BlockPos pos, double slop, CallbackInfoReturnable<Boolean> cir
     ) {
         Player self = (Player) (Object) this;
-        SubLevel owner = dev.ryanhcode.sable.Sable.HELPER.getContaining(self.level(), pos);
+        SubLevel owner = Sable.HELPER.getContaining(self.level(), pos);
         if (owner == null) return;
         IplProjectionTree tree = IplProjectionTree.of(owner);
         if (tree.isEmpty() && owner.getLevel() == self.level()) return; // plain native ship: Sable's own check

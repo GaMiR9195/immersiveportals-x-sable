@@ -1,10 +1,9 @@
 package ipl.sable.mixin;
 
-import net.minecraft.network.syncher.EntityDataAccessor;
+import dev.simulated_team.simulated.content.entities.launched_plunger.LaunchedPlungerEntity;
+import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Unique;
@@ -32,80 +31,29 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class PlungerEntityMixin {
 
     @Unique
-    private static final Logger IPL$LOG = LoggerFactory.getLogger("ipl-plunger-target");
-
-    @Unique
     private static final boolean IPL$ENABLED =
         !"false".equals(System.getProperty("ipl.sable.plungerTargetFix"));
 
     @Unique
-    private static volatile EntityDataAccessor<Vec3> ipl$targetPos;
-
-    @Unique
-    private static volatile EntityDataAccessor<Integer> ipl$otherPlungerId;
-
-    @Unique
-    private static volatile boolean ipl$reflectionFailed;
-
-    @Unique
-    private static long ipl$lastRestoreLogMs;
-
-    @Unique
     private Vec3 ipl$savedTarget;
 
-    @SuppressWarnings("unchecked")
-    @Unique
-    private boolean ipl$resolveAccessors() {
-        if (ipl$reflectionFailed) return false;
-        if (ipl$targetPos != null) return true;
-        try {
-            Class<?> cls = Class.forName(
-                "dev.simulated_team.simulated.content.entities.launched_plunger.LaunchedPlungerEntity",
-                false, this.getClass().getClassLoader());
-            ipl$otherPlungerId = (EntityDataAccessor<Integer>)
-                cls.getField("OTHER_PLUNGER_ID").get(null);
-            ipl$targetPos = (EntityDataAccessor<Vec3>) cls.getField("TARGET_POS").get(null);
-            return true;
-        } catch (ReflectiveOperationException | ClassCastException e) {
-            ipl$reflectionFailed = true;
-            IPL$LOG.warn("[IPL-PLUNGER-TARGET] accessor reflection failed; fix disabled", e);
-            return false;
+    @Inject(method = "tick", at = @At("HEAD"))
+    private void ipl$captureTarget(CallbackInfo ci) {
+        Entity self = (Entity) (Object) this;
+        if (IPL$ENABLED && self.level().isClientSide) {
+            this.ipl$savedTarget = self.getEntityData().get(LaunchedPlungerEntity.TARGET_POS);
         }
     }
 
-    @Inject(method = "tick", at = @At("HEAD"), require = 0)
-    private void ipl$captureTarget(CallbackInfo ci) {
-        Entity self = (Entity) (Object) this;
-        if (!IPL$ENABLED || !self.level().isClientSide || !ipl$resolveAccessors()) return;
-        this.ipl$savedTarget = self.getEntityData().get(ipl$targetPos);
-    }
-
-    @Inject(method = "tick", at = @At("RETURN"), require = 0)
+    @Inject(method = "tick", at = @At("RETURN"))
     private void ipl$restoreTarget(CallbackInfo ci) {
         Vec3 saved = this.ipl$savedTarget;
         this.ipl$savedTarget = null;
         if (saved == null || saved.equals(Vec3.ZERO)) return;
-
-        Entity self = (Entity) (Object) this;
-        if (!self.level().isClientSide) return;
-        int otherId = self.getEntityData().get(ipl$otherPlungerId);
-        if (otherId == -1) return;
-        if (!self.getEntityData().get(ipl$targetPos).equals(Vec3.ZERO)) return;
-
-        self.getEntityData().set(ipl$targetPos, saved);
-
-        // The renderer only falls back to TARGET_POS when the partner's client entity is
-        // missing or removed — that's the window where the zeroed value drew (0,0,0).
-        Entity other = self.level().getEntity(otherId);
-        if (other != null && !other.isRemoved()) return;
-        long now = System.currentTimeMillis();
-        if (now - ipl$lastRestoreLogMs > 1000) {
-            ipl$lastRestoreLogMs = now;
-            IPL$LOG.debug("[IPL-PLUNGER-TARGET] paired plunger id={} has {} partner "
-                + "(id={}) client-side; restored TARGET_POS=({}, {}, {})",
-                self.getId(), other == null ? "no" : "a removed", otherId,
-                String.format("%.1f", saved.x), String.format("%.1f", saved.y),
-                String.format("%.1f", saved.z));
+        SynchedEntityData data = ((Entity) (Object) this).getEntityData();
+        if (data.get(LaunchedPlungerEntity.OTHER_PLUNGER_ID) == -1) return;
+        if (data.get(LaunchedPlungerEntity.TARGET_POS).equals(Vec3.ZERO)) {
+            data.set(LaunchedPlungerEntity.TARGET_POS, saved);
         }
     }
 }

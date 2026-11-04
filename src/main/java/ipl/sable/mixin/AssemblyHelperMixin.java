@@ -25,7 +25,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(value = SubLevelAssemblyHelper.class, remap = false)
 public abstract class AssemblyHelperMixin {
 
-    @Inject(method = "assembleBlocks", at = @At("RETURN"), remap = false, require = 0)
+    @Inject(method = "assembleBlocks", at = @At("RETURN"))
     private static void ipl$attachContainedPortals(
         ServerLevel level, BlockPos anchor, Iterable<BlockPos> blocks, BoundingBox3ic bounds,
         CallbackInfoReturnable<ServerSubLevel> cir

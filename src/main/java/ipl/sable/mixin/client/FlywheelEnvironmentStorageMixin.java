@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(value = EnvironmentStorage.class, remap = false)
 public abstract class FlywheelEnvironmentStorageMixin {
 
-    @Inject(method = "flush()V", at = @At("HEAD"), remap = false, require = 0)
+    @Inject(method = "flush()V", at = @At("HEAD"))
     private void ipl$selectHiddenEnvironments(CallbackInfo ci) {
         IplFlywheelFallback.beginEnvironmentFlush();
     }

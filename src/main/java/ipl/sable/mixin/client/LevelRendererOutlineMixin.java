@@ -3,6 +3,7 @@ package ipl.sable.mixin.client;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
+import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
@@ -39,11 +40,8 @@ import java.util.List;
  * {@link IplStraddleRenderState} for that exact image (chains included), and our
  * {@code renderPose()} override feeds Sable's own outline math the image pose. A piece
  * that is not present in this pass's level draws no outline here at all (it is drawn in
- * the pass that shows it), so no phantom outline appears on a cut-away twin.
- *
- * <p>Русский комментарий: раньше контур рисовался по одной плоскости первого портала и
- * только для первой найденной проекции — после второго портала контур оказывался не на
- * том куске или на "призраке".
+ * the pass that shows it), so no phantom outline appears on a cut-away twin, after a second
+ * portal included.
  */
 @Mixin(value = LevelRenderer.class, priority = 2100)
 public abstract class LevelRendererOutlineMixin {
@@ -58,8 +56,7 @@ public abstract class LevelRendererOutlineMixin {
             value = "INVOKE",
             target = "Lnet/neoforged/neoforge/client/ClientHooks;onDrawHighlight(Lnet/minecraft/client/renderer/LevelRenderer;Lnet/minecraft/client/Camera;Lnet/minecraft/world/phys/HitResult;Lnet/minecraft/client/DeltaTracker;Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;)Z",
             remap = false
-        ),
-        require = 0
+        )
     )
     private boolean ipl$outlineOnPiece(
         LevelRenderer context, Camera camera, HitResult target, DeltaTracker deltaTracker,
@@ -69,7 +66,7 @@ public abstract class LevelRendererOutlineMixin {
             || target.getType() != HitResult.Type.BLOCK) {
             return original.call(context, camera, target, deltaTracker, poseStack, bufferSource);
         }
-        SubLevel owner = dev.ryanhcode.sable.Sable.HELPER.getContaining(this.level, blockTarget.getBlockPos());
+        SubLevel owner = Sable.HELPER.getContaining(this.level, blockTarget.getBlockPos());
         if (!(owner instanceof ClientSubLevel clientOwner)) {
             return original.call(context, camera, target, deltaTracker, poseStack, bufferSource);
         }

@@ -4,14 +4,21 @@ import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
+import org.joml.Quaterniond;
+import org.joml.Vector3d;
 import qouteall.imm_ptl.core.portal.Portal;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /** Occupied-block continuous OBB sweep in one coordinate chart.
  * A trail is consumed in chronological order; a portal maps only its residual.
@@ -25,9 +32,8 @@ public final class PortalCrossingDetector {
      * Quarter-block tolerance never widens fresh admission or native clipping. */
     public static final double SESSION_RELEASE_MARGIN = 0.65;
     private static final Map<UUID, Trail> TRAILS = new HashMap<>();
-    private static final Map<UUID, ExitAnchor> EXIT_ANCHORS = new HashMap<>();
+    private static final Map<UUID, Pose3d> EXIT_ANCHORS = new HashMap<>();
     private static final double EXIT_CLEARANCE_THICKNESS = 0.01;
-    private static final double MIN_EXIT_CLEARANCE = 1e-3;
     private static final double MAX_ROTATION_STEP = Math.toRadians(5.0);
     private static final Map<UUID, ExitLatch> EXIT_LATCHES = new HashMap<>();
     private static long trailTick;
@@ -37,14 +43,14 @@ public final class PortalCrossingDetector {
      * this rigid mapping (the projection side of a session). The real trail is never
      * modified; exit latches/anchors are real-side state and are ignored in the view.
      */
-    @org.jetbrains.annotations.Nullable
+    @Nullable
     private static IplStraddlePoseMap.StraddleMapping mappedView;
     private record MappedTrailKey(UUID body, IplStraddlePoseMap.StraddleMapping mapping) {}
     private static final Map<MappedTrailKey, Trail> MAPPED_TRAILS = new HashMap<>();
 
     /** Runs {@code action} with every trail query mapped through {@code mapping}. */
     public static <T> T inMappedView(
-        IplStraddlePoseMap.StraddleMapping mapping, java.util.function.Supplier<T> action
+        IplStraddlePoseMap.StraddleMapping mapping, Supplier<T> action
     ) {
         IplStraddlePoseMap.StraddleMapping previous = mappedView;
         mappedView = mapping;
@@ -58,15 +64,12 @@ public final class PortalCrossingDetector {
     /**
      * Piece scope: which blocks of a body take part in a crossing test.
      *
-     * <p>Русский комментарий (почему): раньше и корневые, и цепочечные проверки брали ВСЕ
-     * блоки тела. Часть, уже прошедшая портал P1, физически отсутствует в исходном мире,
-     * но её реальные координаты продолжают лежать там — и она "пересекала" следующие
-     * порталы P2, P3 того же мира (ряд порталов со сдвигом на блок): открывались
-     * фантомные корневые сессии и их цепочки, образы в неверных местах толкали тело, а
-     * снапшот разрастался до обрыва соединения. Теперь кусок берётся из того же дерева
-     * проекций, что и физика: корневой тест портала P видит только родной кусок и кусок,
-     * уже ушедший в P; тест дочернего портала Q узла N — только кусок N и поддерево N>Q.
-     * С одной сессией фильтр ничего не отбрасывает, поведение обычного прохода прежнее.
+     * <p>Часть тела, уже прошедшая портал P1, физически отсутствует в исходном мире, но её
+     * реальные координаты остаются там. Без фильтра она «пересекала» бы соседние порталы P2, P3
+     * того же мира (ряд порталов со сдвигом на блок) и открывала бы фантомные сессии. Поэтому
+     * кусок берётся из того же дерева проекций, что и физика: корневой тест портала P видит
+     * только родной кусок и кусок, уже ушедший в P; тест дочернего портала Q узла N — только
+     * кусок N и поддерево N>Q. При одной сессии фильтр ничего не отбрасывает.
      */
     private record PieceScope(String parentPath, UUID portal, boolean leading) {
         String id() {
@@ -74,7 +77,7 @@ public final class PortalCrossingDetector {
         }
     }
 
-    @org.jetbrains.annotations.Nullable
+    @Nullable
     private static PieceScope pieceScope;
     private record ScopedBlocksKey(UUID body, String scope, long generation, long tick, long revision) {}
     private static final Map<ScopedBlocksKey, List<BlockPos>> SCOPED_BLOCKS = new HashMap<>();
@@ -82,18 +85,16 @@ public final class PortalCrossingDetector {
     /**
      * Piece of every occupied block, once per body, tick, session generation and block revision.
      *
-     * <p>Русский комментарий (почему): каждая область куска (корень, каждый ребёнок каждого
-     * узла) раньше заново спрашивала {@code tree.pieceAt} для всех блоков тела — в ряду из N
-     * порталов это N проходов по телу на тик, плюс ещё по проходу в проверках "держит ли кусок
-     * материал". Принадлежность блока куску от области не зависит, поэтому считается один раз,
-     * а области только фильтруют готовый массив: нарезка дешевле без всяких ограничений глубины.
+     * <p>Принадлежность блока куску не зависит от области проверки (корень, ребёнок узла),
+     * поэтому считается один раз, а области только фильтруют готовый массив. Иначе ряд из N
+     * порталов стоил бы N проходов {@code tree.pieceAt} по всему телу за тик.
      */
     private record PieceIndex(UUID body, long generation, long tick, long revision) {}
     private record Pieces(List<BlockPos> blocks, IplProjectionTree.Node[] pieces) {}
     private static final Map<PieceIndex, Pieces> PIECE_INDEX = new HashMap<>();
 
     /** Runs {@code action} with crossing tests restricted to one projection piece. */
-    public static <T> T inPieceScope(String parentPath, UUID portal, java.util.function.Supplier<T> action) {
+    public static <T> T inPieceScope(String parentPath, UUID portal, Supplier<T> action) {
         return inScope(new PieceScope(parentPath == null ? "" : parentPath, portal, false), action);
     }
 
@@ -102,11 +103,11 @@ public final class PortalCrossingDetector {
      * box already reaches through the parent's portal (their image is visible beyond its exit).
      * Only used to decide whether a new child session opens; see {@code IplTransitController}.
      */
-    public static <T> T inLeadingPieceScope(String parentPath, UUID portal, java.util.function.Supplier<T> action) {
+    public static <T> T inLeadingPieceScope(String parentPath, UUID portal, Supplier<T> action) {
         return inScope(new PieceScope(parentPath == null ? "" : parentPath, portal, true), action);
     }
 
-    private static <T> T inScope(PieceScope scope, java.util.function.Supplier<T> action) {
+    private static <T> T inScope(PieceScope scope, Supplier<T> action) {
         PieceScope previous = pieceScope;
         pieceScope = scope;
         try {
@@ -139,7 +140,7 @@ public final class PortalCrossingDetector {
         IplProjectionTree.Node[] pieces = pieces(body, tree, all);
         String childPath = scope.parentPath().isEmpty() ? null : scope.parentPath() + ">" + scope.portal();
         Lead lead = scope.leading() && childPath != null ? Lead.of(tree, scope.parentPath(), realTrail(body).end) : null;
-        List<BlockPos> out = new java.util.ArrayList<>(all.size());
+        List<BlockPos> out = new ArrayList<>(all.size());
         for (int i = 0; i < all.size(); i++) {
             IplProjectionTree.Node piece = pieces[i];
             boolean accept;
@@ -180,7 +181,7 @@ public final class PortalCrossingDetector {
      * visible image starts with these boxes.
      */
     private record Lead(IplProjectionTree.Node node, Frame frame, double supportN, double supportW, double supportH) {
-        @org.jetbrains.annotations.Nullable
+        @Nullable
         static Lead of(IplProjectionTree tree, String path, Pose3dc realPose) {
             for (IplProjectionTree.Node node : tree.nodes()) {
                 if (!node.path.equals(path)) continue;
@@ -296,9 +297,10 @@ public final class PortalCrossingDetector {
         trailTick++;
     }
 
+    /** Exit latches are real-side state: none in a mapped view. */
+    @Nullable
     private static ExitLatch liveExitLatch(ServerSubLevel airship) {
-        if (mappedView != null) return null;
-        return airship == null ? null : EXIT_LATCHES.get(airship.getUniqueId());
+        return mappedView != null ? null : EXIT_LATCHES.get(airship.getUniqueId());
     }
 
     private static double backwardTravelIntoPlate(ServerSubLevel airship, ExitLatch latch) {
@@ -307,14 +309,13 @@ public final class PortalCrossingDetector {
         double tx = (end.minX + end.maxX) * 0.5 - (start.minX + start.maxX) * 0.5;
         double ty = (end.minY + end.maxY) * 0.5 - (start.minY + start.maxY) * 0.5;
         double tz = (end.minZ + end.maxZ) * 0.5 - (start.minZ + start.maxZ) * 0.5;
-
         return tx * latch.nx + ty * latch.ny + tz * latch.nz;
     }
 
     private static final double PLATE_IDENTITY_TOLERANCE = 1.0e-3;
 
     private static boolean plateIsRectangleOf(
-        ExitLatch latch, @org.jetbrains.annotations.Nullable Portal portal
+        ExitLatch latch, @Nullable Portal portal
     ) {
         if (portal == null) return false;
         Vec3 o = portal.getOriginPos();
@@ -339,9 +340,9 @@ public final class PortalCrossingDetector {
     }
 
     public static boolean touchesPortalVirtually(
-        ServerSubLevel airship, @org.jetbrains.annotations.Nullable Portal portal
+        ServerSubLevel airship, @Nullable Portal portal
     ) {
-        if (airship == null || portal == null) return false;
+        if (portal == null) return false;
         ExitLatch latch = liveExitLatch(airship);
         if (latch == null || !plateIsRectangleOf(latch, portal)) return false;
         return overlapsExit(airship, latch, trail(airship).end);
@@ -371,25 +372,11 @@ public final class PortalCrossingDetector {
                 new Pose3d(airship.logicalPose()));
             TRAILS.put(id, trail);
         } else {
-
-            trail.seededFromExit = false;
-            ExitAnchor anchor = liveAnchor(id);
-            if (trail.rebasedThisTick && anchor != null) {
-
-                trail.start.set(anchor.pose);
-
-                trail.rebasedThisTick = false;
-
-                trail.seededFromExit = true;
-                EXIT_ANCHORS.remove(id);
-            } else if (trail.rebasedThisTick) {
-
-                trail.start.set(trail.end);
-
-                trail.rebasedThisTick = false;
-            } else {
-                trail.start.set(trail.end);
-            }
+            // The first capture after a rebase starts at the exit anchor (the mapped crossing pose).
+            Pose3d anchor = trail.rebasedThisTick ? EXIT_ANCHORS.remove(id) : null;
+            trail.start.set(anchor != null ? anchor : trail.end);
+            trail.seededFromExit = anchor != null;
+            trail.rebasedThisTick = false;
             trail.end.set(airship.logicalPose());
         }
         trail.evaluations.clear();
@@ -397,15 +384,7 @@ public final class PortalCrossingDetector {
         trail.lastSeenTick = trailTick;
     }
 
-    public static void forgetTrail(ServerSubLevel airship) {
-        invalidateMapped(airship.getUniqueId());
-        TRAILS.remove(airship.getUniqueId());
-        EXIT_LATCHES.remove(airship.getUniqueId());
-        EXIT_ANCHORS.remove(airship.getUniqueId());
-    }
-
     public static void resetTrail(ServerSubLevel airship) {
-
         if (EXIT_ANCHORS.containsKey(airship.getUniqueId())) {
             reseedTrailFromExitAnchor(airship);
             return;
@@ -415,58 +394,44 @@ public final class PortalCrossingDetector {
             captureTrail(airship);
             return;
         }
-        if (trail.seededFromExit) {
-
-            return;
-        }
-
+        if (trail.seededFromExit) return;
         trail.start.set(airship.logicalPose());
         trail.end.set(airship.logicalPose());
-
         trail.rebasedThisTick = true;
         trail.evaluations.clear();
         invalidateMapped(airship.getUniqueId());
         trail.lastSeenTick = trailTick;
     }
 
-    @org.jetbrains.annotations.Nullable
     /** Geometry, not elapsed ticks, retires exit contact. History remains continuous. */
+    @Nullable
     public static UUID settleExit(ServerSubLevel airship) {
         UUID id = airship.getUniqueId();
         ExitLatch latch = EXIT_LATCHES.get(id);
         if (latch == null) return null;
         if (overlapsExit(airship, latch, trail(airship).end)) return null;
         EXIT_LATCHES.remove(id);
-
         reseedTrailFromExitAnchor(airship);
         return latch.portalId;
     }
 
     private static void reseedTrailFromExitAnchor(ServerSubLevel airship) {
         UUID id = airship.getUniqueId();
-        ExitAnchor anchor = liveAnchor(id);
+        Pose3d anchor = EXIT_ANCHORS.get(id);
         if (anchor == null) return;
         Trail trail = TRAILS.get(id);
         if (trail == null) {
-            trail = new Trail(new Pose3d(anchor.pose),
-                new Pose3d(airship.logicalPose()));
+            trail = new Trail(new Pose3d(anchor), new Pose3d(airship.logicalPose()));
             TRAILS.put(id, trail);
         } else {
-
-            trail.start.set(anchor.pose);
+            trail.start.set(anchor);
             trail.end.set(airship.logicalPose());
         }
-
         trail.rebasedThisTick = true;
         trail.seededFromExit = true;
         trail.evaluations.clear();
         invalidateMapped(airship.getUniqueId());
         trail.lastSeenTick = trailTick;
-    }
-
-    @org.jetbrains.annotations.Nullable
-    private static ExitAnchor liveAnchor(UUID id) {
-        return EXIT_ANCHORS.get(id);
     }
 
     /** Cut at whole-assembly completion, then map A and B through the SAME isometry. */
@@ -479,7 +444,6 @@ public final class PortalCrossingDetector {
         if (trail == null || !Double.isFinite(crossingTime)) {
             entry = new Pose3d(airship.logicalPose());
         } else {
-
             entry = IplStraddlePoseMap.StraddleMapping.of(portal).mapPose(
                 interpolate(trail.start, trail.end, Math.clamp(crossingTime, 0.0, 1.0)));
         }
@@ -488,9 +452,8 @@ public final class PortalCrossingDetector {
             TRAILS.put(id, trail);
         }
 
-        Pose3d anchor = armExitAnchor(airship, portal, entry);
-
-        trail.start.set(anchor);
+        EXIT_ANCHORS.put(id, new Pose3d(entry));
+        trail.start.set(entry);
 
         armExitClearance(airship, portal);
         trail.end.set(airship.logicalPose());
@@ -523,8 +486,8 @@ public final class PortalCrossingDetector {
             from.position().x() + (to.position().x() - from.position().x()) * t,
             from.position().y() + (to.position().y() - from.position().y()) * t,
             from.position().z() + (to.position().z() - from.position().z()) * t);
-        org.joml.Quaterniond rotation = new org.joml.Quaterniond(from.orientation());
-        rotation.slerp(new org.joml.Quaterniond(to.orientation()), Math.clamp(t, 0.0, 1.0));
+        Quaterniond rotation = new Quaterniond(from.orientation());
+        rotation.slerp(new Quaterniond(to.orientation()), Math.clamp(t, 0.0, 1.0));
         out.orientation().set(rotation);
         double bounded = Math.clamp(t, 0.0, 1.0);
         from.rotationPoint().lerp(to.rotationPoint(), bounded, out.rotationPoint());
@@ -532,69 +495,26 @@ public final class PortalCrossingDetector {
         return out;
     }
 
-    public static Pose3d armExitAnchor(
-        ServerSubLevel airship, Portal portal, Pose3dc mappedCrossingPose
-    ) {
-        Pose3d anchor = projectOntoExitPlane(airship, portal, mappedCrossingPose);
-        EXIT_ANCHORS.put(airship.getUniqueId(), new ExitAnchor(
-            new Pose3d(anchor), portal == null ? null : portal.getUUID()));
-        return anchor;
-    }
-
-    /** Compatibility name: deliberately NO normal projection of an actual path pose. */
-    public static Pose3d projectOntoExitPlane(
-        ServerSubLevel airship, Portal portal, Pose3dc destinationFramePose
-    ) {
-
-        return new Pose3d(destinationFramePose);
-    }
-
     public static void armExitClearance(ServerSubLevel airship, Portal portal) {
-        if (portal == null) return;
-
-        double clearance = Math.max(EXIT_CLEARANCE_THICKNESS, MIN_EXIT_CLEARANCE);
-
         IplEnteringVolumeVisualization.clearBuffer(airship);
-
-        IplStraddlePoseMap.StraddleMapping exitFrame =
-            IplStraddlePoseMap.StraddleMapping.of(portal);
-        Vec3 origin = exitFrame.mapPoint(portal.getOriginPos());
-        Vec3 normal = exitFrame.mapVec(portal.getNormal());
-        Vec3 axisW = exitFrame.mapVec(portal.getAxisW());
-        Vec3 axisH = exitFrame.mapVec(portal.getAxisH());
-        ExitLatch latch = new ExitLatch(
-            portal.getUUID(),
-            origin.x, origin.y, origin.z,
-            normal.x, normal.y, normal.z,
-            axisW.x, axisW.y, axisW.z,
-            axisH.x, axisH.y, axisH.z,
-            portal.getWidth() * 0.5,
-            portal.getHeight() * 0.5,
-            clearance);
-        latch.sourceDim = portal.level().dimension();
-        latch.sourceOrigin = portal.getOriginPos();
-        EXIT_LATCHES.put(airship.getUniqueId(), latch);
+        EXIT_LATCHES.put(airship.getUniqueId(), new ExitLatch(portal, EXIT_CLEARANCE_THICKNESS));
     }
 
     /**
      * Fresh exit: a crossing of the plate we just came out of is not a new entrance.
      *
-     * <p>Русский комментарий: блокируется только грань, ведущая НАЗАД в исходный портал
-     * (иначе тело "пинг-понгом" возвращалось бы сразу после флипа). Раньше блокировался
-     * любой портал на той же плоскости — и ряд порталов "выход P1 = вход P2" вставал после
-     * первого же перехода.
+     * <p>Блокируется только грань, ведущая НАЗАД в исходный портал (иначе тело «пинг-понгом»
+     * возвращалось бы сразу после флипа). Другие порталы той же плоскости не блокируются:
+     * в ряду «выход P1 = вход P2» тело проходит дальше.
      */
     public static boolean withinExitClearance(ServerSubLevel airship, Portal portal) {
         ExitLatch latch = liveExitLatch(airship);
         if (latch == null) return false;
-
         if (!overlapsExit(airship, latch, trail(airship).end)) return false;
-
         return plateIsRectangleOf(latch, portal) && leadsBack(latch, portal);
     }
 
     private static boolean leadsBack(ExitLatch latch, Portal candidate) {
-        if (latch.sourceDim == null || latch.sourceOrigin == null) return true;
         return candidate.getDestDim().equals(latch.sourceDim)
             && candidate.getDestPos().distanceToSqr(latch.sourceOrigin) <= 1.0e-4;
     }
@@ -609,38 +529,29 @@ public final class PortalCrossingDetector {
         trailTick = 0L;
     }
 
-    @org.jetbrains.annotations.Nullable
+    @Nullable
     public static Pose3dc bufferedExitAnchor(ServerSubLevel airship) {
-        ExitAnchor anchor = liveAnchor(airship.getUniqueId());
-        return anchor == null ? null : anchor.pose;
-    }
-
-    @org.jetbrains.annotations.Nullable
-    public static UUID bufferedExitAnchorPortal(ServerSubLevel airship) {
-        ExitAnchor anchor = liveAnchor(airship.getUniqueId());
-        return anchor == null ? null : anchor.portalId;
+        return EXIT_ANCHORS.get(airship.getUniqueId());
     }
 
     public static boolean hasBufferedExit(ServerSubLevel airship) {
         if (mappedView != null) return false;
         UUID id = airship.getUniqueId();
         if (EXIT_ANCHORS.containsKey(id)) return true;
-
         Trail trail = TRAILS.get(id);
         return trail != null && trail.seededFromExit;
     }
 
-    @org.jetbrains.annotations.Nullable
+    @Nullable
     public static Pose3dc bufferedPose(ServerSubLevel airship) {
-        ExitAnchor anchor = liveAnchor(airship.getUniqueId());
-        if (anchor != null) return anchor.pose;
+        Pose3d anchor = EXIT_ANCHORS.get(airship.getUniqueId());
+        if (anchor != null) return anchor;
         Trail trail = TRAILS.get(airship.getUniqueId());
         if (trail == null) return null;
-
         return trail.seededFromExit ? trail.start : null;
     }
 
-    public static AABB boundsAt(ServerSubLevel airship, double t) {
+    private static AABB boundsAt(ServerSubLevel airship, double t) {
         Trail trail = trail(airship);
         double clamped = Double.isFinite(t) ? Math.clamp(t, 0.0, 1.0) : 0.0;
         Bounds bounds = new Bounds();
@@ -689,13 +600,16 @@ public final class PortalCrossingDetector {
     private static boolean sectionFits(Portal portal, List<BlockPos> blocks, Frame frame,
                                       double margin, double depth) {
         double[][] basis = frame.halfBasis();
-        double[] origin = vector(portal.getOriginPos()), w = vector(portal.getAxisW());
-        double[] h = vector(portal.getAxisH()), n = vector(portal.getNormal());
-        double halfW = portal.getWidth()*.5+margin, halfH = portal.getHeight()*.5+margin;
+        double[] origin = vector(portal.getOriginPos());
+        double[] w = vector(portal.getAxisW());
+        double[] h = vector(portal.getAxisH());
+        double[] n = vector(portal.getNormal());
+        double halfW = portal.getWidth() * 0.5 + margin;
+        double halfH = portal.getHeight() * 0.5 + margin;
         boolean touched = false;
         for (BlockPos block : blocks) {
-            double[] center = {frame.centerX(block),frame.centerY(block),frame.centerZ(block)};
-            int section = PortalSectionMath.classify(center,basis,origin,w,h,n,halfW,halfH,depth);
+            double[] center = {frame.centerX(block), frame.centerY(block), frame.centerZ(block)};
+            int section = PortalSectionMath.classify(center, basis, origin, w, h, n, halfW, halfH, depth);
             if (section == PortalSectionMath.OUTSIDE) return false;
             if (section == PortalSectionMath.INSIDE) touched = true;
         }
@@ -739,25 +653,18 @@ public final class PortalCrossingDetector {
         return high;
     }
 
-    public static double segmentLength(ServerSubLevel airship) {
-        Trail trail = trail(airship);
-        return trail.start.position().distance(trail.end.position());
-    }
-
     public static boolean entryWithinExitSlab(ServerSubLevel airship, double entryTime) {
-
         ExitLatch latch = liveExitLatch(airship);
         if (latch == null) return false;
-
         if (backwardTravelIntoPlate(airship, latch) <= EPSILON) return false;
-
-        if (Double.isFinite(entryTime) && overlapsExit(airship, latch,
-            interpolate(trail(airship).start, trail(airship).end, Math.clamp(entryTime, 0.0, 1.0)))) return true;
-
-        return !Double.isFinite(entryTime) && overlapsExit(airship, latch, trail(airship).end);
+        Trail trail = trail(airship);
+        Pose3dc pose = Double.isFinite(entryTime)
+            ? interpolate(trail.start, trail.end, Math.clamp(entryTime, 0.0, 1.0))
+            : trail.end;
+        return overlapsExit(airship, latch, pose);
     }
 
-    public static AABB currentBounds(ServerSubLevel airship) {
+    private static AABB currentBounds(ServerSubLevel airship) {
         Trail trail = trail(airship);
         Bounds bounds = new Bounds();
         includePlotBounds(bounds, airship, trail.end);
@@ -836,23 +743,19 @@ public final class PortalCrossingDetector {
         boolean currentContact = current.minDistance <= PORTAL_HYSTERESIS_DEPTH + EPSILON
             && current.maxDistance >= -PORTAL_HYSTERESIS_DEPTH - EPSILON
             && overlapsAperture(portal, blocks, end, sourceToDestNormal, apertureMargin);
-        SweepResult recent = staticPose ? new SweepResult(currentContact
+        SweepResult sweep = staticPose ? new SweepResult(currentContact
             && current.minDistance <= EPSILON && current.maxDistance >= -EPSILON
             && overlapsAperture(portal, blocks, end, sourceToDestNormal, apertureMargin, 0.0),
             Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY) : sweepSegment(
                 portal, blocks, trail.start, trail.end, sourceToDestNormal, apertureMargin);
-        SweepResult sweep = recent;
-
         CrossingState result = new CrossingState(
             phase(current.minDistance, current.maxDistance),
-
             oldest.minDistance < -EPSILON,
             sweep.intersects,
             currentContact,
             sweep.direction(),
             staticPose ? SweepDirection.NONE : motionDirection(blocks, start, end, sourceToDestNormal),
-
-            Double.isFinite(recent.towardTime()) ? recent.towardTime() : Double.NaN);
+            Double.isFinite(sweep.towardTime()) ? sweep.towardTime() : Double.NaN);
         trail.evaluations.put(key, result);
         if (mappedView == null) IplEnteringVolumeVisualization.record(airship, portal, result);
         return result;
@@ -1025,16 +928,7 @@ public final class PortalCrossingDetector {
         return false;
     }
 
-    private static final class ExitAnchor {
-        final Pose3d pose;
-        @org.jetbrains.annotations.Nullable final UUID portalId;
-
-        ExitAnchor(Pose3d pose, @org.jetbrains.annotations.Nullable UUID portalId) {
-            this.pose = pose;
-            this.portalId = portalId;
-        }
-    }
-
+    /** The plate of a portal just passed, mapped into the destination frame. */
     private static final class ExitLatch {
         final UUID portalId;
         final double ox, oy, oz;
@@ -1043,25 +937,26 @@ public final class PortalCrossingDetector {
         final double hx, hy, hz;
         final double halfW, halfH, halfThickness;
         /** Level and origin of the portal we came through (to recognise its reverse face). */
-        @org.jetbrains.annotations.Nullable net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> sourceDim;
-        @org.jetbrains.annotations.Nullable Vec3 sourceOrigin;
+        final ResourceKey<Level> sourceDim;
+        final Vec3 sourceOrigin;
 
-        ExitLatch(UUID portalId,
-                  double ox, double oy, double oz,
-                  double nx, double ny, double nz,
-                  double wx, double wy, double wz,
-                  double hx, double hy, double hz,
-                  double halfW, double halfH, double halfThickness) {
-            this.portalId = portalId;
-            this.ox = ox; this.oy = oy; this.oz = oz;
-            this.nx = nx; this.ny = ny; this.nz = nz;
-            this.wx = wx; this.wy = wy; this.wz = wz;
-            this.hx = hx; this.hy = hy; this.hz = hz;
-            this.halfW = halfW;
-            this.halfH = halfH;
+        ExitLatch(Portal portal, double halfThickness) {
+            IplStraddlePoseMap.StraddleMapping exitFrame = IplStraddlePoseMap.StraddleMapping.of(portal);
+            Vec3 origin = exitFrame.mapPoint(portal.getOriginPos());
+            Vec3 normal = exitFrame.mapVec(portal.getNormal());
+            Vec3 axisW = exitFrame.mapVec(portal.getAxisW());
+            Vec3 axisH = exitFrame.mapVec(portal.getAxisH());
+            portalId = portal.getUUID();
+            ox = origin.x; oy = origin.y; oz = origin.z;
+            nx = normal.x; ny = normal.y; nz = normal.z;
+            wx = axisW.x; wy = axisW.y; wz = axisW.z;
+            hx = axisH.x; hy = axisH.y; hz = axisH.z;
+            halfW = portal.getWidth() * 0.5;
+            halfH = portal.getHeight() * 0.5;
             this.halfThickness = halfThickness;
+            sourceDim = portal.level().dimension();
+            sourceOrigin = portal.getOriginPos();
         }
-
     }
 
     private record EvaluationKey(UUID portal, Vec3 origin, Vec3 axisW, Vec3 axisH,
@@ -1091,9 +986,9 @@ public final class PortalCrossingDetector {
             // Keep plot-local coordinates relative to the rotation point. Forming
             // transform(0) + R*globalPlotBlock subtracts two huge numbers at distant
             // plot slots and needlessly loses precision at an oblique portal plane.
-            var x = pose.orientation().transform(new org.joml.Vector3d(pose.scale().x(), 0, 0));
-            var y = pose.orientation().transform(new org.joml.Vector3d(0, pose.scale().y(), 0));
-            var z = pose.orientation().transform(new org.joml.Vector3d(0, 0, pose.scale().z()));
+            var x = pose.orientation().transform(new Vector3d(pose.scale().x(), 0, 0));
+            var y = pose.orientation().transform(new Vector3d(0, pose.scale().y(), 0));
+            var z = pose.orientation().transform(new Vector3d(0, 0, pose.scale().z()));
             ox = pose.position().x(); oy = pose.position().y(); oz = pose.position().z();
             pivotX = pose.rotationPoint().x(); pivotY = pose.rotationPoint().y(); pivotZ = pose.rotationPoint().z();
             xx = x.x; xy = x.y; xz = x.z;
@@ -1126,14 +1021,11 @@ public final class PortalCrossingDetector {
                 + Math.abs(yx * x + yy * y + yz * z)
                 + Math.abs(zx * x + zy * y + zz * z)) * 0.5;
         }
-
     }
 
     private record Sample(double minDistance, double maxDistance) {}
 
     private record SweepResult(boolean intersects, double towardTime, double sourceTime) {
-        static final SweepResult NONE = new SweepResult(false, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY);
-
         SweepDirection direction() {
             boolean toward = Double.isFinite(towardTime);
             boolean source = Double.isFinite(sourceTime);

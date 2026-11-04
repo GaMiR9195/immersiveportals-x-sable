@@ -15,44 +15,33 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Конвейер Rapier: учёт связей для ожидания отцепления и «взведённый» шаг общего мира Atlas.
+ * Rapier pipeline: constraint bookkeeping for the attachment gate and the armed step of the
+ * fused world.
  */
 @Pseudo
 @Mixin(value = RapierPhysicsPipeline.class, remap = false)
 public abstract class RapierPipelineMixin {
 
-    // ---- Учёт связей со статическим миром ----
-    // Records constraints to the static world so finished crossings can wait for detachment.
-
-    @Inject(method = "addConstraint", at = @At("RETURN"), remap = false, require = 0)
+    /** Constraints to the static world: a finished crossing waits until they are released. */
+    @Inject(method = "addConstraint", at = @At("RETURN"))
     private void ipl$trackConstraint(PhysicsPipelineBody bodyA, PhysicsPipelineBody bodyB,
                                      PhysicsConstraintConfiguration<?> configuration,
                                      CallbackInfoReturnable<PhysicsConstraintHandle> cir) {
-        try {
-            IplAttachmentGate.onConstraintAdded(bodyA, bodyB, configuration, cir.getReturnValue());
-        } catch (Throwable ignored) {
-            // Bookkeeping must never break constraint creation.
-        }
+        IplAttachmentGate.onConstraintAdded(bodyA, bodyB, configuration, cir.getReturnValue());
     }
 
-    // ---- Один нативный шаг на подшаг (Atlas) ----
-    // Atlas M1 (spec v3 §2.7): gate the native world step. The fused driver runs every
-    // pipeline's {@code physicsTick} per substep so each pipeline keeps its
-    // contraption-pose and wake-up housekeeping, but only the ARMED call (the last
-    // pipeline in the driver's iteration) actually steps the shared world — one native
-    // step per substep, after all charts' kinematic poses are pushed.
-
+    /**
+     * The fused driver runs every pipeline's {@code physicsTick} per substep (contraption poses,
+     * wake-ups), but only the armed call steps the shared world: one native step per substep,
+     * after every chart pushed its kinematic poses. Stock natives step every pipeline.
+     */
     @WrapOperation(
         method = "physicsTick",
-        at = @At(
-            value = "INVOKE",
-            target = "Ldev/ryanhcode/sable/physics/impl/rapier/Rapier3D;step(JD)V"
-        ),
-        remap = false,
-        require = 0
+        at = @At(value = "INVOKE", target = "Ldev/ryanhcode/sable/physics/impl/rapier/Rapier3D;step(JD)V"),
+        require = 1
     )
     private void ipl$armWorldStep(long sceneHandle, double timeStep, Operation<Void> original) {
-        if (IplFusedStep.STEP_ARMED) {
+        if (IplFusedStep.mayStepWorld()) {
             original.call(sceneHandle, timeStep);
         }
     }

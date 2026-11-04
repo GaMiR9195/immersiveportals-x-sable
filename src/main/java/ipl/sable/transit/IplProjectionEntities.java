@@ -7,6 +7,8 @@ import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import dev.ryanhcode.sable.util.SubLevelInclusiveLevelEntityGetter;
+import ipl.sable.client.IplClientProjections;
+import ipl.sable.client.IplStraddleSessionStore;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
@@ -19,6 +21,7 @@ import net.minecraft.world.level.entity.LevelEntityGetter;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import qouteall.imm_ptl.core.ducks.IEWorld;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -33,18 +36,17 @@ import java.util.function.Consumer;
  * physically touch a plot-space box, and whether an entity's in-block scan really touches
  * a block of the piece it scanned.
  *
- * <p>Русский комментарий (почему так): нажимные плиты, растяжки, кнопки под стрелами,
- * кактусы, паутина и т.п. на проекции корабля не работали по двум причинам.
+ * <p>Нажимные плиты, растяжки, кнопки под стрелами, кактусы, паутина и т.п. на проекции
+ * корабля работают за счёт двух правил.
  * 1) Логика блока ({@code entityInside}, {@code stepOn}, {@code fallOn},
- * {@code onProjectileHit}) получала уровень СУЩНОСТИ, а блок живёт в уровне-владельце
- * корабля: запись в чужой плот отклонялась, тики планировались в уровень, где этого
- * чанка нет. Теперь логика всегда выполняется в уровне-владельце плота.
- * 2) Плита ищет сущности в своём плот-боксе, а Sable переводит бокс в мир родной позой
- * и ищет только в своём уровне — игрок, стоящий на образе (за порталом, возможно в
- * другом измерении), не находился. Теперь бокс переводится в КАЖДЫЙ кусок, которого он
- * касается, и поиск идёт в уровне этого куска; сущность засчитывается только если точка
- * бокса, ближайшая к ней, принадлежит именно этому куску (иначе за порталом "сзади"
- * нажимались бы срезанные блоки).
+ * {@code onProjectileHit}) выполняется в уровне-владельце плота, а не в уровне сущности:
+ * в уровне сущности запись в чужой плот отклоняется, а тики планируются туда, где этого
+ * чанка нет.
+ * 2) Плот-бокс, в котором блок ищет сущности, переводится в КАЖДЫЙ кусок, которого он
+ * касается, и поиск идёт в уровне этого куска (Sable переводит бокс только родной позой и
+ * ищет только в своём уровне, мимо игрока на образе за порталом). Сущность засчитывается,
+ * только если ближайшая к ней точка бокса принадлежит именно этому куску, иначе за
+ * порталом «сзади» нажимались бы срезанные блоки.
  */
 public final class IplProjectionEntities {
 
@@ -55,7 +57,7 @@ public final class IplProjectionEntities {
 
     static boolean idle(Level level) {
         return level.isClientSide()
-            ? ipl.sable.client.IplStraddleSessionStore.isIdle()
+            ? IplStraddleSessionStore.isIdle()
             : IplAtlasStraddleSession.isIdle();
     }
 
@@ -104,7 +106,7 @@ public final class IplProjectionEntities {
         if (node == null || own == null) return own;
         ResourceKey<Level> dim = node.destDim();
         if (own.dimension() == dim) return own;
-        if (own.isClientSide()) return ipl.sable.client.IplClientProjections.clientLevel(dim);
+        if (own.isClientSide()) return IplClientProjections.clientLevel(dim);
         return own instanceof ServerLevel server ? server.getServer().getLevel(dim) : null;
     }
 
@@ -159,7 +161,7 @@ public final class IplProjectionEntities {
     @SuppressWarnings("unchecked")
     @Nullable
     private static LevelEntityGetter<Entity> getterOf(@Nullable Level level) {
-        if (!(level instanceof qouteall.imm_ptl.core.ducks.IEWorld world)) return null;
+        if (!(level instanceof IEWorld world)) return null;
         return world.portal_getEntityLookup();
     }
 

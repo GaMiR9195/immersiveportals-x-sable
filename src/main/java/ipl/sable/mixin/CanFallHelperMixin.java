@@ -42,8 +42,7 @@ public abstract class CanFallHelperMixin {
         at = @At(
             value = "INVOKE",
             target = "Ldev/ryanhcode/sable/sublevel/SubLevel;lastPose()Ldev/ryanhcode/sable/companion/math/Pose3dc;"
-        ),
-        require = 0
+        )
     )
     private static Pose3dc ipl$mapProbePoseForStraddler(
         SubLevel sub, Operation<Pose3dc> original,
@@ -60,8 +59,7 @@ public abstract class CanFallHelperMixin {
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/core/BlockPos;betweenClosed(Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/BlockPos;)Ljava/lang/Iterable;"
-        ),
-        require = 0
+        )
     )
     private static Iterable<BlockPos> ipl$dropWrongHalfGround(
         BlockPos min, BlockPos max, Operation<Iterable<BlockPos>> original,

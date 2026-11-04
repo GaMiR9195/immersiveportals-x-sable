@@ -2,6 +2,7 @@ package ipl.sable.render;
 
 import qouteall.imm_ptl.core.render.EntityShaderNames;
 
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -20,10 +21,8 @@ import java.util.concurrent.ConcurrentMap;
  * {@code dot(gbufferModelViewInverse * iris_ModelViewMat * (iris_Position + iris_ChunkOffset), eq)}
  * which are in <i>camera-relative world</i> space.
  *
- * <p>Writing the wrong-space equation gives a plane that clips <i>something</i>
- * but in the wrong location/orientation -- which is exactly the symptom we saw
- * on the chest: clip math runs, but the cull boundary doesn't line up with the
- * portal.
+ * <p>An equation in the wrong space still clips, but along a plane that does not line up
+ * with the portal.
  *
  * <p>Populated by {@code ShaderInstanceMixin} at
  * {@code ShaderInstance.updateLocations()} RETURN. Read by
@@ -33,7 +32,7 @@ public final class IplProgramRegistry {
     private IplProgramRegistry() {}
 
     private static final ConcurrentMap<Integer, Boolean> ENTITY_STYLE_BY_PROGRAM = new ConcurrentHashMap<>();
-    private static final java.util.Set<String> VANILLA_SUBLEVEL_INPUT_SHADERS = java.util.Set.of(
+    private static final Set<String> VANILLA_SUBLEVEL_INPUT_SHADERS = Set.of(
         "rendertype_solid", "rendertype_cutout", "rendertype_cutout_mipped",
         "rendertype_translucent"
     );
@@ -50,7 +49,7 @@ public final class IplProgramRegistry {
      * registrations heal automatically.
      */
     public static void register(int programId, String shaderName) {
-        if (programId == 0 || shaderName == null) return;
+        if (programId == 0) return;
         ENTITY_STYLE_BY_PROGRAM.put(programId, EntityShaderNames.IS_ENTITY_STYLE.contains(shaderName));
         VANILLA_SUBLEVEL_INPUT_BY_PROGRAM.put(
             programId, VANILLA_SUBLEVEL_INPUT_SHADERS.contains(shaderName));

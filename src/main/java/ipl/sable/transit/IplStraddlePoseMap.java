@@ -1,22 +1,37 @@
 package ipl.sable.transit;
 
+import dev.ryanhcode.sable.companion.math.BoundingBox3d;
+import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.client.IplClientProjections;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Quaterniond;
+import org.joml.Quaterniondc;
+import org.joml.Vector3d;
+import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.q_misc_util.my_util.DQuaternion;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.function.BiConsumer;
+import java.util.function.Predicate;
 
 /**
  * Frame mapping for straddling sub-levels: from a given context dimension, a ship
  * straddling INTO that dimension has a portal-mapped pose.
  *
- * <p>Server side the isometry comes from the active Atlas image session;
- * client side it is derived from the straddle portal found by
- * {@code IplClipPortalFinder} (lazily, via the client-only lookup class).
+ * <p>Server side the isometry comes from the active Atlas image sessions; client side from
+ * the session portals mirrored by {@code IplStraddleSessionStore}, chains included (via the
+ * client-only {@link IplClientProjections}, loaded lazily on the client branch).
  */
 public final class IplStraddlePoseMap {
 
@@ -32,30 +47,24 @@ public final class IplStraddlePoseMap {
     public static final class StraddleMapping {
         private final Vec3 origin;
         private final Vec3 dest;
-        private final org.joml.Quaterniond rot;
-        private final org.joml.Quaterniond inv;
-        private final boolean identityRotation;
+        private final Quaterniond rot;
+        private final Quaterniond inv;
 
-        private StraddleMapping(Vec3 origin, Vec3 dest, org.joml.Quaterniond rot,
-                                boolean identityRotation) {
+        private StraddleMapping(Vec3 origin, Vec3 dest, Quaterniond rot) {
             this.origin = origin;
             this.dest = dest;
             this.rot = rot;
-            this.inv = new org.joml.Quaterniond(rot).conjugate();
-            this.identityRotation = identityRotation;
+            this.inv = new Quaterniond(rot).conjugate();
         }
 
-        public static StraddleMapping of(qouteall.imm_ptl.core.portal.Portal portal) {
+        public static StraddleMapping of(Portal portal) {
             DQuaternion q = portal.getRotationD();
-            boolean identity = isApproxIdentity(q);
-            org.joml.Quaterniond rot = identity || q == null
-                ? new org.joml.Quaterniond()
-                : new org.joml.Quaterniond(q.x, q.y, q.z, q.w);
-            return new StraddleMapping(portal.getOriginPos(), portal.getDestPos(), rot, identity);
+            Quaterniond rot = isApproxIdentity(q) ? new Quaterniond() : new Quaterniond(q.x, q.y, q.z, q.w);
+            return new StraddleMapping(portal.getOriginPos(), portal.getDestPos(), rot);
         }
 
-        private static Vec3 rotate(org.joml.Quaterniond q, Vec3 v) {
-            org.joml.Vector3d out = q.transform(new org.joml.Vector3d(v.x, v.y, v.z));
+        private static Vec3 rotate(Quaterniond q, Vec3 v) {
+            Vector3d out = q.transform(new Vector3d(v.x, v.y, v.z));
             return new Vec3(out.x, out.y, out.z);
         }
 
@@ -77,13 +86,8 @@ public final class IplStraddlePoseMap {
             return rotate(inv, v);
         }
 
-        public org.joml.Quaterniond mapQuat(org.joml.Quaterniondc q) {
-            return new org.joml.Quaterniond(rot).mul(q);
-        }
-
-        /** Conjugate a DEST-frame rotation delta back into the source frame: R⁻¹·dq·R. */
-        public org.joml.Quaterniond unmapRotationDelta(org.joml.Quaterniondc dq) {
-            return new org.joml.Quaterniond(inv).mul(dq).mul(rot);
+        public Quaterniond mapQuat(Quaterniondc q) {
+            return new Quaterniond(rot).mul(q);
         }
 
         /** Full pose isometry (position + orientation; rotationPoint/scale copied). */
@@ -97,11 +101,11 @@ public final class IplStraddlePoseMap {
         }
 
         /** Enclosing axis-aligned box of the 8 mapped corners. */
-        public dev.ryanhcode.sable.companion.math.BoundingBox3d mapAabb(
-            dev.ryanhcode.sable.companion.math.BoundingBox3dc box
+        public BoundingBox3d mapAabb(
+            BoundingBox3dc box
         ) {
-            dev.ryanhcode.sable.companion.math.BoundingBox3d out =
-                new dev.ryanhcode.sable.companion.math.BoundingBox3d();
+            BoundingBox3d out =
+                new BoundingBox3d();
             boolean first = true;
             for (int i = 0; i < 8; i++) {
                 Vec3 corner = mapPoint(new Vec3(
@@ -123,20 +127,14 @@ public final class IplStraddlePoseMap {
          * conjugated). {@code inverse().mapX ≡ unmapX}.
          */
         public StraddleMapping inverse() {
-            return new StraddleMapping(
-                dest, origin, new org.joml.Quaterniond(inv), identityRotation);
-        }
-
-        public boolean isIdentityRotation() {
-            return identityRotation;
+            return new StraddleMapping(dest, origin, new Quaterniond(inv));
         }
 
         /** {@code next ∘ this}: apply this mapping first, then {@code next}. */
         public StraddleMapping then(StraddleMapping next) {
             Vec3 shifted = next.mapPoint(dest);
-            org.joml.Quaterniond composed = new org.joml.Quaterniond(next.rot).mul(rot);
-            return new StraddleMapping(origin, shifted, composed,
-                identityRotation && next.identityRotation);
+            Quaterniond composed = new Quaterniond(next.rot).mul(rot);
+            return new StraddleMapping(origin, shifted, composed);
         }
 
         /** Translation of the rigid map {@code x -> shift + rot x}. */
@@ -145,7 +143,7 @@ public final class IplStraddlePoseMap {
         }
 
         /** Approximate equality used to detect moved portals / cache keys. */
-        public boolean sameAs(@org.jetbrains.annotations.Nullable StraddleMapping other) {
+        public boolean sameAs(@Nullable StraddleMapping other) {
             if (other == null) return false;
             return shift().distanceToSqr(other.shift()) < 1.0e-12
                 && Math.abs(Math.abs(rot.dot(other.rot)) - 1.0) < 1.0e-12;
@@ -159,7 +157,7 @@ public final class IplStraddlePoseMap {
 
         @Override
         public int hashCode() {
-            return java.util.Objects.hash(origin, dest, rot.x, rot.y, rot.z, rot.w);
+            return Objects.hash(origin, dest, rot.x, rot.y, rot.z, rot.w);
         }
     }
 
@@ -185,7 +183,7 @@ public final class IplStraddlePoseMap {
     public static boolean isStraddling(@Nullable SubLevel sub, @Nullable Level contextLevel) {
         if (sub == null || contextLevel == null) return false;
         if (contextLevel.isClientSide()) {
-            return ipl.sable.client.IplClientProjections.isClientStraddling(sub);
+            return IplClientProjections.isClientStraddling(sub);
         }
         return IplAtlasStraddleSession.hasSession(sub.getUniqueId());
     }
@@ -195,10 +193,10 @@ public final class IplStraddlePoseMap {
      * frames not backed by a session node).
      */
     public record StraddleFrame(
-        @Nullable qouteall.imm_ptl.core.portal.Portal portal, StraddleMapping mapping,
+        @Nullable Portal portal, StraddleMapping mapping,
         @Nullable IplProjectionTree.Node node
     ) {
-        public StraddleFrame(@Nullable qouteall.imm_ptl.core.portal.Portal portal, StraddleMapping mapping) {
+        public StraddleFrame(@Nullable Portal portal, StraddleMapping mapping) {
             this(portal, mapping, null);
         }
     }
@@ -206,27 +204,14 @@ public final class IplStraddlePoseMap {
     /** Visit every straddle of {@code sub} mapping INTO {@code ctx} (dest side). */
     public static void forEachStraddleInto(
         SubLevel sub, Level ctx,
-        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal, StraddleMapping> visitor
+        BiConsumer<Portal, StraddleMapping> visitor
     ) {
         if (sub == null || ctx == null) return;
         if (ctx.isClientSide()) {
-            ipl.sable.client.IplClientProjections.forEachClientStraddleInto(sub, ctx, visitor);
+            IplClientProjections.forEachClientStraddleInto(sub, ctx, visitor);
             return;
         }
         IplAtlasStraddleSession.forEachSessionInto(sub, ctx, visitor);
-    }
-
-    /** Visit every straddle of {@code sub} exiting FROM {@code ctx} (its parent side). */
-    public static void forEachStraddleFrom(
-        SubLevel sub, Level ctx,
-        java.util.function.BiConsumer<qouteall.imm_ptl.core.portal.Portal, StraddleMapping> visitor
-    ) {
-        if (sub == null || ctx == null) return;
-        if (ctx.isClientSide()) {
-            ipl.sable.client.IplClientProjections.forEachClientStraddleFrom(sub, ctx, visitor);
-            return;
-        }
-        IplAtlasStraddleSession.forEachSessionFrom(sub, ctx, visitor);
     }
 
     /**
@@ -241,14 +226,12 @@ public final class IplStraddlePoseMap {
      * of its path (each pulled back to the real frame through its parent's mapping) and
      * front side of every child portal (pulled back through the node's own mapping).
      *
-     * <p>Русский комментарий: раньше плоскость выхода для образа считалась как
-     * mapping.mapPoint(origin) первого портала — для цепочек это неверно (нужна плоскость
-     * ПОСЛЕДНЕГО портала пути), а дочерние сессии не вырезались вовсе. Теперь срезы
-     * строятся по дереву проекций и совпадают с регионами физики (KEEP/EXCLUDE трубки),
-     * с приближением трубки полупространством для коллизий сущностей.
+     * <p>Срезы строятся по дереву проекций: у цепочки это плоскость ПОСЛЕДНЕГО портала пути
+     * плюс вырезы дочерних сессий. Они совпадают с регионами физики (KEEP/EXCLUDE трубки),
+     * трубка для коллизий сущностей приближается полупространством.
      */
-    public static java.util.List<RealHalfSpace> frameCuts(IplProjectionTree tree, @Nullable IplProjectionTree.Node node) {
-        java.util.List<RealHalfSpace> out = new java.util.ArrayList<>(2);
+    public static List<RealHalfSpace> frameCuts(IplProjectionTree tree, @Nullable IplProjectionTree.Node node) {
+        List<RealHalfSpace> out = new ArrayList<>(2);
         if (node == null) {
             for (IplProjectionTree.Node root : tree.roots()) {
                 out.add(new RealHalfSpace(root.portal.getOriginPos(), root.portal.getNormal()));
@@ -285,7 +268,7 @@ public final class IplStraddlePoseMap {
         IplProjectionTree tree = IplProjectionTree.of(sub);
         if (tree.isEmpty()) return null;
 
-        dev.ryanhcode.sable.companion.math.BoundingBox3dc shipBox = sub.boundingBox();
+        BoundingBox3dc shipBox = sub.boundingBox();
         boolean nativeHere = sub.getLevel() == ctx;
 
         double[] best = {Double.MAX_VALUE};
@@ -298,10 +281,10 @@ public final class IplStraddlePoseMap {
                 Vec3 exitInward = node.portal.getContentDirection();
                 if (exitInward.dot(position.subtract(exitPoint)) < 0.0) return;
             }
-            dev.ryanhcode.sable.companion.math.BoundingBox3d box =
-                new dev.ryanhcode.sable.companion.math.BoundingBox3d();
+            BoundingBox3d box =
+                new BoundingBox3d();
             box.set(mapping == null ? shipBox : mapping.mapAabb(shipBox));
-            dev.ryanhcode.sable.companion.math.BoundingBox3d cut = box;
+            BoundingBox3d cut = box;
             for (RealHalfSpace h : frameCuts(tree, node)) {
                 if (cut == null) break;
                 Vec3 point = mapping == null ? h.point() : mapping.mapPoint(h.point());
@@ -345,7 +328,7 @@ public final class IplStraddlePoseMap {
         if (sub == null || contextLevel == null) return null;
         if (contextLevel.isClientSide()) {
             // Client-only class; loaded lazily when this branch executes.
-            return ipl.sable.client.IplClientProjections.getClientStraddleMappingInto(sub, contextLevel);
+            return IplClientProjections.getClientStraddleMappingInto(sub, contextLevel);
         }
         return IplAtlasStraddleSession.getMappingInto(sub, contextLevel);
     }
@@ -371,7 +354,7 @@ public final class IplStraddlePoseMap {
      * the frame's half-space cuts, minus space yielded to a higher-priority sibling.
      */
     @Nullable
-    public static java.util.function.Predicate<BlockPos> getBlockCollisionKeepFilter(
+    public static Predicate<BlockPos> getBlockCollisionKeepFilter(
         @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
     ) {
         if (sub == null || contextLevel == null || entityBounds == null) return null;
@@ -381,10 +364,10 @@ public final class IplStraddlePoseMap {
         IplProjectionTree.Node node = frame == null ? null : frame.node();
         if (node == null && sub.getLevel() != contextLevel) return null;
         Pose3dc pose = leadPose(sub);
-        java.util.function.Predicate<BlockPos> cut = cutFilter(pose, frameCuts(tree, node), SEAM_SUPPORT_MARGIN);
+        Predicate<BlockPos> cut = cutFilter(pose, frameCuts(tree, node), SEAM_SUPPORT_MARGIN);
         if (node == null || !tree.yieldsAnything(node)) return cut;
         // Space contested by several portals belongs to one piece only (sibling priority).
-        java.util.function.Predicate<BlockPos> owned =
+        Predicate<BlockPos> owned =
             pos -> !tree.yieldsAt(node, pose.transformPosition(Vec3.atCenterOf(pos)));
         return cut == null ? owned : cut.and(owned);
     }
@@ -409,7 +392,7 @@ public final class IplStraddlePoseMap {
      * <p>Null when no clipping applies. A box must survive every returned cut.
      */
     @Nullable
-    public static java.util.List<LocalHalfSpace> getBlockCollisionKeepPlanes(
+    public static List<LocalHalfSpace> getBlockCollisionKeepPlanes(
         @Nullable SubLevel sub, @Nullable Level contextLevel, @Nullable AABB entityBounds
     ) {
         if (sub == null || contextLevel == null || entityBounds == null) return null;
@@ -419,7 +402,7 @@ public final class IplStraddlePoseMap {
         IplProjectionTree.Node node = frame == null ? null : frame.node();
         if (node == null && sub.getLevel() != contextLevel) return null;
         Pose3dc pose = leadPose(sub);
-        java.util.List<LocalHalfSpace> parts = new java.util.ArrayList<>(2);
+        List<LocalHalfSpace> parts = new ArrayList<>(2);
         for (RealHalfSpace h : frameCuts(tree, node)) {
             parts.add(localHalfSpace(pose, h.point(), h.keep()));
         }
@@ -428,15 +411,15 @@ public final class IplStraddlePoseMap {
 
     /** AND of real-frame half-space cuts as a plot-local block predicate. */
     @Nullable
-    private static java.util.function.Predicate<BlockPos> cutFilter(
-        Pose3dc pose, java.util.List<RealHalfSpace> cuts, double planeMargin
+    private static Predicate<BlockPos> cutFilter(
+        Pose3dc pose, List<RealHalfSpace> cuts, double planeMargin
     ) {
         if (cuts.isEmpty()) return null;
-        java.util.List<java.util.function.Predicate<BlockPos>> parts = new java.util.ArrayList<>(cuts.size());
+        List<Predicate<BlockPos>> parts = new ArrayList<>(cuts.size());
         for (RealHalfSpace h : cuts) parts.add(buildKeepFilter(pose, h.point(), h.keep(), planeMargin));
         if (parts.size() == 1) return parts.get(0);
         return pos -> {
-            for (java.util.function.Predicate<BlockPos> part : parts) {
+            for (Predicate<BlockPos> part : parts) {
                 if (!part.test(pos)) return false;
             }
             return true;
@@ -456,15 +439,12 @@ public final class IplStraddlePoseMap {
     /**
      * DYNAMIC CUT CADENCE.
      *
-     * <p>The cut planes are rebuilt on every collision query, so their frequency was never
-     * the problem -- their PHASE was. Every plane was derived from {@code logicalPose()},
-     * the pose at the START of the tick, while the boxes it trims are consumed throughout
-     * the movement resolution of that same tick. For a slow body the difference is far
-     * below the block granularity the old whole-block filter worked at, which is what the
-     * original comment on {@code buildKeepFilter} relied on. That assumption died twice
-     * over: the cut is now sub-block exact, and the bodies being cut can move very fast.
-     * At speed the plane sits a whole tick of travel behind the geometry, and the entity
-     * feels it as material that is still solid one tick after the portal should have
+     * <p>The cut planes are rebuilt on every collision query, so their frequency is not the
+     * issue -- their PHASE is. {@code logicalPose()} is the pose at the START of the tick,
+     * while the boxes it trims are consumed throughout the movement resolution of that same
+     * tick. The cut is sub-block exact and the bodies being cut can move very fast, so a
+     * plane derived from the start pose sits a whole tick of travel behind the geometry: the
+     * entity feels material that is still solid one tick after the portal should have
      * removed it, or support that disappears one tick before it should.
      *
      * <p>Advancing the pose by the body's own last-tick displacement puts the plane where
@@ -476,8 +456,6 @@ public final class IplStraddlePoseMap {
     private static Pose3dc leadPose(SubLevel sub) {
         Pose3dc now = sub.logicalPose();
         Pose3dc previous = sub.lastPose();
-        if (previous == null) return now;
-
         double dx = now.position().x() - previous.position().x();
         double dy = now.position().y() - previous.position().y();
         double dz = now.position().z() - previous.position().z();
@@ -496,11 +474,11 @@ public final class IplStraddlePoseMap {
     }
 
     private static LocalHalfSpace localHalfSpace(Pose3dc pose, Vec3 point, Vec3 keepNormal) {
-        org.joml.Vector3d lp = pose.transformPositionInverse(
-            new org.joml.Vector3d(point.x, point.y, point.z));
-        org.joml.Vector3d ln = pose.transformNormalInverse(
-            new org.joml.Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
-            new org.joml.Vector3d());
+        Vector3d lp = pose.transformPositionInverse(
+            new Vector3d(point.x, point.y, point.z));
+        Vector3d ln = pose.transformNormalInverse(
+            new Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
+            new Vector3d());
         double length = Math.sqrt(ln.x * ln.x + ln.y * ln.y + ln.z * ln.z);
         if (length > 1.0e-12) {
             ln.x /= length;
@@ -522,7 +500,7 @@ public final class IplStraddlePoseMap {
      * for collision.
      */
     @Nullable
-    public static dev.ryanhcode.sable.companion.math.BoundingBox3d clipLocalBoxKeeping(
+    public static BoundingBox3d clipLocalBoxKeeping(
         double minX, double minY, double minZ,
         double maxX, double maxY, double maxZ,
         LocalHalfSpace plane
@@ -536,7 +514,7 @@ public final class IplStraddlePoseMap {
         double sz = nz > 0 ? maxZ : minZ;
         double dPushed = plane.signedDistance(px, py, pz);
         if (dPushed >= 0.0) {
-            return new dev.ryanhcode.sable.companion.math.BoundingBox3d(
+            return new BoundingBox3d(
                 minX, minY, minZ, maxX, maxY, maxZ);
         }
         double dStatic = plane.signedDistance(sx, sy, sz);
@@ -544,7 +522,7 @@ public final class IplStraddlePoseMap {
         px -= dPushed * nx;
         py -= dPushed * ny;
         pz -= dPushed * nz;
-        return new dev.ryanhcode.sable.companion.math.BoundingBox3d(
+        return new BoundingBox3d(
             Math.min(px, sx), Math.min(py, sy), Math.min(pz, sz),
             Math.max(px, sx), Math.max(py, sy), Math.max(pz, sz));
     }
@@ -556,7 +534,7 @@ public final class IplStraddlePoseMap {
      * when the ship isn't straddling out of {@code contextLevel}.
      */
     @Nullable
-    public static java.util.function.Predicate<BlockPos> getSourceHalfKeepFilter(
+    public static Predicate<BlockPos> getSourceHalfKeepFilter(
         @Nullable SubLevel sub, @Nullable Level contextLevel
     ) {
         return getSourceHalfKeepFilter(sub, contextLevel, 0.0);
@@ -568,7 +546,7 @@ public final class IplStraddlePoseMap {
      * on the kept side of all of them to be physically present on the source side.
      */
     @Nullable
-    public static java.util.function.Predicate<BlockPos> getSourceHalfKeepFilter(
+    public static Predicate<BlockPos> getSourceHalfKeepFilter(
         @Nullable SubLevel sub, @Nullable Level contextLevel, double planeMargin
     ) {
         if (sub == null || contextLevel == null) return null;
@@ -586,34 +564,25 @@ public final class IplStraddlePoseMap {
      * Uses the end-of-tick pose rather than any substep lerp — within-tick ship motion
      * is far below the block-center granularity this test operates at.
      */
-    private static java.util.function.Predicate<BlockPos> buildKeepFilter(
+    private static Predicate<BlockPos> buildKeepFilter(
         Pose3dc pose, Vec3 point, Vec3 keepNormal, double planeMargin
     ) {
-        org.joml.Vector3d lp = pose.transformPositionInverse(
-            new org.joml.Vector3d(point.x, point.y, point.z));
-        org.joml.Vector3d ln = pose.transformNormalInverse(
-            new org.joml.Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
-            new org.joml.Vector3d());
+        Vector3d lp = pose.transformPositionInverse(
+            new Vector3d(point.x, point.y, point.z));
+        Vector3d ln = pose.transformNormalInverse(
+            new Vector3d(keepNormal.x, keepNormal.y, keepNormal.z),
+            new Vector3d());
         double keepThreshold = -planeMargin;
-        // IPL fix (exact cut): test the block's real EXTENT against the half-space,
-        // not its centre.
+        // Test the block's real EXTENT against the half-space, not its centre. A centre test
+        // keeps or drops each block WHOLE and quantises the cut to the block lattice: for an
+        // oblique (45-degree) portal the physical boundary would sit up to half a block on
+        // the wrong side of the plane, asymmetrically across the aperture -- solid material
+        // behind the portal on one side, missing support in front of it on the other.
         //
-        // The old test was `centre . n >= threshold`: a block was kept or dropped as a
-        // WHOLE depending on which side its midpoint fell on. That quantises the cut to
-        // the sub-level's block lattice ("obrez po deleniyam mesha"). For an oblique
-        // portal (the 45-degree case) the physical boundary can therefore sit up to half
-        // a block on the wrong side of the mathematical plane, in BOTH directions:
-        // solid material surviving behind the portal (the chunk you can jump onto) and
-        // support vanishing in front of it. Because the error depends on where each
-        // block centre happens to fall, it is also asymmetric across the aperture --
-        // material on one side, nothing on the other.
-        //
-        // Keeping a block when ANY part of its unit cube is still in the kept half is
-        // the exact half-space test for that block's geometry: the support function of
-        // an axis-aligned unit cube along the (plot-local) plane normal is
-        // 0.5*(|nx|+|ny|+|nz|). Nothing with real material on the kept side is dropped,
-        // and nothing lying entirely behind the plane is kept, at ANY plane
-        // orientation -- the cut no longer follows the lattice.
+        // A block is kept when ANY part of its unit cube is in the kept half: the support
+        // function of an axis-aligned unit cube along the (plot-local) plane normal is
+        // 0.5*(|nx|+|ny|+|nz|). Nothing with material on the kept side is dropped and
+        // nothing lying entirely behind the plane is kept, at ANY plane orientation.
         double halfExtentAlongNormal =
             0.5 * (Math.abs(ln.x) + Math.abs(ln.y) + Math.abs(ln.z));
         return pos -> (pos.getX() + 0.5 - lp.x) * ln.x
@@ -629,10 +598,10 @@ public final class IplStraddlePoseMap {
      * are preserved for for-each consumers.
      */
     public static Iterable<BlockPos> filterBlocks(
-        Iterable<BlockPos> all, java.util.function.Predicate<BlockPos> keep
+        Iterable<BlockPos> all, Predicate<BlockPos> keep
     ) {
-        return () -> new java.util.Iterator<>() {
-            private final java.util.Iterator<BlockPos> in = all.iterator();
+        return () -> new Iterator<>() {
+            private final Iterator<BlockPos> in = all.iterator();
             private BlockPos next;
             private boolean hasNext;
 
@@ -650,7 +619,7 @@ public final class IplStraddlePoseMap {
 
             @Override
             public BlockPos next() {
-                if (!hasNext()) throw new java.util.NoSuchElementException();
+                if (!hasNext()) throw new NoSuchElementException();
                 hasNext = false;
                 return next;
             }
@@ -665,8 +634,8 @@ public final class IplStraddlePoseMap {
      * entities would be handed the mapped pose (and fall through the real hull).
      */
     public static boolean isInMappedHalf(
-        StraddleMapping mapping, qouteall.imm_ptl.core.portal.Portal portal,
-        dev.ryanhcode.sable.companion.math.BoundingBox3dc shipBox, Vec3 position
+        StraddleMapping mapping, Portal portal,
+        BoundingBox3dc shipBox, Vec3 position
     ) {
         Vec3 srcPlanePoint = portal.getOriginPos();
         Vec3 inward = portal.getNormal().scale(-1.0);
@@ -680,9 +649,9 @@ public final class IplStraddlePoseMap {
         // BOTH boxes — the 0-vs-0 tie resolved to "mapped" and collision flipped to the
         // wrong frame around halfway. The halves that physically exist are the real box
         // BEFORE the source plane and the image PAST the dest plane; measure those.
-        dev.ryanhcode.sable.companion.math.BoundingBox3d srcHalf =
+        BoundingBox3d srcHalf =
             clipBoxKeeping(shipBox, srcPlanePoint, inward.scale(-1.0));
-        dev.ryanhcode.sable.companion.math.BoundingBox3d dstHalf =
+        BoundingBox3d dstHalf =
             clipBoxKeeping(mapping.mapAabb(shipBox), destPlanePoint, destInward);
         double dSource = srcHalf == null ? Double.MAX_VALUE : distanceSqToBox(srcHalf, position);
         double dMapped = dstHalf == null ? Double.MAX_VALUE : distanceSqToBox(dstHalf, position);
@@ -696,8 +665,8 @@ public final class IplStraddlePoseMap {
      * ImmersivePortals' own CollisionHelper.clipBox uses).
      */
     @Nullable
-    private static dev.ryanhcode.sable.companion.math.BoundingBox3d clipBoxKeeping(
-        dev.ryanhcode.sable.companion.math.BoundingBox3dc box, Vec3 planePos, Vec3 keepNormal
+    private static BoundingBox3d clipBoxKeeping(
+        BoundingBox3dc box, Vec3 planePos, Vec3 keepNormal
     ) {
         Vec3 n = keepNormal.normalize();
         double px = n.x > 0 ? box.minX() : box.maxX();
@@ -708,8 +677,8 @@ public final class IplStraddlePoseMap {
         double sz = n.z > 0 ? box.maxZ() : box.minZ();
         double dPushed = (px - planePos.x) * n.x + (py - planePos.y) * n.y
                        + (pz - planePos.z) * n.z;
-        dev.ryanhcode.sable.companion.math.BoundingBox3d out =
-            new dev.ryanhcode.sable.companion.math.BoundingBox3d();
+        BoundingBox3d out =
+            new BoundingBox3d();
         if (dPushed >= 0.0) {
             out.set(box);
             return out;
@@ -727,7 +696,7 @@ public final class IplStraddlePoseMap {
     }
 
     private static double distanceSqToBox(
-        dev.ryanhcode.sable.companion.math.BoundingBox3dc box, Vec3 p
+        BoundingBox3dc box, Vec3 p
     ) {
         double cx = Math.max(box.minX(), Math.min(box.maxX(), p.x));
         double cy = Math.max(box.minY(), Math.min(box.maxY(), p.y));

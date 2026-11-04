@@ -12,16 +12,18 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelTrackingSystem;
 import foundry.veil.api.network.VeilPacketManager;
 import io.netty.channel.local.LocalAddress;
+import ipl.sable.IplTimeline;
 import ipl.sable.transit.IplAtlasStraddleSession;
 import ipl.sable.transit.IplStraddlePoseMap;
 import ipl.sable.transit.IplStraddleSessionSync;
-import ipl.sable.transit.IplTrackingStamp;
 import ipl.sable.transit.StraddleKey;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3dc;
 import org.spongepowered.asm.mixin.Final;
@@ -66,8 +68,12 @@ import java.util.UUID;
  *       sync.</li>
  *   <li><b>Packets land in this level's client container.</b> Full-sync, bounds, movement
  *       and removal packets are tagged with this dimension ({@link PacketRedirection});
- *       movement goes over TCP for remote viewers and for a singleplayer host, because
- *       Sable's UDP path bypasses that tagging.</li>
+ *       movement goes over TCP for every player that sees another level and for a
+ *       singleplayer host, because Sable's UDP path bypasses that tagging.</li>
+ *   <li><b>One timeline.</b> Snapshots and clock packets of every level carry the server-wide
+ *       stamp of {@link IplTimeline} instead of Sable's per-level count, so a client can run
+ *       one interpolation clock for all levels it shows and a ship that changes level keeps
+ *       its snapshot history.</li>
  * </ul>
  *
  * <p>{@code StartTrackingPacketMixin} still guards the client against a repeated
@@ -75,36 +81,11 @@ import java.util.UUID;
  */
 @Pseudo
 @Mixin(value = SubLevelTrackingSystem.class, remap = false)
-public abstract class TrackingSystemMixin implements IplTrackingStamp {
+public abstract class TrackingSystemMixin {
 
     @Shadow @Final private ServerLevel level;
 
     @Shadow private int interpolationTick;
-
-    /**
-     * Серверный тик, в котором этот уровень последний раз штамповал снимки. Нужен, чтобы
-     * при межизмеренческом переходе посчитать сдвиг часов двух уровней для одного и того же
-     * серверного тика (уровни тикают по очереди, поэтому «текущая» метка уровня, который уже
-     * оттикал, на единицу больше метки этого тика).
-     */
-    @Unique
-    private int ipl$stampServerTick = Integer.MIN_VALUE;
-
-    @Inject(method = "sendMovementUpdates", at = @At("HEAD"), require = 0)
-    private void ipl$recordStampTick(SubLevelContainer container, CallbackInfo ci) {
-        ipl$stampServerTick = level.getServer().getTickCount();
-    }
-
-    @Override
-    public int ipl$stampFor(int serverTick) {
-        // sendMovementUpdates увеличивает interpolationTick последней строкой.
-        return ipl$stampServerTick == serverTick ? interpolationTick - 1 : interpolationTick;
-    }
-
-    @Override
-    public boolean ipl$hasTicked(int serverTick) {
-        return ipl$stampServerTick == serverTick;
-    }
 
     @Shadow
     private void sendFullSync(ServerPlayer player, ServerSubLevel subLevel, CustomPacketPayload extraPacket) {
@@ -136,6 +117,16 @@ public abstract class TrackingSystemMixin implements IplTrackingStamp {
     // ------------------------------------------------------------------------
     // Viewers, computed once at tick HEAD
     // ------------------------------------------------------------------------
+
+    /**
+     * Start-tracking (sent from tick) and the movement updates stamp with this tick's
+     * server-wide number; Sable's increment after the movement updates is overwritten here
+     * next tick.
+     */
+    @Inject(method = "tick", at = @At("HEAD"), require = 1)
+    private void ipl$stampSharedTimeline(SubLevelContainer container, CallbackInfo ci) {
+        interpolationTick = IplTimeline.stamp(level.getServer());
+    }
 
     @Inject(method = "tick", at = @At("HEAD"))
     private void ipl$collectViewers(SubLevelContainer container, CallbackInfo ci) {
@@ -288,8 +279,8 @@ public abstract class TrackingSystemMixin implements IplTrackingStamp {
 
     /**
      * Bounds changes go to every tracker. Sable's {@code playerSink()} resolves trackers in
-     * this level only, so a remote viewer kept the old plot bounds: blocks added meanwhile
-     * stayed outside its render grid until a re-sync.
+     * this level only; a remote viewer would keep stale plot bounds, and blocks added
+     * meanwhile would stay outside its render grid until a re-sync.
      */
     @WrapOperation(
         method = "sendBoundsUpdates",
@@ -365,9 +356,12 @@ public abstract class TrackingSystemMixin implements IplTrackingStamp {
     // ------------------------------------------------------------------------
 
     /**
-     * Remote viewers always go over TCP. So does the host of a singleplayer world: there Sable's
-     * "UDP" is only a local queue that the client drains later on whatever level it displays
-     * then, so it gains nothing and loses the dimension tag.
+     * TCP for every player that sees another level (remote viewers, and players near a portal,
+     * who can switch dimension at any moment): an untagged UDP snapshot or clock packet that the
+     * client handles after the switch would land in the wrong container, freezing one level's
+     * sub-levels and throwing the other level's clock onto foreign stamps. The host of a
+     * singleplayer world uses TCP as well: there Sable's "UDP" is only a local queue that the
+     * client drains later on whatever level it displays then.
      */
     @WrapOperation(
         method = "sendMovementUpdates",
@@ -378,10 +372,19 @@ public abstract class TrackingSystemMixin implements IplTrackingStamp {
         require = 1
     )
     private boolean ipl$forceTaggedTCP(SableUDPServer server, ServerPlayer player, Operation<Boolean> original) {
-        if (player.serverLevel() != level || player.connection.getRemoteAddress() instanceof LocalAddress) {
+        if (player.serverLevel() != level || player.connection.getRemoteAddress() instanceof LocalAddress
+            || ipl$seesOtherLevel(player)) {
             return false;
         }
         return original.call(server, player);
+    }
+
+    @Unique
+    private boolean ipl$seesOtherLevel(ServerPlayer player) {
+        for (ResourceKey<Level> dimension : ImmPtlChunkTracking.getVisibleDimensions(player)) {
+            if (dimension != level.dimension()) return true;
+        }
+        return false;
     }
 
     // ------------------------------------------------------------------------

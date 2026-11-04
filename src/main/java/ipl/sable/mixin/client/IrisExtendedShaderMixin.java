@@ -1,11 +1,9 @@
 package ipl.sable.mixin.client;
 
 import ipl.sable.render.IplProgramBindHook;
-import ipl.sable.render.IplClipUniformPatcher;
 import net.minecraft.client.renderer.ShaderInstance;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
-import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -17,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(targets = "net.irisshaders.iris.pipeline.programs.ExtendedShader", remap = false)
 public abstract class IrisExtendedShaderMixin {
 
-    @Inject(method = "updateUniforms", at = @At("HEAD"), remap = false)
+    @Inject(method = "updateUniforms", at = @At("HEAD"))
     private void ipl$prepareClipUniforms(CallbackInfo ci) {
         IplProgramBindHook.prepareShader((ShaderInstance) (Object) this);
     }

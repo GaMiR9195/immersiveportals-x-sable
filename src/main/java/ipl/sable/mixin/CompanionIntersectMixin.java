@@ -3,13 +3,17 @@ package ipl.sable.mixin;
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Local;
 import dev.ryanhcode.sable.ActiveSableCompanion;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.companion.SubLevelAccess;
 import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.atlas.IplScenes;
+import ipl.sable.client.IplClientProjections;
+import ipl.sable.client.IplParentDimSync;
 import ipl.sable.transit.IplAtlasStraddleSession;
 import ipl.sable.transit.IplStraddlePoseMap;
 import ipl.sable.transit.StraddleKey;
@@ -64,15 +68,15 @@ public abstract class CompanionIntersectMixin {
             }
         } else if (level.isClientSide) {
             // Client-only classes; only loaded when this branch actually executes.
-            extra = ipl.sable.client.IplClientProjections.intersectingImages(level, bounds);
-            dropGhosts = ipl.sable.client.IplParentDimSync.hasGhosts();
+            extra = IplClientProjections.intersectingImages(level, bounds);
+            dropGhosts = IplParentDimSync.hasGhosts();
         }
         if (extra == null && !dropGhosts) return original;
 
         List<SubLevel> combined = new ArrayList<>(4);
         for (SubLevel sub : original) {
-            if (dropGhosts && sub instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel client
-                && ipl.sable.client.IplParentDimSync.isGhost(client)) continue;
+            if (dropGhosts && sub instanceof ClientSubLevel client
+                && IplParentDimSync.isGhost(client)) continue;
             combined.add(sub);
         }
         if (extra != null) {
@@ -91,12 +95,11 @@ public abstract class CompanionIntersectMixin {
     }
 
     /*
-     * Русский комментарий: здесь раньше были две обёртки позы в projectOutOfSubLevel
-     * ("первое отображение в уровень" для чужих кораблей). Для нескольких порталов и цепочек
-     * это давало неверную точку: кусок корабля мог быть за ДРУГИМ порталом. Теперь
-     * projectOutOfSubLevel всегда считает родную позу, а CompanionProjectOutMixin
-     * (RETURN) переводит результат в кадр того куска, которому принадлежит точка
-     * (IplProjectionTree.worldPointIn) — одна истина для пика, досягаемости и звуков.
+     * projectOutOfSubLevel здесь не оборачивается: он всегда считает родную позу, а
+     * CompanionProjectOutMixin (RETURN) переводит результат в кадр того куска, которому
+     * принадлежит точка (IplProjectionTree.worldPointIn) — одна истина для пика, досягаемости
+     * и звуков. Подмена позы «первым отображением в уровень» дала бы неверную точку для
+     * нескольких порталов и цепочек: кусок корабля может быть за ДРУГИМ порталом.
      */
 
     @WrapOperation(
@@ -104,16 +107,14 @@ public abstract class CompanionIntersectMixin {
         at = @At(
             value = "INVOKE",
             target = "Ldev/ryanhcode/sable/api/sublevel/SubLevelContainer;getContainer(Lnet/minecraft/server/level/ServerLevel;)Ldev/ryanhcode/sable/api/sublevel/ServerSubLevelContainer;"
-        ),
-        require = 0
+        )
     )
     private ServerSubLevelContainer ipl$velocityFromOwningContainer(
         ServerLevel level, Operation<ServerSubLevelContainer> original,
-        @com.llamalad7.mixinextras.sugar.Local(argsOnly = true) SubLevelAccess subLevel
+        @Local(argsOnly = true) SubLevelAccess subLevel
     ) {
-        if (subLevel instanceof ServerSubLevel serverSubLevel
-            && serverSubLevel.getLevel() instanceof ServerLevel own && own != level) {
-            return original.call(own);
+        if (subLevel instanceof ServerSubLevel serverSubLevel && serverSubLevel.getLevel() != level) {
+            return original.call(serverSubLevel.getLevel());
         }
         return original.call(level);
     }

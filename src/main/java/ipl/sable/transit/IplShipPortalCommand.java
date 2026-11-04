@@ -2,13 +2,14 @@ package ipl.sable.transit;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
-import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import qouteall.imm_ptl.core.commands.PortalCommand;
 import qouteall.imm_ptl.core.portal.Portal;
+
+import java.util.LinkedHashMap;
 
 /**
  * Atlas M6: {@code /iplsable_portal anchor|unanchor|list} — glue the portal the
@@ -55,8 +56,8 @@ public final class IplShipPortalCommand {
                 false);
                 return 1;
             }))
-            // PREDICTIVE SEAM OPENING (was PREARM_LOOKAHEAD_SEGMENTS). How far ahead of
-            // the body's current motion the detector looks before opening the portal seam.
+            // Predictive seam opening: how far ahead of the body's current motion the
+            // detector looks before opening the portal seam.
             .then(Commands.literal("early_open_segments")
                 .executes(context -> {
                     context.getSource().sendSuccess(() -> Component.literal(
@@ -70,7 +71,7 @@ public final class IplShipPortalCommand {
                 })
                 .then(Commands.argument("value", DoubleArgumentType.doubleArg(0.0, 16.0))
                     .suggests((context, builder) -> {
-                        java.util.LinkedHashMap<String, String> opts = new java.util.LinkedHashMap<>();
+                        LinkedHashMap<String, String> opts = new LinkedHashMap<>();
                         opts.put(String.valueOf(IplTransitController.DEFAULT_EARLY_OPEN_SEGMENTS),
                             "default " + IplTransitController.DEFAULT_EARLY_OPEN_SEGMENTS);
                         opts.putIfAbsent(String.valueOf(IplTransitController.getEarlyOpenSegments()),
@@ -86,8 +87,6 @@ public final class IplShipPortalCommand {
                             "early_open_segments = " + applied), true);
                         return 1;
                     })))
-            // Renamed from the unpronounceable
-            // `volumetricenteringdetectionvisualization`.
             .then(Commands.literal("visualize_sweep_detector")
                 .then(Commands.literal("on").executes(context -> setVolumeMode(context.getSource(),
                     IplEnteringVolumeVisualization.Mode.ON)))

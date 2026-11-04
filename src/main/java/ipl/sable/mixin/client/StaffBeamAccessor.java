@@ -8,27 +8,29 @@ import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.gen.Accessor;
 import org.spongepowered.asm.mixin.gen.Invoker;
 
+import java.util.List;
+
 /** Endpoints, nodes and the draw call of Simulated's physics-staff beam (portal beam pass). */
 @Pseudo
 @Mixin(targets = "dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler$PhysicsBeam", remap = false)
 public interface StaffBeamAccessor {
 
-    @Accessor(value = "nodes", remap = false)
-    java.util.List<?> ipl$getNodes();
+    @Accessor(value = "nodes")
+    List<?> ipl$getNodes();
 
-    @Accessor(value = "previousStart", remap = false)
+    @Accessor(value = "previousStart")
     Vec3 ipl$getPreviousStart();
 
-    @Accessor(value = "start", remap = false)
+    @Accessor(value = "start")
     Vec3 ipl$getStart();
 
-    @Accessor(value = "previousEnd", remap = false)
+    @Accessor(value = "previousEnd")
     Vec3 ipl$getPreviousEnd();
 
-    @Accessor(value = "end", remap = false)
+    @Accessor(value = "end")
     Vec3 ipl$getEnd();
 
-    @Invoker(value = "render", remap = false)
+    @Invoker(value = "render")
     void ipl$render(
         Vec3 start, Vec3 end, PoseStack poseStack, SuperRenderTypeBuffer buffer, Vec3 camera, float partialTick
     );

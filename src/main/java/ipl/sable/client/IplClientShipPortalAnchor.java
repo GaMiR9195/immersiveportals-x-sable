@@ -4,15 +4,16 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.NeoForge;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.portal.animation.ClientPortalAnimationManagement;
 import qouteall.q_misc_util.my_util.DQuaternion;
 
 import java.util.HashMap;
@@ -35,8 +36,6 @@ import java.util.UUID;
  * exactly what {@code rectifyClusterPortals} does server-side.
  */
 public final class IplClientShipPortalAnchor {
-
-    private static final Logger LOG = LoggerFactory.getLogger("ipl-ship-portal-client");
 
     private record ClientAnchor(
         UUID flippedId,
@@ -64,7 +63,7 @@ public final class IplClientShipPortalAnchor {
         // survive disconnect and the per-frame driver runs against a torn-down
         // ClientWorldLoader — getClientWorlds() Validate.isTrue crashed the render
         // thread mid-disconnect (emergencySaveAndCrash = unclean server shutdown).
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+        NeoForge.EVENT_BUS.addListener(
             de.nick1st.imm_ptl.events.ClientCleanupEvent.class, e -> {
                 ANCHORS.clear();
                 PORTAL_CACHE.clear();
@@ -77,7 +76,7 @@ public final class IplClientShipPortalAnchor {
         // END of update(), right before teleportation management and rendering — the
         // one point where our write is final for the frame (and teleport math sees
         // the welded pose too).
-        qouteall.imm_ptl.core.portal.animation.ClientPortalAnimationManagement
+        ClientPortalAnimationManagement
             .clientAnimationUpdateSignal.connect(IplClientShipPortalAnchor::driveAll);
     }
 
@@ -87,7 +86,7 @@ public final class IplClientShipPortalAnchor {
         // hard-validates initialization, and the game can render frames on the
         // disconnect path after teardown — never drive there.
         if (!ClientWorldLoader.getIsInitialized()
-            || net.minecraft.client.Minecraft.getInstance().level == null) {
+            || Minecraft.getInstance().level == null) {
             return;
         }
         for (Map.Entry<UUID, ClientAnchor> entry : ANCHORS.entrySet()) {
@@ -182,22 +181,18 @@ public final class IplClientShipPortalAnchor {
             String portalUuid, String flippedUuid, String reverseUuid, String parallelUuid,
             String shipUuid, String localPos, String localOrient, String destLock
         ) {
-            try {
-                ensureRegistered();
-                double[] p = parse(localPos, 3);
-                double[] o = parse(localOrient, 4);
-                double[] d = parse(destLock, 4);
-                ANCHORS.put(UUID.fromString(portalUuid), new ClientAnchor(
-                    parseUuid(flippedUuid),
-                    parseUuid(reverseUuid),
-                    parseUuid(parallelUuid),
-                    UUID.fromString(shipUuid),
-                    new Vector3d(p[0], p[1], p[2]),
-                    new DQuaternion(o[0], o[1], o[2], o[3]),
-                    new DQuaternion(d[0], d[1], d[2], d[3])));
-            } catch (Throwable t) {
-                LOG.error("[IPL-SHIP-PORTAL] bad anchor sync", t);
-            }
+            ensureRegistered();
+            double[] p = parse(localPos, 3);
+            double[] o = parse(localOrient, 4);
+            double[] d = parse(destLock, 4);
+            ANCHORS.put(UUID.fromString(portalUuid), new ClientAnchor(
+                parseUuid(flippedUuid),
+                parseUuid(reverseUuid),
+                parseUuid(parallelUuid),
+                UUID.fromString(shipUuid),
+                new Vector3d(p[0], p[1], p[2]),
+                new DQuaternion(o[0], o[1], o[2], o[3]),
+                new DQuaternion(d[0], d[1], d[2], d[3])));
         }
 
         private static UUID parseUuid(String s) {
@@ -205,10 +200,7 @@ public final class IplClientShipPortalAnchor {
         }
 
         public static void clear(String portalUuid) {
-            try {
-                ANCHORS.remove(UUID.fromString(portalUuid));
-            } catch (Throwable ignored) {
-            }
+            ANCHORS.remove(UUID.fromString(portalUuid));
         }
 
         private static double[] parse(String csv, int n) {

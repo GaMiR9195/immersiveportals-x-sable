@@ -2,6 +2,8 @@ package ipl.sable.client;
 
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.platform.SableChunkEventPlatform;
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.FriendlyByteBuf;
@@ -104,9 +106,9 @@ public final class IplPlotChunkRouting {
         if (container == null || !container.inBounds(x, z)) {
             return false;
         }
-        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = container.getPlot(x, z); // plot-bridged
+        LevelPlot plot = container.getPlot(x, z); // plot-bridged
         if (plot != null
-            && plot.getSubLevel() instanceof dev.ryanhcode.sable.sublevel.ClientSubLevel clientSub
+            && plot.getSubLevel() instanceof ClientSubLevel clientSub
             && clientSub.getRenderData() != null) {
             clientSub.getRenderData().setDirty(x, y, z, playerChanged);
         }

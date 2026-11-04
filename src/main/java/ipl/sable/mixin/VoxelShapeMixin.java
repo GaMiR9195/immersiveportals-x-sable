@@ -17,12 +17,11 @@ import java.util.Iterator;
  * <p>{@code sable$allBoxes()} is the single funnel every consumer of a sub-level's
  * collision geometry goes through -- Sable's own movement solver and step-up probe, its
  * fall helper, and ANY third-party mod that iterates a sub-level's boxes through the same
- * interface. Wrapping individual call sites one at a time was a losing game: each site
- * that was missed reappeared as a symptom (the player darkened inside blocks, forced into
- * a crouch or prone pose, or standing on geometry that should have been cut off behind
- * the portal plane).
+ * interface. Every call site left uncut shows up in game: the player darkened inside
+ * blocks, forced into a crouch or prone pose, or standing on geometry that lies behind the
+ * portal plane.
  *
- * <p>Cutting at the source instead means the cut is universal by construction. It is
+ * <p>Cutting at the source makes the cut universal by construction. It is
  * gated by {@link IplStraddleCollisionClip}, whose keep-planes are installed and cleared
  * per sub-level inside the intersection loop, so when no cut is installed this returns
  * the original iterator untouched and costs one thread-local read.
@@ -39,8 +38,7 @@ public abstract class VoxelShapeMixin {
     @Inject(
         method = "sable$allBoxes",
         at = @At("RETURN"),
-        cancellable = true,
-        require = 0
+        cancellable = true
     )
     private void ipl$clipAllBoxesAtPortalPlane(CallbackInfoReturnable<Object> cir) {
         Object returned = cir.getReturnValue();

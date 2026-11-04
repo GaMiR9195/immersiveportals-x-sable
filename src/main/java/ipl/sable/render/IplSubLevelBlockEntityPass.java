@@ -34,21 +34,21 @@ import java.util.Set;
  *
  * <p><b>Почему так, а не скобками вокруг каждой BE.</b> BER ничего не рисует сам — он лишь
  * складывает вершины в {@code BufferSource}, а шейдер выполняется при {@code endBatch()}.
- * Скобка «поставить плоскость → BER → снять плоскость» заканчивалась ДО реальной отрисовки,
- * поэтому шестерни/сундуки/верёвки на пересекающем портал корабле резались чем попало (или
- * не резались). Теперь каждый пересекающий портал саб-уровень рисует свои BE внутри
+ * Скобка «поставить плоскость → BER → снять плоскость» заканчивается ДО реальной отрисовки,
+ * и шестерни/сундуки/верёвки на пересекающем портал корабле резались бы чем попало (или
+ * не резались бы вовсе). Поэтому каждый пересекающий портал саб-уровень рисует свои BE внутри
  * {@link IplBlockEntityRenderScope#renderAndFlush}: плоскости ставятся один раз, весь
  * проход BE саб-уровня выполняется, и только ПОСЛЕ него буфер сбрасывается — вне любого BER
- * (сброс внутри BER ломал общий буфер catnip, это и был старый краш «Not building!»).
+ * (сброс внутри BER ломает общий буфер catnip — краш «Not building!»).
  *
  * <p><b>Что рисуется сверх оригинала Sable</b> (одной и той же матрицей саб-уровня — для
  * проекции уже отображённой — и «локальной» камерой, как у Sable):
  * <ul>
  *   <li>{@code RenderSection.globalBlockEntities} — верёвки, лебёдки и прочие BE с бесконечной
- *       рамкой. Раньше их рисовал только ванильный общий цикл, причём настоящей позой и без
- *       плоскостей куска: в проекции верёвки оставались «на старом месте», а под Sodium в тот
- *       же цикл попадали верёвки саб-уровней ЧУЖИХ измерений. Ванильный цикл теперь такие BE
- *       пропускает ({@link #shouldSkipGlobalLoopCall}).</li>
+ *       рамкой. Ванильный общий цикл рисует их настоящей позой и без плоскостей куска (в
+ *       проекции верёвки остались бы «на старом месте», а под Sodium в тот же цикл попадают
+ *       верёвки саб-уровней ЧУЖИХ измерений), поэтому такие BE он пропускает
+ *       ({@link #shouldSkipGlobalLoopCall}).</li>
  *   <li>BE, которые обычно визуализирует Flywheel, — только пока саб-уровень пересекает
  *       портал (или рисуется как проекция). Их окружение Flywheel в это время схлопнуто
  *       ({@link IplFlywheelFallback}), а BER вызывается с «выключенным» Flywheel
@@ -63,16 +63,7 @@ public final class IplSubLevelBlockEntityPass {
 
     /** Flywheel — необязательная зависимость; класс фолбэка трогаем только при её наличии. */
     private static final class Flywheel {
-        static final boolean LOADED = detect();
-
-        private static boolean detect() {
-            try {
-                ModList list = ModList.get();
-                return list != null && list.isLoaded("flywheel");
-            } catch (Throwable t) {
-                return false;
-            }
-        }
+        static final boolean LOADED = ModList.get().isLoaded("flywheel");
     }
 
     /** &gt; 0, пока выполняется диспетчер Sable (наш маршрут или его оригинал). Только render thread. */
@@ -105,10 +96,6 @@ public final class IplSubLevelBlockEntityPass {
     /** RETURN {@code LevelRenderer.renderLevel}. */
     public static void endLevelPass() {
         DRAWN_GLOBALS.pollLast();
-    }
-
-    public static boolean insideDispatcher() {
-        return dispatcherDepth > 0;
     }
 
     /**
@@ -155,9 +142,9 @@ public final class IplSubLevelBlockEntityPass {
         SubLevelRenderDispatcher.BlockEntityRenderer renderer,
         double camX, double camY, double camZ, float partialTick
     ) {
-        // «Преемник» перехода скрыт, пока призрак не передаст ему отрисовку: его секции уже не
-        // рисуются (IplSubLevelRenderVisibility), а BE раньше рисовались — вторая копия
-        // сундуков/шестерён рядом с призраком.
+        // «Преемник» перехода скрыт, пока призрак не передаст ему отрисовку: его секции не
+        // рисуются (IplSubLevelRenderVisibility), и BE тоже не должны — иначе рядом с призраком
+        // появится вторая копия сундуков/шестерён.
         if (IplParentDimSync.isSuppressedSuccessor(sub)) return;
 
         // Проекцию (IplStraddleRenderState) и уже открытую область держит вызывающий код —

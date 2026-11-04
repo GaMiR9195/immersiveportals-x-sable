@@ -172,34 +172,23 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
             return Vec3.ZERO;
         }
 
-        // Sable-compat fix: when an entity is standing on a sub-level (airship)
-        // that straddles a portal, IP's portal branch previously returned `result`
-        // and dropped Sable's sub-level floor entirely -- so the moment the ship
-        // clipped the portal frame, the deck stopped colliding and the entity fell
-        // through. The two collision systems are not mutually exclusive here: the
-        // real sub-level lives wholly in the source dim (the mirror is a separate
-        // copy), so its floor is always valid source-dim geometry and must keep
-        // applying. We fold both constraints together per-axis (most-restrictive).
+        // Sable compatibility: an entity standing on a sub-level next to a portal is
+        // bound by both collision systems. IP's portal branch alone drops Sable's
+        // sub-level floor, and the entity falls through the deck as soon as the ship
+        // touches the portal, so both results are folded per axis (most restrictive).
+        // Only "riding a ship floor at a portal" is affected: with no ship under the
+        // entity, or without Sable, `result` is returned unchanged.
         //
-        // Gated on hasSubLevelFloorThisTick so the ONLY behavior that changes is
-        // "riding a ship floor at a portal": a pure portal crossing with no ship
-        // under the entity still returns `result` exactly as before. No-op when
-        // Sable is absent.
-        //
-        // FUTURE (option B): `sableResult` is Sable's FULL collide -- it includes
-        // Sable's internal vanilla this-side collision, so a block in the portal
-        // frame edge could theoretically over-constrain via the merge below. To
-        // eliminate that, pull ONLY the sub-level contribution (call
-        // SubLevelEntityCollision.collide directly, skipping Sable's vanilla merge)
-        // and constrain `result` with just that. More coupling to Sable internals;
-        // deferred until/unless the frame-edge case actually bites.
+        // `sableResult` is Sable's full collide, including its vanilla this-side pass,
+        // so a block at the portal frame edge can over-constrain the merge. Calling only
+        // SubLevelEntityCollision.collide would avoid that at the cost of more coupling
+        // to Sable internals.
         if (SableBridge.hasSubLevelFloorThisTick((Entity) (Object) this)) {
-            // Riding a ship that's STRADDLING the portal: Sable's collision is now
-            // both-frame aware through Atlas image mappings, so it is
-            // authoritative. Folding IP's portal result in here constrained the rider
-            // against dest-world geometry beyond the plane (the ground the linked portal
-            // stands on, the frame at mapped coords) — phantom floors that reduced
-            // apparent gravity and capped jumps while on the through-part.
+            // The floor sub-level straddles the portal: Sable's collision knows both frames
+            // through Atlas image mappings and is authoritative. Folding IP's portal result
+            // in would bind the rider to destination geometry beyond the plane (the ground
+            // under the linked portal, the frame at mapped coordinates): phantom floors that
+            // reduce apparent gravity and cap jumps on the part that is already through.
             if (SableBridge.isFloorSubLevelStraddlingPortal((Entity) (Object) this)) {
                 return sableResult;
             }

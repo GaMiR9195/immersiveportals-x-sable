@@ -10,12 +10,10 @@ import org.spongepowered.asm.mixin.Mixin;
 /**
  * Server twin of {@code ClientLevelMixin}: projectiles, mob line of sight,
  * explosions' exposure rays, Create's raycasts, item use validation — every server
- * {@code clip} now hits straddling ships piece-by-piece (native piece cut at its root
+ * {@code clip} hits straddling ships piece-by-piece (native piece cut at its root
  * portal tubes, images through every session including chains, foreign images included).
- *
- * <p>Русский комментарий: на сервере проекции раньше вообще не участвовали в рейкастах,
- * поэтому, например, стрела проходила сквозь видимую часть корабля за порталом и
- * попадала в "призрака" на исходной стороне.
+ * Без этого стрела проходила бы сквозь видимую часть корабля за порталом и попадала в
+ * "призрака" на исходной стороне.
  */
 @Mixin(value = ServerLevel.class, priority = 1200)
 public abstract class ServerLevelMixin implements BlockGetter {

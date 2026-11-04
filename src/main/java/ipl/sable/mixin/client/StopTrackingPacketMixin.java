@@ -22,7 +22,7 @@ public abstract class StopTrackingPacketMixin {
 
     @Shadow public abstract long plotCoordinate();
 
-    @Inject(method = "handle", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
+    @Inject(method = "handle", at = @At("HEAD"), cancellable = true)
     private void ipl$deferGhostRemoval(PacketContext context, CallbackInfo ci) {
         Level level = context.level();
         if (level == null || !level.isClientSide()) return;

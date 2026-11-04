@@ -8,23 +8,16 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Clears hosted transit state when the server stops — at stopServer RETURN, not HEAD:
- * the final world save runs INSIDE stopServer, and the ship-portal anchor map must
- * still be populated when portal entities serialize (the persistence tag is derived
- * from it; clearing at HEAD silently saved every portal unanchored). By stop time
- * nothing ticks these maps, so late clearing is safe for all of them.
+ * Clears transit state when the server stops — at {@code stopServer} RETURN, not HEAD: the final
+ * world save runs inside {@code stopServer}, and the ship-portal anchor map must still be
+ * populated when portal entities serialize (their persistence tag is derived from it). By then
+ * nothing ticks these maps any more.
  */
 @Mixin(MinecraftServer.class)
 public abstract class MinecraftServerMixin {
 
     @Inject(method = "stopServer", at = @At("RETURN"))
     private void ipl$cleanupOnStop(CallbackInfo ci) {
-        MinecraftServer server = (MinecraftServer) (Object) this;
-        try {
-            IplTransitController.onServerStopping(server);
-        } catch (Throwable t) {
-            org.slf4j.LoggerFactory.getLogger("ipl-sable-transit")
-                .warn("[IPL-TRANSIT] server-stop cleanup threw", t);
-        }
+        IplTransitController.onServerStopping((MinecraftServer) (Object) this);
     }
 }

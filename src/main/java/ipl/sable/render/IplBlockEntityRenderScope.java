@@ -7,6 +7,8 @@ import org.lwjgl.opengl.GL30;
 import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
+import java.util.ArrayDeque;
+
 /**
  * Keeps a sub-level clip alive until its deferred block-entity vertices are drawn.
  * A block-entity renderer only appends vertices to BufferSource; the shader runs at
@@ -14,13 +16,13 @@ import qouteall.imm_ptl.core.render.context_management.PortalRendering;
  */
 public final class IplBlockEntityRenderScope {
 
-    private static final ThreadLocal<java.util.ArrayDeque<ClientSubLevel>> ACTIVE =
-        ThreadLocal.withInitial(java.util.ArrayDeque::new);
+    private static final ThreadLocal<ArrayDeque<ClientSubLevel>> ACTIVE =
+        ThreadLocal.withInitial(ArrayDeque::new);
 
     private IplBlockEntityRenderScope() {}
 
     public static boolean isActiveFor(ClientSubLevel sub) {
-        return sub != null && ACTIVE.get().contains(sub);
+        return ACTIVE.get().contains(sub);
     }
 
     public static void renderAndFlush(
@@ -48,10 +50,6 @@ public final class IplBlockEntityRenderScope {
         // must be off: a portal pass can otherwise leave an old slot-0 equation
         // enabled and cull native destination BEs after the parent handoff.
         disableStalePortalClipOutsidePortalPass();
-        GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
-        // Second sub-level cut lives on its own clip distance (see
-        // ChunkedRenderDataMixin for why min() into one slot bent the cut).
-        GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
         ACTIVE.get().addLast(sub);
         try {
             render.run();

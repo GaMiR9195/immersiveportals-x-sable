@@ -5,6 +5,9 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
+import ipl.sable.client.IplClientProjections;
+import ipl.sable.client.IplStaffBeamRoutes;
 import ipl.sable.client.IplStraddleStaffPick;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -12,7 +15,9 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
@@ -20,6 +25,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
+
+import java.util.UUID;
 
 /**
  * Клиентский обработчик посоха: выбор цели через цепочку порталов и фокус камеры.
@@ -37,8 +44,7 @@ public abstract class StaffClientHandlerMixin {
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/client/player/LocalPlayer;pick(DFZ)Lnet/minecraft/world/phys/HitResult;"
-        ),
-        require = 0
+        )
     )
     private HitResult ipl$portalPick(
         LocalPlayer player, double range, float tickDelta, boolean fluids, Operation<HitResult> original
@@ -48,11 +54,9 @@ public abstract class StaffClientHandlerMixin {
         IplStraddleStaffPick.PortalTarget through =
             IplStraddleStaffPick.pickThroughPortals(player, range, tickDelta);
         // NEAREST-WINS. A through-portal target must never beat a candidate the player can
-        // already see in their own world. The old code returned `through` unconditionally,
-        // which is why a build standing next to (or on top of) the player got bound to the
-        // portal and held through it, and why grabbing a body co-located with the player
-        // snapped the grab onto the portal. The comparison is between VISIBLE ray lengths,
-        // the only frame in which a local hit and a through-portal hit are comparable.
+        // already see in their own world: otherwise a build next to (or under) the player
+        // binds to the portal and is held through it. The comparison is between VISIBLE ray
+        // lengths, the only frame in which a local hit and a through-portal hit are comparable.
         double localVisible = IplStraddleStaffPick.visibleRayLength(player, local, tickDelta);
         double projectionVisible = IplStraddleStaffPick.visibleRayLength(player, projection, tickDelta);
         double nearestHere = Math.min(localVisible, projectionVisible);
@@ -77,9 +81,9 @@ public abstract class StaffClientHandlerMixin {
      * body's raw world position. Seeding the same chain here makes "fixate through a
      * portal" behave optically identically to "grab through a portal".
      */
-    @Inject(method = "lockSubLevel", at = @At("HEAD"), require = 0)
+    @Inject(method = "lockSubLevel", at = @At("HEAD"))
     private void ipl$captureLockPath(
-        SubLevel sub, net.minecraft.world.phys.Vec3 hitLocation,
+        SubLevel sub, Vec3 hitLocation,
         LocalPlayer player, InteractionHand hand, CallbackInfo ci
     ) {
         if (sub instanceof ClientSubLevel clientSub) {
@@ -87,7 +91,7 @@ public abstract class StaffClientHandlerMixin {
         }
     }
 
-    @Inject(method = "startDraggingSubLevel", at = @At("HEAD"), require = 0)
+    @Inject(method = "startDraggingSubLevel", at = @At("HEAD"))
     private void ipl$capturePortalPath(
         SubLevel sub, BlockPos blockPos, LocalPlayer player, InteractionHand hand, CallbackInfo ci
     ) {
@@ -101,15 +105,15 @@ public abstract class StaffClientHandlerMixin {
      * hold distance with the true visible pick distance for through-portal / projection grabs.
      * Fixes the maxed-out scroll on a cross-dimension grab and the wrong hold point on an image.
      */
-    @Inject(method = "startDraggingSubLevel", at = @At("TAIL"), require = 0)
+    @Inject(method = "startDraggingSubLevel", at = @At("TAIL"))
     private void ipl$applyGrabDistance(
         SubLevel sub, BlockPos blockPos, LocalPlayer player, InteractionHand hand, CallbackInfo ci
     ) {
         IplStraddleStaffPick.applyGrabDistance(
-            (dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler) (Object) this, sub);
+            (PhysicsStaffClientHandler) (Object) this, sub);
     }
 
-    @Inject(method = "stopDragging", at = @At("HEAD"), require = 0)
+    @Inject(method = "stopDragging", at = @At("HEAD"))
     private void ipl$clearCaptureBeforeStop(CallbackInfo ci) {
         IplStraddleStaffPick.clearDragTargets();
     }
@@ -121,30 +125,29 @@ public abstract class StaffClientHandlerMixin {
      * physical length instead — the resolved route length when one exists, else the pick
      * ray's measured length — and bind the beam to its owner for the per-tick length feed.
      */
-    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+    @WrapOperation(
         method = "updateBeam",
         at = @At(
             value = "NEW",
             target = "dev/simulated_team/simulated/content/physics_staff/PhysicsStaffClientHandler$PhysicsBeam"
-        ),
-        require = 0
+        )
     )
-    private dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler.PhysicsBeam ipl$seedBeamLength(
-        net.minecraft.world.phys.Vec3 start, net.minecraft.world.phys.Vec3 end, double length,
-        Operation<dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler.PhysicsBeam> original,
-        net.minecraft.world.level.Level level, java.util.UUID uuid,
-        net.minecraft.world.phys.Vec3 startArg, net.minecraft.world.phys.Vec3 endArg
+    private PhysicsStaffClientHandler.PhysicsBeam ipl$seedBeamLength(
+        Vec3 start, Vec3 end, double length,
+        Operation<PhysicsStaffClientHandler.PhysicsBeam> original,
+        Level level, UUID uuid,
+        Vec3 startArg, Vec3 endArg
     ) {
-        double best = ipl.sable.client.IplStaffBeamRoutes.knownLength(uuid);
+        double best = IplStaffBeamRoutes.knownLength(uuid);
         if (Double.isNaN(best)) {
-            ClientSubLevel sub = ipl.sable.client.IplStaffPortalBeamRenderer.findHostedSubLevel(end);
+            ClientSubLevel sub = IplClientProjections.findSubLevelAtPlot(end);
             if (sub != null) {
                 best = IplStraddleStaffPick.pickDistance(sub.getUniqueId());
             }
         }
-        dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler.PhysicsBeam beam =
+        PhysicsStaffClientHandler.PhysicsBeam beam =
             original.call(start, end, Double.isNaN(best) ? length : best);
-        ipl.sable.client.IplStaffBeamRoutes.registerBeamOwner(beam, uuid);
+        IplStaffBeamRoutes.registerBeamOwner(beam, uuid);
         return beam;
     }
 

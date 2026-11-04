@@ -25,7 +25,7 @@ public final class IplPortalVolumeCache {
         return BLOCKS.computeIfAbsent(ship.getUniqueId(), ignored -> build(ship));
     }
 
-    /** Starts a hosting-container scan. Entries not touched by its live ships are stale. */
+    /** Starts a server tick. Entries no live ship touched during it are dropped by the next {@link #prune}. */
     public static void beginTick() {
         tick++;
     }
@@ -65,7 +65,7 @@ public final class IplPortalVolumeCache {
     }
 
     private static List<BlockPos> build(ServerSubLevel ship) {
-        ServerLevel level = (ServerLevel) ship.getLevel();
+        ServerLevel level = ship.getLevel();
         var bounds = ship.getPlot().getBoundingBox();
         List<BlockPos> blocks = new ArrayList<>();
         for (int x = bounds.minX(); x <= bounds.maxX(); x++) {
