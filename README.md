@@ -4,8 +4,7 @@
 2) Multi-portal / chained straddling, attachment gate, seamless same-dim flips and cross-dim moves.
 3) Linux/macOS natives build script, multi-platform natives loader, much less console spam.
 
-Full description of the 0.6.0 model: `README060NEW.md`. Old worlds with ships stored in
-`ipl_sable:sublevels` are not migrated (see README060NEW.md → Upgrade).
+All changes introduced in 0.6.0 can be found here: `README060NEW.md`.
 
 # Immersive Portals × Sable Compatibility Fork
 Version: NeoForge 1.21.1; Targets: Sable 2.0.3+ · Create Aeronautics 1.3.0+ · Create 6.0.10
