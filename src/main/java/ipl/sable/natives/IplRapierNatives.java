@@ -25,19 +25,28 @@ public final class IplRapierNatives {
         return available;
     }
 
-    /** Region mode values of the ABI-2 payload (17th double of each region). */
-    public static final double REGION_EXCLUDE = 0.0;
-    public static final double REGION_KEEP = 1.0;
-    /** Doubles per region in the ABI-2 payload. */
-    public static final int REGION_STRIDE_V2 = 17;
+    /** ABI level whose piece clipping this Java side speaks ({@link #setPieceSection} etc.). */
+    public static final int PIECE_ABI = 3;
+    /** Doubles per edge in {@link #setPieceEdges} (ABI 3..4). */
+    public static final int EDGE_STRIDE_V3 = 18;
+    /** ABI level whose edges carry the label-time plot plane (consistent zone split). */
+    public static final int EDGE_PLANE_ABI = 5;
+    /** Doubles per edge: the ABI-5 prefix (24), then label-time width/height axes and half extents (8). */
+    public static final int EDGE_STRIDE = 32;
+    /** ABI 6 carries the complete label-time aperture, for an observed finite sweep. */
+    public static final int EDGE_SWEEP_ABI = 6;
+
+    /** Doubles per edge the loaded natives read. */
+    public static int nativeEdgeStride() {
+        return abiLevel() >= EDGE_SWEEP_ABI ? EDGE_STRIDE : abiLevel() >= EDGE_PLANE_ABI ? 24 : EDGE_STRIDE_V3;
+    }
 
     private static volatile int abiLevel = -1;
 
     /**
-     * Native ABI level: 1 = exclusion-only clip regions (natives that predate the probe),
-     * 2 = keep/exclude regions ({@link #setClipRegionsV2}, {@link #setImageClipRegionsV2}).
-     * Probed once; an older DLL simply lacks the symbol, which is caught here instead of
-     * surfacing as an {@link UnsatisfiedLinkError} in a physics tick.
+     * Native ABI level (0 = natives not loaded, 1 = a DLL that predates the probe). Probed
+     * once; an older DLL simply lacks the symbol, which is caught here instead of surfacing
+     * as an {@link UnsatisfiedLinkError} in a physics tick.
      */
     public static int abiLevel() {
         int level = abiLevel;
@@ -52,29 +61,35 @@ public final class IplRapierNatives {
         return level;
     }
 
+    /** Whether the loaded natives clip contacts by piece (README, section 9). */
+    public static boolean piecesSupported() {
+        return abiLevel() >= PIECE_ABI;
+    }
+
     private static native int nativeAbiLevel();
 
     /**
-     * ABI 2 body clip regions: N regions × 17 doubles —
-     * {@code [px py pz  nx ny nz  wx wy wz halfW  hx hy hz halfH  skin maxDepth  mode]}.
-     * A contact is neutralized when it lies inside any EXCLUDE region or outside any KEEP
-     * region (KEEP regions intersect).
+     * Labels of one 16³ plot section ({@code 4096} bytes, index {@code x | y << 4 | z << 8},
+     * unsigned piece ids); {@code null} drops the section (all native).
      */
-    public static native void setClipRegionsV2(long sceneHandle, int bodyId, double[] regions);
-
-    /** ABI 2 image clip regions (same 17-double layout as {@link #setClipRegionsV2}). */
-    public static native void setImageClipRegionsV2(
-        long sceneHandle, int bodyId, long imageHandle, double[] regions);
+    public static native void setPieceSection(long sceneHandle, int bodyId, int sx, int sy, int sz, byte[] labels);
 
     /**
-     * Set (or clear, with an empty array) body clip regions: solver contacts past the
-     * region's plane and within its lateral rectangle are dropped from its manifolds.
-     * Infinite lateral half extents encode a full plane.
-     *
-     * <p>Layout: N regions × 14 doubles —
-     * {@code [px py pz  nx ny nz  wx wy wz  halfW  hx hy hz  halfH]}.
+     * Aperture edges of a body: N × {@link #EDGE_STRIDE} doubles
+     * {@code [parent child  ox oy oz  nx ny nz  wx wy wz halfW  hx hy hz halfH  zone slack
+     * pox poy poz pnx pny pnz pwx pwy pwz phalfW phx phy phz phalfH]}
+     * in the parent piece's scene frame, normal towards the parent
+     * side; {@code po/pn} is the same plane in plot coordinates when the labels were made
+     * (ABI 6 carries the complete reference aperture; ABI 5 receives 24 doubles,
+     * earlier libraries receive {@link #EDGE_STRIDE_V3}).
      */
-    public static native void setClipRegions(long sceneHandle, int bodyId, double[] regions);
+    public static native void setPieceEdges(long sceneHandle, int bodyId, double[] edges);
+
+    /** Piece id (1..255) of an image collider; the native collider is piece 0. */
+    public static native void setImageNode(long sceneHandle, int bodyId, long imageHandle, int node);
+
+    /** Drops every piece datum of a body: its contacts are no longer clipped. */
+    public static native void clearPieces(long sceneHandle, int bodyId);
 
     /**
      * Sable bodies in {@code bodyId}'s joint component. {@code rigidOnly} restricts the
@@ -89,6 +104,12 @@ public final class IplRapierNatives {
     /** Packed {@code (ropeId << 1) | endBit} for every rope end attached to the body. */
     public static native long[] ropesAttachedToSableBody(long sceneHandle, int bodyId);
 
+    /** ABI 4 can reframe all particles of an eligible same-dimension rope group. */
+    public static final int ROPE_TRANSIT_ABI = 4;
+    public static native boolean canMoveGroupRopes(long sceneHandle, int[] bodyIds);
+    public static native boolean moveGroupRopes(long sceneHandle, int[] bodyIds,
+        double tx, double ty, double tz, double qx, double qy, double qz, double qw);
+
     // ------------------------------------------------------------------
     // Atlas M2 (spec v3 §2.2-2.3): image colliders — Tier-1 exact coupling.
     // ------------------------------------------------------------------
@@ -100,8 +121,8 @@ public final class IplRapierNatives {
      * geometry on the SAME rigid body: its contacts act on the body through the engine's
      * portal-frame mapping — exact, in-solver, no servo, any fixed rotation (Tier 2).
      *
-     * @return packed collider handle for {@link #removeImageCollider} /
-     *         {@link #setImageClipRegions}, or -1 if the body is unknown.
+     * @return packed collider handle for {@link #removeImageCollider} and
+     *         {@link #setImageNode}, or -1 if the body is unknown.
      */
     public static native long createImageCollider(
         long sceneHandle, int bodyId,
@@ -120,12 +141,4 @@ public final class IplRapierNatives {
     /** Remove an image collider created by {@link #createImageCollider}. */
     public static native void removeImageCollider(
         long sceneHandle, int bodyId, long imageHandle);
-
-    /**
-     * Set (or clear, with an empty array) the clip regions of one IMAGE collider — the
-     * far side of the half-open aperture seam. Same 14-double layout as
-     * {@link #setClipRegions}.
-     */
-    public static native void setImageClipRegions(
-        long sceneHandle, int bodyId, long imageHandle, double[] regions);
 }

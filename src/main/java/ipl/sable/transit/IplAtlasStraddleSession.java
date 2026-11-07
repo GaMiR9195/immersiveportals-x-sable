@@ -15,7 +15,6 @@ import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -25,64 +24,37 @@ import java.util.UUID;
 import java.util.function.BiConsumer;
 
 /**
- * Straddle sessions: lightweight far-side projections of a sub-level.
+ * Straddle sessions: the far-side images of a sub-level (README, section 2).
  *
- * <p>The real body stays the single source of truth. While it straddles a portal, an
- * IMAGE collider of the same rigid body is registered into the destination level's
- * Atlas chart with the portal isometry as its prefix ({@code image pose = P x body
- * pose}). Clip regions split the contacts along the session's THROUGH PRISM
- * ({@link PortalPrism}): the real body ignores contacts inside it, the image keeps only
- * contacts inside it (mapped), so the pair behaves like one body passing through the
- * aperture. Material that crossed the portal's infinite plane beside the frame is outside
- * the prism and keeps colliding in the source world. Forces on the image act on the real
- * body.
+ * <p>The real body stays the single source of truth. While part of it is through a portal,
+ * an IMAGE collider of the same rigid body is registered into the destination level's Atlas
+ * chart with the portal isometry as its prefix ({@code image pose = P x body pose}). Every
+ * session is one node of the body's piece tree ({@link IplPieceMap}): the natives keep a
+ * contact only on the collider of the piece its point belongs to, so real body and images
+ * behave like one body passing through the apertures. Forces on an image act on the real body.
  *
- * <p>Chains: when an image itself straddles another portal in its level, a child
- * session is opened with the composite prefix ({@code P_child x P_parent}). The parent
- * image gets an extra region hiding the part already in the child's prism, and the child
- * image keeps the intersection of every prism of its path. Several children of one node
- * (or several roots of one body) are BRANCHES: each owns the material inside its own prism,
- * contested space goes to the sibling with priority ({@link #outranks}). Depth is capped by
- * {@link #MAX_CHAIN_DEPTH}; nothing else limits chains.
+ * <p>Chains: an image crossing a portal of its destination level is a child session with the
+ * composite prefix ({@code P_child x P_parent}).
+ * WHICH sessions exist is decided by {@link IplPieceTracker}; this class only owns the images.
+ *
+ * <p>Natives without piece clipping (stock, or an IPSable build older than
+ * {@link IplRapierNatives#PIECE_ABI}) get sessions without an image collider: the body is
+ * still split, drawn and flipped, but its far side does not collide (README, section 9).
  */
 public final class IplAtlasStraddleSession {
     private static final Logger LOG = LoggerFactory.getLogger("ipl-atlas-straddle");
-    /**
-     * Recursion guard for projection-of-projection chains.
-     *
-     * <p>Почему 16, а не 8: в ряду порталов со сдвигом на блок длинный
-     * корабль честно стоит в стольких порталах, сколько блоков в нём помещается между ними;
-     * при 8 кусок за восьмым порталом не нарезался бы вовсе и торчал сквозь грань. Фантомные
-     * сессии отсекает область куска, так что предел — только защита от разгона.
-     */
-    public static final int MAX_CHAIN_DEPTH = 16;
-    /**
-     * Жёсткий предел сессий на одно тело. Без ограничения тестов областью куска цепочки
-     * однонаправленных порталов подряд плодили бы фантомные сессии комбинаторно (каждая —
-     * образ в Rapier и запись в снапшоте) и роняли соединение. Нормальный проход через
-     * N порталов — это N сессий, так что 64 — лишь страховка (≈30 КБ снапшота), а не рабочий
-     * предел нарезки.
-     */
-    public static final int MAX_SESSIONS_PER_SHIP = 64;
 
     private static final Map<StraddleKey, Session> SESSIONS = new LinkedHashMap<>();
 
     /**
      * Copy-on-write view of {@link #SESSIONS} for the hot read paths (every server spatial
-     * query goes through {@code CompanionIntersectMixin}): rebuilt on each session-set change
-     * by {@link #sessionsChanged}, iterated without a per-call copy. A visitor that ends a
-     * session keeps iterating the set it started with, exactly like the former
-     * {@code List.copyOf(SESSIONS.values())}.
+     * query goes through {@code CompanionIntersectMixin}), rebuilt on each change.
      */
     private static volatile Session[] snapshot = new Session[0];
 
-    /**
-     * Per destination level, the ships with at least one image into it, ordered by each ship's
-     * first session (the order the former per-query key scan produced).
-     */
+    /** Per destination level, the ships with at least one image into it, in first-session order. */
     private static volatile Map<ServerLevel, List<UUID>> shipsByDest = Map.of();
     private static boolean loggedScaledSkip;
-    private static boolean loggedSessionCap;
 
     private IplAtlasStraddleSession() {}
 
@@ -97,35 +69,13 @@ public final class IplAtlasStraddleSession {
         final long bodyScene;
         final long destScene;
         final int realId;
-        IplStraddlePoseMap.StraddleMapping local;
+        /** Piece id of this session in the body's {@link IplPieceMap} (1..255). */
+        final int node;
         IplStraddlePoseMap.StraddleMapping mapping;
-        Vec3 sourceToDest;
-        /**
-         * Plot-local point of the body that stood at the aperture centre when the session
-         * opened; its chord gives the passage direction of {@link #prism}.
-         */
-        Vec3 anchor;
-        /** Through region of this portal in the SOURCE level frame, at the last refresh. */
-        PortalPrism prism;
-        /** {@link #prism} as a native EXCLUDE region (real body for roots, parent image otherwise). */
-        double[] beyondRegion;
-        /**
-         * ABI 2: this image's KEEP set in the DEST frame -- the emerged prism of this portal
-         * plus every ancestor's emerged prism mapped forward. A chained image is exactly
-         * "what went through P1, then P2, ... then Pk": an INTERSECTION of prisms.
-         */
-        List<double[]> keepRegions = List.of();
-        /** Legacy (ABI 1) only: region of the image behind this portal's exit, DEST frame. */
-        double[] notThroughRegion;
-        /** Legacy (ABI 1) only: parent chain's not-through regions mapped into this dest frame. */
-        List<double[]> inheritedRegions = List.of();
-        double[] lastImageRegions;
         long imageHandle = -1;
-        boolean admitted;
-        boolean completed;
 
         Session(StraddleKey key, ServerSubLevel sub, Portal portal, ServerLevel source, ServerLevel dest,
-                long bodyScene, long destScene) {
+                long bodyScene, long destScene, int node) {
             this.key = key;
             this.sub = sub;
             this.portal = portal;
@@ -135,364 +85,89 @@ public final class IplAtlasStraddleSession {
             this.bodyScene = bodyScene;
             this.destScene = destScene;
             this.realId = Rapier3D.getID(sub);
+            this.node = node;
         }
-    }
-
-    public static boolean isEnabled() {
-        return IplScenes.isEnabled();
     }
 
     // ------------------------------------------------------------------ lifecycle
 
-    /**
-     * Opens or refreshes the ROOT session of the real body with {@code portal};
-     * {@code anchorAt} seeds the passage anchor of a NEW session (see {@link #ensure}).
-     */
-    public static void onStraddleTick(ServerSubLevel sub, Portal portal, Vec3 sourceToDest, @Nullable Vec3 anchorAt) {
-        if (portal.level() != sub.getLevel()) return;
-        ensure(new StraddleKey(sub.getUniqueId(), portal.getUUID()), null, sub, portal, sourceToDest, sub.getLevel(),
-            anchorAt);
-    }
-
-    /** Opens or refreshes a CHAINED session: the image of {@code parentKey} straddles {@code portal}. */
-    public static void onChainTick(StraddleKey parentKey, Portal portal, Vec3 sourceToDest, @Nullable Vec3 anchorAt) {
-        Session parent = SESSIONS.get(parentKey);
-        if (parent == null || parentKey.depth() >= MAX_CHAIN_DEPTH || portal.level() != parent.dest) return;
-        ensure(parentKey.child(portal.getUUID()), parent, parent.sub, portal, sourceToDest, parent.dest, anchorAt);
-    }
-
-    /**
-     * {@code anchorAt}: where the anchor of a NEW session stands NOW in the portal's source
-     * frame -- the body point that was at the aperture centre when the passage began (a
-     * promoted session keeps its passage); null = the aperture centre itself.
-     */
-    private static void ensure(StraddleKey key, @Nullable Session parent, ServerSubLevel sub,
-                               Portal portal, Vec3 sourceToDest, ServerLevel source, @Nullable Vec3 anchorAt) {
-        if (!isEnabled() || sub.isRemoved()) return;
-        if (IplShipPortalAnchor.isAnchorShip(portal, sub.getUniqueId())) return;
-        ServerLevel dest = source.getServer().getLevel(portal.getDestDim());
-        if (dest == null) return;
+    /** Whether {@code portal} can carry a session at all (scale 1, live, loaded destination). */
+    static boolean supports(ServerLevel source, Portal portal) {
+        if (portal.isRemoved() || portal.level() != source) return false;
         if (Math.abs(portal.getScaling() - 1.0) > 1e-9) {
             if (!loggedScaledSkip) {
                 loggedScaledSkip = true;
                 LOG.info("[IPL-IMAGE] scaled portals are not supported for sub-level projections "
                     + "(portal {}, logged once)", portal.getUUID());
             }
-            return;
+            return false;
         }
-        IplStraddlePoseMap.StraddleMapping local = IplStraddlePoseMap.StraddleMapping.of(portal);
-        IplStraddlePoseMap.StraddleMapping mapping = parent == null ? local : parent.mapping.then(local);
-        Session existing = SESSIONS.get(key);
-        if (existing != null) {
-            if (existing.dest != dest || existing.bodyLevel != sub.getLevel()
-                || IplScenes.sceneHandle(existing.bodyLevel) != existing.bodyScene
-                || IplScenes.sceneHandle(dest) != existing.destScene) {
-                clear(key, "frame-invalidated");
-            } else {
-                refresh(existing, parent, local, mapping, sourceToDest);
-                return;
-            }
-        }
-        if (sessionCount(sub.getUniqueId()) >= MAX_SESSIONS_PER_SHIP) {
-            if (!loggedSessionCap) {
-                loggedSessionCap = true;
-                LOG.warn("[IPL-IMAGE] ship {} reached {} straddle sessions; further projections are "
-                    + "skipped (logged once)", sub.getUniqueId(), MAX_SESSIONS_PER_SHIP);
-            }
-            return;
-        }
+        return source.getServer().getLevel(portal.getDestDim()) != null;
+    }
+
+    /**
+     * Opens session {@code key} (its parent must exist for a chain) as piece {@code node}.
+     * Returns false when it cannot be opened (missing scene, invalid portal or native failure).
+     */
+    static boolean open(StraddleKey key, ServerSubLevel sub, Portal portal, int node) {
+        if (sub.isRemoved() || SESSIONS.containsKey(key)) return false;
+        if (IplShipPortalAnchor.isAnchorShip(portal, sub.getUniqueId())) return false;
+        Session parent = key.isRoot() ? null : SESSIONS.get(key.parent());
+        if (!key.isRoot() && parent == null) return false;
+        ServerLevel source = parent == null ? sub.getLevel() : parent.dest;
+        if (!supports(source, portal)) return false;
+        ServerLevel dest = source.getServer().getLevel(portal.getDestDim());
         long bodyScene = IplScenes.sceneHandle(sub.getLevel());
         long destScene = IplScenes.sceneHandle(dest);
-        if (bodyScene == 0 || destScene == 0) return;
-        Session session = new Session(key, sub, portal, source, dest, bodyScene, destScene);
-        session.local = local;
-        session.mapping = mapping;
-        session.sourceToDest = sourceToDest;
-        Vec3 anchorSource = anchorAt != null ? anchorAt : portal.getOriginPos();
-        session.anchor = sub.logicalPose().transformPositionInverse(
-            parent == null ? anchorSource : parent.mapping.unmapPoint(anchorSource));
-        Vec3 shift = mapping.shift();
-        Quaterniond rot = mapping.mapQuat(new Quaterniond());
-        session.imageHandle = IplRapierNatives.createImageCollider(
-            destScene, session.realId, shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
-        if (session.imageHandle < 0) {
-            LOG.warn("[IPL-IMAGE] image collider creation failed for ship {} portal {}",
-                sub.getUniqueId(), portal.getUUID());
-            return;
+        boolean physical = IplRapierNatives.piecesSupported();
+        if (physical && (bodyScene == 0 || destScene == 0)) return false;
+        Session session = new Session(key, sub, portal, source, dest, bodyScene, destScene, node);
+        IplStraddlePoseMap.StraddleMapping local = IplStraddlePoseMap.StraddleMapping.of(portal);
+        session.mapping = parent == null ? local : parent.mapping.then(local);
+        if (physical) {
+            Vec3 shift = session.mapping.shift();
+            Quaterniond rot = session.mapping.mapQuat(new Quaterniond());
+            session.imageHandle = IplRapierNatives.createImageCollider(
+                destScene, session.realId, shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
+            if (session.imageHandle < 0) {
+                LOG.warn("[IPL-IMAGE] image collider creation failed for ship {} portal {}",
+                    sub.getUniqueId(), portal.getUUID());
+                return false;
+            }
+            IplRapierNatives.setImageNode(destScene, session.realId, session.imageHandle, node);
         }
         SESSIONS.put(key, session);
         sessionsChanged();
-        IplProjectionTree.invalidate();
-        // Новая сессия меняет пространство, которое соседи уступают по приоритету: пересчёт
-        // всех областей тела, а не только своей.
-        rebuildShip(sub);
-        LOG.debug("[IPL-IMAGE] start {} depth={} dest={} imageHandle={}",
-            key.path(), key.depth(), dest.dimension().location(), session.imageHandle);
+        LOG.debug("[IPL-IMAGE] start {} node={} dest={}", key.path(), node, dest.dimension().location());
+        return true;
     }
 
-    private static void refresh(Session s, @Nullable Session parent,
-                                IplStraddlePoseMap.StraddleMapping local,
-                                IplStraddlePoseMap.StraddleMapping mapping, Vec3 sourceToDest) {
-        if (s.sub.isRemoved()) return;
-        boolean moved = !mapping.sameAs(s.mapping);
-        s.local = local;
-        s.mapping = mapping;
-        s.sourceToDest = sourceToDest;
-        if (moved) {
-            Vec3 shift = mapping.shift();
-            Quaterniond rot = mapping.mapQuat(new Quaterniond());
-            IplRapierNatives.setImagePrefix(s.destScene, s.imageHandle,
-                shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
-        }
-        double[] oldBeyond = s.beyondRegion;
-        computeRegions(s, parent);
-        if (!Arrays.equals(oldBeyond, s.beyondRegion)) {
-            if (s.key.isRoot()) applyRealClipRegions(s.sub);
-            if (parent != null) applyImageRegions(parent);
-            // Siblings (and their chains) yield to this region or are yielded to by it.
-            for (Session other : List.copyOf(SESSIONS.values())) {
-                if (other != s && other.sub == s.sub && other.key.depth() >= s.key.depth()) applyImageRegions(other);
-            }
-        }
-        applyImageRegions(s);
-    }
-
-    /** Recomputes every region of one body (parents first) and re-applies changed payloads. */
-    private static void rebuildShip(ServerSubLevel sub) {
-        boolean anyRoot = false;
-        for (Session s : List.copyOf(SESSIONS.values())) {
-            if (s.sub != sub) continue;
+    /**
+     * Follows moving portals (composite mapping, image prefix, client snapshot) and drops
+     * sessions whose frame became invalid. Parents are refreshed before their children
+     * (insertion order).
+     */
+    static void refreshShip(ServerSubLevel sub) {
+        for (Session s : snapshot) {
+            if (s.sub != sub || !SESSIONS.containsKey(s.key)) continue;
             Session parent = s.key.isRoot() ? null : SESSIONS.get(s.key.parent());
-            if (!s.key.isRoot() && parent == null) continue;
-            computeRegions(s, parent);
-            anyRoot |= s.key.isRoot();
-        }
-        if (anyRoot) applyRealClipRegions(sub);
-        for (Session s : List.copyOf(SESSIONS.values())) {
-            if (s.sub == sub) applyImageRegions(s);
-        }
-        IplProjectionTree.invalidate();
-    }
-
-    private static int sessionCount(UUID ship) {
-        int n = 0;
-        for (StraddleKey key : SESSIONS.keySet()) if (key.subLevelUuid().equals(ship)) n++;
-        return n;
-    }
-
-    /**
-     * Sessions competing for the same source-frame space: other roots of the same body, or
-     * other children of the same parent.
-     */
-    private static boolean isSibling(Session a, Session b) {
-        return a != b && a.sub == b.sub && a.key.via().equals(b.key.via());
-    }
-
-    /**
-     * SIBLING PRIORITY (mirrors {@link IplProjectionTree}'s build order): space claimed by
-     * several siblings (adjacent apertures share their lateral margin, prisms of portals in a
-     * row overlap) belongs first to the UPSTREAM portal (the other one stands inside its
-     * prism, see {@link PortalOrder}), then to the lower path. Images exclude the space they
-     * yield; the real body's exclusion is the union of all root prisms and needs no priority.
-     *
-     * <p>Первым в приоритете стоит геометрия: без него призма портала, стоящего ЗА плоскостью
-     * другого (ряд {@code ->|  |}), забирала бы кусок переднего — образ этого куска толкал бы
-     * тело из чужого мира, а клиент рисовал бы его в чужом портале.
-     */
-    static boolean outranks(Session a, Session b) {
-        int ra = upstreamRank(a);
-        int rb = upstreamRank(b);
-        if (ra != rb) return ra < rb;
-        return a.key.path().compareTo(b.key.path()) < 0;
-    }
-
-    /** How many siblings {@code s} lies strictly downstream of (same rule as the tree's build order). */
-    private static int upstreamRank(Session s) {
-        int rank = 0;
-        for (Session other : SESSIONS.values()) {
-            if (isSibling(other, s) && other.prism != null && s.prism != null
-                && PortalOrder.strictlyDownstreamOf(s.portal, s.prism, other.portal, other.prism)) rank++;
-        }
-        return rank;
-    }
-
-    /**
-     * Whether a session {@code key} through {@code portal} would stand strictly downstream of a
-     * live sibling session: the only material that can reach it went through that sibling first,
-     * so a PREDICTED entry there is a phantom (the native trail does not know the material is gone).
-     */
-    public static boolean downstreamOfSibling(StraddleKey key, Portal portal) {
-        for (Session s : SESSIONS.values()) {
-            if (!s.key.subLevelUuid().equals(key.subLevelUuid()) || !s.key.via().equals(key.via())
-                || s.portal.getUUID().equals(portal.getUUID()) || s.prism == null) continue;
-            if (PortalOrder.strictlyDownstreamOf(portal, PortalPrism.straight(portal, s.prism.maxDepth()),
-                s.portal, s.prism)) return true;
-        }
-        return false;
-    }
-
-    /**
-     * Regions (in {@code s}'s SOURCE frame) that {@code s}'s image yields to higher-priority
-     * siblings of {@code s} and of every ancestor (ancestors' yields carried forward).
-     */
-    private static List<double[]> yieldedRegions(Session s) {
-        List<double[]> out = new ArrayList<>(2);
-        Session parent = s.key.isRoot() ? null : SESSIONS.get(s.key.parent());
-        if (parent != null) {
-            for (double[] r : yieldedRegions(parent)) out.add(transform(r, parent.local));
-        }
-        for (Session other : SESSIONS.values()) {
-            if (isSibling(other, s) && outranks(other, s) && other.beyondRegion != null) out.add(other.beyondRegion);
-        }
-        return out;
-    }
-
-    private static void computeRegions(Session s, @Nullable Session parent) {
-        Portal portal = s.portal;
-        double depth = clipDepthLimit(s);
-        s.prism = PortalPrism.of(portal, sourceAnchor(s, parent), depth);
-        s.beyondRegion = s.prism.region(IplRapierNatives.REGION_EXCLUDE);
-        // KEEP set: emerged prism of THIS portal + ancestors' keep prisms carried forward.
-        double[] through = withMode(transform(s.beyondRegion, s.local), IplRapierNatives.REGION_KEEP);
-        List<double[]> keeps = new ArrayList<>(1 + (parent == null ? 0 : parent.keepRegions.size()));
-        keeps.add(through);
-        if (parent != null) {
-            for (double[] k : parent.keepRegions) keeps.add(transform(k, s.local));
-        }
-        s.keepRegions = keeps;
-        // Legacy exclusion-only description (old natives without keep regions): straight tube
-        // behind the exit.
-        s.notThroughRegion = transform(region(portal.getOriginPos(), s.sourceToDest.scale(-1.0),
-            portal.getAxisW(), portal.getAxisH(), s.prism.halfW(), s.prism.halfH(), depth,
-            IplRapierNatives.REGION_EXCLUDE), s.local);
-        if (parent == null) {
-            s.inheritedRegions = List.of();
-        } else {
-            List<double[]> inherited = new ArrayList<>(parent.inheritedRegions.size() + 1);
-            inherited.add(transform(parent.notThroughRegion, s.local));
-            for (double[] r : parent.inheritedRegions) inherited.add(transform(r, s.local));
-            s.inheritedRegions = inherited;
-        }
-    }
-
-    /** Clip depth covers the whole body plus its distance from the portal plane. */
-    private static double clipDepthLimit(Session s) {
-        var box = s.sub.getPlot().getBoundingBox();
-        double dx = box.maxX() - box.minX() + 1.0;
-        double dy = box.maxY() - box.minY() + 1.0;
-        double dz = box.maxZ() - box.minZ() + 1.0;
-        double diagonal = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        Vec3 center = s.sub.logicalPose().transformPosition(new Vec3(
-            (box.minX() + box.maxX() + 1.0) * .5,
-            (box.minY() + box.maxY() + 1.0) * .5,
-            (box.minZ() + box.maxZ() + 1.0) * .5));
-        // Chained portals live in a projected frame: measure from the mapped centre.
-        Session parent = s.key.isRoot() ? null : SESSIONS.get(s.key.parent());
-        if (parent != null) center = parent.mapping.mapPoint(center);
-        double normalDistance = Math.abs(center.subtract(s.portal.getOriginPos()).dot(s.portal.getNormal()));
-        return diagonal + normalDistance;
-    }
-
-    /** One region: 17 doubles, the ABI-2 layout (legacy payloads use the first 16). */
-    private static double[] region(Vec3 point, Vec3 normal, Vec3 axisW, Vec3 axisH,
-                                   double halfW, double halfH, double maxDepth, double mode) {
-        return new double[]{
-            point.x, point.y, point.z,
-            normal.x, normal.y, normal.z,
-            axisW.x, axisW.y, axisW.z, halfW,
-            axisH.x, axisH.y, axisH.z, halfH,
-            PortalPrism.SKIN, maxDepth, mode
-        };
-    }
-
-    private static double[] withMode(double[] r, double mode) {
-        double[] copy = r.clone();
-        copy[16] = mode;
-        return copy;
-    }
-
-    private static double[] transform(double[] r, IplStraddlePoseMap.StraddleMapping m) {
-        Vec3 p = m.mapPoint(new Vec3(r[0], r[1], r[2]));
-        Vec3 n = m.mapVec(new Vec3(r[3], r[4], r[5]));
-        Vec3 w = m.mapVec(new Vec3(r[6], r[7], r[8]));
-        Vec3 h = m.mapVec(new Vec3(r[10], r[11], r[12]));
-        return region(p, n, w, h, r[9], r[13], r[15], r[16]);
-    }
-
-    private static boolean keepRegionsSupported() {
-        return IplRapierNatives.abiLevel() >= 2;
-    }
-
-    /** ABI-2 payload (17 doubles per region, explicit mode). */
-    private static double[] flatten(List<double[]> regions) {
-        int stride = IplRapierNatives.REGION_STRIDE_V2;
-        double[] flat = new double[regions.size() * stride];
-        for (int i = 0; i < regions.size(); i++) System.arraycopy(regions.get(i), 0, flat, i * stride, stride);
-        return flat;
-    }
-
-    /** Legacy payload (16 doubles per region, exclusion only). */
-    private static double[] flattenLegacy(List<double[]> regions) {
-        double[] flat = new double[regions.size() * 16];
-        for (int i = 0; i < regions.size(); i++) System.arraycopy(regions.get(i), 0, flat, i * 16, 16);
-        return flat;
-    }
-
-    /** Real body: union of the beyond-plane regions of all ROOT sessions. */
-    private static void applyRealClipRegions(ServerSubLevel ship) {
-        List<double[]> regions = new ArrayList<>(2);
-        long scene = 0;
-        int realId = -1;
-        for (Session s : SESSIONS.values()) {
-            if (s.sub != ship || !s.key.isRoot()) continue;
-            regions.add(s.beyondRegion);
-            scene = s.bodyScene;
-            realId = s.realId;
-        }
-        if (realId < 0) {
-            if (ship.isRemoved()) return;
-            scene = IplScenes.sceneHandle(ship.getLevel());
-            realId = Rapier3D.getID(ship);
-            if (scene == 0) return;
-        }
-        if (keepRegionsSupported()) {
-            IplRapierNatives.setClipRegionsV2(scene, realId, flatten(regions));
-        } else {
-            IplRapierNatives.setClipRegions(scene, realId, flattenLegacy(regions));
-        }
-    }
-
-    /**
-     * Image regions. ABI 2: KEEP = this image's prism intersection (what actually went
-     * through every portal of its path), EXCLUDE = the parts that already went on through
-     * a child portal (owned by the child image) and the space yielded to higher-priority
-     * siblings along the path ({@link #outranks}). Legacy natives only understand
-     * exclusions: own not-through region + inherited ones + child beyond regions -- which
-     * leaves everything outside the straight not-through tubes colliding (full copies with
-     * several portals), hence the probe.
-     */
-    private static void applyImageRegions(Session s) {
-        if (s.imageHandle < 0) return;
-        boolean v2 = keepRegionsSupported();
-        List<double[]> regions = new ArrayList<>(4 + s.inheritedRegions.size());
-        if (v2) {
-            regions.addAll(s.keepRegions);
-        } else {
-            regions.add(s.notThroughRegion);
-            regions.addAll(s.inheritedRegions);
-        }
-        String path = s.key.path();
-        for (Session child : SESSIONS.values()) {
-            if (child.sub == s.sub && child.key.via().equals(path)) regions.add(child.beyondRegion);
-        }
-        for (double[] yielded : yieldedRegions(s)) regions.add(transform(yielded, s.local));
-        double[] flat = v2 ? flatten(regions) : flattenLegacy(regions);
-        if (Arrays.equals(flat, s.lastImageRegions)) return;
-        s.lastImageRegions = flat;
-        if (v2) {
-            IplRapierNatives.setImageClipRegionsV2(s.destScene, s.realId, s.imageHandle, flat);
-        } else {
-            IplRapierNatives.setImageClipRegions(s.destScene, s.realId, s.imageHandle, flat);
+            if (s.portal.isRemoved() || s.bodyLevel != sub.getLevel() || (!s.key.isRoot() && parent == null)
+                || IplScenes.sceneHandle(s.bodyLevel) != s.bodyScene || IplScenes.sceneHandle(s.dest) != s.destScene) {
+                clear(s.key, "frame-invalidated");
+                continue;
+            }
+            IplStraddlePoseMap.StraddleMapping local = IplStraddlePoseMap.StraddleMapping.of(s.portal);
+            IplStraddlePoseMap.StraddleMapping mapping = parent == null ? local : parent.mapping.then(local);
+            if (mapping.sameAs(s.mapping)) continue;
+            s.mapping = mapping;
+            if (s.imageHandle >= 0) {
+                Vec3 shift = mapping.shift();
+                Quaterniond rot = mapping.mapQuat(new Quaterniond());
+                IplRapierNatives.setImagePrefix(s.destScene, s.imageHandle,
+                    shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
+            }
+            // Clients mirror the advertised geometry: a moved portal is re-advertised.
+            IplStraddleSessionSync.onSessionStart(sub.getLevel().getServer(), sub, s.key, s.portal);
         }
     }
 
@@ -500,8 +175,6 @@ public final class IplAtlasStraddleSession {
     public static void clear(StraddleKey key, String reason) {
         Session session = SESSIONS.remove(key);
         if (session == null) return;
-        sessionsChanged();
-        IplProjectionTree.invalidate();
         String prefix = key.path();
         for (StraddleKey other : new ArrayList<>(SESSIONS.keySet())) {
             if (other.subLevelUuid().equals(key.subLevelUuid())
@@ -512,81 +185,8 @@ public final class IplAtlasStraddleSession {
         if (session.imageHandle >= 0 && IplScenes.sceneHandle(session.dest) == session.destScene) {
             IplRapierNatives.removeImageCollider(session.destScene, session.realId, session.imageHandle);
         }
-        if (!session.sub.isRemoved() && session.sub.getLevel() == session.bodyLevel
-            && IplScenes.sceneHandle(session.bodyLevel) == session.bodyScene) {
-            if (key.isRoot()) applyRealClipRegions(session.sub);
-            // Уступленное соседям пространство изменилось.
-            if (hasSession(key.subLevelUuid())) rebuildShip(session.sub);
-            else if (!key.isRoot()) {
-                Session parent = SESSIONS.get(key.parent());
-                if (parent != null) applyImageRegions(parent);
-            }
-        }
+        sessionsChanged();
         LOG.debug("[IPL-IMAGE] end {} reason={}", key.path(), reason);
-    }
-
-    // ------------------------------------------------------------------ promotion on flip
-
-    /**
-     * A descendant of a flipped root, re-keyed relative to the portal the body just went
-     * through ({@code P1>P2>P3} becomes {@code P2>P3}).
-     */
-    public record Promotion(String via, Portal portal, Vec3 sourceToDest,
-                            boolean admitted, boolean completed, Vec3 anchor) {}
-
-    /**
-     * Sessions below the root {@code root} as they look AFTER the body flipped through its
-     * portal, parents first.
-     *
-     * <p>Флип закрывает все сессии тела. Когда выход P1
-     * совпадает с входом P2 (ряд порталов) или тело во время флипа ещё стоит в P2, его
-     * часть уже прошла P2 — а без сессии после флипа она оказалась бы в исходном мире «за»
-     * плоскостью P2 (и тело не прошло бы ряд дальше). Дочерние сессии P1>... повышаются в
-     * корневые/цепочки нового кадра вместе с флагами admitted/completed и якорем прохода
-     * ({@code anchor} -- в мировом кадре портала, он флипом не меняется), и в том же
-     * тике следующий раунд контроллера честно продолжает переход через P2, P3, ...
-     */
-    public static List<Promotion> promotionsThrough(StraddleKey root) {
-        if (!root.isRoot()) return List.of();
-        String prefix = root.path();
-        List<Promotion> out = new ArrayList<>();
-        for (Session s : SESSIONS.values()) {
-            if (!s.key.subLevelUuid().equals(root.subLevelUuid())) continue;
-            String via = s.key.via();
-            String newVia;
-            if (via.equals(prefix)) newVia = "";
-            else if (via.startsWith(prefix + ">")) newVia = via.substring(prefix.length() + 1);
-            else continue;
-            Session parent = s.key.isRoot() ? null : SESSIONS.get(s.key.parent());
-            out.add(new Promotion(newVia, s.portal, s.sourceToDest, s.admitted, s.completed, sourceAnchor(s, parent)));
-        }
-        out.sort(Comparator.comparingInt(p -> p.via().isEmpty() ? 0 : 1 + p.via().split(">").length));
-        return out;
-    }
-
-    /** Re-opens promoted sessions for the live body (after the flip); returns how many opened. */
-    public static int promote(ServerSubLevel live, List<Promotion> promotions) {
-        if (promotions.isEmpty() || live.isRemoved()) return 0;
-        ServerLevel level = live.getLevel();
-        int opened = 0;
-        for (Promotion p : promotions) {
-            if (p.portal().isRemoved()) continue;
-            StraddleKey key = new StraddleKey(live.getUniqueId(), p.portal().getUUID(), p.via());
-            if (key.isRoot()) {
-                if (p.portal().level() != level) continue;
-                ensure(key, null, live, p.portal(), p.sourceToDest(), level, p.anchor());
-            } else {
-                Session parent = SESSIONS.get(key.parent());
-                if (parent == null || p.portal().level() != parent.dest || key.depth() > MAX_CHAIN_DEPTH) continue;
-                ensure(key, parent, live, p.portal(), p.sourceToDest(), parent.dest, p.anchor());
-            }
-            Session s = SESSIONS.get(key);
-            if (s == null) continue;
-            s.admitted = p.admitted();
-            s.completed = p.completed();
-            opened++;
-        }
-        return opened;
     }
 
     /** Ends every session of a ship (flip, removal, move). */
@@ -600,52 +200,45 @@ public final class IplAtlasStraddleSession {
     public static void clearAll() {
         SESSIONS.clear();
         sessionsChanged();
-        IplProjectionTree.invalidate();
         loggedScaledSkip = false;
-        loggedSessionCap = false;
     }
 
-    // ------------------------------------------------------------------ state flags
+    // ------------------------------------------------------------------ promotion on flip
 
-    public static boolean isCompleted(StraddleKey key) {
-        Session session = SESSIONS.get(key);
-        return session != null && session.completed;
-    }
+    /**
+     * A descendant of the root a body flips through, re-keyed relative to that portal
+     * ({@code P1>P2>P3} becomes {@code P2>P3}); it keeps its piece id, so the labels of the
+     * material that went on through P2 stay valid in the new frame.
+     */
+    public record Promotion(String via, Portal portal, int node) {}
 
-    public static void revokeCompletion(StraddleKey key) {
-        Session session = SESSIONS.get(key);
-        if (session != null) session.completed = false;
-    }
-
-    public static void markCompleted(StraddleKey key) {
-        Session session = SESSIONS.get(key);
-        if (session != null) {
-            session.admitted = true;
-            session.completed = true;
+    /** Sessions below the root {@code root} as they look AFTER the body flipped through it, parents first. */
+    public static List<Promotion> promotionsThrough(StraddleKey root) {
+        if (!root.isRoot()) return List.of();
+        String prefix = root.path();
+        List<Promotion> out = new ArrayList<>();
+        for (Session s : SESSIONS.values()) {
+            if (!s.key.subLevelUuid().equals(root.subLevelUuid())) continue;
+            String via = s.key.via();
+            String newVia;
+            if (via.equals(prefix)) newVia = "";
+            else if (via.startsWith(prefix + ">")) newVia = via.substring(prefix.length() + 1);
+            else continue;
+            out.add(new Promotion(newVia, s.portal, s.node));
         }
+        out.sort(Comparator.comparingInt(p -> p.via().isEmpty() ? 0 : 1 + p.via().split(">").length));
+        return out;
     }
 
-    public static void markAdmitted(StraddleKey key) {
-        Session session = SESSIONS.get(key);
-        if (session != null) session.admitted = true;
-    }
-
-    public static boolean isAdmitted(StraddleKey key) {
-        Session session = SESSIONS.get(key);
-        return session != null && session.admitted;
-    }
-
-    /** Plot-local passage anchor of a session (see {@link PortalPrism}); mirrored to clients. */
-    @Nullable
-    public static Vec3 sessionAnchor(StraddleKey key) {
-        Session session = SESSIONS.get(key);
-        return session == null ? null : session.anchor;
-    }
-
-    /** Where the anchor of {@code s} stands now, in the SOURCE frame of its portal. */
-    private static Vec3 sourceAnchor(Session s, @Nullable Session parent) {
-        Vec3 world = s.sub.logicalPose().transformPosition(s.anchor);
-        return parent == null ? world : parent.mapping.mapPoint(world);
+    /** Re-opens promoted sessions for the live body (after the flip); returns the opened keys. */
+    static List<StraddleKey> promote(ServerSubLevel live, List<Promotion> promotions) {
+        if (promotions.isEmpty() || live.isRemoved()) return List.of();
+        List<StraddleKey> opened = new ArrayList<>(promotions.size());
+        for (Promotion p : promotions) {
+            StraddleKey key = new StraddleKey(live.getUniqueId(), p.portal().getUUID(), p.via());
+            if (open(key, live, p.portal(), p.node())) opened.add(key);
+        }
+        return opened;
     }
 
     // ------------------------------------------------------------------ queries
@@ -656,7 +249,7 @@ public final class IplAtlasStraddleSession {
     }
 
     public static boolean hasSession(UUID shipUuid) {
-        for (StraddleKey key : SESSIONS.keySet()) if (key.subLevelUuid().equals(shipUuid)) return true;
+        for (Session s : snapshot) if (s.key.subLevelUuid().equals(shipUuid)) return true;
         return false;
     }
 
@@ -687,6 +280,12 @@ public final class IplAtlasStraddleSession {
         return s == null ? null : s.dest;
     }
 
+    /** Piece id of a session, or {@link IplPieceMap#NATIVE} when it does not exist. */
+    public static int sessionNode(StraddleKey key) {
+        Session s = SESSIONS.get(key);
+        return s == null ? IplPieceMap.NATIVE : s.node;
+    }
+
     /** Composite mapping real-body world -> session destination world. */
     @Nullable
     public static IplStraddlePoseMap.StraddleMapping sessionMapping(StraddleKey key) {
@@ -694,7 +293,7 @@ public final class IplAtlasStraddleSession {
         return s == null ? null : s.mapping;
     }
 
-    /** Session portals of a chain parent's destination, used to exclude the exit face. */
+    /** Direct children of a session. */
     public static List<StraddleKey> childrenOf(StraddleKey key) {
         String path = key.path();
         List<StraddleKey> out = new ArrayList<>();
@@ -707,7 +306,7 @@ public final class IplAtlasStraddleSession {
     /** First projection of {@code sub} into {@code destLevel} (any chain depth). */
     @Nullable
     public static IplStraddlePoseMap.StraddleMapping getMappingInto(SubLevel sub, Level destLevel) {
-        for (Session s : SESSIONS.values()) {
+        for (Session s : snapshot) {
             if (s.dest == destLevel && s.sub.getUniqueId().equals(sub.getUniqueId())) return s.mapping;
         }
         return null;
@@ -724,6 +323,15 @@ public final class IplAtlasStraddleSession {
         }
     }
 
+    /** Every live projection into {@code destLevel}: (real sub-level, composite mapping). */
+    public static void forEachSessionInto(
+        ServerLevel destLevel, BiConsumer<ServerSubLevel, IplStraddlePoseMap.StraddleMapping> visitor
+    ) {
+        for (Session s : snapshot) {
+            if (s.dest == destLevel && !s.sub.isRemoved()) visitor.accept(s.sub, s.mapping);
+        }
+    }
+
     /**
      * Ships with at least one session image into {@code level}, in first-session order. The
      * only candidates the server spatial-query splice has to test for {@code level}.
@@ -732,58 +340,29 @@ public final class IplAtlasStraddleSession {
         return shipsByDest.getOrDefault(level, List.of());
     }
 
-    /** Rebuilds the hot-path views after every change of {@link #SESSIONS}. */
-    private static void sessionsChanged() {
-        Session[] all = SESSIONS.values().toArray(new Session[0]);
-        Map<ServerLevel, List<UUID>> byDest = new IdentityHashMap<>();
-        List<UUID> order = new ArrayList<>(2);
-        for (Session s : all) {
-            if (!order.contains(s.key.subLevelUuid())) order.add(s.key.subLevelUuid());
-        }
-        for (UUID ship : order) {
-            for (Session s : all) {
-                if (!s.key.subLevelUuid().equals(ship)) continue;
-                List<UUID> ships = byDest.computeIfAbsent(s.dest, d -> new ArrayList<>(2));
-                if (!ships.contains(ship)) ships.add(ship);
-            }
-        }
-        byDest.replaceAll((d, ships) -> List.copyOf(ships));
-        snapshot = all;
-        shipsByDest = byDest.isEmpty() ? Map.of() : byDest;
-    }
-
-    /** ROOT sessions of the real body whose portal lives in {@code level}. */
-    public static void forEachSessionFrom(
-        SubLevel sub, Level level, BiConsumer<Portal, IplStraddlePoseMap.StraddleMapping> visitor
-    ) {
-        for (Session s : snapshot) {
-            if (s.key.isRoot() && s.source == level && s.sub.getUniqueId().equals(sub.getUniqueId())) {
-                visitor.accept(s.portal, s.mapping);
-            }
-        }
-    }
-
-    /**
-     * Sessions of {@code sub} as projection-tree entries, parents before children
-     * (insertion order: a child is only ever opened while its parent exists).
-     */
+    /** Sessions of {@code sub} as projection-tree entries, parents before children. */
     public static List<IplProjectionTree.Entry> treeEntries(SubLevel sub) {
         List<IplProjectionTree.Entry> out = null;
         UUID id = sub.getUniqueId();
-        for (Session s : SESSIONS.values()) {
+        for (Session s : snapshot) {
             if (!s.key.subLevelUuid().equals(id) || s.sub.isRemoved()) continue;
             if (out == null) out = new ArrayList<>(2);
-            out.add(new IplProjectionTree.Entry(s.key.path(), s.key.via(), s.portal, s.anchor));
+            out.add(new IplProjectionTree.Entry(s.key.path(), s.key.via(), s.portal, s.node));
         }
         return out == null ? List.of() : out;
     }
 
-    /** Every live projection into {@code destLevel}: (real sub-level, composite mapping). */
-    public static void forEachSessionInto(
-        ServerLevel destLevel, BiConsumer<ServerSubLevel, IplStraddlePoseMap.StraddleMapping> visitor
-    ) {
-        for (Session s : snapshot) {
-            if (s.dest == destLevel && !s.sub.isRemoved()) visitor.accept(s.sub, s.mapping);
+    /** Rebuilds the hot-path views after every change of {@link #SESSIONS}. */
+    private static void sessionsChanged() {
+        Session[] all = SESSIONS.values().toArray(new Session[0]);
+        Map<ServerLevel, List<UUID>> byDest = new IdentityHashMap<>();
+        for (Session s : all) {
+            List<UUID> ships = byDest.computeIfAbsent(s.dest, d -> new ArrayList<>(2));
+            if (!ships.contains(s.key.subLevelUuid())) ships.add(s.key.subLevelUuid());
         }
+        byDest.replaceAll((d, ships) -> List.copyOf(ships));
+        snapshot = all;
+        shipsByDest = byDest.isEmpty() ? Map.of() : byDest;
+        IplProjectionTree.invalidate();
     }
 }

@@ -5,6 +5,9 @@ import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHand
 import ipl.sable.mixin.client.StaffClientHandlerAccessor;
 import ipl.sable.transit.IplGrabLink;
 import net.minecraft.client.Minecraft;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
 import net.minecraft.client.player.LocalPlayer;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
@@ -82,29 +85,30 @@ public final class IplGrabChainClient {
      * path (identities only) to the server, which re-snapshots geometry itself.
      *
      * @param pickPath        portals the pick ray traversed FORWARD, in order
-     * @param imageGrabPortal when the click landed on a straddle IMAGE, the session portal
-     *                        whose inverse links the image frame back to the body's parent
+     * @param imagePath session path from the body to the clicked image, root first
      */
-    public static void seedLocal(UUID subId, List<Portal> pickPath, @Nullable Portal imageGrabPortal) {
+    public static void seedLocal(UUID subId, List<Portal> pickPath, List<Portal> imagePath) {
         List<IplGrabLink> chain = List.of();
-        StringBuilder encodedPath = new StringBuilder();
+        ListTag steps = new ListTag();
         for (Portal portal : pickPath) {
             chain = IplGrabLink.append(chain, IplGrabLink.forward(portal));
-            if (encodedPath.length() > 0) encodedPath.append('|');
-            encodedPath.append(portal.getUUID()).append('@')
-                .append(portal.level().dimension().location());
+            steps.add(StringTag.valueOf(portal.getUUID() + "@"
+                + portal.level().dimension().location()));
         }
-        if (imageGrabPortal != null) {
-            chain = IplGrabLink.append(chain, IplGrabLink.inverse(imageGrabPortal));
-            if (encodedPath.length() > 0) encodedPath.append('|');
-            encodedPath.append(imageGrabPortal.getUUID()).append('@')
-                .append(imageGrabPortal.level().dimension().location()).append("@inv");
+        // Undo the complete image path from its leaf back to the native body.
+        for (int i = imagePath.size() - 1; i >= 0; i--) {
+            Portal portal = imagePath.get(i);
+            chain = IplGrabLink.append(chain, IplGrabLink.inverse(portal));
+            steps.add(StringTag.valueOf(portal.getUUID() + "@"
+                + portal.level().dimension().location() + "@inv"));
         }
+        CompoundTag encodedPath = new CompoundTag();
+        encodedPath.put("steps", steps);
         String seedId = UUID.randomUUID().toString();
         local = new ChainState(subId, 0L, chain, IplParentDimSync.frame(subId), seedId);
         McRemoteProcedureCallClient.tellServerToInvoke(
             "ipl.sable.transit.IplGrabChain.RemoteCallables.seedChain",
-            subId.toString(), encodedPath.toString(), Long.toString(IplParentDimSync.frame(subId)), seedId
+            subId.toString(), encodedPath, Long.toString(IplParentDimSync.frame(subId)), seedId
         );
     }
 
@@ -162,11 +166,11 @@ public final class IplGrabChainClient {
         }
 
         /** Authoritative chain snapshot for one dragging player. */
-        public static void snapshot(String playerUuid, String subUuid, String revision, String encodedChain, String bodyFrame, String seedId) {
+        public static void snapshot(String playerUuid, String subUuid, String revision, CompoundTag encodedChain, String bodyFrame, String seedId) {
             UUID playerId = UUID.fromString(playerUuid);
             UUID subId = UUID.fromString(subUuid);
             long rev = Long.parseLong(revision);
-            ChainState state = new ChainState(subId, rev, IplGrabLink.decodeChain(encodedChain), Long.parseLong(bodyFrame), seedId);
+            ChainState state = new ChainState(subId, rev, IplGrabLink.decodeChainTag(encodedChain), Long.parseLong(bodyFrame), seedId);
             SNAPSHOTS.put(playerId, state);
 
             LocalPlayer player = Minecraft.getInstance().player;

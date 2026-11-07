@@ -54,7 +54,7 @@ import java.util.UUID;
  * lives in the grab chain ({@link IplGrabChainClient} / server {@code IplGrabChain});
  * beam geometry lives in {@link IplStaffBeamRoutes}. The pick's job at grab start is to
  * hand the chain its seed: the exact portal path the pick ray traversed, plus — when the
- * click landed on a straddle IMAGE rather than the native half — the session portal whose
+ * click landed on a straddle IMAGE rather than the native half — the full session path whose
  * inverse links the image's frame back to the body's parent frame. Which representation
  * was clicked is resolved geometrically against the actual ray (both candidate positions
  * are computed and the one the ray intersects wins), not guessed from player position.
@@ -98,7 +98,7 @@ public final class IplStraddleStaffPick {
     public static PortalTarget pickThroughPortals(Player player, double range, float partialTick) {
         Vec3 eye = player.getEyePosition(partialTick);
         PortalTarget target = pickThroughPortals(
-            player, player.level(), eye, player.getViewVector(partialTick), range, List.of(), 0, 0.0
+            player, player.level(), eye, player.getViewVector(partialTick), range
         );
         if (target == null) return null;
         // Exactly ONE pick may be pending at a time: a capture left over from an aborted pick
@@ -113,75 +113,64 @@ public final class IplStraddleStaffPick {
     /** Portal recursion with Sable plot hits compared in their visible world frame. */
     @Nullable
     private static PortalTarget pickThroughPortals(
-        Player player, Level level, Vec3 from, Vec3 direction, double remaining,
-        List<Portal> path, int depth, double traveled
+        Player player, Level level, Vec3 from, Vec3 direction, double remaining
     ) {
-        if (depth > 3 || remaining <= 0.0) return null;
-
-        Vec3 to = from.add(direction.scale(remaining));
-        BlockHitResult block = level.clip(new ClipContext(
-            from, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player
-        ));
-        // `level.clip` is projection-aware (IplProjectionRaycast): it already hits every
-        // piece of every straddling ship present in `level` -- native pieces cut at their
-        // portal prisms, direct images, chained images, foreign images. The winning frame
-        // tells exactly which representation was hit; no candidate guessing needed.
-        IplProjectionRaycast.FrameHit frame = IplProjectionRaycast.lastWinner(block);
-        ClientSubLevel sub = block.getType() == HitResult.Type.MISS ? null
-            : frame != null && frame.sub() instanceof ClientSubLevel frameSub ? frameSub
-            : getHitSubLevel(level, block);
-        VisibleHit visible = null;
-        double blockDistance = Double.MAX_VALUE;
-        if (sub != null) {
-            if (frame != null) {
-                blockDistance = frame.distance();
-                // Images reached through a CHAIN are view-only for the staff (its drag
-                // frame algebra maps through one session portal); they still occlude.
-                if (frame.node() == null || !frame.node().isChained()) {
-                    visible = new VisibleHit(frame.distance(),
-                        frame.node() == null ? null : frame.node().portal);
+        List<Portal> path = new ArrayList<>();
+        double traveled = 0.0;
+        // Suppress a ray that cycles without covering any meaningful distance. This is
+        // a numerical loop guard, not a limit on the number of portals in a path.
+        Set<String> stationary = new java.util.HashSet<>();
+        while (level != null && remaining > 1.0e-6) {
+            Vec3 to = from.add(direction.scale(remaining));
+            BlockHitResult block = level.clip(new ClipContext(
+                from, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+            IplProjectionRaycast.FrameHit frame = IplProjectionRaycast.lastWinner(block);
+            ClientSubLevel sub = block.getType() == HitResult.Type.MISS ? null
+                : frame != null && frame.sub() instanceof ClientSubLevel frameSub ? frameSub
+                : getHitSubLevel(level, block);
+            VisibleHit visible = null;
+            double blockDistance = block.getType() == HitResult.Type.MISS ? Double.MAX_VALUE
+                : from.distanceTo(block.getLocation());
+            if (sub != null) {
+                if (frame != null) {
+                    blockDistance = frame.distance();
+                    visible = new VisibleHit(blockDistance,
+                        frame.node() == null ? List.of() : frame.node().pathPortals());
+                } else {
+                    visible = visibleHit(level, from, to, sub, block);
+                    blockDistance = visible == null ? Double.MAX_VALUE : visible.distance();
                 }
-            } else {
-                visible = visibleHit(level, from, to, sub, block);
-                if (visible != null) blockDistance = visible.distance();
             }
+            Optional<Pair<Portal, RayTraceResult>> portalHit = PortalUtils.raytracePortals(
+                level, from, to, true, portal -> portal.isInteractableBy(player));
+            double portalDistance = portalHit.isPresent()
+                ? portalHit.get().getSecond().hitPos().distanceTo(from) : Double.MAX_VALUE;
+            if (visible != null && blockDistance <= portalDistance + 0.0001) {
+                return new PortalTarget(sub, level, block, List.copyOf(path),
+                    visible.imagePath(), traveled + blockDistance);
+            }
+            if (block.getType() != HitResult.Type.MISS && blockDistance < portalDistance) return null;
+            if (portalHit.isEmpty() || portalDistance >= remaining) return null;
+            Portal portal = portalHit.get().getFirst();
+            if (portalDistance < 1.0e-5) {
+                String state = level.dimension().location() + ":" + portal.getUUID();
+                if (!stationary.add(state)) return null;
+            } else {
+                stationary.clear();
+            }
+            path.add(portal);
+            Vec3 transformedDirection = portal.transformLocalVecNonScale(direction).normalize();
+            // Move just beyond the exit along the transformed ray, not along the source
+            // normal (which can point into a completely different direction after rotation).
+            double skip = Math.min(1.0e-4, remaining - portalDistance);
+            from = portal.transformPoint(portalHit.get().getSecond().hitPos())
+                .add(transformedDirection.scale(skip));
+            direction = transformedDirection;
+            level = portal.getDestinationWorld();
+            remaining -= portalDistance + skip;
+            traveled += portalDistance + skip;
         }
-
-        Optional<Pair<Portal, RayTraceResult>> portalHit =
-            PortalUtils.raytracePortals(
-                level, from, to, true, portal -> portal.isInteractableBy(player)
-            );
-        double portalDistance = portalHit.map(hit -> hit.getSecond().hitPos().distanceTo(from))
-            .orElse(Double.MAX_VALUE);
-
-        if (visible != null && blockDistance <= portalDistance + 0.0001) {
-            // traveled through prior frames + the visible reach within this frame = the true
-            // ray length to the grabbed point (mappings are rigid, so lengths add).
-            return new PortalTarget(
-                sub, level, block, path, visible.imagePortal(), traveled + blockDistance);
-        }
-        if (block.getType() != HitResult.Type.MISS && portalDistance > blockDistance) {
-            return null;
-        }
-        if (portalHit.isEmpty()) return null;
-
-        Portal portal = portalHit.get().getFirst();
-        RayTraceResult trace = portalHit.get().getSecond();
-        double rest = remaining - portalDistance;
-        if (rest <= 0.0) return null;
-
-        ArrayList<Portal> nextPath = new ArrayList<>(path);
-        nextPath.add(portal);
-        return pickThroughPortals(
-            player,
-            portal.getDestinationWorld(),
-            portal.transformPoint(trace.hitPos()).add(trace.surfaceNormal().scale(-0.001)),
-            portal.transformLocalVecNonScale(direction),
-            rest,
-            List.copyOf(nextPath),
-            depth + 1,
-            traveled + portalDistance
-        );
+        return null;
     }
 
     /**
@@ -213,11 +202,11 @@ public final class IplStraddleStaffPick {
             }
         });
         if (nearest[0] == null) return null;
-        if (chosen[0] != null && chosen[0].isChained()) return null; // view-only image
-        return new VisibleHit(from.distanceTo(nearest[0]), chosen[0] == null ? null : chosen[0].portal);
+        return new VisibleHit(from.distanceTo(nearest[0]),
+            chosen[0] == null ? List.of() : chosen[0].pathPortals());
     }
 
-    private record VisibleHit(double distance, @Nullable Portal imagePortal) {}
+    private record VisibleHit(double distance, List<Portal> imagePath) {}
 
     private static double rayErrorSq(Vec3 from, Vec3 to, Vec3 point) {
         Vec3 ray = to.subtract(from);
@@ -243,11 +232,11 @@ public final class IplStraddleStaffPick {
         PortalTarget selected = PENDING_TARGETS.remove(sub.getUniqueId());
         if (selected == null || selected.sub() != sub) {
             DRAG_TARGETS.remove(sub.getUniqueId());
-            IplGrabChainClient.seedLocal(sub.getUniqueId(), List.of(), null);
+            IplGrabChainClient.seedLocal(sub.getUniqueId(), List.of(), List.of());
             return;
         }
         DRAG_TARGETS.put(sub.getUniqueId(), selected);
-        IplGrabChainClient.seedLocal(sub.getUniqueId(), selected.portals(), selected.imagePortal());
+        IplGrabChainClient.seedLocal(sub.getUniqueId(), selected.portals(), selected.imagePath());
     }
 
     /**
@@ -262,11 +251,11 @@ public final class IplStraddleStaffPick {
         PortalTarget selected = PENDING_TARGETS.get(sub.getUniqueId());
         if (selected == null || selected.sub() != sub) {
             DRAG_TARGETS.remove(sub.getUniqueId());
-            IplGrabChainClient.seedLocal(sub.getUniqueId(), List.of(), null);
+            IplGrabChainClient.seedLocal(sub.getUniqueId(), List.of(), List.of());
             return;
         }
         DRAG_TARGETS.put(sub.getUniqueId(), selected);
-        IplGrabChainClient.seedLocal(sub.getUniqueId(), selected.portals(), selected.imagePortal());
+        IplGrabChainClient.seedLocal(sub.getUniqueId(), selected.portals(), selected.imagePath());
     }
 
     public static void clearDragTargets() {
@@ -382,7 +371,7 @@ public final class IplStraddleStaffPick {
             return;
         }
 
-        if (visible.imagePortal() == null
+        if (visible.imagePath().isEmpty()
             && sub.getLevel() == level) {
             // Plain native grab in the body's own world: stock behavior, no capture.
             PENDING_TARGETS.remove(sub.getUniqueId());
@@ -393,7 +382,7 @@ public final class IplStraddleStaffPick {
 
         PENDING_TARGETS.clear();
         PENDING_TARGETS.put(sub.getUniqueId(), new PortalTarget(
-            sub, level, blockHit, List.of(), visible.imagePortal(), visible.distance()
+            sub, level, blockHit, List.of(), visible.imagePath(), visible.distance()
         ));
         GRAB_DISTANCE.put(sub.getUniqueId(), visible.distance());
     }
@@ -416,7 +405,7 @@ public final class IplStraddleStaffPick {
     public static Pose3d mapStaffRenderPose(ClientSubLevel sub, Pose3dc pose) {
         PortalTarget target = DRAG_TARGETS.get(sub.getUniqueId());
         if (target == null || target.sub() != sub
-            || (target.portals().isEmpty() && target.imagePortal() == null)) {
+            || (target.portals().isEmpty() && target.imagePath().isEmpty())) {
             Minecraft mc = Minecraft.getInstance();
             Level renderLevel = mc.level;
             if (PortalRendering.isRendering()) {
@@ -429,26 +418,15 @@ public final class IplStraddleStaffPick {
             return mapping == null ? new Pose3d(pose) : mapping.mapPose(pose);
         }
         Pose3d mapped = new Pose3d(pose);
-        if (target.portals().isEmpty()) {
-            // Image grab: the visible representation in the image's world is the session
-            // portal's forward map of the native pose.
-            Level renderLevel = Minecraft.getInstance().level;
-            if (PortalRendering.isRendering()) {
-                renderLevel = PortalRendering
-                    .getRenderingPortal().getDestinationWorld();
-            }
-            Portal portal = target.imagePortal();
-            if (renderLevel != null && portal.getDestDim() == renderLevel.dimension()) {
-                Vec3 position = portal.transformPoint(new Vec3(
-                    mapped.position().x(), mapped.position().y(), mapped.position().z()
-                ));
-                DQuaternion rotation = portal.getRotationD();
-                mapped.position().set(position.x, position.y, position.z);
-                mapped.orientation().set(new Quaterniond(
-                    rotation.x, rotation.y, rotation.z, rotation.w
-                ).mul(mapped.orientation()));
-            }
-            return mapped;
+        // Pose starts in the body's frame; the picked image is reached by the
+        // entire session path, not just its last portal.
+        for (Portal portal : target.imagePath()) {
+            Vec3 position = portal.transformPoint(new Vec3(
+                mapped.position().x(), mapped.position().y(), mapped.position().z()));
+            DQuaternion rotation = portal.getRotationD();
+            mapped.position().set(position.x, position.y, position.z);
+            if (rotation != null) mapped.orientation().set(new Quaterniond(
+                rotation.x, rotation.y, rotation.z, rotation.w).mul(mapped.orientation()));
         }
         List<Portal> renderPath = getActiveRenderPath();
         int traversed = 0;
@@ -466,11 +444,13 @@ public final class IplStraddleStaffPick {
                 mapped.position().x(), mapped.position().y(), mapped.position().z()
             ));
             DQuaternion rotation = portal.getRotationD();
-            Quaterniond inverse = new Quaterniond(
-                rotation.x, rotation.y, rotation.z, rotation.w
-            ).invert();
             mapped.position().set(position.x, position.y, position.z);
-            mapped.orientation().set(inverse.mul(mapped.orientation()));
+            if (rotation != null) {
+                Quaterniond inverse = new Quaterniond(
+                    rotation.x, rotation.y, rotation.z, rotation.w
+                ).invert();
+                mapped.orientation().set(inverse.mul(mapped.orientation()));
+            }
         }
         return mapped;
     }
@@ -481,7 +461,7 @@ public final class IplStraddleStaffPick {
      */
     public record PortalTarget(
         ClientSubLevel sub, Level world, BlockHitResult hit,
-        List<Portal> portals, @Nullable Portal imagePortal, double visibleDistance
+        List<Portal> portals, List<Portal> imagePath, double visibleDistance
     ) {}
 
     /** A projection hit: plot-coordinate BlockHitResult + ray distance² (frame-comparable). */
@@ -512,10 +492,9 @@ public final class IplStraddleStaffPick {
         IplProjectionRaycast.FrameHit best = null;
         for (IplClientProjections.StraddleProjection projection : projections) {
             if (!seen.add(projection.sub())) continue;
-            // Image frames only (the native piece is the stock pick's business); picks
-            // map through ONE portal, so chained images are excluded here.
+            // The native piece is handled by the stock pick; all image depths are eligible.
             IplProjectionRaycast.FrameHit hit = IplProjectionRaycast.clipSubLevel(
-                level, ctx, from, to, projection.sub(), false, node -> !node.isChained());
+                level, ctx, from, to, projection.sub(), false, node -> true);
             if (hit != null && (best == null || hit.distance() < best.distance())) best = hit;
         }
         if (best == null || !(best.sub() instanceof ClientSubLevel bestSub)) return null;

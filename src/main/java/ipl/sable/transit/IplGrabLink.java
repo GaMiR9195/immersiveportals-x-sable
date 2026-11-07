@@ -1,6 +1,10 @@
 package ipl.sable.transit;
 
 import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
@@ -241,4 +245,20 @@ public record IplGrabLink(
         for (String part : encoded.split("\\" + LINK_SEPARATOR)) out.add(decode(part));
         return List.copyOf(out);
     }
+    /** Each link is a separate NBT string, avoiding the RPC single-string limit. */
+    public static CompoundTag encodeChainTag(List<IplGrabLink> chain) {
+        ListTag links = new ListTag();
+        for (IplGrabLink link : chain) links.add(StringTag.valueOf(link.encode()));
+        CompoundTag tag = new CompoundTag();
+        tag.put("links", links);
+        return tag;
+    }
+
+    public static List<IplGrabLink> decodeChainTag(CompoundTag tag) {
+        ListTag links = tag.getList("links", Tag.TAG_STRING);
+        List<IplGrabLink> out = new ArrayList<>(links.size());
+        for (int i = 0; i < links.size(); i++) out.add(decode(links.getString(i)));
+        return List.copyOf(out);
+    }
+
 }

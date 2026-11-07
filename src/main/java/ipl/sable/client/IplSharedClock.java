@@ -89,6 +89,8 @@ public final class IplSharedClock {
         if (tickedAt == clientTick) return;
         tickedAt = clientTick;
         state.tick();
+        // Session and label payloads wait for the pose they belong to (IplStraddleSessionStore).
+        // Timed render state is drained at the outer render pass, using its partial tick.
     }
 
     /** Merges a clock packet of {@code level} into the shared clock. */

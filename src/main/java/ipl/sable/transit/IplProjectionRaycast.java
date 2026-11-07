@@ -8,8 +8,12 @@ import dev.ryanhcode.sable.mixinterface.clip_overwrite.LevelPoseProviderExtensio
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import ipl.sable.client.IplStraddleSessionStore;
 import ipl.sable.mixin.ClipContextAccessor;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -26,16 +30,15 @@ import java.util.function.Predicate;
  * Portal-aware raycasting against straddling sub-levels, for BOTH logical sides.
  *
  * <p>Sable's clip overlay raycasts every intersecting sub-level with one pose. A
- * straddling ship is, physically, several disjoint PIECES (see {@link IplProjectionTree}):
- * the native piece at the real pose, and one piece per session at that session's
- * composite portal mapping. Each piece is a ray-convex region (native: outside every root
- * prism; node: inside its path's prism intersection, outside its children's prisms), so a
- * frame cast walks the ray only through its own region and skips holes exactly at their
- * boundaries. A block straddling the portal plane is therefore hit on its visible cut
- * face, never on a phantom twin behind the plane.
+ * straddling ship is, physically, several PIECES (see {@link IplProjectionTree}): the native
+ * piece at the real pose, and one piece per session at that session's composite portal
+ * mapping. A frame cast walks the ray through the plot at the frame's pose and stops only on
+ * blocks of its own piece (labels; split blocks of an aperture zone by the side of the plane),
+ * so material that went past a portal frame is hit where it really is, and a block straddling
+ * the portal plane is hit on its visible part, never on a phantom twin behind the plane.
  *
  * <p>Один алгоритм для сервера и клиента, для прямых и цепочечных проекций: каждый кадр
- * (кусок) кастуется отдельно только внутри своей области, ближайшее попадание побеждает.
+ * (кусок) кастуется отдельно только по своим блокам, ближайшее попадание побеждает.
  * Так по кораблю можно кликнуть и после выхода из второго портала, а стрелы, линия
  * видимости мобов и проверки досягаемости на сервере видят проекции.
  *
@@ -56,8 +59,8 @@ public final class IplProjectionRaycast {
 
     private IplProjectionRaycast() {}
 
-    private static final int MAX_SKIPS = 8;
-    private static final double SKIP_EPS = 1.0e-4;
+    /** Hits this close behind the aperture plane of a split block still count (rounding). */
+    private static final double PLANE_EPS = 1.0e-4;
 
     /** A frame hit: plot-coordinate result, world ray distance, owning ship and piece. */
     public record FrameHit(BlockHitResult hit, double distance, SubLevel sub,
@@ -201,79 +204,48 @@ public final class IplProjectionRaycast {
     }
 
     /**
-     * Clip one frame: the ray restricted to that piece's region. {@code node == null} is
-     * the native piece (holes = root prisms); otherwise the keep interval of the node minus
-     * its children's prisms and the space it yields to higher-priority siblings. Blocks are
-     * read from the ship's OWN level (the plot owner), so no cross-level bridging is involved.
+     * Clip one frame: the ray cast through the plot at that frame's pose, hitting only the
+     * blocks of that frame's piece ({@link IplStraddlePoseMap.PieceCut}; {@code node == null}
+     * is the native piece). A block an aperture zone splits counts only when the hit lies on
+     * the piece's side of the aperture plane, so a block straddling the portal is hit on its
+     * visible part, never on a phantom twin. Blocks are read from the ship's OWN level (the plot
+     * owner) block by block, without any overlay or cross-level bridging.
      */
     @Nullable
     private static FrameHit clipFrame(ClipContext template, Vec3 from, Vec3 dir, double length, SubLevel sub,
                                       IplProjectionTree tree, @Nullable IplProjectionTree.Node node,
                                       Pose3dc realPose) {
-        double keepFrom = 0.0;
-        double keepTo = length;
-        List<double[]> holes = new ArrayList<>(2);
-        if (node == null) {
-            for (IplProjectionTree.Node root : tree.roots()) {
-                double[] iv = root.beyondInterval(from, dir);
-                if (iv != null && iv[1] >= 0.0 && iv[0] <= length) holes.add(iv);
-            }
-        } else {
-            double[] keep = node.keepInterval(from, dir);
-            if (keep == null) return null;
-            keepFrom = Math.max(keepFrom, keep[0]);
-            keepTo = Math.min(keepTo, keep[1]);
-            if (keepFrom > keepTo) return null;
-            for (IplProjectionTree.Node child : node.children) {
-                double[] iv = child.beyondInterval(from, dir);
-                if (iv != null && iv[1] >= keepFrom && iv[0] <= keepTo) holes.add(iv);
-            }
-            for (double[] iv : tree.yieldedIntervals(node, from, dir)) {
-                if (iv[1] >= keepFrom && iv[0] <= keepTo) holes.add(iv);
-            }
-        }
         Pose3dc pose = node == null ? realPose : node.mapping.mapPose(realPose);
+        IplStraddlePoseMap.PieceCut cut = IplStraddlePoseMap.PieceCut.of(tree, node);
         Level blocks = sub.getLevel();
         ClipContextAccessor access = (ClipContextAccessor) template;
-        double t = keepFrom;
-        for (int i = 0; i < MAX_SKIPS; i++) {
-            t = skipHoles(holes, t);
-            if (t >= keepTo) return null;
-            Vec3 a = from.add(dir.scale(t));
-            Vec3 b = from.add(dir.scale(keepTo));
-            ClipContext step = new ClipContext(
-                pose.transformPositionInverse(a), pose.transformPositionInverse(b),
-                access.ipl$getBlock(), access.ipl$getFluid(), access.ipl$getCollisionContext());
-            ((ClipContextExtension) step).sable$setDoNotProject(true);
-            BlockHitResult hit = blocks.clip(step);
-            if (hit == null || hit.getType() == HitResult.Type.MISS) return null;
-            Vec3 world = pose.transformPosition(hit.getLocation());
-            double th = world.subtract(from).dot(dir);
-            double[] hole = holeAt(holes, th);
-            if (hole == null) return new FrameHit(hit, th, sub, node);
-            t = Math.max(hole[1], th) + SKIP_EPS;
-        }
-        return null;
+        ClipContext plot = new ClipContext(
+            pose.transformPositionInverse(from), pose.transformPositionInverse(from.add(dir.scale(length))),
+            access.ipl$getBlock(), access.ipl$getFluid(), access.ipl$getCollisionContext());
+        BlockHitResult hit = BlockGetter.traverseBlocks(plot.getFrom(), plot.getTo(), plot, (c, pos) -> {
+            if (!cut.keeps(pos)) return null;
+            BlockHitResult h = clipBlock(blocks, c, pos);
+            if (h == null) return null;
+            IplStraddlePoseMap.LocalHalfSpace plane = cut.planeFor(pos.getX(), pos.getY(), pos.getZ());
+            Vec3 at = h.getLocation();
+            return plane == null || plane.signedDistance(at.x, at.y, at.z) >= -PLANE_EPS ? h : null;
+        }, c -> null);
+        if (hit == null) return null;
+        return new FrameHit(hit, pose.transformPosition(hit.getLocation()).subtract(from).dot(dir), sub, node);
     }
 
-    private static double skipHoles(List<double[]> holes, double t) {
-        boolean moved = true;
-        for (int guard = 0; moved && guard < 8; guard++) {
-            moved = false;
-            for (double[] h : holes) {
-                if (t >= h[0] && t <= h[1]) {
-                    t = h[1] + SKIP_EPS;
-                    moved = true;
-                }
-            }
-        }
-        return t;
-    }
-
+    /** One block of vanilla's {@code BlockGetter.clip}: the nearer of its shape and fluid hits. */
     @Nullable
-    private static double[] holeAt(List<double[]> holes, double t) {
-        for (double[] h : holes) if (t >= h[0] && t <= h[1]) return h;
-        return null;
+    private static BlockHitResult clipBlock(Level blocks, ClipContext c, BlockPos pos) {
+        BlockState state = blocks.getBlockState(pos);
+        FluidState fluid = blocks.getFluidState(pos);
+        Vec3 a = c.getFrom();
+        Vec3 b = c.getTo();
+        BlockHitResult block = blocks.clipWithInteractionOverride(a, b, pos, c.getBlockShape(state, blocks, pos), state);
+        BlockHitResult liquid = c.getFluidShape(fluid, blocks, pos).clip(a, b, pos);
+        double db = block == null ? Double.MAX_VALUE : a.distanceToSqr(block.getLocation());
+        double dl = liquid == null ? Double.MAX_VALUE : a.distanceToSqr(liquid.getLocation());
+        return db <= dl ? block : liquid;
     }
 
     /**

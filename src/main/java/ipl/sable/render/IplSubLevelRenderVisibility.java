@@ -11,12 +11,10 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.ducks.IEWorldRenderer;
-import qouteall.q_misc_util.my_util.Plane;
 
 /**
  * Visibility of a sub-level draw: Sable's vanilla/reach-around {@code updateCulling} does not
- * cull, so hidden successors, off-frustum bodies and bodies entirely outside one plane of
- * their clip cell are rejected here. {@link #inFrustum} also answers Create: Pocket Sized's own
+ * cull, so hidden successors and off-frustum bodies are rejected here. {@link #inFrustum} also answers Create: Pocket Sized's own
  * frustum filter ({@code PocketRenderFrameMixin}).
  */
 public final class IplSubLevelRenderVisibility {
@@ -66,15 +64,9 @@ public final class IplSubLevelRenderVisibility {
 
     private static boolean compute(ClientSubLevel sub, Pose3dc pose) {
         double[] bounds = worldBounds(sub, pose);
-        if (!inFrustum(bounds, 0.0)) return false;
-        // The native draw and every projection have their OWN pose and cell; an empty native
-        // piece carries a cut above the world, so its draw is rejected here.
-        var decision = IplClipPortalFinder.findStraddlingPortalPlane(sub);
-        if (decision == null) return true;
-        for (Plane plane : decision.planes()) {
-            if (outside(bounds, plane.normal(), plane.pos())) return false;
-        }
-        return true;
+        // Frustum only: a piece is not a half-space (material beside a frame stays in its
+        // piece on either side of the plane), the per-section plans skip what is not drawn.
+        return inFrustum(bounds, 0.0);
     }
 
     /** World AABB {minX, minY, minZ, maxX, maxY, maxZ} of the plot box under {@code pose}. */
@@ -87,7 +79,10 @@ public final class IplSubLevelRenderVisibility {
         Vec3 ex = pose.transformPosition(new Vec3(plot.maxX() + 1.0, y, z)).subtract(center);
         Vec3 ey = pose.transformPosition(new Vec3(x, plot.maxY() + 1.0, z)).subtract(center);
         Vec3 ez = pose.transformPosition(new Vec3(x, y, plot.maxZ() + 1.0)).subtract(center);
-        return IplRenderCullMath.bounds(v(center), new double[][]{v(ex), v(ey), v(ez)});
+        double hx = Math.abs(ex.x) + Math.abs(ey.x) + Math.abs(ez.x);
+        double hy = Math.abs(ex.y) + Math.abs(ey.y) + Math.abs(ez.y);
+        double hz = Math.abs(ex.z) + Math.abs(ey.z) + Math.abs(ez.z);
+        return new double[]{center.x - hx, center.y - hy, center.z - hz, center.x + hx, center.y + hy, center.z + hz};
     }
 
     private static boolean inFrustum(double[] b, double margin) {
@@ -95,13 +90,5 @@ public final class IplSubLevelRenderVisibility {
         return frustum == null || frustum.isVisible(new AABB(
             b[0] - margin, b[1] - margin, b[2] - margin,
             b[3] + margin, b[4] + margin, b[5] + margin));
-    }
-
-    private static boolean outside(double[] b, Vec3 n, Vec3 p) {
-        return IplRenderCullMath.outside(b, n.x, n.y, n.z, -n.dot(p));
-    }
-
-    private static double[] v(Vec3 v) {
-        return new double[]{v.x, v.y, v.z};
     }
 }

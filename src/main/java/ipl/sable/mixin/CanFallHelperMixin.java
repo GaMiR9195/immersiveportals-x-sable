@@ -14,8 +14,6 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 
-import java.util.function.Predicate;
-
 /**
  * Frame-correct sneak-edge ground probing on straddling ships.
  *
@@ -29,9 +27,9 @@ import java.util.function.Predicate;
  * {@link SubLevelEntityCollisionMixin}, at this helper's own pose read: substitute
  * the portal-mapped pose when the collision mapping is active for the probe box.
  *
- * <p>The candidate-block iterable also gets the straddle keep-filter (same authority
- * as {@link SubLevelEntityCollisionMixin}): blocks of other pieces must not count as
- * ground, or sneaking could walk off onto phantom deck at the seam.
+ * <p>The candidate-block iterable is also restricted to the probe's piece (same cut as
+ * {@link SubLevelEntityCollisionMixin}): blocks of other pieces must not count as ground, or
+ * sneaking could walk off onto phantom deck at the seam.
  */
 @Pseudo
 @Mixin(value = CanFallAtleastHelper.class, remap = false)
@@ -67,9 +65,7 @@ public abstract class CanFallHelperMixin {
         @Local SubLevel subLevel
     ) {
         Iterable<BlockPos> all = original.call(min, max);
-        Predicate<BlockPos> keep =
-            IplStraddlePoseMap.getBlockCollisionKeepFilter(subLevel, level, aabb);
-        if (keep == null) return all;
-        return IplStraddlePoseMap.filterBlocks(all, keep);
+        IplStraddlePoseMap.PieceCut cut = IplStraddlePoseMap.getBlockCollisionCut(subLevel, level, aabb);
+        return cut == null ? all : IplStraddlePoseMap.filterBlocks(all, cut::keeps);
     }
 }

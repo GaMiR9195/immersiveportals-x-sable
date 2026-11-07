@@ -1,7 +1,6 @@
 package ipl.sable.client;
 
 import ipl.sable.mixin.client.LevelRendererAccessor;
-import net.minecraft.client.Minecraft;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.common.NeoForge;
 
@@ -16,15 +15,9 @@ public final class IplStaffPortalBeamStage {
         if (initialized) return;
         initialized = true;
         NeoForge.EVENT_BUS.addListener(RenderLevelStageEvent.class, event -> {
-            if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES
-                && event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
+            if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
             var level = ((LevelRendererAccessor) (Object) event.getLevelRenderer()).ipl$getLevel();
-            if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
-                IplEnteringVolumeRenderer.render(event.getPoseStack(),
-                    Minecraft.getInstance().renderBuffers().bufferSource(), event.getCamera(), level);
-            } else {
-                IplStaffPortalBeamRenderer.render(event.getPoseStack(), event.getCamera(), level);
-            }
+            IplStaffPortalBeamRenderer.render(event.getPoseStack(), event.getCamera(), level);
         });
     }
 }

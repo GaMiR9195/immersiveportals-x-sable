@@ -10,8 +10,9 @@ import java.util.concurrent.atomic.LongAdder;
 /**
  * Opt-in timing of IPSable's hot paths, enabled by {@code -Dipl.perfDiagnostics=true}: the
  * spatial-query splice of {@code CompanionIntersectMixin} (client and server), the client's
- * full portal scans, Sable's server sub-level container tick and the transit controller that
- * runs at its tail. One summary line every 5 seconds; counters reset each time.
+ * section draws of bodies crossing portals ({@code IplPieceRender}, CPU side), Sable's server
+ * sub-level container tick and the transit controller that runs at its tail. One summary line
+ * every 5 seconds; counters reset each time.
  *
  * <p>Для поиска рывков при стабильном FPS: если «splice» или «transit» дают миллисекунды на тик,
  * узкое место здесь; если нет, а рывки есть, — оно вне этих путей (Sable/физика, другие моды,
@@ -53,7 +54,7 @@ public final class IplPerfDiagnostics {
     }
 
     public static final Counter CLIENT_SPLICE = new Counter("client-splice");
-    public static final Counter CLIENT_PORTAL_SCAN = new Counter("client-portal-scan");
+    public static final Counter CLIENT_PIECE_DRAW = new Counter("client-piece-draw");
     public static final Counter SERVER_SPLICE = new Counter("server-splice");
     public static final Counter SERVER_CONTAINER = new Counter("server-container-tick");
     public static final Counter SERVER_TRANSIT = new Counter("server-transit");
@@ -74,7 +75,7 @@ public final class IplPerfDiagnostics {
         if (now - last < REPORT_INTERVAL_NANOS || !LAST_REPORT.compareAndSet(last, now)) return;
         double seconds = (now - last) / 1.0e9;
         LOG.info("[IPL-PERF] last {}s: {} | {} | {} | {} | {}", String.format(Locale.ROOT, "%.1f", seconds),
-            CLIENT_SPLICE.drain(seconds), CLIENT_PORTAL_SCAN.drain(seconds), SERVER_SPLICE.drain(seconds),
+            CLIENT_SPLICE.drain(seconds), CLIENT_PIECE_DRAW.drain(seconds), SERVER_SPLICE.drain(seconds),
             SERVER_CONTAINER.drain(seconds), SERVER_TRANSIT.drain(seconds));
     }
 }

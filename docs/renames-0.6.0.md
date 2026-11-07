@@ -39,7 +39,6 @@
 | `IplRapier3DInvoker` | `Rapier3DInvoker` |
 | `IplRapierConstraintHandleAccessor` | `RapierConstraintHandleAccessor` |
 | `IplRapierPipelineAccess` | `RapierPipelineAccessor` |
-| `IplRopeObjectAccess` | `RopeObjectAccessor` |
 | `IplServerProjectionClipMixin` | `ServerLevelMixin` |
 | `SableSubLevelTransitMixin` | `ServerSubLevelContainerMixin` |
 | `IplSubLevelPreviousPoseAccessor` | `SubLevelAccessor` |
@@ -50,7 +49,6 @@
 | `IplFusedStepMixin` | `PhysicsSystemMixin` |
 | `IplPhysicsSystemFusionAccess` | `PhysicsSystemAccessor` |
 | `SableCrossDimTrackingMixin` | `TrackingSystemMixin` |
-| `IplVoxelShapeClipMixin` | `VoxelShapeMixin` |
 | `IplLevelRendererAccessor` | `LevelRendererAccessor` |
 | `IplSectionOcclusionGuardMixin` | `LevelRendererOcclusionMixin` |
 | `IplProjectionRenderMixin` | `LevelRendererProjectionMixin` |
@@ -110,7 +108,6 @@
 | `SableTransitController` | `IplTransitController` |
 | `SableTransitOps` | `IplTransitOps` |
 | `SourceClipDiag` | `IplClipDiagnostics` |
-| `SourceClipPortalFinder` | `IplClipPortalFinder` |
 | `IplPerLevelSubLevelRenderDispatcher` | `IplLevelRenderDispatcher` |
 | `SubLevelBlockEntityRenderScope` | `IplBlockEntityRenderScope` |
 | `SubLevelClipUniformPatcher` | `IplClipUniformPatcher` |
@@ -126,25 +123,28 @@
 | `IplTransitOps.findFirstEmptyPlotForMirror` | `IplTransitOps.findFirstEmptyPlot` |
 | `IplTransitOps.copyPlotBlocksPublic` | `IplTransitOps.copyPlotBlocks` |
 | `IplTransitOps.executeTransit` | удалён, переезд выполняет `IplShipFlip` |
-| RPC `IplEnteringVolumeRenderer.RemoteCallables.setMode(value, ignoredShipId, encodedShape)` | `setMode(value, shipId)`, форма приходит через `shapePart` |
 | `IplDimSwitchGuard` | удалён: сглаживание позы и удержание света при смене измерения не нужны, причина рывка исправлена в шаге физики и переезде |
-| `IplRopePortalSeam`, `RopeObjectAccessor` | удалены вместе со швом верёвок через портал и свойствами `ipl.sable.ropePortalSeam`, `ipl.sable.ropeBreakStretch` |
+| `IplRopePortalSeam`, `IplRopeObjectAccess` (`RopeObjectAccessor`) | удалены вместе со швом верёвок через портал и свойствами `ipl.sable.ropePortalSeam`, `ipl.sable.ropeBreakStretch` |
 | `IplPortalRimManager`, `IplStraddlePortalRim` | удалены, рамки портала были отключены и ничего не делали |
 | `IplSubLevelUniformRegistry` | удалён, не использовался |
 | JNI `createPortalRim`, `removePortalRim`, `setPortalRimTransform`, `remapRope`, `overstretchedRopes`, `setRopePortalPrefix`, `setBodyDormant`, `setBodyPairExclusion`, `setParentFrame` | удалены из `natives/` вместе с состоянием сцены и проверками в диспетчере и хуках, Java их не вызывала |
-| Широкая область сессии: `WIDE_EXTENT`, `IplAtlasStraddleSession.isWide`, `IplStraddleSessionStore.isWide`, `withoutCoveredSplits`, флаг `wide` в `onStraddleTick`, `onChainTick`, `Promotion`, `IplProjectionTree.Entry` | удалена: область сессии — призма прохода `transit/PortalPrism`. Вместо флага — якорь прохода: `onStraddleTick(…, @Nullable Vec3 anchorAt)`, `onChainTick(…, anchorAt)`, `Promotion(…, Vec3 anchor)`, `Entry(path, via, portal, @Nullable Vec3 anchor)`, `IplAtlasStraddleSession.sessionAnchor`, `IplStraddleSessionStore.anchor` |
-| Ключ синхронизации `ipl_session_wide` | `ipl_session_anchor`: plot-local якорь, список из трёх double |
-| `IplProjectionTree.SKIN`, `LATERAL_MARGIN`, `Node.halfW`, `Node.halfH`; `IplAtlasStraddleSession.CLIP_SKIN`, `LATERAL_MARGIN`; `PortalOrder.LATERAL_MARGIN` | `PortalPrism.SKIN`, `PortalPrism.LATERAL_MARGIN`, `IplProjectionTree.Node.prism` |
-| `PortalOrder.downstreamOf(q, p, pWide)`, `strictlyDownstreamOf(q, qWide, p, pWide)` | `downstreamOf(q, PortalPrism p)`, `strictlyDownstreamOf(q, qPrism, p, pPrism)` |
-| `PortalOrder.coveredBy` | удалён вместе с широкой областью: кусок, целиком уступленный соседу, пуст и не рисуется |
-| `PortalCrossingDetector.retainsAdmittedSession` | удалён: сессию держит материал в призме, `PortalCrossingDetector.pieceHoldsMaterial` |
-| `PortalCrossingDetector.noMaterialBeyondOtherPortals` | `PortalCrossingDetector.flipReadyThrough`: в родном куске нет блоков, из нескольких корней тело берёт тот, где больше блоков; без сессии — `crossedWithinAperture`. Якорь новой сессии — `entryAnchor` |
-| `IplAtlasStraddleSession.isInMappedHalf`, `IplStraddlePoseMap.isInMappedHalf`, `getSourceHalfKeepFilter`, `frameCuts`, `RealHalfSpace`, `LocalHalfSpace`, `clipLocalBoxKeeping`, `clipBoxKeeping` | удалены вместе с делением по полупространствам: `IplStraddlePoseMap.frameRegion`, `blockFilter` и `transit/IplCollisionRegion` (выпуклые куски, резка коробок на части) |
-| `IplStraddlePoseMap.getBlockCollisionKeepPlanes` | `getBlockCollisionRegion` (`IplCollisionRegion`) |
-| `IplStraddleCollisionClip.setPlanes(List<LocalHalfSpace>)` | `setRegion(IplCollisionRegion)`; одна коробка может дать несколько частей |
-| `IplClipPortalFinder.ClipDecision(portal, plane)`, `secondPlaneFor`, `findStraddlingPortalPlanes` | `ClipDecision(portal, List<Plane> planes)`: первая ячейка родного куска из `IplClientProjections.RenderPlan` |
-| `IplClientProjections.StraddleProjection(…, destPlane, via, mapping, exclude)`, `computeMappedPose`, `keepsAnything` | `StraddleProjection(sub, portal, mappedPose, List<Plane> planes, via, mapping)`, по проекции на ячейку (`isNative` — ещё одна ячейка родного куска); план кадра — `renderPlan(sub)` → `RenderPlan(nativeDecision, projections)`, пустые ячейки отсеивает `render/IplClipCells.hasInterior` |
-| `IplStraddleRenderCache.decision`, `cacheDecision`, `hasDecision`, `allDecisions`, `cacheAllDecisions` | `plan`, `cachePlan` |
-| `IplStraddleRenderState.getPlaneFor`, `getPlane2For` | `getPlanesFor` |
-| `IplClipUniformPatcher.patchForSubLevel(sub, plane, plane2)`, `getCurrentSubLevelEqWorld/Eye/VanillaInput` и их `…2` | `patchForSubLevel(sub, List<Plane>)`, `getCurrentSubLevelEq…(int slot)`, `SLOTS = 6`, `disableSlots`, `hasSubLevelClip` |
-| `IplSubLevelClipShader.ipl$getSubLevelClipUniform()`, `ipl$getSubLevelClipUniform2()` | `ipl$getSubLevelClipUniform(int slot)`; GLSL `ipl_subLevelClipEquation[2]` → `ipl_subLevelClipEquation[6]`, `gl_ClipDistance[1..6]`; имя элемента — `IplProgramBindHook.subLevelUniformName` |
+| `PortalCrossingDetector`, `PortalSweepMath`, `PortalAperture`, `PortalOrder`, `PortalSectionMath`, `IplPortalVolumeCache` | удалены вместе с детектором заметаемого объёма: что прошло через портал, решают метки кусков `transit/IplPieceTracker` (зоны апертур, рёбра, открытие и закрытие сессий) и `transit/IplPieceMap` (метки по секциям); `LevelPlotMixin` при правке блока обновляет метки, а не кэш объёма |
+| `IplTransitController.endSession`, `getEarlyOpenSegments`, `setEarlyOpenSegments`, `DEFAULT_EARLY_OPEN_SEGMENTS`, команда `early_open_segments` | удалены: сессии открывает и закрывает `IplPieceTracker`, все сессии тела закрывает `IplStraddleSessionSync.endAllFor` |
+| `IplAtlasStraddleSession.isEnabled`, `isWide`, `isAdmitted`, `markAdmitted`, `isCompleted`, `markCompleted`, `revokeCompletion`, `outranks`, `downstreamOfSibling`, `onStraddleTick`, `onChainTick`, `forEachSessionFrom`, `isInMappedHalf` | `open`, `refreshShip`, `sessionNode`, `supports`: сессия — узел дерева кусков, без трубок, допуска и приоритета соседей |
+| `IplProjectionTree.keepInterval`, `beyondInterval`, `beyondContains`, `yieldedIntervals`, `yieldsAt`, `yieldsAnything`, `WIDE_EXTENT`, `LATERAL_MARGIN`, `SKIN` | куски: `pieces`, `node`, `parentId`, `labelOf`, `pieceOfPlot`, `edges`, `edgeInto`, `hasMaterial` |
+| `IplStraddlePoseMap.getBlockCollisionKeepFilter`, `getBlockCollisionKeepPlanes`, `getSourceHalfKeepFilter`, `frameCuts`, `RealHalfSpace`, `isInMappedHalf` | `getBlockCollisionCut` (`PieceCut`: кусок кадра и плоскости зон), `keeps`, `planeFor` |
+| `IplStraddleCollisionClip.setPlanes`, `noteBlock` | `install`, `filter`, `clip`, `clear`, `hasCut`: блоки фильтруются по куску, обрезаются только блоки зон |
+| `IplVoxelShapeClipMixin` (`VoxelShapeMixin`) | удалён: срез коллизий сущностей по куску делает `SubLevelEntityCollisionMixin` через `IplStraddleCollisionClip` |
+| `SourceClipPortalFinder` (`IplClipPortalFinder`), `IplRenderCullMath`, `IplClientVisualTransitLatch`, решения `IplStraddleRenderCache` (`decision`, `cacheDecision`, `allDecisions`, `cacheAllDecisions`, `renderPortals`, `cacheRenderPortals`, `portalCandidates`, `cachePortalCandidates`, `canonicalPortalFace`, `cacheCanonicalPortalFace`, `hasDecision`) | удалены: клиент не ищет портал и не предсказывает вход, а рисует куски по меткам и узлам сессий с сервера (`render/IplPieceRender`, `render/IplSectionRanges`, миксины `BufferBuilderAccessor`, `MeshDataMixin`, `VertexBufferMixin`) |
+| `IplStraddleRenderState.getPortalFor`, `getPlaneFor`, `getPlane2For` | `getNodeFor`, `isActive` |
+| `IplStraddleSessionStore.resolvePortal`, `resolveAllPortals`, `resolveRenderPortal`, `resolveAllRenderPortals`, `resolveChains`, `resolveRenderChains`, `isWide`, `captureGhostTails`, `clearGhostTails`, `beginHandoffVisual`, `clearHandoffVisual`, `clearRetiredForHandoff` | `session`, `sessions`, `label`, `labels`, `pieces`, `treeEntries`, `lookupPortal`, `renderView` (`RenderView`, `ResolvedSession`), `captureGhostView`, `clearGhostView` |
+| `IplStraddleSessionSync.retainOnly` | `forgetAllFor`; метки уходят через `sendLabels`, не больше 64 секций в пакете |
+| `IplStaffBeamRoutes.isPastPlane` и гистерезис у плоскости | удалены: представление якоря луча выбирает кусок, которому принадлежит якорь |
+| `IplPerfDiagnostics.CLIENT_PORTAL_SCAN` (`client-portal-scan`) | `CLIENT_PIECE_DRAW` (`client-piece-draw`): время отрисовки кусков |
+| `IplEnteringVolumeVisualization`, `IplEnteringVolumeRenderer` с RPC `setMode`, команда `visualize_sweep_detector` | удалены вместе с оверлеем объёма входа |
+| `-Dipl.sable.clip.seamSupportMargin` | удалено: шов — плоскость апертуры внутри зоны |
+| JNI `setClipRegions`, `setClipRegionsV2`, `setImageClipRegions`, `setImageClipRegionsV2`, константы `REGION_KEEP`, `REGION_EXCLUDE`, `REGION_STRIDE_V2` | ABI 3: `setPieceSection`, `setPieceEdges`, `clearPieces`, `setImageNode`, `EDGE_STRIDE`, `PIECE_ABI`; `IplRapierNatives.piecesSupported()` сообщает, умеют ли нативы куски |
+| `tests/portal`, `tests/render/GeometryTest` (проверял `PortalSectionMath`), фикстура `IplClipPortalFinder` в `tests/render` | удалены вместе с детектором; модель кусков проверяет `tests/pieces` |
+| `MAX_CHAIN_DEPTH`, `MAX_SESSIONS_PER_SHIP`, `MAX_TRANSIT_GROUP`, `MAX_CHAIN_LINKS` | прежние лимиты удалены; остаются 255 меток кусков на тело и бюджет флипов на тик |
+| RPC посоха со строкой всей цепи | seed и snapshot передают список звеньев в NBT; клиент и сервер должны совпадать по версии |
+| JNI ABI 4 | добавлены `canMoveGroupRopes`, `moveGroupRopes` и `ROPE_TRANSIT_ABI` для переноса подходящих верёвок в пределах измерения |

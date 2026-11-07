@@ -1,68 +1,26 @@
 package ipl.sable.mixin.client;
 
-import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
-import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import com.llamalad7.mixinextras.sugar.Local;
-import com.mojang.blaze3d.vertex.PoseStack;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.SubLevelRenderDispatcher;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.VanillaSubLevelRenderDispatcher;
-import ipl.sable.render.IplBlockEntityRenderScope;
-import ipl.sable.render.IplClipPortalFinder;
-import ipl.sable.render.IplClipUniformPatcher;
 import ipl.sable.render.IplSubLevelBlockEntityPass;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
-import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.Collection;
-
 /**
- * Extend our per-sub-level clip (gl_ClipDistance[1..SLOTS] / ipl_subLevelClipEquation[SLOTS])
- * to Sable's block-entity render pass.
- *
- * <p><b>Why this is needed:</b> Sable renders sub-level block entities (chests
- * on the airship, signs, banners, brewing stands, etc.) through
- * {@link VanillaSubLevelRenderDispatcher#renderBlockEntities}, which iterates
- * sub-levels and dispatches each one's BEs to the active
- * {@link SubLevelRenderDispatcher.BlockEntityRenderer}. This is a separate
- * render pass from chunked-terrain rendering, so the brackets in
- * {@link ChunkedRenderDataMixin} (which only fire inside {@code renderChunkedSubLevel})
- * don't cover it. Without intervention:
- *
- * <ul>
- *   <li>In main-dim render of source dim, our slots are disabled (or have
- *       stale equations) -- block entities render unclipped, so chests that
- *       already went into the portal aperture show up on the source side
- *       where they shouldn't.</li>
- *   <li>In portal-through render, IP's slot 0 may apply a direction different
- *       from the sub-level chunk clip, so block entities can be clipped on the
- *       opposite side from the chunks.</li>
- * </ul>
- *
- * <p>Wrapping the per-sub-level call inside the loop lets us install the same
- * per-sub-level cell we use for chunks via {@link IplClipPortalFinder},
- * so block entities follow the chunks visually.
- *
- * <p>We wrap both {@code renderBlockEntities(Collection,...)} and
- * {@code renderSingleBE(...)} since Sable dispatches to either depending on the
- * sub-level's render data type.
+ * Sable's block-entity pass of sub-levels
+ * ({@code VanillaSubLevelRenderDispatcher.renderBlockEntities}) goes through
+ * {@link IplSubLevelBlockEntityPass#route}: one sub-level at a time, a straddling one as piece
+ * passes flushed after each pass, plus the sub-level's global block entities and the ones
+ * taken out of Flywheel. The original runs again from inside the route (re-entry flag).
  */
 @Pseudo
 @Mixin(value = VanillaSubLevelRenderDispatcher.class, remap = false)
 public abstract class RenderDispatcherBlockEntityClipMixin {
 
-    /**
-     * Весь проход BE саб-уровней идёт через {@link IplSubLevelBlockEntityPass#route}: по одному
-     * саб-уровню, пересекающие портал — внутри общей области отсечения со сбросом буфера ПОСЛЕ
-     * прохода, плюс глобальные BE (верёвки) самого саб-уровня. Оригинал вызывается повторно
-     * изнутри маршрута (флаг повторного входа), поэтому вложенные обёртки ниже продолжают
-     * работать как запасной путь.
-     */
     @Inject(
         method = "renderBlockEntities(Ljava/lang/Iterable;Ldev/ryanhcode/sable/sublevel/render/dispatcher/SubLevelRenderDispatcher$BlockEntityRenderer;DDDF)V",
         at = @At("HEAD"),
@@ -77,74 +35,6 @@ public abstract class RenderDispatcherBlockEntityClipMixin {
         if (IplSubLevelBlockEntityPass.route(
             (SubLevelRenderDispatcher) (Object) this, subLevels, renderer, camX, camY, camZ, partialTick)) {
             ci.cancel();
-        }
-    }
-
-    @WrapOperation(
-        method = "renderBlockEntities",
-        at = @At(
-            value = "INVOKE",
-            target = "Ldev/ryanhcode/sable/sublevel/render/dispatcher/SubLevelRenderDispatcher$BlockEntityRenderer;renderBlockEntities(Ljava/util/Collection;Lcom/mojang/blaze3d/vertex/PoseStack;FDDD)V"
-        )
-    )
-    private void ipl$wrapRenderBEs(
-        SubLevelRenderDispatcher.BlockEntityRenderer renderer,
-        Collection<BlockEntity> entities,
-        PoseStack pose,
-        float partialTick,
-        double x, double y, double z,
-        Operation<Void> original,
-        @Local(type = ClientSubLevel.class) ClientSubLevel sub
-    ) {
-        ipl$withClip(sub, () -> original.call(renderer, entities, pose, partialTick, x, y, z));
-    }
-
-    @WrapOperation(
-        method = "renderBlockEntities",
-        at = @At(
-            value = "INVOKE",
-            target = "Ldev/ryanhcode/sable/sublevel/render/dispatcher/SubLevelRenderDispatcher$BlockEntityRenderer;renderSingleBE(Lnet/minecraft/world/level/block/entity/BlockEntity;Lcom/mojang/blaze3d/vertex/PoseStack;FDDD)V"
-        )
-    )
-    private void ipl$wrapRenderSingleBE(
-        SubLevelRenderDispatcher.BlockEntityRenderer renderer,
-        BlockEntity be,
-        PoseStack pose,
-        float partialTick,
-        double x, double y, double z,
-        Operation<Void> original,
-        @Local(type = ClientSubLevel.class) ClientSubLevel sub
-    ) {
-        ipl$withClip(sub, () -> original.call(renderer, be, pose, partialTick, x, y, z));
-    }
-
-    /**
-     * Install our per-sub-level clip cell for the duration of {@code body.run()}.
-     * Resolves the piece drawn for {@code sub}, writes its planes to our sub-level slots,
-     * runs the operation, then restores state. Skips bracketing if the sub-level isn't
-     * straddling any portal or is already inside {@link IplBlockEntityRenderScope}.
-     */
-    @Unique
-    private static void ipl$withClip(ClientSubLevel sub, Runnable body) {
-        if (IplBlockEntityRenderScope.isActiveFor(sub)) {
-            body.run();
-            return;
-        }
-        IplClipPortalFinder.ClipDecision decision =
-            IplClipPortalFinder.findStraddlingPortalPlane(sub);
-        if (decision == null || decision.planes().isEmpty()) {
-            body.run();
-            return;
-        }
-
-        IplClipUniformPatcher.patchForSubLevel(sub, decision.planes());
-
-        try {
-            body.run();
-        } finally {
-            // The sub-level slots are always disabled on exit (see ChunkedRenderDataMixin).
-            IplClipUniformPatcher.disableSlots();
-            IplClipUniformPatcher.clearAndUpload();
         }
     }
 }

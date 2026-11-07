@@ -2,49 +2,27 @@ package ipl.sable.transit;
 
 import dev.ryanhcode.sable.companion.math.BoundingBox3d;
 import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
+import net.minecraft.core.BlockPos;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
- * Per-thread scratch state that lets the entity-vs-ship collision loop cut individual
- * collision boxes to the piece of the body the entity's frame owns, instead of keeping or
- * dropping whole blocks.
+ * Per-thread state of the entity-vs-ship collision cut ({@code SubLevelEntityCollisionMixin}).
  *
- * <p><b>Why this exists.</b> {@code SubLevelEntityCollisionMixin} filters the candidate
- * {@code BlockPos} iterable, which is the only granularity a position predicate can
- * offer: a block is either physically present in this frame or it is not. With an oblique
- * portal (the 45-degree case) that quantises the physical boundary to the sub-level's block
- * lattice, so a ship that is only partly through the portal is physically cut along block
- * divisions rather than along the portal plane -- you can stand on, or fall through, up to
- * half a block of material that the render pass has already clipped away. The visual seam
- * and the collision seam disagree.
+ * <p>Sable's collision loop walks the candidate blocks of one sub-level and tests the entity
+ * against each block's boxes ({@code FastVoxelShapeIterable.sable$allBoxes()}). While the body
+ * straddles a portal the entity collides with ONE piece ({@link IplStraddlePoseMap.PieceCut}):
+ * the candidate blocks are filtered to that piece ({@link #filter}), and the boxes of the few
+ * blocks an aperture zone splits between two pieces are trimmed at the aperture plane
+ * ({@link #clip}), so the seam follows the portal to sub-block precision while everything else
+ * is decided by labels alone.
  *
- * <p><b>How.</b> The block filter is deliberately generous: it keeps a block whenever ANY
- * part of its cube may be in the piece. This class then trims what survives. Sable's
- * collision loop obtains each block's collision boxes through
- * {@code FastVoxelShapeIterable.sable$allBoxes()} and turns every box into an OBB; by
- * wrapping that iterator we hand back the box pieces that lie in the frame's
- * {@link IplCollisionRegion} (a box crossing a prism face becomes up to one piece per crossed
- * face), so the SAT solver sees the material that actually exists. The cut follows the
- * portal plane and the aperture's sides down to sub-block precision rather than the lattice.
- *
- * <p><b>Frame and lifecycle.</b> The region is plot-local, matching the coordinates the
- * collision loop works in before it applies the sub-level pose. {@link #setRegion} is
- * called once per sub-level, at the point the candidate block iterable is created, and
- * is explicitly cleared for non-straddling sub-levels so state can never leak from one
- * sub-level to the next. {@link #noteBlock} is fed by the same filtering iterator that
- * drives every loop over those blocks, so the box clip always knows which block the
- * boxes it is being handed belong to. Everything is {@link ThreadLocal}: client and
- * server collision run concurrently.
- *
- * <p>Boxes that lie entirely outside the piece are dropped from the iterator, which is
- * what makes a block that survived the (generous) position filter contribute nothing
- * when the piece happens to miss all of its actual collision geometry.
+ * <p>The cut is installed for each sub-level where its candidate iterable is created and
+ * cleared when {@code collide} returns; the filtering iterator notes the block whose boxes are
+ * fetched next, so the box clip always knows which plane (if any) applies. Everything is
+ * {@link ThreadLocal}: client and server collide concurrently.
  */
 public final class IplStraddleCollisionClip {
 
@@ -52,8 +30,9 @@ public final class IplStraddleCollisionClip {
     }
 
     private static final class State {
-        @Nullable
-        IplCollisionRegion region;
+        @Nullable IplStraddlePoseMap.PieceCut cut;
+        /** Plane of the block noted last; null = its boxes stay whole. */
+        @Nullable IplStraddlePoseMap.LocalHalfSpace plane;
         int blockX;
         int blockY;
         int blockZ;
@@ -61,48 +40,90 @@ public final class IplStraddleCollisionClip {
 
     private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
 
-    /** Installs (or with null, clears) the plot-local piece for the sub-level being tested. */
-    public static void setRegion(@Nullable IplCollisionRegion region) {
-        STATE.get().region = region == null || region.isUnbounded() ? null : region;
-    }
-
-    /** Records which block the boxes handed to {@link #clip} belong to. */
-    public static void noteBlock(int x, int y, int z) {
+    /** Installs (or with null, clears) the cut for the sub-level being tested. */
+    public static void install(@Nullable IplStraddlePoseMap.PieceCut cut) {
         State state = STATE.get();
-        state.blockX = x;
-        state.blockY = y;
-        state.blockZ = z;
+        state.cut = cut;
+        state.plane = null;
     }
 
+    public static void clear() {
+        install(null);
+    }
+
+    /** Whether a cut is installed (step-up probes reuse it for their own candidate blocks). */
+    public static boolean hasCut() {
+        return STATE.get().cut != null;
+    }
+
+    /** Whether the boxes fetched next belong to a block split at an aperture plane. */
     public static boolean isActive() {
-        return STATE.get().region != null;
+        return STATE.get().plane != null;
     }
 
     /**
-     * Wraps a block's collision-box iterator so every box is trimmed to the piece. Returns
-     * the input untouched when no cut applies, so non-straddling ships pay nothing beyond
-     * one thread-local read.
+     * {@code all} restricted to the installed piece; every block handed out is noted for
+     * {@link #clip}. Lookahead happens inside {@code hasNext}, the same timing as vanilla's
+     * {@code betweenClosed} iterator, so its MutableBlockPos reuse semantics are preserved.
+     */
+    public static Iterable<BlockPos> filter(Iterable<BlockPos> all) {
+        State state = STATE.get();
+        IplStraddlePoseMap.PieceCut cut = state.cut;
+        if (cut == null) return all;
+        return () -> new Iterator<>() {
+            private final Iterator<BlockPos> in = all.iterator();
+            private BlockPos next;
+            private boolean hasNext;
+
+            @Override
+            public boolean hasNext() {
+                while (!hasNext && in.hasNext()) {
+                    BlockPos candidate = in.next();
+                    if (cut.keeps(candidate)) {
+                        next = candidate;
+                        hasNext = true;
+                    }
+                }
+                return hasNext;
+            }
+
+            @Override
+            public BlockPos next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                hasNext = false;
+                state.blockX = next.getX();
+                state.blockY = next.getY();
+                state.blockZ = next.getZ();
+                state.plane = cut.planeFor(state.blockX, state.blockY, state.blockZ);
+                return next;
+            }
+        };
+    }
+
+    /**
+     * Wraps the collision boxes of the block noted last so each is trimmed at its aperture
+     * plane. Returns the input untouched for whole blocks and when no cut applies.
      */
     public static Iterator<BoundingBox3dc> clip(Iterator<BoundingBox3dc> boxes) {
         State state = STATE.get();
-        IplCollisionRegion region = state.region;
-        if (region == null) return boxes;
-        return new ClippedIterator(boxes, region, state.blockX, state.blockY, state.blockZ);
+        IplStraddlePoseMap.LocalHalfSpace plane = state.plane;
+        if (plane == null) return boxes;
+        return new ClippedIterator(boxes, plane, state.blockX, state.blockY, state.blockZ);
     }
 
     private static final class ClippedIterator implements Iterator<BoundingBox3dc> {
         private final Iterator<BoundingBox3dc> in;
-        private final IplCollisionRegion region;
+        private final IplStraddlePoseMap.LocalHalfSpace plane;
         private final double offsetX;
         private final double offsetY;
         private final double offsetZ;
-        private final ArrayDeque<BoundingBox3dc> pending = new ArrayDeque<>(2);
-        private final List<double[]> pieces = new ArrayList<>(2);
+        @Nullable
+        private BoundingBox3dc next;
 
-        ClippedIterator(Iterator<BoundingBox3dc> in, IplCollisionRegion region,
+        ClippedIterator(Iterator<BoundingBox3dc> in, IplStraddlePoseMap.LocalHalfSpace plane,
                         int blockX, int blockY, int blockZ) {
             this.in = in;
-            this.region = region;
+            this.plane = plane;
             this.offsetX = blockX;
             this.offsetY = blockY;
             this.offsetZ = blockZ;
@@ -110,37 +131,48 @@ public final class IplStraddleCollisionClip {
 
         @Override
         public boolean hasNext() {
-            while (pending.isEmpty() && in.hasNext()) {
-                clipOne(in.next());
+            while (next == null && in.hasNext()) {
+                next = clipOne(in.next());
             }
-            return !pending.isEmpty();
+            return next != null;
         }
 
         @Override
         public BoundingBox3dc next() {
             if (!hasNext()) throw new NoSuchElementException();
-            return pending.poll();
+            BoundingBox3dc result = next;
+            next = null;
+            return result;
         }
 
         /**
-         * Boxes arrive in block-local coordinates (0..1 within the block), so they are
-         * lifted into plot-local space for the cut and pushed back afterwards -- the
-         * caller adds the block position again itself.
+         * Boxes arrive in block-local coordinates (0..1 within the block), so they are lifted
+         * into plot-local space for the cut and pushed back afterwards -- the caller adds the
+         * block position again itself.
          */
-        private void clipOne(BoundingBox3dc box) {
-            double[] local = {
-                box.minX() + offsetX, box.minY() + offsetY, box.minZ() + offsetZ,
-                box.maxX() + offsetX, box.maxY() + offsetY, box.maxZ() + offsetZ};
-            pieces.clear();
-            if (!region.clip(local, pieces)) {
-                pending.add(box);
-                return;
+        @Nullable
+        private BoundingBox3dc clipOne(BoundingBox3dc box) {
+            double minX = box.minX() + offsetX;
+            double minY = box.minY() + offsetY;
+            double minZ = box.minZ() + offsetZ;
+            double maxX = box.maxX() + offsetX;
+            double maxY = box.maxY() + offsetY;
+            double maxZ = box.maxZ() + offsetZ;
+            BoundingBox3d cut = IplStraddlePoseMap.clipLocalBoxKeeping(minX, minY, minZ, maxX, maxY, maxZ, plane);
+            if (cut == null) return null;
+            if (cut.minX == minX && cut.minY == minY && cut.minZ == minZ
+                && cut.maxX == maxX && cut.maxY == maxY && cut.maxZ == maxZ) {
+                return box;
             }
-            for (double[] piece : pieces) {
-                pending.add(new BoundingBox3d(
-                    piece[0] - offsetX, piece[1] - offsetY, piece[2] - offsetZ,
-                    piece[3] - offsetX, piece[4] - offsetY, piece[5] - offsetZ));
+            // A degenerate sliver is worse than nothing: SAT on a zero-thickness box yields a
+            // zero MTV that still counts as colliding, pinning the entity against a surface
+            // that has no material left.
+            if (cut.maxX - cut.minX <= 1.0e-6 || cut.maxY - cut.minY <= 1.0e-6 || cut.maxZ - cut.minZ <= 1.0e-6) {
+                return null;
             }
+            return new BoundingBox3d(
+                cut.minX - offsetX, cut.minY - offsetY, cut.minZ - offsetZ,
+                cut.maxX - offsetX, cut.maxY - offsetY, cut.maxZ - offsetZ);
         }
     }
 }

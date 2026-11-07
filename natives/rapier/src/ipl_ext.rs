@@ -1,55 +1,38 @@
-//! IPSable extensions to the sable_rapier natives (portal-physics spec phase 4),
-//! rebased onto sable 2.0.3 (scene handles are raw `Arc<PhysicsScene>` pointers; sable
-//! data lives behind `RwLock`, so hook-time reads are properly synchronized).
+//! IPSable extensions to the sable_rapier natives, rebased onto sable 2.0.x (scene
+//! handles are raw `Arc<PhysicsScene>` pointers; sable data lives behind `RwLock`, so
+//! hook-time reads are properly synchronized).
 //!
 //! Exposed under the `ipl.sable.natives.IplRapierNatives` Java class — sable's own JNI
 //! surface is untouched.
+//!
+//! Piece clipping (ABI 3): a body straddling portals is ONE rigid body with one collider
+//! per piece (the native collider plus an image collider per session). Which piece a
+//! point of the body belongs to is decided by [`IplPieces::classify`]: a per-voxel label
+//! (history: the piece a block went to when it crossed an aperture) and, close to an
+//! aperture, the side of its plane. A solver contact survives only on the collider of the
+//! piece its point belongs to.
 
 use jni::JNIEnv;
-use jni::objects::{JClass, JDoubleArray};
+use jni::objects::{JByteArray, JClass, JDoubleArray};
 use jni::sys::{jboolean, jdouble, jint, jlong};
-use std::collections::HashSet;
 use marten::Real;
+use rapier3d::glamx::DVec3;
 use rapier3d::math::Vec3;
+use rapier3d::prelude::ColliderHandle;
+use std::collections::{HashMap, HashSet};
 
 use crate::scene::{LevelColliderID, PhysicsScene};
 
-/// An oriented clip volume: solver contacts past the plane (signed distance >= 0 along
-/// `normal`) and inside the lateral rectangle are dropped from the owning body's manifolds.
-/// Infinite half extents remain available to callers, but Atlas keeps both real and image
-/// clipping bounded to the portal aperture so terrain beside a frame remains solid.
-#[derive(Debug, Clone)]
-pub struct IplClipRegion {
-    pub point: Vec3,
-    pub normal: Vec3,
-    pub axis_w: Vec3,
-    pub half_w: Real,
-    pub axis_h: Vec3,
-    pub half_h: Real,
-    /// Tolerance BEFORE the plane. A contact whose point sits a hair on the near side of
-    /// the cut while its geometry is already past it used to survive, which is what a
-    /// player still "feels" when entering the doorway from the opposite side. The band is
-    /// tiny (sub-millimetre by default) and does not widen the cut anywhere else.
-    pub skin: Real,
-    /// Depth bound BEYOND the plane. Previously the region was an infinite half-space, so
-    /// it could reach arbitrarily far past the portal and neutralize contacts that had
-    /// nothing to do with this crossing -- the "microscopically affects other sub-levels"
-    /// symptom. Java sends the owning body's own diagonal, so the cutter is a closed box
-    /// around exactly the volume that can be straddling.
-    pub max_depth: Real,
-    /// ABI 2: region MODE. `false` = EXCLUDE (legacy: a contact inside is neutralized),
-    /// `true` = KEEP (a contact must lie inside EVERY keep region of the set to survive).
-    /// Image colliders describe "the part of the body that went through this portal"
-    /// as an intersection of keep tubes; describing it as the complement (a union of
-    /// exclusions) leaked contacts everywhere outside the aperture tube of the image --
-    /// the duplicated full copies seen with several portals.
-    pub keep: bool,
-}
-
 /// Native ABI level probed by Java (`IplRapierNatives.nativeAbiLevel()`):
-/// 1 = (implicit, symbol absent) exclusion-only regions, 2 = keep/exclude regions
-/// via `setClipRegionsV2` / `setImageClipRegionsV2` (17 doubles per region).
-pub const IPL_NATIVE_ABI_LEVEL: jint = 2;
+/// 3 = piece labels + aperture edges (`setPieceSection`, `setPieceEdges`, `setImageNode`).
+/// 5 = label-time plot plane. 6 = complete reference aperture + observed material sweep.
+pub const IPL_NATIVE_ABI_LEVEL: jint = 6;
+
+/// Doubles per edge in `setPieceEdges`:
+/// `[parent child  ox oy oz  nx ny nz  wx wy wz halfW  hx hy hz halfH  zone slack
+///   pox poy poz pnx pny pnz pwx pwy pwz phalfW phx phy phz phalfH]` (`po`/`pn`: the plane in plot coordinates when the labels
+/// were made).
+pub const IPL_EDGE_STRIDE: usize = 32;
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_nativeAbiLevel<'local>(
@@ -59,56 +42,197 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_nativeAbiLevel<'l
     IPL_NATIVE_ABI_LEVEL
 }
 
-/// True when a scene-frame contact point must be neutralized for a body whose clip set is
-/// `regions`: inside any EXCLUDE region, or outside any KEEP region.
-#[inline]
-pub fn ipl_point_clipped(regions: &[IplClipRegion], p: Vec3) -> bool {
-    for r in regions {
-        let inside = r.contains(p);
-        if r.keep != inside {
-            // keep && !inside  -> outside a keep tube
-            // !keep && inside  -> inside an exclusion
-            return true;
+/// One live portal crossing of a body: material of piece `parent` that passes the aperture
+/// becomes piece `child`. Geometry is in the PARENT piece's scene frame (where the portal
+/// itself lives); `normal` points to the parent side.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IplPieceEdge {
+    pub parent: u8,
+    pub child: u8,
+    pub origin: DVec3,
+    pub normal: DVec3,
+    pub axis_w: DVec3,
+    pub half_w: f64,
+    pub axis_h: DVec3,
+    pub half_h: f64,
+    /// Geometric split depth in the ABI-3 prefix. ABI 6 derives the current voxel
+    /// support radius from transformed plot axes, not a predicted-motion slab.
+    pub zone: f64,
+    /// How far a voxel centre may lie on the wrong side of [`Self::plot_normal`] for its
+    /// label and still be this edge's material (0 from the server: exact).
+    pub slack: f64,
+    /// The aperture plane in PLOT coordinates at the time the labels were made. A voxel of
+    /// `parent` whose centre lay behind it, or of `child` whose centre lay in front of it,
+    /// reached that side without passing this rectangle (around the frame, through the
+    /// opposite face of a doorway): this edge must not cut it, whatever the plane says now.
+    pub plot_origin: DVec3,
+    pub plot_normal: DVec3,
+    pub plot_axis_w: DVec3,
+    pub plot_half_w: f64,
+    pub plot_axis_h: DVec3,
+    pub plot_half_h: f64,
+}
+
+impl IplPieceEdge {
+    /// Whether the voxel of `label` centred at `centre` (plot coordinates) is this edge's material.
+    #[inline]
+    pub fn owns_voxel(&self, label: u8, centre: DVec3) -> bool {
+        let s = (centre - self.plot_origin).dot(self.plot_normal);
+        if label == self.parent {
+            s >= -self.slack
+        } else if label == self.child {
+            s <= self.slack
+        } else {
+            false
         }
     }
-    false
+}
+
+/// Piece data of one body (see the module docs).
+#[derive(Debug, Default)]
+pub struct IplPieces {
+    /// 16³ label arrays by section coordinate, index `x | y << 4 | z << 8`; absent = 0.
+    pub sections: HashMap<(i32, i32, i32), Box<[u8]>>,
+    pub edges: Vec<IplPieceEdge>,
+    /// Piece of each image collider; the native collider is piece 0.
+    pub image_nodes: HashMap<ColliderHandle, u8>,
+    /// Labels changed since the last atomic edge publication.
+    pub dirty_contacts: bool,
+}
+
+impl IplPieces {
+    #[inline]
+    pub fn label(&self, x: i32, y: i32, z: i32) -> u8 {
+        match self.sections.get(&(x >> 4, y >> 4, z >> 4)) {
+            Some(s) => s[((x & 15) | ((y & 15) << 4) | ((z & 15) << 8)) as usize],
+            None => 0,
+        }
+    }
+
+    /// Classifies the body's OWN surface witness, not the midpoint between colliders.
+    /// `in_parent` maps any plot point to an edge's current parent frame. The observed
+    /// centre segment supplies membership between label updates; no prediction distance
+    /// or portal slab limits a piece that already crossed the finite aperture.
+    pub fn classify(&self, plot: DVec3, in_parent: impl Fn(u8, DVec3) -> Option<DVec3>) -> u8 {
+        let voxel = plot.floor();
+        self.classify_voxel(plot, voxel.as_ivec3(), in_parent)
+    }
+
+    /// The dispatcher knows the material voxel even when its surface witness lies exactly
+    /// on an integer edge, or a collision shape extends outside the nominal block cube.
+    pub fn classify_voxel(
+        &self,
+        plot: DVec3,
+        voxel: rapier3d::glamx::IVec3,
+        in_parent: impl Fn(u8, DVec3) -> Option<DVec3>,
+    ) -> u8 {
+        let label = self.label(voxel.x, voxel.y, voxel.z);
+        let centre = voxel.as_dvec3() + DVec3::splat(0.5);
+        let mut piece = label;
+        let mut after = -1.0;
+        // Order by observed crossing time, not session/node allocation order. This also
+        // supports already-armed nested edges within a single native substep.
+        for _ in 0..self.edges.len() {
+            let mut next: Option<(f64, u8)> = None;
+            for e in &self.edges {
+                if piece != e.parent && piece != e.child {
+                    continue;
+                }
+                let Some(p) = in_parent(e.parent, centre) else {
+                    continue;
+                };
+                let old = centre - e.plot_origin;
+                let now = p - e.origin;
+                let s0 = old.dot(e.plot_normal);
+                let s1 = now.dot(e.normal);
+                let forward = piece == e.parent && s0 >= 0.0 && s1 < 0.0;
+                let backward = piece == e.child && s0 < 0.0 && s1 >= 0.0;
+                if !forward && !backward {
+                    continue;
+                }
+                let t = s0 / (s0 - s1);
+                if t <= after {
+                    continue;
+                }
+                let u = old.dot(e.plot_axis_w) * (1.0 - t) + now.dot(e.axis_w) * t;
+                let v = old.dot(e.plot_axis_h) * (1.0 - t) + now.dot(e.axis_h) * t;
+                let margin = if backward { 0.5 } else { 0.0 };
+                if u.abs() > e.plot_half_w * (1.0 - t) + e.half_w * t + margin
+                    || v.abs() > e.plot_half_h * (1.0 - t) + e.half_h * t + margin
+                {
+                    continue;
+                }
+                if next.is_none_or(|(best, _)| t < best) {
+                    next = Some((t, if forward { e.child } else { e.parent }));
+                }
+            }
+            let Some((t, target)) = next else {
+                break;
+            };
+            after = t;
+            piece = target;
+        }
+        for e in &self.edges {
+            if piece != e.parent && piece != e.child {
+                continue;
+            }
+            let (Some(p), Some(c)) = (in_parent(e.parent, plot), in_parent(e.parent, centre))
+            else {
+                continue;
+            };
+            let rel = p - e.origin;
+            let centre_rel = c - e.origin;
+            let cs = centre_rel.dot(e.normal);
+            let mut reach = 0.0;
+            for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
+                if let Some(p) = in_parent(e.parent, centre + axis) {
+                    reach += (p - c).dot(e.normal).abs() * 0.5;
+                }
+            }
+            // Only material on its label's side can be geometrically split. A U arm
+            // that went around the frame cannot be stolen by the opposite face.
+            let consistent = if piece == e.parent {
+                cs >= 0.0
+            } else {
+                cs < 0.0
+            };
+            if !consistent
+                || (piece == label && !e.owns_voxel(label, centre))
+                || cs.abs() > reach + 0.05
+                || centre_rel.dot(e.axis_w).abs() > e.half_w
+                || centre_rel.dot(e.axis_h).abs() > e.half_h
+                || rel.dot(e.axis_w).abs() > e.half_w
+                || rel.dot(e.axis_h).abs() > e.half_h
+            {
+                continue;
+            }
+            let target = if rel.dot(e.normal) >= 0.0 {
+                e.parent
+            } else {
+                e.child
+            };
+            if target != piece {
+                return target;
+            }
+        }
+        piece
+    }
 }
 
 /// Marker test for contacts neutralized by `SablePhysicsHooks::ipl_clip_contacts`
-/// (separated by 10 m with zero friction -- never produced by the narrow phase itself,
+/// (large finite separation with zero friction -- never produced by the narrow phase itself,
 /// whose prediction distance is a few centimetres).
+pub const IPL_NEUTRAL_CONTACT_GAP: Real = 1.0e12;
+
 #[inline]
 pub fn ipl_contact_neutralized(c: &rapier3d::geometry::SolverContact) -> bool {
-    c.dist >= 9.99 && c.friction == 0.0
-}
-
-/// Decode a region payload. `stride` 17 carries an explicit mode (17th value, >0.5 = KEEP);
-/// 16/14 are the legacy exclusion-only layouts.
-fn ipl_parse_regions(values: &[f64], stride: usize) -> Vec<IplClipRegion> {
-    let mut out = Vec::with_capacity(values.len() / stride.max(1));
-    for c in values.chunks_exact(stride) {
-        let normal = Vec3::new(c[3] as Real, c[4] as Real, c[5] as Real);
-        // A degenerate frame would make `contains` meaningless (NaN dot products are
-        // never <= anything, so a NaN KEEP region would clip every contact). Skip it.
-        if !(normal.length_squared() > 1.0e-12) || c.iter().any(|v| v.is_nan()) {
-            continue;
-        }
-        out.push(IplClipRegion {
-            point: Vec3::new(c[0] as Real, c[1] as Real, c[2] as Real),
-            normal,
-            axis_w: Vec3::new(c[6] as Real, c[7] as Real, c[8] as Real),
-            half_w: c[9] as Real,
-            axis_h: Vec3::new(c[10] as Real, c[11] as Real, c[12] as Real),
-            half_h: c[13] as Real,
-            skin: if c.len() > 14 { c[14] as Real } else { 1.0e-3 },
-            max_depth: if c.len() > 15 { c[15] as Real } else { Real::MAX },
-            keep: c.len() > 16 && c[16] > 0.5,
-        });
-    }
-    out
+    c.dist >= IPL_NEUTRAL_CONTACT_GAP * 0.99 && c.friction == 0.0
 }
 
 fn ipl_read_doubles(env: &JNIEnv, data: &JDoubleArray) -> Option<Vec<f64>> {
+    if data.is_null() {
+        return Some(Vec::new());
+    }
     let len = env.get_array_length(data).ok()? as usize;
     let mut values = vec![0.0f64; len];
     if len > 0 && env.get_double_array_region(data, 0, &mut values).is_err() {
@@ -117,10 +241,90 @@ fn ipl_read_doubles(env: &JNIEnv, data: &JDoubleArray) -> Option<Vec<f64>> {
     Some(values)
 }
 
-/// ABI 2 body regions: N x 17 doubles
-/// `[px py pz  nx ny nz  wx wy wz halfW  hx hy hz halfH  skin maxDepth  mode]`.
+fn ipl_unpack_handle(packed: jlong) -> ColliderHandle {
+    ColliderHandle::from_raw_parts((packed >> 32) as u32, (packed & 0xFFFF_FFFF) as u32)
+}
+
+fn ipl_parse_edges(values: &[f64]) -> Vec<IplPieceEdge> {
+    let mut out = Vec::with_capacity(values.len() / IPL_EDGE_STRIDE);
+    for c in values.chunks_exact(IPL_EDGE_STRIDE) {
+        // A NaN frame would make every comparison false and silently keep the label.
+        if c.iter().any(|v| !v.is_finite())
+            || !(0.0..=255.0).contains(&c[0])
+            || !(0.0..=255.0).contains(&c[1])
+        {
+            continue;
+        }
+        let normal = DVec3::new(c[5], c[6], c[7]);
+        if normal.length_squared() < 1.0e-12 {
+            continue;
+        }
+        out.push(IplPieceEdge {
+            parent: c[0] as u8,
+            child: c[1] as u8,
+            origin: DVec3::new(c[2], c[3], c[4]),
+            normal,
+            axis_w: DVec3::new(c[8], c[9], c[10]),
+            half_w: c[11],
+            axis_h: DVec3::new(c[12], c[13], c[14]),
+            half_h: c[15],
+            zone: c[16],
+            slack: c[17].max(0.0),
+            plot_origin: DVec3::new(c[18], c[19], c[20]),
+            plot_normal: DVec3::new(c[21], c[22], c[23]),
+            plot_axis_w: DVec3::new(c[24], c[25], c[26]),
+            plot_half_w: c[27],
+            plot_axis_h: DVec3::new(c[28], c[29], c[30]),
+            plot_half_h: c[31],
+        });
+    }
+    out
+}
+
+/// Piece data is not part of Rapier's shape revision. Without this explicit
+/// invalidation a sleeping manifold can retain its old source-ground contacts until
+/// the session disappears. Never hold the scene-data lock while acquiring sim_data:
+/// solver hooks acquire those locks in the opposite direction.
+fn invalidate_piece_contacts(scene: &PhysicsScene, body_id: LevelColliderID) {
+    let (handles, body) = {
+        let data = scene
+            .sable_data
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(info) = data.level_colliders.get(&body_id) else {
+            return;
+        };
+        let mut handles = Vec::with_capacity(1 + info.image_colliders.len());
+        handles.push(info.collider);
+        handles.extend_from_slice(&info.image_colliders);
+        (
+            handles,
+            data.rigid_bodies
+                .get(&body_id)
+                .copied()
+                .or(info.static_mount),
+        )
+    };
+    let mut sim = scene
+        .sim_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(body) = body.and_then(|h| sim.rigid_body_set.get_mut(h)) {
+        body.wake_up(true);
+    }
+    for handle in handles {
+        if let Some(collider) = sim.collider_set.get_mut(handle) {
+            // set_position marks POSITION even for an unchanged transform: re-run the
+            // narrow phase and the piece hook, without changing shape/mass properties.
+            collider.set_position(*collider.position());
+        }
+    }
+}
+
+/// Replace the aperture edges of a body (N x [`IPL_EDGE_STRIDE`] doubles, see
+/// [`IplPieceEdge`]). An empty array keeps the labels but disables the geometric split.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegionsV2<'local>(
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setPieceEdges<'local>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
     scene_handle: jlong,
@@ -130,114 +334,140 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegionsV2<
     if scene_handle == 0 {
         return;
     }
-    let Some(values) = ipl_read_doubles(&env, &data) else { return; };
-    let regions = ipl_parse_regions(&values, 17);
-    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(info) = sable_data.level_colliders.get_mut(&(body_id as LevelColliderID)) else {
+    let Some(values) = ipl_read_doubles(&env, &data) else {
         return;
     };
-    info.clip_regions = regions;
-}
-
-/// ABI 2 image regions (same 17-double layout as `setClipRegionsV2`).
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegionsV2<'local>(
-    env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    scene_handle: jlong,
-    body_id: jint,
-    packed_handle: jlong,
-    data: JDoubleArray<'local>,
-) {
-    use rapier3d::prelude::ColliderHandle;
-
-    if scene_handle == 0 || packed_handle < 0 {
-        return;
-    }
-    let Some(values) = ipl_read_doubles(&env, &data) else { return; };
-    let regions = ipl_parse_regions(&values, 17);
+    let edges = ipl_parse_edges(&values);
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(info) = sable_data.level_colliders.get_mut(&(body_id as LevelColliderID)) else {
-        return;
-    };
-    let handle = ColliderHandle::from_raw_parts(
-        (packed_handle >> 32) as u32,
-        (packed_handle & 0xFFFF_FFFF) as u32,
-    );
-    if regions.is_empty() {
-        info.image_clip.remove(&handle);
-    } else {
-        info.image_clip.insert(handle, regions);
-    }
-}
-
-/// Clip-region stride. The current payload is 16 doubles per region:
-/// `[px py pz  nx ny nz  wx wy wz halfW  hx hy hz halfH  skin maxDepth]`.
-/// The historical 14-double payload (no skin, unbounded depth) is still accepted so an
-/// older Java side cannot hard-fail against a newer native.
-#[inline]
-fn ipl_clip_stride(len: usize) -> usize {
-    if len != 0 && len % 16 == 0 { 16 } else { 14 }
-}
-
-impl IplClipRegion {
-    #[inline]
-    pub fn contains(&self, p: Vec3) -> bool {
-        let rel = p - self.point;
-        let depth = rel.dot(self.normal);
-        depth >= -self.skin
-            && depth <= self.max_depth
-            && rel.dot(self.axis_w).abs() <= self.half_w
-            && rel.dot(self.axis_h).abs() <= self.half_h
-    }
-}
-
-/// Set (or clear, with an empty array) the clip regions of a body.
-/// Layout: N regions x 14 doubles: [px py pz  nx ny nz  wx wy wz  halfW  hx hy hz  halfH].
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'local>(
-    env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    scene_handle: jlong,
-    body_id: jint,
-    data: JDoubleArray<'local>,
-) {
-    if scene_handle == 0 {
-        return;
-    }
-    let len = match env.get_array_length(&data) {
-        Ok(l) => l as usize,
-        Err(_) => return,
-    };
-    let mut values = vec![0.0f64; len];
-    if len > 0 && env.get_double_array_region(&data, 0, &mut values).is_err() {
-        return;
-    }
-
-    // Same handle-deref pattern as the upstream natives (with_handle).
-    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sable_data = scene
+        .sable_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(info) = sable_data
         .level_colliders
         .get_mut(&(body_id as LevelColliderID))
     else {
-        // Diagnostic (stderr -> launcher log): a silent miss here means Java is
-        // clipping a body id / scene pair that native doesn't know.
-        static CLIP_MISS_WARNED: std::sync::Once = std::sync::Once::new();
-        CLIP_MISS_WARNED.call_once(|| {
-            eprintln!(
-                "[ipl-natives] setClipRegions MISS: body {body_id} not in scene {scene_handle:x} \
-                 (further misses are not logged)"
-            );
-        });
-        return; // body already gone — nothing to clip
+        return;
     };
+    let pieces = info.pieces.get_or_insert_with(Default::default);
+    let changed = pieces.dirty_contacts || pieces.edges != edges;
+    pieces.edges = edges;
+    pieces.dirty_contacts = false;
+    drop(sable_data);
+    if changed {
+        invalidate_piece_contacts(scene, body_id as LevelColliderID);
+    }
+}
 
-    info.clip_regions = ipl_parse_regions(&values, ipl_clip_stride(values.len()));
-    // No success log: straddle sessions re-push regions per tick — an unconditional
-    // stderr write here is a server-thread tick cost. The MISS branch above stays.
+/// Replace the labels of one 16³ plot section (4096 bytes, index `x | y << 4 | z << 8`);
+/// `null` or an all-zero array drops the section (everything native).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setPieceSection<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    sx: jint,
+    sy: jint,
+    sz: jint,
+    labels: JByteArray<'local>,
+) {
+    if scene_handle == 0 {
+        return;
+    }
+    let mut data: Option<Box<[u8]>> = None;
+    if !labels.is_null() {
+        let Ok(bytes) = env.convert_byte_array(&labels) else {
+            return;
+        };
+        if bytes.len() != 4096 {
+            return;
+        }
+        if bytes.iter().any(|b| *b != 0) {
+            data = Some(bytes.into_boxed_slice());
+        }
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene
+        .sable_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(info) = sable_data
+        .level_colliders
+        .get_mut(&(body_id as LevelColliderID))
+    else {
+        return;
+    };
+    let pieces = info.pieces.get_or_insert_with(Default::default);
+    pieces.dirty_contacts = true;
+    match data {
+        Some(d) => {
+            pieces.sections.insert((sx, sy, sz), d);
+        }
+        None => {
+            pieces.sections.remove(&(sx, sy, sz));
+        }
+    }
+}
+
+/// Assign the piece of an image collider (`node` 1..255).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageNode<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+    packed_handle: jlong,
+    node: jint,
+) {
+    if scene_handle == 0 || packed_handle < 0 || !(1..=255).contains(&node) {
+        return;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene
+        .sable_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(info) = sable_data
+        .level_colliders
+        .get_mut(&(body_id as LevelColliderID))
+    else {
+        return;
+    };
+    info.pieces
+        .get_or_insert_with(Default::default)
+        .image_nodes
+        .insert(ipl_unpack_handle(packed_handle), node as u8);
+}
+
+/// Drop all piece data of a body (no straddle left): contacts are no longer clipped.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_clearPieces<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    body_id: jint,
+) {
+    if scene_handle == 0 {
+        return;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene
+        .sable_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let changed = if let Some(info) = sable_data
+        .level_colliders
+        .get_mut(&(body_id as LevelColliderID))
+    {
+        info.pieces.take().is_some()
+    } else {
+        false
+    };
+    drop(sable_data);
+    if changed {
+        invalidate_piece_contacts(scene, body_id as LevelColliderID);
+    }
 }
 
 /// Sable body ids in the impulse-joint component containing `body_id`.
@@ -247,8 +477,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setClipRegions<'l
 /// couplings). This excludes flexible links regardless of construction: native rope
 /// particle chains (endpoints aren't ship bodies) and rope/chain links built as
 /// one-block sub-levels joined by ball-type joints (linear-only locks) or springs
-/// (empty lock mask). Roped ships transit independently and the rope spans the portal;
-/// only genuinely rigid assemblies cross as one unit.
+/// (empty lock mask). This mode reports only genuinely rigid assemblies;
+/// the transit controller uses the full walk to keep flexible links together too.
 ///
 /// `rigid_only == 0`: the full walk — every joint bridges.
 #[unsafe(no_mangle)]
@@ -263,17 +493,28 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBod
         return env.new_int_array(0).unwrap();
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let sable_data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(start) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
+    let sable_data = scene
+        .sable_data
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(start) = sable_data
+        .rigid_bodies
+        .get(&(body_id as LevelColliderID))
+        .copied()
+    else {
         return env.new_int_array(0).unwrap();
     };
     let sable_handles: HashSet<_> = sable_data.rigid_bodies.values().copied().collect();
-    let sim = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let sim = scene
+        .sim_data
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut connected = HashSet::from([start]);
     loop {
         let mut changed = false;
         for (_, joint) in sim.impulse_joint_set.iter() {
-            if joint.body1 == scene.world.ground_handle || joint.body2 == scene.world.ground_handle {
+            if joint.body1 == scene.world.ground_handle || joint.body2 == scene.world.ground_handle
+            {
                 continue;
             }
             if rigid_only != 0 {
@@ -302,7 +543,9 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBod
             break;
         }
     }
-    let mut ids: Vec<jint> = sable_data.rigid_bodies.iter()
+    let mut ids: Vec<jint> = sable_data
+        .rigid_bodies
+        .iter()
         .filter_map(|(id, handle)| connected.contains(handle).then_some(*id as jint))
         .collect();
     ids.sort_unstable();
@@ -345,15 +588,28 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
         return -1;
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sable_data = scene
+        .sable_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sim_data = scene
+        .sim_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sim_data = &mut *sim_data;
 
-    let Some(body_handle) = sable_data.rigid_bodies.get(&(body_id as LevelColliderID)).copied() else {
+    let Some(body_handle) = sable_data
+        .rigid_bodies
+        .get(&(body_id as LevelColliderID))
+        .copied()
+    else {
         eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} unknown");
         return -1;
     };
-    let Some(info) = sable_data.level_colliders.get_mut(&(body_id as LevelColliderID)) else {
+    let Some(info) = sable_data
+        .level_colliders
+        .get_mut(&(body_id as LevelColliderID))
+    else {
         eprintln!("[ipl-natives] createImageCollider MISS: body {body_id} unknown");
         return -1;
     };
@@ -378,10 +634,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
     let prefix = rapier3d::math::Pose {
         translation: Vec3::new(dx as Real, dy as Real, dz as Real),
         rotation: rapier3d::math::Rotation::from_xyzw(
-            qx as Real,
-            qy as Real,
-            qz as Real,
-            qw as Real,
+            qx as Real, qy as Real, qz as Real, qw as Real,
         )
         .normalize(),
     };
@@ -394,13 +647,21 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
         .position(rapier3d::math::Pose::IDENTITY)
         .build();
 
-    let handle =
-        sim_data
-            .collider_set
-            .insert_with_parent(collider, body_handle, &mut sim_data.rigid_body_set);
-    sim_data.collider_set.get_mut(handle).unwrap().set_portal_prefix(Some(prefix));
+    let handle = sim_data.collider_set.insert_with_parent(
+        collider,
+        body_handle,
+        &mut sim_data.rigid_body_set,
+    );
+    sim_data
+        .collider_set
+        .get_mut(handle)
+        .unwrap()
+        .set_portal_prefix(Some(prefix));
     let parent_pose = sim_data.rigid_body_set[body_handle].position().clone();
-    sim_data.collider_set.get_mut(handle).unwrap()
+    sim_data
+        .collider_set
+        .get_mut(handle)
+        .unwrap()
         .refresh_portal_prefixed_pose(&parent_pose);
     // `insert_with_parent` composes before the Atlas prefix is attached. Recompose now so
     // this image never enters broad phase at identity and leaves a one-step real/image twin.
@@ -420,27 +681,30 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollid
     body_id: jint,
     packed_handle: jlong,
 ) {
-    use rapier3d::prelude::ColliderHandle;
-
     if scene_handle == 0 || packed_handle < 0 {
         return;
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sable_data = scene
+        .sable_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sim_data = scene
+        .sim_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sim_data = &mut *sim_data;
 
-    let handle = ColliderHandle::from_raw_parts(
-        (packed_handle >> 32) as u32,
-        (packed_handle & 0xFFFF_FFFF) as u32,
-    );
+    let handle = ipl_unpack_handle(packed_handle);
 
     if let Some(info) = sable_data
         .level_colliders
         .get_mut(&(body_id as LevelColliderID))
     {
         info.image_colliders.retain(|h| *h != handle);
-        info.image_clip.remove(&handle);
+        if let Some(pieces) = info.pieces.as_mut() {
+            pieces.image_nodes.remove(&handle);
+        }
     }
 
     sim_data.collider_set.remove(
@@ -449,53 +713,6 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollid
         &mut sim_data.rigid_body_set,
         true,
     );
-}
-
-/// Set (or clear, with an empty array) the clip regions of one IMAGE collider —
-/// the far side of the half-open aperture seam. Layout matches `setClipRegions`
-/// (N x 14 doubles).
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageClipRegions<'local>(
-    env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    scene_handle: jlong,
-    body_id: jint,
-    packed_handle: jlong,
-    data: JDoubleArray<'local>,
-) {
-    use rapier3d::prelude::ColliderHandle;
-
-    if scene_handle == 0 || packed_handle < 0 {
-        return;
-    }
-    let len = match env.get_array_length(&data) {
-        Ok(l) => l as usize,
-        Err(_) => return,
-    };
-    let mut values = vec![0.0f64; len];
-    if len > 0 && env.get_double_array_region(&data, 0, &mut values).is_err() {
-        return;
-    }
-
-    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sable_data = scene.sable_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(info) = sable_data
-        .level_colliders
-        .get_mut(&(body_id as LevelColliderID))
-    else {
-        return;
-    };
-
-    let handle = ColliderHandle::from_raw_parts(
-        (packed_handle >> 32) as u32,
-        (packed_handle & 0xFFFF_FFFF) as u32,
-    );
-    let regions = ipl_parse_regions(&values, ipl_clip_stride(values.len()));
-    if regions.is_empty() {
-        info.image_clip.remove(&handle);
-    } else {
-        info.image_clip.insert(handle, regions);
-    }
 }
 
 /// Atlas M5 (spec v3 §2.8): update an image collider's portal prefix — moving
@@ -516,28 +733,137 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImagePrefix<'l
     qz: jdouble,
     qw: jdouble,
 ) {
-    use rapier3d::prelude::ColliderHandle;
-
     if scene_handle == 0 || packed_handle < 0 {
         return;
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let handle = ColliderHandle::from_raw_parts(
-        (packed_handle >> 32) as u32,
-        (packed_handle & 0xFFFF_FFFF) as u32,
-    );
+    let mut sim_data = scene
+        .sim_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let handle = ipl_unpack_handle(packed_handle);
     let Some(collider) = sim_data.collider_set.get_mut(handle) else {
         return; // image already retired — a moving-portal refresh racing session end
     };
     collider.set_portal_prefix(Some(rapier3d::math::Pose {
         translation: Vec3::new(dx as Real, dy as Real, dz as Real),
         rotation: rapier3d::math::Rotation::from_xyzw(
-            qx as Real,
-            qy as Real,
-            qz as Real,
-            qw as Real,
+            qx as Real, qy as Real, qz as Real, qw as Real,
         )
         .normalize(),
     }));
+}
+
+#[cfg(test)]
+mod piece_routing_tests {
+    use super::*;
+
+    fn edge(parent: u8, child: u8, x: f64) -> IplPieceEdge {
+        IplPieceEdge {
+            parent,
+            child,
+            origin: DVec3::new(x, 0.0, 0.0),
+            normal: DVec3::X,
+            axis_w: DVec3::Y,
+            half_w: 5.0,
+            axis_h: DVec3::Z,
+            half_h: 5.0,
+            zone: 3.0,
+            slack: 0.0,
+            plot_origin: DVec3::new(x, 0.0, 0.0),
+            plot_normal: DVec3::X,
+            plot_axis_w: DVec3::Y,
+            plot_half_w: 5.0,
+            plot_axis_h: DVec3::Z,
+            plot_half_h: 5.0,
+        }
+    }
+
+    fn exact(parent: u8, child: u8, x: f64) -> IplPieceEdge {
+        IplPieceEdge {
+            slack: 0.0,
+            ..edge(parent, child, x)
+        }
+    }
+
+    #[test]
+    fn edge_does_not_cut_material_that_went_around_it() {
+        // Native voxel [0,1)^3 behind the plane x = 1 of edge 0 -> 1 (came around the frame):
+        // it stays native. In front of the plane x = 0 it is that edge's material and is cut.
+        let mut pieces = IplPieces::default();
+        pieces.edges = vec![exact(0, 1, 1.0)];
+        let p = DVec3::new(0.9, 0.5, 0.5);
+        assert_eq!(pieces.classify(p, |_, q| Some(q)), 0);
+        pieces.edges = vec![exact(0, 1, 0.2)];
+        let behind = DVec3::new(0.1, 0.5, 0.5);
+        assert_eq!(pieces.classify(behind, |_, q| Some(q)), 1);
+        // Two faces of one doorway (opposite normals): a native voxel in front of face A is
+        // never handed to face B.
+        let mut b = exact(0, 2, 0.2);
+        b.normal = -DVec3::X;
+        b.plot_normal = -DVec3::X;
+        pieces.edges = vec![b, exact(0, 1, 0.2)];
+        let front = DVec3::new(0.9, 0.5, 0.5);
+        assert_eq!(pieces.classify(front, |_, q| Some(q)), 0);
+    }
+    #[test]
+    fn observed_crossings_have_no_velocity_cutoff_or_prediction_slab() {
+        for speed in [1.0, 32.0, 33.0, 64.0, 1_000.0, 1_000_000.0] {
+            let mut pieces = IplPieces::default();
+            pieces.edges = vec![exact(0, 1, 0.0)];
+            let p = DVec3::splat(0.5);
+            assert_eq!(pieces.classify(p, |_, q| Some(q - DVec3::X * speed)), 1);
+            let miss = DVec3::new(0.5, 7.5, 0.5);
+            assert_eq!(pieces.classify(miss, |_, q| Some(q - DVec3::X * speed)), 0);
+        }
+    }
+
+    #[test]
+    fn transferred_material_does_not_regain_source_terrain_outside_aperture() {
+        let mut pieces = IplPieces::default();
+        pieces
+            .sections
+            .insert((0, 0, 0), vec![1; 4096].into_boxed_slice());
+        pieces.edges = vec![exact(0, 1, 0.0)];
+        let p = DVec3::new(0.5, 12.5, 0.5);
+        assert_eq!(pieces.classify(p, |_, q| Some(q)), 1);
+        pieces.edges.clear();
+        assert_eq!(pieces.classify(p, |_, q| Some(q)), 1);
+    }
+
+    #[test]
+    fn nested_edges_are_applied_in_time_order_not_node_order() {
+        let mut pieces = IplPieces::default();
+        pieces.edges = vec![exact(1, 2, -2.0), exact(0, 1, 0.0)];
+        assert_eq!(
+            pieces.classify(DVec3::splat(0.5), |_, q| Some(q - DVec3::X * 4.0)),
+            2
+        );
+    }
+
+    #[test]
+    fn reverse_crossing_returns_material_immediately() {
+        let mut pieces = IplPieces::default();
+        pieces
+            .sections
+            .insert((0, 0, 0), vec![1; 4096].into_boxed_slice());
+        pieces.edges = vec![exact(0, 1, 1.0)];
+        assert_eq!(
+            pieces.classify(DVec3::splat(0.5), |_, q| Some(q + DVec3::X)),
+            0
+        );
+    }
+    #[test]
+    fn surface_on_integer_edge_uses_dispatcher_material_voxel() {
+        let mut pieces = IplPieces::default();
+        let mut labels = vec![0; 4096].into_boxed_slice();
+        labels[0] = 1;
+        pieces.sections.insert((0, 0, 0), labels);
+        let surface = DVec3::new(1.0, 0.0, 0.5);
+        assert_eq!(pieces.classify(surface, |_, p| Some(p)), 0);
+        assert_eq!(
+            pieces.classify_voxel(surface, rapier3d::glamx::IVec3::ZERO, |_, p| Some(p)),
+            1
+        );
+    }
 }

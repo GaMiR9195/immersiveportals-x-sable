@@ -160,7 +160,6 @@ public final class IplParentDimSync {
                     // apply every transform in order (portal chains, self-recursive portals).
                     while (!pending.isEmpty()) {
                         PendingHandoff next = pending.peekFirst();
-                        RemoteCallables.beginHandoffVisual(entry.getKey(), next);
                         if (!RemoteCallables.applyHandoffWhenVisuallyClear(entry.getKey(), next, false)) break;
                         pending.removeFirst();
                     }
@@ -222,6 +221,16 @@ public final class IplParentDimSync {
         if (ghost == null || ghost.sub != sub) return null;
         Portal live = IplStraddleSessionStore.findLivePortal(sub.getLevel(), ghost.mapping.portalId());
         return live != null ? live : ghost.surrogate;
+    }
+
+    /** The successor a ghost hands over to, once Sable tracks it in the destination level. */
+    @Nullable
+    public static ClientSubLevel ghostSuccessor(ClientSubLevel sub) {
+        if (GHOSTS.isEmpty() || sub == null) return null;
+        Ghost ghost = GHOSTS.get(sub.getUniqueId());
+        if (ghost == null || ghost.sub != sub) return null;
+        ClientSubLevel successor = IplClientProjections.findClientSub(sub.getUniqueId(), ghost.toDim);
+        return successor == sub ? null : successor;
     }
 
     /**
@@ -329,7 +338,7 @@ public final class IplParentDimSync {
         Ghost ghost = GHOSTS.get(id);
         if (ghost != null && ghost.sub == sub) {
             GHOSTS.remove(id);
-            IplStraddleSessionStore.clearGhostTails(id);
+            IplStraddleSessionStore.clearGhostView(id);
             IplStraddleRenderCache.invalidateActivePasses();
             return;
         }
@@ -343,7 +352,7 @@ public final class IplParentDimSync {
         for (Map.Entry<UUID, Ghost> entry : new ArrayList<>(GHOSTS.entrySet())) {
             Ghost ghost = entry.getValue();
             if (ghost.sub.isRemoved()) {
-                if (GHOSTS.remove(entry.getKey(), ghost)) IplStraddleSessionStore.clearGhostTails(entry.getKey());
+                if (GHOSTS.remove(entry.getKey(), ghost)) IplStraddleSessionStore.clearGhostView(entry.getKey());
                 continue;
             }
             ClientSubLevel successor = IplClientProjections.findClientSub(entry.getKey(), ghost.toDim);
@@ -393,7 +402,7 @@ public final class IplParentDimSync {
             if (!ghost.stopDeferred) EXPECTED_STOPS.merge(ghost.sub.getLevel().dimension(), 1, Integer::sum);
             container.removeSubLevel(ghost.sub, SubLevelRemovalReason.REMOVED);
         }
-        if (GHOSTS.remove(id, ghost)) IplStraddleSessionStore.clearGhostTails(id);
+        if (GHOSTS.remove(id, ghost)) IplStraddleSessionStore.clearGhostView(id);
         IplStraddleRenderCache.invalidateActivePasses();
     }
 
@@ -420,7 +429,6 @@ public final class IplParentDimSync {
             PendingHandoff next = new PendingHandoff(dimensionId, portalTransform, portalNbtB64,
                 Integer.parseInt(firstDestinationTick), destinationFrame, inverseGrabLink);
             queue.addLast(next);
-            if (queue.size() == 1) beginHandoffVisual(id, next);
             // Drained at the client tick tail (applyPendingHandoffs).
         }
 
@@ -446,13 +454,12 @@ public final class IplParentDimSync {
                 PortalMapping mapping = PortalMapping.decode(portalTransform);
                 Portal surrogate = IplStraddleSessionStore.resolveHandoffPortal(
                     mapping.portalId(), portalNbtB64, old.getLevel());
-                IplClientVisualTransitLatch.clear(id);
                 ResourceKey<Level> to = dimensionKey(toDimensionId);
                 Ghost ghost = new Ghost(old, to, mapping, surrogate, System.currentTimeMillis());
                 GHOSTS.put(id, ghost);
-                // Смена кадра ниже стирает цепочки старого кадра; призрак дорисовывает их,
-                // пока не придёт первый снимок преемника.
-                IplStraddleSessionStore.captureGhostTails(id, mapping.portalId());
+                // Смена кадра ниже заменяет сессии и метки старого кадра; призрак рисует их
+                // копию, пока не придёт первый снимок преемника.
+                IplStraddleSessionStore.captureGhostView(id);
             }
             enterFrame(id, destinationFrame);
             IplStraddleRenderCache.invalidateActivePasses();
@@ -471,7 +478,6 @@ public final class IplParentDimSync {
             ClientSubLevel client = IplClientProjections.findClientSub(id, dimensionKey(handoff.dimensionId()));
             if (client == null) {
                 enterFrame(id, Math.max(frame(id), handoff.destinationFrame()));
-                IplStraddleSessionStore.clearHandoffVisual(id);
                 return true;
             }
             PortalMapping mapping = PortalMapping.decode(handoff.portalTransform());
@@ -492,15 +498,8 @@ public final class IplParentDimSync {
             }
             applyHandoff(client, mapping);
             enterFrame(id, handoff.destinationFrame());
-            IplStraddleSessionStore.clearHandoffVisual(id);
             IplStraddleSessionStore.releaseHandoffPortal();
             return true;
-        }
-
-        /** Only the FIFO head receives a render tail; later recursive handoffs wait. */
-        private static void beginHandoffVisual(UUID subLevelId, PendingHandoff handoff) {
-            PortalMapping mapping = PortalMapping.decode(handoff.portalTransform());
-            IplStraddleSessionStore.beginHandoffVisual(subLevelId, mapping.portalId(), handoff.portalNbtB64());
         }
 
         private static void applyHandoff(ClientSubLevel clientSubLevel, PortalMapping mapping) {
@@ -508,7 +507,6 @@ public final class IplParentDimSync {
             // Every buffered pose is normalized to the CURRENT visible chart on receipt.
             // Rebase that entire chart once, leaving timestamps, clock and stopped state
             // untouched. Clearing/reseeding at the newest tick freezes a delayed pointer.
-            IplClientVisualTransitLatch.clear(subLevelId);
             Pose3d mappedLogicalPose = mapping.mapPose(new Pose3d(clientSubLevel.logicalPose()));
             Pose3d mappedLastPose = mapping.mapPose(new Pose3d(clientSubLevel.lastPose()));
             SubLevelSnapshotInterpolator interpolator = clientSubLevel.getInterpolator();
@@ -540,8 +538,6 @@ public final class IplParentDimSync {
                     swept.maxZ = Math.max(swept.maxZ, corner.z);
                 }
             }
-            // The retired split only bridges server session-end to this exact mapped pose.
-            IplStraddleSessionStore.clearRetiredForHandoff(subLevelId);
             IplStraddleRenderCache.invalidateActivePasses();
             // Rebuild Sable's cached render pose from the separately mapped endpoints.
             ((ClientSubLevelAccessor) clientSubLevel).ipl$setLastRenderPosePartialTick(-1.0f);

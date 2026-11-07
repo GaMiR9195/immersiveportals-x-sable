@@ -2,6 +2,7 @@ package ipl.sable.client;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.transit.IplGrabLink;
+import ipl.sable.transit.IplProjectionTree;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.entity.Entity;
@@ -19,10 +20,8 @@ import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.WeakHashMap;
 
@@ -31,15 +30,16 @@ import java.util.WeakHashMap;
  *
  * <p>The beam is the visible expression of the SAME frame algebra the server uses for the
  * PD goal: the owner's grab chain ({@link IplGrabChainClient}), plus one refinement for a
- * straddling body — when the grabbed anchor is past a live straddle-session plane, its
- * visible representation is the portal IMAGE, so the route gains that session link and
- * targets the image. Both facts are event-sourced (chain) or server-synced (session
- * store); nothing is chosen by comparing distances, latching first-seen portals, or
- * testing which side the player "probably" works from.
+ * straddling body — when the grabbed anchor belongs to a session piece, its visible
+ * representation is that piece's IMAGE, so the route gains the links of the piece's portal
+ * path and targets the image. Both facts are event-sourced (chain) or server-synced (session
+ * store and piece labels); nothing is chosen by comparing distances, latching first-seen
+ * portals, or testing which side the player "probably" works from.
  *
  * <p>Route transitions are continuous by construction: a chain link appears exactly when
  * a teleport/transit event maps the endpoint through that same portal, and the image
- * refinement toggles exactly at the session plane, where native and image coincide.
+ * refinement toggles when the anchor's piece changes -- at an aperture plane, where native
+ * and image coincide.
  *
  * <p>Exact, non-heuristic helpers on top of that: aperture clamping (a beam may bend at a
  * portal edge but never vanish), segment
@@ -50,23 +50,6 @@ public final class IplStaffBeamRoutes {
 
     /** Ticks a stale-but-active beam keeps its last resolved geometry. */
     private static final int RETENTION_TICKS = 3;
-
-    /**
-     * Owner -> set of session portals whose IMAGE representation the beam is currently
-     * targeting. Purely a hysteresis memory; it never decides anything on its own.
-     */
-    private static final Map<UUID, Set<UUID>> IMAGE_LATCH = new HashMap<>();
-
-    /**
-     * Dead band, in blocks, around a session plane inside which the native/image choice is
-     * NOT re-decided. The claim that "native and image coincide at the plane, so toggling
-     * is visually continuous" is only true in exact arithmetic. In practice the anchor is
-     * a physics-driven point evaluated at a render partial-tick, so it jitters across the
-     * plane several times while the body is passing through, and every crossing swapped
-     * the beam endpoint between two representations that are a portal-transform apart --
-     * the visible "endpoint teleports a couple of times per transit".
-     */
-    private static final double IMAGE_HYSTERESIS = 0.05;
 
     private record Kept(Route route, long gameTime, List<IplGrabLink> chain, UUID subId) {}
 
@@ -145,8 +128,7 @@ public final class IplStaffBeamRoutes {
             // The image/plane latch is per (owner, portal) memory of a route that does not
             // exist anymore. Kept across a chain change, it would start a new grab in the
             // previous grab's image frame and leave the beam visually split until rejoin.
-            IMAGE_LATCH.remove(owner);
-            return null;
+                return null;
         }
         if (now - kept.gameTime() > RETENTION_TICKS
             || kept.route().staffLevel() != staffLevel) {
@@ -155,8 +137,7 @@ public final class IplStaffBeamRoutes {
             // would keep a stale node density (and therefore keep drawing at the old portal
             // distance) until the owner is forgotten entirely.
             LENGTHS.remove(owner);
-            IMAGE_LATCH.remove(owner);
-            return null;
+                return null;
         }
         // Staff tip stays live during the bridge; target/links hold the last good shape.
         return new Route(staffLevel, staffStart, kept.route().target(),
@@ -167,7 +148,6 @@ public final class IplStaffBeamRoutes {
         LAST.remove(owner);
         LENGTHS.remove(owner);
         BEAM_OWNERS.entrySet().removeIf(entry -> entry.getValue().equals(owner));
-        IMAGE_LATCH.remove(owner);
     }
 
     public static void clearAll() {
@@ -176,32 +156,6 @@ public final class IplStaffBeamRoutes {
         // Owners go too: a beam object that outlived its grab must not resolve a length
         // (and keep drawing) after the session was torn down.
         BEAM_OWNERS.clear();
-        IMAGE_LATCH.clear();
-    }
-
-    /**
-     * {@link #isPastPlane} with hysteresis and memory.
-     *
-     * <p>Switching INTO the image representation requires the anchor to be clearly past
-     * the plane; switching back out requires it to be clearly in front. Between the two
-     * thresholds the previous answer is repeated, so a jittering anchor cannot make the
-     * endpoint oscillate. The band is deliberately far smaller than any visible distance
-     * (0.05 blocks), so the choice still flips essentially at the plane -- it just cannot
-     * flip more than once per pass.
-     */
-    private static boolean isPastPlaneSticky(UUID owner, Portal portal, Vec3 point) {
-        double signed = point.subtract(portal.getOriginPos()).dot(portal.getNormal());
-        Set<UUID> latched =
-            IMAGE_LATCH.computeIfAbsent(owner, key -> new HashSet<>());
-        UUID id = portal.getUUID();
-        boolean wasPast = latched.contains(id);
-        boolean now = wasPast ? signed < IMAGE_HYSTERESIS : signed < -IMAGE_HYSTERESIS;
-        if (now) {
-            latched.add(id);
-        } else {
-            latched.remove(id);
-        }
-        return now;
     }
 
     @Nullable
@@ -218,21 +172,21 @@ public final class IplStaffBeamRoutes {
         Quaterniond imageRotation = new Quaterniond();
         boolean targetsImage = false;
 
-        // Straddle refinement: while the body straddles a session portal and the grabbed
-        // anchor is past that portal's plane (crossing direction), the anchor's visible
-        // representation is the portal image — the beam must thread the aperture and end
-        // on visible geometry. At the plane both representations coincide, so toggling
-        // this refinement is visually continuous. Session order is server history
-        // (session-start order), not a per-frame race.
-        for (Portal session : IplStraddleSessionStore.resolveAllRenderPortals(sub)) {
-            if (session.isRemoved()) continue;
-            if (!isPastPlaneSticky(owner, session, nativeAnchor)) continue;
-            IplGrabLink sessionLink = IplGrabLink.forward(session);
-            links = IplGrabLink.append(links, sessionLink);
-            target = sessionLink.transform(nativeAnchor);
-            imageRotation = new Quaterniond(sessionLink.rotation());
+        // Straddle refinement: the grabbed anchor is visible where its PIECE is. An anchor in
+        // a session piece is seen through every portal of that piece's path, so the beam
+        // threads each aperture and ends on the image. The piece is a property of the
+        // material (it changes only at an aperture plane, where both representations
+        // coincide), so the switch is continuous and cannot flicker.
+        IplProjectionTree tree = IplProjectionTree.of(sub);
+        IplProjectionTree.Node piece = tree.node(tree.pieceOfPlot(localAnchor.x, localAnchor.y, localAnchor.z));
+        if (piece != null) {
+            for (Portal portal : piece.pathPortals()) {
+                IplGrabLink link = IplGrabLink.forward(portal);
+                links = IplGrabLink.append(links, link);
+                target = link.transform(target);
+                imageRotation.premul(link.rotation());
+            }
             targetsImage = true;
-            break;
         }
 
         // Frame-continuity validation: the route must start in the staff world and each
@@ -658,11 +612,6 @@ public final class IplStaffBeamRoutes {
             }
         }
         return null;
-    }
-
-    /** True when {@code point} is past the portal plane in the crossing direction (-normal). */
-    public static boolean isPastPlane(Portal portal, Vec3 point) {
-        return point.subtract(portal.getOriginPos()).dot(portal.getNormal()) < -1.0e-4;
     }
 
     // ------------------------------------------------------------------

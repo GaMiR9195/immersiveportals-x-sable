@@ -9,7 +9,7 @@ import ipl.sable.duck.IplPhysicsStepClock;
 import ipl.sable.mixin.PhysicsSystemAccessor;
 import ipl.sable.natives.IplRapierNatives;
 import ipl.sable.transit.IplShipPortalAnchor;
-import ipl.sable.transit.PortalCrossingDetector;
+import ipl.sable.transit.IplPieceTracker;
 import net.minecraft.CrashReport;
 import net.minecraft.ReportedException;
 import net.minecraft.server.MinecraftServer;
@@ -87,7 +87,6 @@ public final class IplFusedStep {
         int tick = system.getLevel().getServer().getTickCount();
         if (!isFused()) {
             ((IplPhysicsStepClock) system).ipl$markStepped(tick);
-            seedTrails(container);
             return false;
         }
         if (fusedTick != tick) {
@@ -120,10 +119,10 @@ public final class IplFusedStep {
                     subLevel.updateLastPose();
                 }
             }
-            seedTrails(p.container());
             p.system().getPipeline().prePhysicsTicks();
         }
 
+        sampleTransit(participants, server);
         for (int substep = 0; substep < substeps; substep++) {
             for (Participant p : participants) {
                 // Stock order: currentSubstep is set before the pre-phases
@@ -133,23 +132,27 @@ public final class IplFusedStep {
             }
 
             SubLevelPhysicsSystem.IN_PHYSICS_STEP = true;
-            for (int i = 0; i < participants.size(); i++) {
-                Participant p = participants.get(i);
-                boolean last = i == participants.size() - 1;
-                runGuarded(p, () -> {
-                    stepArmed = last;
-                    try {
-                        p.system().getPipeline().physicsTick(dt);
-                    } finally {
-                        stepArmed = false;
-                    }
-                });
+            try {
+                for (int i = 0; i < participants.size(); i++) {
+                    Participant p = participants.get(i);
+                    boolean last = i == participants.size() - 1;
+                    runGuarded(p, () -> {
+                        stepArmed = last;
+                        try {
+                            p.system().getPipeline().physicsTick(dt);
+                        } finally {
+                            stepArmed = false;
+                        }
+                    });
+                }
+            } finally {
+                SubLevelPhysicsSystem.IN_PHYSICS_STEP = false;
             }
-            SubLevelPhysicsSystem.IN_PHYSICS_STEP = false;
 
             for (Participant p : participants) {
                 runGuarded(p, () -> postSubstepPhases(p, dt));
             }
+            sampleTransit(participants, server);
         }
 
         for (Participant p : participants) {
@@ -159,6 +162,18 @@ public final class IplFusedStep {
 
         // Ship-anchored portals follow their ships' poses of this tick before any transit runs.
         IplShipPortalAnchor.tickAll(server);
+    }
+
+    /** Apertures/labels are sampled at solver boundaries, not a tick later. */
+    private static void sampleTransit(List<Participant> participants, MinecraftServer server) {
+        IplShipPortalAnchor.tickAll(server);
+        for (Participant p : participants) {
+            runGuarded(p, () -> {
+                for (ServerSubLevel ship : p.container().getAllSubLevels()) {
+                    IplPieceTracker.samplePhysics(ship);
+                }
+            });
+        }
     }
 
     /** Unpaused physics systems in level tick order. */
@@ -179,13 +194,6 @@ public final class IplFusedStep {
             participants.add(new Participant(level, system, container));
         }
         return participants;
-    }
-
-    /** Crossing detection compares each body against its pose before this tick's step. */
-    private static void seedTrails(ServerSubLevelContainer container) {
-        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
-            if (!subLevel.isRemoved()) PortalCrossingDetector.seedPhysicsStart(subLevel);
-        }
     }
 
     private static void preSubstepPhases(Participant p, double dt) {

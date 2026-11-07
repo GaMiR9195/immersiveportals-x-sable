@@ -17,27 +17,14 @@ import java.util.Map;
 
 /** Render-thread upload to the program actually used by a draw, never a registry broadcast. */
 public final class IplProgramBindHook {
-    /** Per program: {@code [0]} IP's slot-0 equation, {@code [1 + i]} sub-level slot {@code i}. */
     private static final Map<Integer, int[]> LOCATIONS = new HashMap<>();
     private IplProgramBindHook() {}
 
-    /**
-     * GL name of element {@code slot} of {@code ipl_subLevelClipEquation[SLOTS]}. Element 0 is
-     * queried by the bare array name, which also finds it in a program that declares a
-     * single {@code vec4}.
-     */
-    public static String subLevelUniformName(int slot) {
-        return slot == 0 ? "ipl_subLevelClipEquation" : "ipl_subLevelClipEquation[" + slot + "]";
-    }
-
     private static int[] locations(int program) {
-        return LOCATIONS.computeIfAbsent(program, p -> {
-            int[] locs = new int[1 + IplClipUniformPatcher.SLOTS];
-            locs[0] = GL20.glGetUniformLocation(p, "iportal_ClippingEquation");
-            for (int i = 0; i < IplClipUniformPatcher.SLOTS; i++) {
-                locs[1 + i] = GL20.glGetUniformLocation(p, subLevelUniformName(i));
-            }
-            return locs;
+        return LOCATIONS.computeIfAbsent(program, p -> new int[]{
+            GL20.glGetUniformLocation(p, "iportal_ClippingEquation"),
+            GL20.glGetUniformLocation(p, "ipl_subLevelClipEquation"),
+            GL20.glGetUniformLocation(p, "ipl_subLevelClipEquation[1]")
         });
     }
 
@@ -50,7 +37,7 @@ public final class IplProgramBindHook {
         if (program <= 0 || !IPGlobal.enableClippingMechanism) return;
         boolean portalClip = FrontClipping.isClippingEnabled;
         boolean portalPass = PortalRendering.isRendering();
-        boolean subClip = IplClipUniformPatcher.hasSubLevelClip();
+        boolean subClip = IplClipUniformPatcher.getCurrentSubLevelEqWorld() != null;
         if (!portalClip && !portalPass) {
             // Вне портального прохода и без активного FrontClipping слот 0 не нужен никому, а
             // включённым его оставляет и поздний bind, и сам IP: MixinRenderSystem_Clipping
@@ -71,34 +58,33 @@ public final class IplProgramBindHook {
         }
         if (subClip) {
             uploadSubLevel(program);
-            // Re-enables what Veil bloom may have switched off; the bracket exit turns all
-            // sub-level slots off again (IplClipUniformPatcher#disableSlots).
-            for (int i = 0; i < IplClipUniformPatcher.SLOTS; i++) {
-                if (locs[1 + i] >= 0) GL11.glEnable(GL30.GL_CLIP_DISTANCE0 + 1 + i);
-            }
+            if (locs[1] >= 0) GL11.glEnable(GL30.GL_CLIP_DISTANCE1);
+            if (locs[2] >= 0) GL11.glEnable(GL30.GL_CLIP_DISTANCE2);
         }
     }
 
-    private static float[] equation(int program, int slot) {
+    private static float[] equation(int program, boolean second) {
         // Plot-local («чанковое») уравнение — только внутри чанковой скобки Sable; см.
         // IplClipUniformPatcher#chunkInputSpace. BER на тех же программах — мировое.
         if (IplClipUniformPatcher.isChunkInputSpace()
             && IplProgramRegistry.usesVanillaSubLevelInputSpace(program)) {
-            return IplClipUniformPatcher.getCurrentSubLevelEqVanillaInput(slot);
+            return second ? IplClipUniformPatcher.getCurrentSubLevelEqVanillaInput2()
+                : IplClipUniformPatcher.getCurrentSubLevelEqVanillaInput();
         }
         if (IplProgramRegistry.isEntityStyleProgram(program)) {
-            return IplClipUniformPatcher.getCurrentSubLevelEqEye(slot);
+            return second ? IplClipUniformPatcher.getCurrentSubLevelEqEye2()
+                : IplClipUniformPatcher.getCurrentSubLevelEqEye();
         }
-        return IplClipUniformPatcher.getCurrentSubLevelEqWorld(slot);
+        return second ? IplClipUniformPatcher.getCurrentSubLevelEqWorld2()
+            : IplClipUniformPatcher.getCurrentSubLevelEqWorld();
     }
 
     /** Covers an already-bound program at bracket entry, without touching other programs. */
     public static void uploadSubLevel(int program) {
         if (program <= 0) return;
         int[] locs = locations(program);
-        for (int i = 0; i < IplClipUniformPatcher.SLOTS; i++) {
-            write(program, locs[1 + i], equation(program, i));
-        }
+        write(program, locs[1], equation(program, false));
+        write(program, locs[2], equation(program, true));
     }
 
     private static void write(int program, int location, float[] eq) {
@@ -121,9 +107,8 @@ public final class IplProgramBindHook {
             else portal.set((float) eq[0], (float) eq[1], (float) eq[2], (float) eq[3]);
         }
         IplSubLevelClipShader uniforms = (IplSubLevelClipShader) shader;
-        for (int i = 0; i < IplClipUniformPatcher.SLOTS; i++) {
-            set(uniforms.ipl$getSubLevelClipUniform(i), equation(shader.getId(), i));
-        }
+        set(uniforms.ipl$getSubLevelClipUniform(), equation(shader.getId(), false));
+        set(uniforms.ipl$getSubLevelClipUniform2(), equation(shader.getId(), true));
     }
 
     private static double[] portalEquation(int program) {

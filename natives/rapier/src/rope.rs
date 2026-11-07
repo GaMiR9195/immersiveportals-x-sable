@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use jni::JNIEnv;
-use jni::objects::{JClass, JDoubleArray};
+use jni::objects::{JClass, JDoubleArray, JIntArray};
 use jni::sys::{jboolean, jdouble, jint, jlong, jsize};
 use marten::Real;
 use rapier3d::dynamics::{GenericJointBuilder, JointAxis, RigidBodyBuilder, SpringCoefficients};
@@ -603,4 +603,106 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_ropesAttachedToSa
         env.set_long_array_region(&result, 0, &packed).unwrap();
     }
     result
+}
+
+
+/// The ropes affected by this group. A rope fixed to the world or to a body outside
+/// the group must not be teleported. A free end is allowed: its particles move too.
+fn group_rope_points(
+    ropes: &RopeMap, chart: crate::scene::ChartId, bodies: &HashSet<LevelColliderID>,
+) -> Option<Vec<RigidBodyHandle>> {
+    let mut points = Vec::new();
+    for rope in ropes.ropes.values() {
+        if rope.chart != chart { continue; }
+        let ends = [&rope.start_attachment, &rope.end_attachment];
+        if !ends.iter().any(|end| end.as_ref().and_then(|a| a.sub_level_id)
+            .is_some_and(|id| bodies.contains(&id))) { continue; }
+        for attachment in ends.into_iter().flatten() {
+            match attachment.sub_level_id {
+                Some(id) if bodies.contains(&id) => {},
+                _ => return None,
+            }
+        }
+        points.extend(rope.points.iter().copied());
+    }
+    Some(points)
+}
+
+fn read_group(env: &JNIEnv, ids: &JIntArray) -> Option<HashSet<LevelColliderID>> {
+    let len = env.get_array_length(ids).ok()? as usize;
+    let mut raw = vec![0; len];
+    env.get_int_array_region(ids, 0, &mut raw).ok()?;
+    if raw.iter().any(|id| *id < 0) { return None; }
+    Some(raw.into_iter().map(|id| id as LevelColliderID).collect())
+}
+
+/// Check before moving any body. Same-chart moves only; world-anchored ropes stay put.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_canMoveGroupRopes<'local>(
+    env: JNIEnv<'local>, _class: JClass<'local>, handle: jlong, ids: JIntArray<'local>,
+) -> jni::sys::jboolean {
+    if handle == 0 { return 0; }
+    let Some(bodies) = read_group(&env, &ids) else { return 0; };
+    let scene = unsafe { &*(handle as *const PhysicsScene) };
+    let data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(points) = group_rope_points(&data.rope_map, scene.chart, &bodies) else { return 0; };
+    let sim = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    points.iter().all(|point| sim.rigid_body_set.get(*point).is_some()) as jni::sys::jboolean
+}
+
+/// After all attached bodies were moved by the same isometry, move each rope particle
+/// by that isometry too, preserving linear/angular velocities and joint handles.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_moveGroupRopes<'local>(
+    env: JNIEnv<'local>, _class: JClass<'local>, handle: jlong, ids: JIntArray<'local>,
+    tx: jdouble, ty: jdouble, tz: jdouble,
+    qx: jdouble, qy: jdouble, qz: jdouble, qw: jdouble,
+) -> jni::sys::jboolean {
+    if handle == 0 || ![tx, ty, tz, qx, qy, qz, qw].iter().all(|v| v.is_finite()) { return 0; }
+    let Some(bodies) = read_group(&env, &ids) else { return 0; };
+    let scene = unsafe { &*(handle as *const PhysicsScene) };
+    let data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(points) = group_rope_points(&data.rope_map, scene.chart, &bodies) else { return 0; };
+    let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if points.iter().any(|point| sim.rigid_body_set.get(*point).is_none()) { return 0; }
+    let rotation = rapier3d::math::Rotation::from_xyzw(qx as Real, qy as Real, qz as Real, qw as Real).normalize();
+    let prefix = rapier3d::math::Pose { translation: Vec3::new(tx as Real, ty as Real, tz as Real), rotation };
+    for point in points {
+        let rb = sim.rigid_body_set.get_mut(point).unwrap();
+        let pose = prefix * *rb.position();
+        let linear = rotation * rb.linvel();
+        let angular = rotation * rb.angvel();
+        rb.set_position(pose, true);
+        rb.set_linvel(linear, true);
+        rb.set_angvel(angular, true);
+    }
+    1
+}
+
+#[cfg(test)]
+mod group_transit_tests {
+    use super::*;
+
+    fn attachment(id: Option<LevelColliderID>) -> RopeAttachment {
+        RopeAttachment { joint: ImpulseJointHandle::from_raw_parts(0, 0), sub_level_id: id, location: DVec3::ZERO }
+    }
+    fn strand(start: Option<Option<LevelColliderID>>, end: Option<Option<LevelColliderID>>, chart: u16) -> RopeStrand {
+        RopeStrand {
+            points: vec![RigidBodyHandle::from_raw_parts(7, 0)], joints: vec![], point_radius: 0.1,
+            first_joint_length: 0.1, start_attachment: start.map(attachment), end_attachment: end.map(attachment), chart,
+        }
+    }
+    #[test]
+    fn group_rope_preflight_preserves_attachments_and_chart() {
+        let mut map = RopeMap::default();
+        map.ropes.insert(0, strand(Some(Some(1)), Some(Some(2)), 3));
+        assert_eq!(group_rope_points(&map, 3, &HashSet::from([1, 2])).unwrap().len(), 1);
+        assert!(group_rope_points(&map, 3, &HashSet::from([1])).is_none());
+        assert!(group_rope_points(&map, 4, &HashSet::from([1])).unwrap().is_empty());
+        assert!(group_rope_points(&map, 3, &HashSet::from([9])).unwrap().is_empty());
+        map.ropes.insert(0, strand(Some(Some(1)), Some(None), 3));
+        assert!(group_rope_points(&map, 3, &HashSet::from([1])).is_none());
+        map.ropes.insert(0, strand(Some(Some(1)), None, 3));
+        assert_eq!(group_rope_points(&map, 3, &HashSet::from([1])).unwrap().len(), 1);
+    }
 }

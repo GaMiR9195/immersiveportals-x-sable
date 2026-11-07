@@ -5,6 +5,9 @@ import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHand
 import ipl.sable.duck.IplStaffDragSessionControl;
 import ipl.sable.mixin.StaffServerHandlerAccessor;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
@@ -73,14 +76,6 @@ public final class IplGrabChain {
     private static final Logger LOG = LoggerFactory.getLogger("ipl-grab-chain");
 
     private static final Map<UUID, Frame> FRAMES = new HashMap<>();
-
-    /**
-     * A grabbed body inside a portal loop appends one link per crossing, forever. The whole
-     * chain is broadcast to every client as ONE string, so an unbounded chain eventually
-     * exceeds the packet string limit and the connection dies with an EncoderException on
-     * clientbound/custom_payload instead of the drag merely degrading. Bound it.
-     */
-    private static final int MAX_CHAIN_LINKS = 32;
 
     private IplGrabChain() {}
 
@@ -162,7 +157,7 @@ public final class IplGrabChain {
         for (Frame frame : FRAMES.values()) {
             if (!frame.subId.equals(subId)) continue;
 
-            frame.chain = capChain(IplGrabLink.append(frame.chain, link), subId);
+            frame.chain = IplGrabLink.append(frame.chain, link);
             frame.revision++;
 
             if (!identityRotation) {
@@ -252,24 +247,31 @@ public final class IplGrabChain {
          * Grab start: the client's pick raycast walked these portals, in order, from the
          * player's world to the hit. Only identities are trusted — the server resolves
          * each portal itself and snapshots server-side geometry. An unresolvable or
-         * discontinuous path yields an empty chain plus a log line, never a guess.
+         * discontinuous path rejects the grab, never an identity-frame guess.
          */
-        public static void seedChain(ServerPlayer player, String subUuid, String encodedPath, String sourceFrame, String seedId) {
+        public static void seedChain(ServerPlayer player, String subUuid, CompoundTag encodedPath, String sourceFrame, String seedId) {
             UUID subId = UUID.fromString(subUuid);
             Frame frame = new Frame(subId, player.getUUID());
             frame.seedId = UUID.fromString(seedId).toString();
-            frame.chain = resolveSeed(player, encodedPath);
+            List<IplGrabLink> resolved;
+            try {
+                resolved = resolveSeed(player, encodedPath);
+            } catch (IllegalArgumentException ex) {
+                LOG.warn("[IPL-GRAB-CHAIN] malformed seed for {}", player.getUUID());
+                resolved = null;
+            }
             var missed = IplStraddleSessionSync.hopsAfter(subId, Long.parseLong(sourceFrame));
-            if (missed == null) {
+            if (missed == null || resolved == null) {
                 // Never guess a transform or bind an old visual pick to a new body.
                 for (ServerLevel any : player.server.getAllLevels()) {
                     PhysicsStaffServerHandler.get(any).stopDragging(player.getUUID());
                 }
                 McRemoteProcedureCall.tellClientToInvoke(player,
                     "ipl.sable.client.IplGrabChainClient.RemoteCallables.rejectSeed", subUuid, frame.seedId);
-                LOG.warn("[IPL-GRAB-CHAIN] expired pick frame {} for {}", sourceFrame, subId);
+                LOG.warn("[IPL-GRAB-CHAIN] invalid or expired pick frame {} for {}", sourceFrame, subId);
                 return;
             }
+            frame.chain = resolved;
             for (var hop : missed) {
                 frame.chain = IplGrabLink.append(frame.chain, hop.link());
                 frame.revision++;
@@ -301,11 +303,14 @@ public final class IplGrabChain {
      * dimension is always the portal ENTITY's own level; continuity is checked against the
      * side the step enters from.
      */
-    private static List<IplGrabLink> resolveSeed(ServerPlayer player, String encodedPath) {
-        if (encodedPath == null || encodedPath.isEmpty()) return List.of();
+    @Nullable
+    private static List<IplGrabLink> resolveSeed(ServerPlayer player, CompoundTag encodedPath) {
+        if (encodedPath == null) return List.of();
+        ListTag steps = encodedPath.getList("steps", Tag.TAG_STRING);
         List<IplGrabLink> chain = new ArrayList<>(4);
         ResourceKey<Level> at = player.level().dimension();
-        for (String step : encodedPath.split("\\|")) {
+        for (int i = 0; i < steps.size(); i++) {
+            String step = steps.getString(i);
             boolean inverse = step.endsWith("@inv");
             String body = inverse ? step.substring(0, step.length() - "@inv".length()) : step;
             int sep = body.indexOf('@');
@@ -327,9 +332,10 @@ public final class IplGrabChain {
         return List.copyOf(chain);
     }
 
-    private static List<IplGrabLink> failSeed(ServerPlayer player, String path, String reason) {
+    @Nullable
+    private static List<IplGrabLink> failSeed(ServerPlayer player, CompoundTag path, String reason) {
         LOG.warn("[IPL-GRAB-CHAIN] seed rejected for {} ({}): {}", player.getUUID(), reason, path);
-        return List.of();
+        return null;
     }
 
     @Nullable
@@ -358,15 +364,6 @@ public final class IplGrabChain {
         return null;
     }
 
-    /** Keep the newest links: they describe the frame the body is actually in right now. */
-    private static List<IplGrabLink> capChain(List<IplGrabLink> chain, UUID subId) {
-        if (chain.size() <= MAX_CHAIN_LINKS) return chain;
-        LOG.warn("[IPL-GRAB-CHAIN] body {} exceeded {} chain links; dropping the oldest",
-            subId, MAX_CHAIN_LINKS);
-        return List.copyOf(new ArrayList<>(
-            chain.subList(chain.size() - MAX_CHAIN_LINKS, chain.size())));
-    }
-
     private static Quaterniond rotationOf(Portal portal) {
         DQuaternion q = portal.getRotationD();
         return q == null ? new Quaterniond() : new Quaterniond(q.x, q.y, q.z, q.w);
@@ -384,7 +381,7 @@ public final class IplGrabChain {
         if (server == null) return;
         Frame frame = FRAMES.get(playerId);
         if (frame == null) return;
-        String encoded = IplGrabLink.encodeChain(frame.chain);
+        CompoundTag encoded = IplGrabLink.encodeChainTag(frame.chain);
         for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
             McRemoteProcedureCall.tellClientToInvoke(
                 viewer,

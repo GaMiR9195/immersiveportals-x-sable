@@ -17,14 +17,12 @@ import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
-import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import qouteall.imm_ptl.core.portal.Portal;
-import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.List;
 
@@ -76,7 +74,8 @@ public abstract class LevelRendererOutlineMixin {
         }
 
         Pose3dc real = clientOwner.renderPose();
-        IplProjectionTree.Node piece = tree.pieceAt(real.transformPosition(Vec3.atCenterOf(blockTarget.getBlockPos())));
+        var pos = blockTarget.getBlockPos();
+        IplProjectionTree.Node piece = tree.node(tree.pieceOfPlot(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5));
         if (piece == null) {
             // Native piece: only the ship's own world shows it.
             if (owner.getLevel() == this.level) {
@@ -89,13 +88,8 @@ public abstract class LevelRendererOutlineMixin {
         }
 
         IplClientProjections.StraddleProjection projection = ipl$projectionFor(clientOwner, piece);
-        if (projection != null) {
-            IplStraddleRenderState.set(projection);
-        } else {
-            IplStraddleRenderState.set(clientOwner, piece.mapping.mapPose(real),
-                List.of(new Plane(piece.portal.getDestPos(), piece.portal.getContentDirection())),
-                piece.portal);
-        }
+        Pose3dc pose = projection != null ? projection.mappedPose() : piece.mapping.mapPose(real);
+        IplStraddleRenderState.set(clientOwner, pose, piece.id);
         try {
             return original.call(context, camera, target, deltaTracker, poseStack, bufferSource);
         } finally {

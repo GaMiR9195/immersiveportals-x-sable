@@ -216,10 +216,9 @@ public final class IplShipFlip {
 
     private static void endSessions(MinecraftServer server, UUID uuid, String reason) {
         IplAtlasStraddleSession.clearShip(uuid, reason);
-        // One empty snapshot of the old frame ends every session at once: clients turn all vanished
-        // sessions into tails with the same end tick (no per-session snapshots, no "chain without
-        // root" intermediate states on a row of portals).
-        IplStraddleSessionSync.endAllFor(server, uuid, reason);
+        // No snapshot for the old frame: clients drop its sessions when they enter the new frame,
+        // whose snapshot (the promoted sessions) and labels follow the flip.
+        IplStraddleSessionSync.forgetAllFor(uuid);
     }
 
     /** See {@link MergedMassTrackerAccessor}: the copy must not re-base the rotation point. */

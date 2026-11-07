@@ -39,9 +39,10 @@ import java.util.WeakHashMap;
  *   <li>non-Free constraints to the static world (staff lock, stickers, anchors)
  *       block; Free constraints to the world (physics-staff drag, handles) are motor
  *       drivers, not attachments, and are ignored;</li>
- *   <li>joints to sub-levels outside the rigid group block (they would be torn
+ *   <li>joints to sub-levels outside the connected group block (they would be torn
  *       across the seam);</li>
- *   <li>any rope attached to a group member blocks;</li>
+ *   <li>ropes can move with a same-dimension group on ABI 4 if all anchors are in
+ *       the group; world anchors and cross-dimension ropes block;</li>
  *   <li>a jointed group never moves to another dimension (joints cannot follow a
  *       level change); it keeps flying on its projection instead.</li>
  *   <li>"strange" connections that are NOT native joints: Simulated springs, docking
@@ -92,17 +93,17 @@ public final class IplAttachmentGate {
     /**
      * Reason the transit group must not flip right now, or null when it may.
      *
-     * <p>{@code group}: every body that crosses together with {@code ship} -- native rigid
+     * <p>{@code group}: every body that crosses together with {@code ship} -- native joint
      * mates AND actor-linked partners (springs, connectors, ...; see {@link #actorPartners}).
      * {@code nativeJointed}: some member has native joints (those cannot follow a level
      * change).
      *
      * <p>Партнёры по актёрам (пружина между двумя под-уровнями и т. п.) — члены одной группы
-     * перехода: пока прошли не все, прошедшие держат завершённую (широкую) сессию; когда прошли
-     * все, группа флипается вместе одной изометрией, и пружина видит прежнюю взаимную геометрию
-     * (между измерениями — те же UUID и, при свободном слоте, те же координаты плотов). Запрет
-     * флипа из-за партнёра разрывал бы пару: одна часть жила бы проекцией без взаимодействия,
-     * другая оставалась реальной.
+     * перехода: пока прошли не все, прошедшие живут на проекции (родной кусок пуст, сессия
+     * открыта); когда прошли все, группа флипается вместе одной изометрией, и пружина видит
+     * прежнюю взаимную геометрию (между измерениями — те же UUID и, при свободном слоте, те же
+     * координаты плотов). Запрет флипа из-за партнёра разрывал бы пару: одна часть жила бы
+     * проекцией без взаимодействия, другая оставалась реальной.
      */
     @Nullable
     public static String flipBlocker(ServerSubLevel ship, List<ServerSubLevel> group,
@@ -134,12 +135,18 @@ public final class IplAttachmentGate {
         List<ServerSubLevel> members = new ArrayList<>(1 + group.size());
         members.add(ship);
         members.addAll(group);
+        boolean hasRope = false;
         for (ServerSubLevel member : members) {
             int id = Rapier3D.getID(member);
             for (int linked : IplRapierNatives.connectedSableBodyIds(scene, id, false)) {
                 if (!ids.contains(linked)) return "linked";
             }
-            if (IplRapierNatives.ropesAttachedToSableBody(scene, id).length > 0) return "rope";
+            hasRope |= IplRapierNatives.ropesAttachedToSableBody(scene, id).length > 0;
+        }
+        if (hasRope) {
+            if (crossDimension || IplRapierNatives.abiLevel() < IplRapierNatives.ROPE_TRANSIT_ABI) return "rope";
+            int[] bodyIds = members.stream().mapToInt(Rapier3D::getID).toArray();
+            if (!IplRapierNatives.canMoveGroupRopes(scene, bodyIds)) return "rope-anchored";
         }
         return null;
     }
@@ -211,9 +218,6 @@ public final class IplAttachmentGate {
         }
         return null;
     }
-
-    /** Upper bound of one transit group (a spring network is walked transitively). */
-    public static final int MAX_TRANSIT_GROUP = 16;
 
     /**
      * Sub-levels of the same level coupled to {@code body} by physics actors rather than

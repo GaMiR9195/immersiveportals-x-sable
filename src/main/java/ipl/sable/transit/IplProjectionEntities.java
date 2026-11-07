@@ -10,6 +10,7 @@ import dev.ryanhcode.sable.util.SubLevelInclusiveLevelEntityGetter;
 import ipl.sable.client.IplClientProjections;
 import ipl.sable.client.IplStraddleSessionStore;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.AbortableIterationConsumer;
@@ -52,8 +53,8 @@ public final class IplProjectionEntities {
 
     private IplProjectionEntities() {}
 
-    /** Boxes up to this size use corner sampling to skip pieces they cannot touch. */
-    private static final double SAMPLED_BOX_LIMIT = 4.0;
+    /** Boxes spanning more sections than this query every frame instead of scanning labels. */
+    private static final int SCANNED_SECTION_LIMIT = 512;
 
     static boolean idle(Level level) {
         return level.isClientSide()
@@ -132,27 +133,54 @@ public final class IplProjectionEntities {
     }
 
     /**
-     * Frames of {@code sub} a plot box can physically touch: every frame for big boxes,
-     * otherwise the pieces of its corners and center (a piece is a convex prism or its
-     * complement, so a small box crossing a boundary has a sample on each side).
+     * Frames of {@code tree}'s body a plot box can physically touch: the pieces whose labels
+     * occur in the sections the box overlaps, plus the other side of every edge one of those
+     * pieces takes part in (its aperture zone may split their voxels); every frame for huge
+     * boxes. A superset: callers still check each entity against its piece.
      */
-    static List<IplProjectionTree.Node> touchedPieces(SubLevel sub, IplProjectionTree tree, AABB plotBox) {
+    static List<IplProjectionTree.Node> touchedPieces(IplProjectionTree tree, AABB plotBox) {
         List<IplProjectionTree.Node> out = new ArrayList<>(3);
-        if (plotBox.getXsize() > SAMPLED_BOX_LIMIT || plotBox.getYsize() > SAMPLED_BOX_LIMIT
-            || plotBox.getZsize() > SAMPLED_BOX_LIMIT) {
+        int sx0 = Mth.floor(plotBox.minX) >> 4, sx1 = Mth.floor(plotBox.maxX) >> 4;
+        int sy0 = Mth.floor(plotBox.minY) >> 4, sy1 = Mth.floor(plotBox.maxY) >> 4;
+        int sz0 = Mth.floor(plotBox.minZ) >> 4, sz1 = Mth.floor(plotBox.maxZ) >> 4;
+        if ((long) (sx1 - sx0 + 1) * (sy1 - sy0 + 1) * (sz1 - sz0 + 1) > SCANNED_SECTION_LIMIT) {
             out.add(null);
             out.addAll(tree.nodes());
             return out;
         }
-        Pose3dc real = sub.logicalPose();
-        for (int i = 0; i < 9; i++) {
-            Vec3 p = i == 8 ? plotBox.getCenter() : new Vec3(
-                (i & 1) == 0 ? plotBox.minX : plotBox.maxX,
-                (i & 2) == 0 ? plotBox.minY : plotBox.maxY,
-                (i & 4) == 0 ? plotBox.minZ : plotBox.maxZ);
-            IplProjectionTree.Node piece = tree.pieceAt(real.transformPosition(p));
-            if (!out.contains(piece)) out.add(piece);
+        IplPieceMap map = tree.pieces();
+        long[] labels = new long[4];
+        for (int sx = sx0; sx <= sx1; sx++) {
+            for (int sy = sy0; sy <= sy1; sy++) {
+                for (int sz = sz0; sz <= sz1; sz++) {
+                    long[] present = map.present(SectionPos.asLong(sx, sy, sz));
+                    for (int w = 0; w < 4; w++) labels[w] |= present[w];
+                }
+            }
         }
+        boolean nativePiece = IplPieceMap.contains(labels, IplPieceMap.NATIVE);
+        List<IplProjectionTree.Node> nodes = tree.nodes();
+        for (IplProjectionTree.Node n : nodes) {
+            boolean touched = IplPieceMap.contains(labels, n.id);
+            for (IplPieceMap.Edge e : tree.edges()) {
+                if (touched) break;
+                if (e.parent == n.id) touched = IplPieceMap.contains(labels, e.child);
+                else if (e.child == n.id) touched = IplPieceMap.contains(labels, e.parent);
+            }
+            if (touched) out.add(n);
+        }
+        if (!nativePiece) {
+            for (IplPieceMap.Edge e : tree.edges()) {
+                if (e.parent == IplPieceMap.NATIVE && IplPieceMap.contains(labels, e.child)) nativePiece = true;
+            }
+        }
+        if (!nativePiece) {
+            // Labels without a live node count as native (IplProjectionTree.pieceOfPlot).
+            for (int id = 1; id <= IplPieceMap.MAX_PIECE && !nativePiece; id++) {
+                nativePiece = IplPieceMap.contains(labels, id) && tree.node(id) == null;
+            }
+        }
+        if (nativePiece) out.add(0, null);
         return out;
     }
 
@@ -222,7 +250,7 @@ public final class IplProjectionEntities {
         if (own == level) delegate.get(box, once);
         else rawGet(own, box, once);
 
-        for (IplProjectionTree.Node node : touchedPieces(sub, tree, box)) {
+        for (IplProjectionTree.Node node : touchedPieces(tree, box)) {
             Level frameLevel = frameLevel(sub, node);
             if (frameLevel == null) continue;
             Pose3dc pose = framePose(sub, node);
@@ -264,7 +292,7 @@ public final class IplProjectionEntities {
         if (own == level) delegate.get(test, box, once);
         else rawGet(own, test, box, once);
 
-        for (IplProjectionTree.Node node : touchedPieces(sub, tree, box)) {
+        for (IplProjectionTree.Node node : touchedPieces(tree, box)) {
             if (aborted[0]) return true;
             Level frameLevel = frameLevel(sub, node);
             if (frameLevel == null) continue;

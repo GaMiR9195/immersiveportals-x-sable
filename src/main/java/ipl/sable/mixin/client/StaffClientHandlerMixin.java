@@ -67,7 +67,7 @@ public abstract class StaffClientHandlerMixin {
         // capture has to be dropped here. Leaving it pending is what let
         // startDraggingSubLevel seed a portal chain for a body grabbed locally.
         if (through != null) IplStraddleStaffPick.discardTarget(through);
-        if (projection != null) {
+        if (projection != null && projectionVisible < localVisible) {
             IplStraddleStaffPick.rememberLocalProjection(player, projection);
             return projection;
         }

@@ -34,26 +34,23 @@ import java.util.Set;
  *
  * <p><b>Почему так, а не скобками вокруг каждой BE.</b> BER ничего не рисует сам — он лишь
  * складывает вершины в {@code BufferSource}, а шейдер выполняется при {@code endBatch()}.
- * Скобка «поставить плоскость → BER → снять плоскость» заканчивается ДО реальной отрисовки,
- * и шестерни/сундуки/верёвки на пересекающем портал корабле резались бы чем попало (или
- * не резались бы вовсе). Поэтому каждый пересекающий портал саб-уровень рисует свои BE внутри
- * {@link IplBlockEntityRenderScope#renderAndFlush}: плоскости ставятся один раз, весь
- * проход BE саб-уровня выполняется, и только ПОСЛЕ него буфер сбрасывается — вне любого BER
- * (сброс внутри BER ломает общий буфер catnip — краш «Not building!»).
+ * Поэтому каждый пересекающий портал саб-уровень рисует свои BE внутри
+ * {@link IplBlockEntityRenderScope#renderAndFlush}: проход по куску (фильтр
+ * {@link IplPieceRender#rejectsBlockEntity}, у BE в зоне апертуры — плоскость апертуры), и только
+ * ПОСЛЕ него буфер сбрасывается — вне любого BER (сброс внутри BER ломает общий буфер catnip —
+ * краш «Not building!»).
  *
  * <p><b>Что рисуется сверх оригинала Sable</b> (одной и той же матрицей саб-уровня — для
  * проекции уже отображённой — и «локальной» камерой, как у Sable):
  * <ul>
  *   <li>{@code RenderSection.globalBlockEntities} — верёвки, лебёдки и прочие BE с бесконечной
- *       рамкой. Ванильный общий цикл рисует их настоящей позой и без плоскостей куска (в
+ *       рамкой. Ванильный общий цикл рисует их настоящей позой и без фильтра кусков (в
  *       проекции верёвки остались бы «на старом месте», а под Sodium в тот же цикл попадают
  *       верёвки саб-уровней ЧУЖИХ измерений), поэтому такие BE он пропускает
  *       ({@link #shouldSkipGlobalLoopCall}).</li>
- *   <li>BE, которые обычно визуализирует Flywheel, — только пока саб-уровень пересекает
- *       портал (или рисуется как проекция). Их окружение Flywheel в это время схлопнуто
- *       ({@link IplFlywheelFallback}), а BER вызывается с «выключенным» Flywheel
- *       ({@link #isForcingVanillaRender()}): так шестерни режутся плоскостью портала и
- *       переходят в кусок-проекцию, а не висят целиком на исходном месте.</li>
+ *   <li>BE, изъятые из Flywheel ({@link IplFlywheelFallback}): не целиком в родном куске. BER
+ *       вызывается с «выключенным» Flywheel ({@link #isForcingVanillaRender()}), иначе Create
+ *       пропустил бы отрисовку, считая, что её сделает Flywheel.</li>
  * </ul>
  * Если наш перехват по какой-то причине не применился, всё остаётся ванильным.
  */
@@ -150,38 +147,36 @@ public final class IplSubLevelBlockEntityPass {
         // Проекцию (IplStraddleRenderState) и уже открытую область держит вызывающий код —
         // он сам ставит плоскости куска и сам сбрасывает буфер после прохода.
         if (IplStraddleRenderState.isActiveFor(sub) || IplBlockEntityRenderScope.isActiveFor(sub)) {
-            renderBody(dispatcher, sub, renderer, camX, camY, camZ, partialTick, true);
+            renderBody(dispatcher, sub, renderer, camX, camY, camZ, partialTick);
             return;
         }
-        if (IplClipPortalFinder.findStraddlingPortalPlane(sub) == null) {
-            renderBody(dispatcher, sub, renderer, camX, camY, camZ, partialTick, false);
+        if (IplPieceRender.frameFor(sub) == null) {
+            renderBody(dispatcher, sub, renderer, camX, camY, camZ, partialTick);
             return;
         }
-        // Пересекающий портал саб-уровень в своём (нативном) проходе: одна область на весь
-        // проход его BE, сброс — после. Буфер берём текущий: во время прохода портала IP
-        // подменяет RenderBuffers у Minecraft и у LevelRenderer на вторичные.
+        // Пересекающий портал саб-уровень в своём (нативном) проходе: проходы куска, сброс —
+        // после каждого. Буфер берём текущий: во время прохода портала IP подменяет
+        // RenderBuffers у Minecraft и у LevelRenderer на вторичные.
         IplBlockEntityRenderScope.renderAndFlush(
             sub, Minecraft.getInstance().renderBuffers().bufferSource(),
-            () -> renderBody(dispatcher, sub, renderer, camX, camY, camZ, partialTick, true));
+            () -> renderBody(dispatcher, sub, renderer, camX, camY, camZ, partialTick));
     }
 
-    /**
-     * Оригинальный проход Sable для одного саб-уровня + глобальные BE (+ BE Flywheel, если
-     * {@code cut}: саб-уровень режется порталом или рисуется как проекция).
-     */
+    /** Оригинальный проход Sable для одного саб-уровня + глобальные BE + BE, изъятые из Flywheel. */
     private static void renderBody(
         SubLevelRenderDispatcher dispatcher, ClientSubLevel sub,
         SubLevelRenderDispatcher.BlockEntityRenderer renderer,
-        double camX, double camY, double camZ, float partialTick, boolean cut
+        double camX, double camY, double camZ, float partialTick
     ) {
-        boolean flywheelFallback = cut && Flywheel.LOADED;
+        List<BlockEntity> taken = Flywheel.LOADED ? IplFlywheelFallback.visualizedBlockEntities(sub) : List.of();
+        boolean flywheelFallback = !taken.isEmpty();
         Set<BlockEntity> previousRecord = currentRecord;
         Set<BlockEntity> record = newIdentitySet();
         currentRecord = record;
         if (flywheelFallback) forceVanilla++;
         try {
             callOriginal(dispatcher, sub, renderer, camX, camY, camZ, partialTick);
-            List<BlockEntity> extras = collectExtras(sub, flywheelFallback, record);
+            List<BlockEntity> extras = collectExtras(sub, taken, record);
             if (!extras.isEmpty()) renderExtras(sub, renderer, extras, camX, camY, camZ, partialTick);
         } finally {
             if (flywheelFallback) forceVanilla--;
@@ -203,9 +198,9 @@ public final class IplSubLevelBlockEntityPass {
         }
     }
 
-    /** Глобальные BE саб-уровня и (при фолбэке) BE Flywheel, ещё не нарисованные в этом теле. */
+    /** Глобальные BE саб-уровня и изъятые из Flywheel BE, ещё не нарисованные в этом теле. */
     private static List<BlockEntity> collectExtras(
-        ClientSubLevel sub, boolean flywheelFallback, Set<BlockEntity> alreadyDrawn
+        ClientSubLevel sub, List<BlockEntity> taken, Set<BlockEntity> alreadyDrawn
     ) {
         List<BlockEntity> out = null;
         Set<BlockEntity> drawnGlobals = DRAWN_GLOBALS.peekLast();
@@ -223,16 +218,13 @@ public final class IplSubLevelBlockEntityPass {
                 }
             }
         }
-        if (flywheelFallback) {
-            List<BlockEntity> visualized = IplFlywheelFallback.visualizedBlockEntities(sub);
-            if (!visualized.isEmpty()) {
-                Set<BlockEntity> seen = newIdentitySet();
-                if (out != null) seen.addAll(out);
-                for (BlockEntity be : visualized) {
-                    if (be == null || alreadyDrawn.contains(be) || !seen.add(be)) continue;
-                    if (out == null) out = new ArrayList<>();
-                    out.add(be);
-                }
+        if (!taken.isEmpty()) {
+            Set<BlockEntity> seen = newIdentitySet();
+            if (out != null) seen.addAll(out);
+            for (BlockEntity be : taken) {
+                if (be == null || alreadyDrawn.contains(be) || !seen.add(be)) continue;
+                if (out == null) out = new ArrayList<>();
+                out.add(be);
             }
         }
         return out == null ? List.of() : out;
