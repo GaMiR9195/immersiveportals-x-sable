@@ -1,5 +1,9 @@
 package ipl.sable.transit;
 
+import org.joml.Matrix3d;
+import org.joml.Quaterniond;
+import org.joml.Vector3d;
+
 /** Geometry of an observed aperture sweep. No velocity extrapolation or speed cutoff. */
 public final class IplApertureSweep {
     private IplApertureSweep() {}
@@ -14,6 +18,28 @@ public final class IplApertureSweep {
         double v = lerp(before.v(x, y, z), now.v(x, y, z), t);
         return Math.abs(u) <= lerp(before.halfW(), now.halfW(), t) + margin
             && Math.abs(v) <= lerp(before.halfH(), now.halfH(), t) + margin ? t : Double.NaN;
+    }
+
+    /** Observed portal animation between samples; no extrapolation past either endpoint. */
+    public static IplPieceMap.Aperture interpolate(IplPieceMap.Aperture before, IplPieceMap.Aperture now, double t) {
+        if (t <= 0.0) return before;
+        if (t >= 1.0 || before.equals(now)) return now;
+        Quaterniond q = orientation(before).slerp(orientation(now), t);
+        Vector3d w = q.transform(new Vector3d(1, 0, 0));
+        Vector3d h = q.transform(new Vector3d(0, 1, 0));
+        Vector3d n = q.transform(new Vector3d(0, 0, 1));
+        return new IplPieceMap.Aperture(lerp(before.ox(),now.ox(),t), lerp(before.oy(),now.oy(),t),
+            lerp(before.oz(),now.oz(),t), n.x,n.y,n.z, w.x,w.y,w.z, lerp(before.halfW(),now.halfW(),t),
+            h.x,h.y,h.z, lerp(before.halfH(),now.halfH(),t));
+    }
+
+    public static double rotationAngle(IplPieceMap.Aperture before, IplPieceMap.Aperture now) {
+        return 2.0*Math.acos(Math.min(1.0, Math.abs(orientation(before).dot(orientation(now)))));
+    }
+
+    private static Quaterniond orientation(IplPieceMap.Aperture a) {
+        return new Quaterniond().setFromNormalized(new Matrix3d(a.wx(),a.wy(),a.wz(), a.hx(),a.hy(),a.hz(),
+            a.nx(),a.ny(),a.nz())).normalize();
     }
 
     /** Conservative section broad phase for the same observed sweep used by ownership. */

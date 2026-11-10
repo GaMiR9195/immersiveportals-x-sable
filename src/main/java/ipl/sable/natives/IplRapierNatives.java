@@ -91,15 +91,9 @@ public final class IplRapierNatives {
     /** Drops every piece datum of a body: its contacts are no longer clipped. */
     public static native void clearPieces(long sceneHandle, int bodyId);
 
-    /**
-     * Sable bodies in {@code bodyId}'s joint component. {@code rigidOnly} restricts the
-     * walk to joints whose both endpoints are ship bodies AND at least one angular
-     * axis is locked (the current native definition of a rigid assembly: bearings,
-     * fixed/prismatic couplings). Ball joints, springs and rope particle chains do
-     * not bridge components in this mode. This flag is not an all-joints traversal.
-     */
-    public static native int[] connectedSableBodyIds(
-        long sceneHandle, int bodyId, boolean rigidOnly);
+    /** ABI 7 resets internal joint warm starts after a common same-chart frame change. */
+    public static final int JOINT_TRANSIT_ABI = 7;
+    public static native boolean resetGroupJointImpulses(long sceneHandle, int[] bodyIds);
 
     /** Packed {@code (ropeId << 1) | endBit} for every rope end attached to the body. */
     public static native long[] ropesAttachedToSableBody(long sceneHandle, int bodyId);
@@ -108,6 +102,23 @@ public final class IplRapierNatives {
     public static final int ROPE_TRANSIT_ABI = 4;
     public static native boolean canMoveGroupRopes(long sceneHandle, int[] bodyIds);
     public static native boolean moveGroupRopes(long sceneHandle, int[] bodyIds,
+        double tx, double ty, double tz, double qx, double qy, double qz, double qw);
+
+    /**
+     * ABI 8: rope points follow portals with their collision geometry (see
+     * {@code IplRopeTransit}); the dispatcher also culls voxel pairs that cannot belong to
+     * a collider's piece before any manifold is built.
+     */
+    public static final int ROPE_ROUTE_ABI = 8;
+    /** Strand ids owned by the scene view's chart. */
+    public static native long[] ropeIds(long sceneHandle);
+    /** {@code [x y z]*} of a strand's points (start first); empty when unknown. */
+    public static native double[] ropePointPositions(long sceneHandle, long ropeId);
+    /**
+     * Collide point {@code index} of the strand in {@code destScene}'s chart through the
+     * isometry {@code (t, q)}; {@code destScene == 0} restores the strand's own chart.
+     */
+    public static native boolean routeRopePoint(long sceneHandle, long ropeId, int index, long destScene,
         double tx, double ty, double tz, double qx, double qy, double qz, double qw);
 
     // ------------------------------------------------------------------

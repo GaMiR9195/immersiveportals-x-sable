@@ -606,6 +606,97 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_ropesAttachedToSa
 }
 
 
+/// IPL rope routing (ABI 8): ids of the strands owned by this scene view's chart.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_ropeIds<'local>(
+    env: JNIEnv<'local>, _class: JClass<'local>, handle: jlong,
+) -> jni::objects::JLongArray<'local> {
+    let mut ids: Vec<jlong> = Vec::new();
+    if handle != 0 {
+        let scene = unsafe { &*(handle as *const PhysicsScene) };
+        let data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        ids.extend(data.rope_map.ropes.iter()
+            .filter(|(_, rope)| rope.chart == scene.chart)
+            .map(|(id, _)| *id as jlong));
+    }
+    let result = env.new_long_array(ids.len() as jsize).unwrap();
+    if !ids.is_empty() {
+        env.set_long_array_region(&result, 0, &ids).unwrap();
+    }
+    result
+}
+
+/// Positions of a strand's points in its own chart (`[x y z]*`, start first). Empty when
+/// the strand is unknown or a point body is gone -- never panics like `queryRope`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_ropePointPositions<'local>(
+    env: JNIEnv<'local>, _class: JClass<'local>, handle: jlong, rope_id: jlong,
+) -> JDoubleArray<'local> {
+    let mut flat: Vec<jdouble> = Vec::new();
+    if handle != 0 {
+        let scene = unsafe { &*(handle as *const PhysicsScene) };
+        let data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sim = scene.sim_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(rope) = data.rope_map.ropes.get(&(rope_id as usize)) {
+            for point in &rope.points {
+                let Some(body) = sim.rigid_body_set.get(*point) else {
+                    flat.clear();
+                    break;
+                };
+                let t = body.position().translation;
+                flat.extend([t.x as f64, t.y as f64, t.z as f64]);
+            }
+        }
+    }
+    let result = env.new_double_array(flat.len() as jsize).unwrap();
+    if !flat.is_empty() {
+        env.set_double_array_region(&result, 0, &flat).unwrap();
+    }
+    result
+}
+
+/// Routes the collision geometry of one rope point through a portal chain: the point body
+/// stays where it is (joints, Simulated's rope logic and rendering are untouched), but its
+/// collider collides with `dest_handle`'s chart at `prefix * pose` -- exactly like a body
+/// image. A point that passed a portal therefore stops hitting the source-side wall behind
+/// it (phantom ground) and rests on the far-side ground instead. `dest_handle == 0`
+/// restores the strand's own chart. Returns false for an unknown strand/point.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_routeRopePoint<'local>(
+    _env: JNIEnv<'local>, _class: JClass<'local>, handle: jlong, rope_id: jlong, index: jint,
+    dest_handle: jlong,
+    tx: jdouble, ty: jdouble, tz: jdouble,
+    qx: jdouble, qy: jdouble, qz: jdouble, qw: jdouble,
+) -> jboolean {
+    if handle == 0 || index < 0 || ![tx, ty, tz, qx, qy, qz, qw].iter().all(|v| v.is_finite()) {
+        return 0;
+    }
+    let scene = unsafe { &*(handle as *const PhysicsScene) };
+    let data = scene.sable_data.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(rope) = data.rope_map.ropes.get(&(rope_id as usize)) else { return 0; };
+    let Some(point) = rope.points.get(index as usize).copied() else { return 0; };
+    let (group, prefix) = if dest_handle == 0 {
+        (crate::groups::rope_group(rope.chart), None)
+    } else {
+        let dest = unsafe { &*(dest_handle as *const PhysicsScene) };
+        let rotation = rapier3d::math::Rotation::from_xyzw(qx as Real, qy as Real, qz as Real, qw as Real)
+            .normalize();
+        (crate::groups::rope_group(dest.chart),
+         Some(rapier3d::math::Pose { translation: Vec3::new(tx as Real, ty as Real, tz as Real), rotation }))
+    };
+    let mut sim = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let crate::scene::SimulationSceneData { rigid_body_set, collider_set, .. } = &mut *sim;
+    let Some(body) = rigid_body_set.get(point) else { return 0; };
+    let pose = *body.position();
+    for collider_handle in body.colliders().to_vec() {
+        let Some(collider) = collider_set.get_mut(collider_handle) else { continue; };
+        collider.set_collision_groups(group);
+        collider.set_portal_prefix(prefix);
+        collider.refresh_portal_prefixed_pose(&pose);
+    }
+    1
+}
+
 /// The ropes affected by this group. A rope fixed to the world or to a body outside
 /// the group must not be teleported. A free end is allowed: its particles move too.
 fn group_rope_points(
@@ -667,6 +758,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_moveGroupRopes<'l
     if points.iter().any(|point| sim.rigid_body_set.get(*point).is_none()) { return 0; }
     let rotation = rapier3d::math::Rotation::from_xyzw(qx as Real, qy as Real, qz as Real, qw as Real).normalize();
     let prefix = rapier3d::math::Pose { translation: Vec3::new(tx as Real, ty as Real, tz as Real), rotation };
+    let mut moved: HashSet<_> = points.iter().copied().collect();
+    moved.extend(bodies.iter().filter_map(|id| data.rigid_bodies.get(id).copied()));
     for point in points {
         let rb = sim.rigid_body_set.get_mut(point).unwrap();
         let pose = prefix * *rb.position();
@@ -676,7 +769,8 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_moveGroupRopes<'l
         rb.set_linvel(linear, true);
         rb.set_angvel(angular, true);
     }
-    1
+    let crate::scene::SimulationSceneData { rigid_body_set, impulse_joint_set, .. } = &mut *sim;
+    crate::joint_transit::reset_group(rigid_body_set, impulse_joint_set, &moved) as jni::sys::jboolean
 }
 
 #[cfg(test)]

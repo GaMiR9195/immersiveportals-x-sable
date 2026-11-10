@@ -16,27 +16,28 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
 /**
- * Portal transit of Sable sub-levels (README, sections 2-3). Runs at the TAIL of every
- * level's sub-level container tick, after physics, for the bodies of that level:
+ * Portal transit of Sable sub-levels (README, sections 2-3). Shared entry runs at solver
+ * boundaries; retirement and handoff run at container tick tail, after physics:
  *
  * <ol>
- *   <li>{@link IplPieceTracker} follows every aperture near every piece of the body: which
- *       material went through, which sessions exist;</li>
+ *   <li>{@link IplPieceTracker} observes each link's own material, while
+ *       {@link IplGroupTransitContext} prepares and holds a shared path tree from the first
+ *       link's entrance, also at every physics boundary;</li>
  *   <li>a body whose transit is complete flips through exactly one root session, together
- *       with its rigid mates, unless {@link IplAttachmentGate} says it is attached; flipped
- *       bodies are tracked again at once so rows and loops of portals continue in the same tick.</li>
+ *       with the complete Sable connection chain; flipped bodies are tracked again at once so
+ *       rows and loops of portals continue in the same tick.</li>
  * </ol>
  */
 public final class IplTransitController {
@@ -59,7 +60,7 @@ public final class IplTransitController {
         IplPieceTracker.clearAll();
         IplShipPortalAnchor.clearAll();
         IplShipNetherPortal.clearPending();
-        IplAttachmentGate.clearAll();
+        IplRopeTransit.clearAll();
         IplFusedStep.onServerStopping();
         IplTimeline.reset();
         lastServerTick = Integer.MIN_VALUE;
@@ -106,19 +107,30 @@ public final class IplTransitController {
             int tick = server.getTickCount();
             Map<UUID, UUID> movedRiders = new HashMap<>();
             for (int round = 0; round < MAX_TRANSITS_PER_TICK && !pending.isEmpty(); round++) {
-                List<Candidate> candidates = new ArrayList<>();
-                for (ServerSubLevel ship : pending) {
-                    if (ship.isRemoved()) continue;
-                    if (round == 0 && transitTick % ACTOR_RESYNC_INTERVAL == 0) {
-                        int rebound = IplTransitOps.resyncStaleActors(ship);
-                        if (rebound > 0) {
-                            LOG.debug("[IPL-TRANSIT] rebound {} stale physics actor(s) for {}", rebound, ship.getUniqueId());
+                Map<UUID, ServerSubLevel> sampled = new LinkedHashMap<>();
+                List<ServerSubLevel> roundPending = pending;
+                boolean resync = round == 0 && transitTick % ACTOR_RESYNC_INTERVAL == 0;
+                Map<UUID, IplTransitConnections.Group> groups = IplStraddleSessionSync.batchResult(() -> {
+                    for (ServerSubLevel ship : roundPending) {
+                        if (ship.isRemoved()) continue;
+                        if (resync) {
+                            int rebound = IplTransitOps.resyncStaleActors(ship);
+                            if (rebound > 0) {
+                                LOG.debug("[IPL-TRANSIT] rebound {} stale physics actor(s) for {}", rebound, ship.getUniqueId());
+                            }
                         }
+                        IplPieceTracker.update(ship, tick);
+                        sampled.put(ship.getUniqueId(), ship);
                     }
-                    IplPieceTracker.FlipChoice choice = IplPieceTracker.update(ship, tick);
+                    return coordinateGroups(container, sampled, tick, true);
+                });
+                List<Candidate> candidates = new ArrayList<>();
+                for (ServerSubLevel ship : sampled.values()) {
+                    IplPieceTracker.publish(ship);
+                    IplPieceTracker.FlipChoice choice = IplPieceTracker.pendingFlip(ship.getUniqueId());
                     if (choice != null) candidates.add(new Candidate(ship, choice));
                 }
-                pending = executeCandidates(server, candidates, movedRiders);
+                pending = executeCandidates(server, candidates, groups, movedRiders);
             }
             IplShipFlip.flushHandoffs(server);
         } finally {
@@ -128,8 +140,62 @@ public final class IplTransitController {
 
     private record Candidate(ServerSubLevel ship, IplPieceTracker.FlipChoice choice) {}
 
+    /** Every solver boundary: observe all links, join the context, then upload all native masks. */
+    public static void onPhysicsSample(ServerSubLevelContainer container) {
+        if (!IplRapierNatives.piecesSupported()) return;
+        int tick = container.getLevel().getServer().getTickCount();
+        IplStraddleSessionSync.batch(() -> {
+            Map<UUID, ServerSubLevel> sampled = new LinkedHashMap<>();
+            for (ServerSubLevel ship : liveBodies(container)) {
+                IplPieceTracker.samplePhysics(ship);
+                sampled.put(ship.getUniqueId(), ship);
+            }
+            coordinateGroups(container, sampled, tick, false);
+            for (ServerSubLevel ship : sampled.values()) IplPieceTracker.publishPhysics(ship);
+        });
+        IplRopeTransit.sample(container.getLevel());
+    }
+
+    private static List<ServerSubLevel> liveBodies(ServerSubLevelContainer container) {
+        List<ServerSubLevel> live = new ArrayList<>();
+        for (ServerSubLevel ship : container.getAllSubLevels())
+            if (!ship.isRemoved()) live.add(ship);
+        return live;
+    }
+
+    /** Resolve the same Sable connection chains for entry, holding, and handoff. */
+    private static Map<UUID, IplTransitConnections.Group> coordinateGroups(ServerSubLevelContainer container,
+                                                    Map<UUID, ServerSubLevel> sampled, int tick, boolean finish) {
+        Map<UUID, IplTransitConnections.Group> groups = new HashMap<>();
+        // A continuation round may already own bodies in a new level after a cross-dimension
+        // handoff. Looking only in the original container would lose its dependency chain.
+        Set<ServerLevel> sources = new LinkedHashSet<>();
+        sources.add(container.getLevel());
+        for (ServerSubLevel ship : sampled.values()) if (!ship.isRemoved()) sources.add(ship.getLevel());
+        for (ServerLevel source : sources) {
+            var current = SubLevelContainer.getContainer(source);
+            if (current == null) continue;
+            for (var group : IplTransitConnections.activeGroups(source, liveBodies(current))) {
+                for (ServerSubLevel member : group.members()) {
+                    if (!sampled.containsKey(member.getUniqueId())) {
+                        if (finish) IplPieceTracker.update(member, tick);
+                        else IplPieceTracker.samplePhysics(member);
+                        sampled.put(member.getUniqueId(), member);
+                    }
+                }
+                if (!group.complete()) continue;
+                boolean ready = finish ? IplSessionLifecycle.settle(group.members(), tick)
+                    : IplGroupTransitContext.prepare(group.members(), tick) != null;
+                if (ready)
+                    for (ServerSubLevel member : group.members()) groups.put(member.getUniqueId(), group);
+            }
+        }
+        return groups;
+    }
+
     /** Flips every ready body with its group; returns the live bodies to track again this tick. */
     private static List<ServerSubLevel> executeCandidates(MinecraftServer server, List<Candidate> candidates,
+                                                          Map<UUID, IplTransitConnections.Group> groups,
                                                           Map<UUID, UUID> movedRiders) {
         if (candidates.isEmpty()) return List.of();
         candidates.sort(Comparator
@@ -141,34 +207,53 @@ public final class IplTransitController {
             ServerSubLevel ship = c.ship();
             Portal portal = c.choice().portal();
             if (flipped.contains(ship.getUniqueId()) || ship.isRemoved()) continue;
-            TransitGroup group = transitGroup(ship);
-            if (group == null) continue; // a failed joint walk is NOT a solo body
-            List<IplPieceTracker.FlipChoice> mateChoices = new ArrayList<>(group.mates().size());
+            var group = groups.get(ship.getUniqueId());
+            if (group == null || !group.complete()) continue;
+            List<ServerSubLevel> mates = group.members().stream()
+                .filter(member -> !member.getUniqueId().equals(ship.getUniqueId())).toList();
+            List<IplPieceTracker.FlipChoice> mateChoices = new ArrayList<>(mates.size());
             boolean ready = IplShipFlip.canFlip(ship, portal);
-            for (ServerSubLevel mate : group.mates()) {
+            for (ServerSubLevel mate : mates) {
                 IplPieceTracker.FlipChoice mc = IplPieceTracker.pendingFlip(mate.getUniqueId());
                 ready &= mc != null && !flipped.contains(mate.getUniqueId())
                     && sameTransit(portal, mc.portal()) && IplShipFlip.canFlip(mate, mc.portal());
                 mateChoices.add(mc);
             }
-            if (!ready || IplAttachmentGate.flipBlocker(ship, group.mates(), group.nativeJointed(),
-                IplShipFlip.isCrossDimension(ship, portal)) != null) {
+            if (!ready) {
                 continue; // the far side keeps living on the projection
             }
-            long sourceScene = IplScenes.sceneHandle(ship.getLevel());
-            int[] groupIds = new int[group.mates().size() + 1];
+            boolean crossDimension = IplShipFlip.isCrossDimension(ship, portal);
+            int[] groupIds = new int[mates.size() + 1];
             groupIds[0] = Rapier3D.getID(ship);
-            for (int i = 0; i < group.mates().size(); i++) groupIds[i + 1] = Rapier3D.getID(group.mates().get(i));
-            boolean moveRopes = sourceScene != 0 && IplRapierNatives.abiLevel() >= IplRapierNatives.ROPE_TRANSIT_ABI
-                && !IplShipFlip.isCrossDimension(ship, portal)
-                && java.util.Arrays.stream(groupIds).anyMatch(id -> IplRapierNatives.ropesAttachedToSableBody(sourceScene, id).length > 0);
+            for (int i = 0; i < mates.size(); i++) groupIds[i + 1] = Rapier3D.getID(mates.get(i));
+
+            Set<Long> groupRopes = new HashSet<>();
+            long sourceScene = IplScenes.sceneHandle(ship.getLevel());
+            if (sourceScene != 0 && IplRapierNatives.abiLevel() >= IplRapierNatives.ROPE_TRANSIT_ABI) {
+                for (int id : groupIds) {
+                    for (long packed : IplRapierNatives.ropesAttachedToSableBody(sourceScene, id)) {
+                        groupRopes.add(packed >> 1);
+                    }
+                }
+                if (crossDimension && !groupRopes.isEmpty()) {
+                    // Rope strands are level-owned. Keep the connected sub-level chain on its
+                    // projection rather than moving the bodies away from their rope particles.
+                    continue;
+                }
+                if (!crossDimension && !IplRapierNatives.canMoveGroupRopes(sourceScene, groupIds)) {
+                    // A same-dimension rope with an endpoint outside this Sable chain cannot
+                    // be reframed safely. Leave the whole chain on the projection.
+                    continue;
+                }
+            }
+            boolean moveRopes = !groupRopes.isEmpty();
             ServerSubLevel live = flipBody(server, ship, c.choice(), movedRiders);
             if (live == null) continue;
             flipped.add(ship.getUniqueId());
             continuing.add(live);
             boolean groupMoved = true;
-            for (int i = 0; i < group.mates().size(); i++) {
-                ServerSubLevel mate = group.mates().get(i);
+            for (int i = 0; i < mates.size(); i++) {
+                ServerSubLevel mate = mates.get(i);
                 if (mate.isRemoved() || !flipped.add(mate.getUniqueId())) { groupMoved = false; continue; }
                 ServerSubLevel liveMate = flipBody(server, mate, mateChoices.get(i), movedRiders);
                 if (liveMate == null) {
@@ -178,6 +263,12 @@ public final class IplTransitController {
                 }
                 continuing.add(liveMate);
             }
+            if (groupMoved && sourceScene != 0
+                && !crossDimension
+                && IplRapierNatives.abiLevel() >= IplRapierNatives.JOINT_TRANSIT_ABI
+                && !IplRapierNatives.resetGroupJointImpulses(sourceScene, groupIds)) {
+                LOG.error("[IPL-TRANSIT] failed to reset joint warm starts after moving group {}", ship.getUniqueId());
+            }
             if (moveRopes && groupMoved) {
                 var mapping = IplStraddlePoseMap.StraddleMapping.of(portal);
                 var shift = mapping.shift();
@@ -185,6 +276,8 @@ public final class IplTransitController {
                 if (!IplRapierNatives.moveGroupRopes(sourceScene, groupIds, shift.x, shift.y, shift.z,
                     rotation.x, rotation.y, rotation.z, rotation.w)) {
                     LOG.error("[IPL-TRANSIT] failed to reframe ropes after moving group {}", ship.getUniqueId());
+                } else {
+                    IplRopeTransit.onRopesMoved(live.getLevel(), groupRopes, portal);
                 }
             }
         }
@@ -207,71 +300,6 @@ public final class IplTransitController {
         }
         IplGrabChain.onBodyTransit(server, live.getUniqueId(), choice.portal());
         return live;
-    }
-
-    /** Members crossing together with a body (sorted by UUID) and whether native joints are involved. */
-    private record TransitGroup(List<ServerSubLevel> mates, boolean nativeJointed) {}
-
-    /**
-     * All native-joint mates plus actor-linked partners (springs, connectors...)
-     * of {@code body}, walked transitively. A flexible joint is still a connection:
-     * its bodies must wait for one another before the native frame changes.
-     */
-    @Nullable
-    private static TransitGroup transitGroup(ServerSubLevel body) {
-        List<ServerSubLevel> rigid = jointGroupMates(body);
-        if (rigid == null) return null;
-        boolean nativeJointed = !rigid.isEmpty();
-        LinkedHashMap<UUID, ServerSubLevel> members = new LinkedHashMap<>();
-        members.put(body.getUniqueId(), body);
-        for (ServerSubLevel mate : rigid) members.putIfAbsent(mate.getUniqueId(), mate);
-        ArrayDeque<ServerSubLevel> queue = new ArrayDeque<>(members.values());
-        while (!queue.isEmpty()) {
-            ServerSubLevel member = queue.poll();
-            for (ServerSubLevel partner : IplAttachmentGate.actorPartners(member)) {
-                if (members.containsKey(partner.getUniqueId())) continue;
-                List<ServerSubLevel> partnerRigid = jointGroupMates(partner);
-                if (partnerRigid == null) return null;
-                nativeJointed |= !partnerRigid.isEmpty();
-                members.put(partner.getUniqueId(), partner);
-                queue.add(partner);
-                for (ServerSubLevel pm : partnerRigid) {
-                    if (members.putIfAbsent(pm.getUniqueId(), pm) == null) queue.add(pm);
-                }
-            }
-        }
-        members.remove(body.getUniqueId());
-        if (members.isEmpty()) return new TransitGroup(List.of(), nativeJointed);
-        List<ServerSubLevel> mates = new ArrayList<>(members.values());
-        mates.sort(Comparator.comparing(m -> m.getUniqueId().toString()));
-        return new TransitGroup(mates, nativeJointed);
-    }
-
-    /** Bodies connected by native joints (they cross together); null if the walk failed. */
-    @Nullable
-    private static List<ServerSubLevel> jointGroupMates(ServerSubLevel body) {
-        if (!IplRapierNatives.isAvailable()) return List.of();
-        long scene = IplScenes.sceneHandle(body.getLevel());
-        if (scene == 0) return null;
-        int[] ids = IplRapierNatives.connectedSableBodyIds(scene, Rapier3D.getID(body), false);
-        if (ids.length == 0) return null;
-        int selfId = body.getRuntimeId();
-        if (ids.length == 1) return ids[0] == selfId ? List.of() : null;
-        var container = SubLevelContainer.getContainer(body.getLevel());
-        if (container == null) return null;
-        List<ServerSubLevel> mates = new ArrayList<>(ids.length - 1);
-        for (int id : ids) {
-            if (id == selfId) continue;
-            for (var sub : container.getAllSubLevels()) {
-                if (sub.getRuntimeId() == id && !sub.isRemoved() && sub instanceof ServerSubLevel server) {
-                    mates.add(server);
-                    break;
-                }
-            }
-        }
-        if (mates.size() != ids.length - 1) return null;
-        mates.sort(Comparator.comparing(m -> m.getUniqueId().toString()));
-        return mates;
     }
 
     /** Flipped faces of one doorway have distinct UUIDs but the same isometry. */

@@ -18,6 +18,11 @@ pub struct LevelCollider {
     /// chart) — the dispatcher's terrain-vs-convex path has only the shapes in
     /// scope, so the shape itself must know which chart's chunk maps to read.
     pub chart: crate::scene::ChartId,
+    /// IPL pieces: the piece this collider represents (0 = the native collider, image
+    /// colliders carry their node from `setImageNode`). Lets the dispatcher skip voxel
+    /// pairs whose body voxel can never be this piece's material before any manifold
+    /// is generated, instead of neutralizing them after the narrow phase.
+    pub piece: u8,
 }
 
 impl LevelCollider {
@@ -28,6 +33,7 @@ impl LevelCollider {
             is_static,
             cached_aabb: None,
             chart,
+            piece: 0,
         }
     }
 

@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * Server-authoritative piece state for clients (README, sections 2 and 7).
@@ -49,6 +50,8 @@ public final class IplStraddleSessionSync {
 
     /** Ship -> advertised sessions in start order: chain path -> (portal geometry, piece id). */
     private static final Map<UUID, LinkedHashMap<String, Advertised>> ACTIVE = new HashMap<>();
+    private static int batchDepth;
+    private static final Map<UUID, MinecraftServer> DEFERRED = new LinkedHashMap<>();
 
     private record Advertised(String geometry, int node) {}
 
@@ -88,11 +91,36 @@ public final class IplStraddleSessionSync {
 
     private IplStraddleSessionSync() {}
 
+    /**
+     * Publish only the final session set of one settlement transaction (including rollback).
+     * Do not span a body flip: delayed poses still need its old-frame entry snapshot.
+     */
+    static void batch(Runnable action) {
+        batchResult(() -> {
+            action.run();
+            return null;
+        });
+    }
+
+    /** Value-returning prepare transactions use the same outermost publication boundary. */
+    static <T> T batchResult(Supplier<T> action) {
+        batchDepth++;
+        try {
+            return action.get();
+        } finally {
+            if (--batchDepth == 0) {
+                var ready = new LinkedHashMap<>(DEFERRED);
+                DEFERRED.clear();
+                ready.forEach((ship, server) -> broadcastNow(server, ship));
+            }
+        }
+    }
+
     /** Session start (or a moved portal): re-broadcasts only when the advertised entry changed. */
     public static void onSessionStart(MinecraftServer server, ServerSubLevel ship, StraddleKey key, Portal portal) {
         UUID shipId = ship.getUniqueId();
-        LinkedHashMap<String, Advertised> sessions = ACTIVE.computeIfAbsent(shipId, k -> new LinkedHashMap<>());
         Advertised entry = new Advertised(encodePortal(portal), IplAtlasStraddleSession.sessionNode(key));
+        LinkedHashMap<String, Advertised> sessions = ACTIVE.computeIfAbsent(shipId, k -> new LinkedHashMap<>());
         if (entry.equals(sessions.put(key.path(), entry))) return;
         LOG.debug("[IPL-STRADDLE-SYNC] start ship={} path={} node={}", shipId, key.path(), entry.node());
         broadcast(server, shipId);
@@ -207,10 +235,20 @@ public final class IplStraddleSessionSync {
         ACTIVE.clear();
         FRAMES.clear();
         HISTORY.clear();
+        DEFERRED.clear();
+        batchDepth = 0;
     }
 
     private static void broadcast(MinecraftServer server, UUID shipId) {
         if (server == null) return;
+        if (batchDepth > 0) {
+            DEFERRED.put(shipId, server);
+            return;
+        }
+        broadcastNow(server, shipId);
+    }
+
+    private static void broadcastNow(MinecraftServer server, UUID shipId) {
         CompoundTag encoded = encode(shipId);
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             send(player, shipId, encoded);

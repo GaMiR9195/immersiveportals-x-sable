@@ -35,8 +35,12 @@ Since 0.6.0 the fork keeps exactly that native model and adds **projections**:
   Contacts beyond the portal plane are clipped away (requires patched natives; see below).
 - Rendering: the same render data is drawn again at the mapped pose, clipped at the portal plane.
 - Chains: an image that straddles another portal opens a child projection (depth ≤ 16).
-- Transit: once fully through, the body flips (same dim: pose teleport; other dim: native move
-  into that level). Attached ships (world constraints, joints, ropes) keep the session open instead.
+- Transit: once fully through, Sable's own connected-sublevel chain crosses as one unit. The
+  chain is rebuilt at each physics boundary from `SubLevelHelper.getConnectedChain`, so flexible
+  joints, rope holders, bearings and mod-specific actors use the same dependency contract as
+  Sable instead of a second native joint graph. A same-dimension move reframes eligible rope
+  particles and clears solver warm starts after all members move; a cross-dimension move
+  recreates every member in the destination level with the same UUID.
 - Interaction: targeting/outlines/break/place/redstone/BE logic and the physics staff work on the
   projected part.
 

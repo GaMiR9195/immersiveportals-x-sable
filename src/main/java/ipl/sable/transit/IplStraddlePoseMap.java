@@ -57,10 +57,20 @@ public final class IplStraddlePoseMap {
             this.inv = new Quaterniond(rot).conjugate();
         }
 
+        public static StraddleMapping identity() { return new StraddleMapping(Vec3.ZERO, Vec3.ZERO, new Quaterniond()); }
+
         public static StraddleMapping of(Portal portal) {
             DQuaternion q = portal.getRotationD();
             Quaterniond rot = isApproxIdentity(q) ? new Quaterniond() : new Quaterniond(q.x, q.y, q.z, q.w);
             return new StraddleMapping(portal.getOriginPos(), portal.getDestPos(), rot);
+        }
+
+        /** Interpolation of two observed mappings, used only inside a completed physics interval. */
+        public static StraddleMapping interpolate(@Nullable StraddleMapping before, StraddleMapping now, double t) {
+            if (before == null || t >= 1.0 || before.sameAs(now)) return now;
+            if (t <= 0.0) return before;
+            return new StraddleMapping(before.origin.lerp(now.origin, t), before.dest.lerp(now.dest, t),
+                new Quaterniond(before.rot).slerp(now.rot, t));
         }
 
         private static Vec3 rotate(Quaterniond q, Vec3 v) {

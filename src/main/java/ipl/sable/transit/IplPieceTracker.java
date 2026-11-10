@@ -49,8 +49,9 @@ import java.util.function.Supplier;
  * label/reference geometry and selects completed flips. Stock-native fallback samples at tail.
  *
  * <p>Finite-aperture events are applied in observed time order, including sibling faces and
- * newly reached nested frames. A piece never loses material merely because its aperture is
- * no longer nearby: only a reverse crossing, explicit invalidation or frame handoff relabels it.
+ * newly reached nested frames. Missing occupied voxels at an aperture never acts as a timeout:
+ * {@link IplSessionLifecycle} settles a completed body/joint group only after its whole material
+ * envelope is clear of every live finite aperture.
  */
 public final class IplPieceTracker {
     private static final Logger LOG = LoggerFactory.getLogger("ipl-piece-tracker");
@@ -83,23 +84,21 @@ public final class IplPieceTracker {
         double zone;
         /** Material still lies (partly) on the entry side of the plane (last sweep). */
         boolean cut;
-        /** Material crossed or geometrically bridges this aperture in the current sample. */
-        boolean live;
         int seenTick = Integer.MIN_VALUE;
         long sample = Long.MIN_VALUE;
         @Nullable IplPieceMap.Aperture sampleBefore;
-
-        boolean liveAt(int tick) {
-            return seenTick == tick && live;
-        }
+        @Nullable IplPieceMap.Aperture world;
+        @Nullable IplPieceMap.Aperture motionWorldBefore;
+        long motion = Long.MIN_VALUE;
 
         boolean cutAt(int tick) {
             return seenTick == tick && cut;
         }
     }
 
-    private static final class Body {
+    static final class Body {
         final UUID id;
+        ServerSubLevel owner;
         /** Last OBSERVED physics sample, never a predicted pose. */
         @Nullable Pose3d sampledPose;
         final IplPieceMap map = new IplPieceMap();
@@ -124,9 +123,12 @@ public final class IplPieceTracker {
         /** Latest observed crossing time per voxel in this physics sample. */
         final Long2DoubleOpenHashMap movedAt = new Long2DoubleOpenHashMap();
         long sample;
+        long motion;
+        final Map<Integer, IplStraddlePoseMap.StraddleMapping> sampledMappings = new HashMap<>();
 
-        Body(UUID id) {
-            this.id = id;
+        Body(ServerSubLevel ship) {
+            this.id = ship.getUniqueId();
+            this.owner = ship;
             Arrays.fill(parent, -1);
         }
 
@@ -194,7 +196,7 @@ public final class IplPieceTracker {
         return body == null ? null : body.map.encode(null);
     }
 
-    /** The flip computed by the last {@link #update} of {@code ship} in this tick. */
+    /** The flip computed after sampling and, when clear, group-wide settlement. */
     @Nullable
     static FlipChoice pendingFlip(UUID ship) {
         Body body = BODIES.get(ship);
@@ -203,54 +205,189 @@ public final class IplPieceTracker {
 
     // ------------------------------------------------------------------ per tick
 
-    /** One step of a body after physics; returns the flip it is ready for, or null. */
+    /** Sample after physics. Publication is a separate phase, after all group members agree. */
     @Nullable
     static FlipChoice update(ServerSubLevel ship, int tick) {
         Body body = BODIES.get(ship.getUniqueId());
         if (body == null) {
-            if (portalsNear(ship.getLevel(), queryBox(ship, null, ship.lastPose())).isEmpty()) return null;
+            if (portalsNear(ship.getLevel(), queryBox(ship, ship.lastPose(), ship.logicalPose())).isEmpty()) return null;
             if (!IplRapierNatives.piecesSupported() && !loggedNoNatives) {
                 loggedNoNatives = true;
                 LOG.warn("[IPL-PIECES] natives without piece support (ABI {} < {}): the far side of a "
                     + "sub-level in a portal does not collide; rebuild the natives (logged once)",
                     IplRapierNatives.abiLevel(), IplRapierNatives.PIECE_ABI);
             }
-            body = new Body(ship.getUniqueId());
+            body = new Body(ship);
             BODIES.put(body.id, body);
         }
         sample(body, ship, tick);
-        retireEmptySessions(body, ship, tick);
         if (!body.hasSessions() && !body.map.isEmpty()) body.map.clear();
         settleCounts(body, ship);
-        pushEdges(body, ship);
-        pushLabels(body, ship);
         body.pendingFlip = flipChoice(body, ship, tick);
-        if (!body.hasSessions() && body.map.isEmpty() && body.watches.isEmpty() && !body.fullSync) {
-            BODIES.remove(body.id);
-        }
         return body.pendingFlip;
     }
 
-    /** Called at actual physics boundaries; session retirement and flips stay at tick tail. */
-    public static void samplePhysics(ServerSubLevel ship) {
+    @Nullable
+    static Body tracked(ServerSubLevel ship) {
+        return BODIES.get(ship.getUniqueId());
+    }
+
+    /** A joint/actor mate joins the context before it touches an aperture itself. */
+    static Body trackForContext(ServerSubLevel ship) {
+        return BODIES.computeIfAbsent(ship.getUniqueId(), id -> {
+            Body body = new Body(ship);
+            body.sampledPose = new Pose3d(ship.logicalPose());
+            return body;
+        });
+    }
+
+    /** Only final labels of this round are advertised, never its temporary canonicalization states. */
+    static void publish(ServerSubLevel ship) {
+        Body body = tracked(ship);
+        if (body == null) return;
+        settleCounts(body, ship);
+        pushEdges(body, ship);
+        pushLabels(body, ship);
+        if (!body.hasSessions() && body.map.isEmpty() && body.watches.isEmpty()) BODIES.remove(body.id);
+    }
+
+    /**
+     * Seeds the retained path at the current observed pose. A newly opened mate has no sweep
+     * watch yet; leaving it absent would omit its aperture from native contact classification.
+     */
+    static void settled(Body body, ServerSubLevel ship, int tick, int terminal, boolean empty) {
+        body.owner = ship;
+        body.sampledPose = new Pose3d(ship.logicalPose());
+        int root = terminal;
+        while (root > 0 && body.parent[root] > 0) root = body.parent[root];
+        seedCurrentFrames(body, ship, tick);
+        settleCounts(body, ship);
+        body.pendingFlip = flipChoice(body, ship, tick);
+        // A zero-block connector is still a member of the Sable connection chain.
+        if (empty && root > 0) {
+            Portal portal = IplAtlasStraddleSession.sessionPortal(body.keys[root]);
+            if (portal != null) body.pendingFlip = new FlipChoice(body.keys[root], portal, root);
+        }
+    }
+
+    /** Every retained/promoted frame needs contact geometry BEFORE another sample or tick. */
+    private static void seedCurrentFrames(Body body, ServerSubLevel ship, int tick) {
+        body.watches.clear();
+        body.sampledMappings.clear();
+        for (int node : body.liveNodes()) {
+            if (node == IplPieceMap.NATIVE) continue;
+            seedCurrentFrame(body, ship, node, tick);
+        }
+    }
+
+    private static void seedCurrentFrame(Body body, ServerSubLevel ship, int node, int tick) {
+        Portal portal = IplAtlasStraddleSession.sessionPortal(body.keys[node]);
+        var mapping = IplAtlasStraddleSession.sessionMapping(body.keys[node]);
+        if (portal == null || mapping == null) return;
+        body.sampledMappings.putIfAbsent(node, mapping);
+        WatchKey key = new WatchKey(body.parent[node], portal.getUUID());
+        Watch previous = body.watches.get(key);
+        if (previous != null && previous.plot != null) return;
+        var parentMapping = body.parent[node] == IplPieceMap.NATIVE ? null
+            : IplAtlasStraddleSession.sessionMapping(body.keys[body.parent[node]]);
+        Pose3dc pose = parentMapping == null ? ship.logicalPose() : parentMapping.mapPose(ship.logicalPose());
+        Watch watch = new Watch();
+        watch.portal = portal;
+        watch.world = IplPieceMap.Aperture.of(portal);
+        watch.plot = watch.world.toPlot(pose);
+        watch.zone = watch.plot.voxelReach() + 0.05;
+        watch.motionWorldBefore = watch.world;
+        watch.motion = body.motion;
+        watch.seenTick = tick;
+        body.watches.put(key, watch);
+    }
+
+    /** Inherit paths, never a mate's labels or its observed sweep history. */
+    static void contextReady(Body body, ServerSubLevel ship, int tick) {
+        for (int node : body.liveNodes())
+            if (node != IplPieceMap.NATIVE) seedCurrentFrame(body, ship, node, tick);
+        repaired(body, ship, tick);
+    }
+
+    static void repaired(Body body, ServerSubLevel ship, int tick) {
+        settleCounts(body, ship);
+        body.pendingFlip = flipChoice(body, ship, tick);
+    }
+
+    /** Raw observation only; the controller prepares the whole group before uploading edges. */
+    static void samplePhysics(ServerSubLevel ship) {
         if (ship.isRemoved() || !IplRapierNatives.piecesSupported()) return;
         Body body = BODIES.get(ship.getUniqueId());
         if (body == null) {
-            if (portalsNear(ship.getLevel(), queryBox(ship, null, ship.lastPose())).isEmpty()) return;
-            body = new Body(ship.getUniqueId());
+            if (portalsNear(ship.getLevel(), queryBox(ship, ship.lastPose(), ship.logicalPose())).isEmpty()) return;
+            body = new Body(ship);
             BODIES.put(body.id, body);
         }
         sample(body, ship, ship.getLevel().getServer().getTickCount());
-        pushEdges(body, ship);
+    }
+
+    static void publishPhysics(ServerSubLevel ship) {
+        Body body = tracked(ship);
+        if (body != null) pushEdges(body, ship);
     }
 
     private static void sample(Body body, ServerSubLevel ship, int tick) {
         body.pendingFlip = null;
+        rebindObservation(body, ship);
         IplAtlasStraddleSession.refreshShip(ship);
         reconcile(body, ship);
-        sweepAll(body, ship, tick);
+        Pose3d now = new Pose3d(ship.logicalPose());
+        Pose3dc previous = body.sampledPose == null ? ship.lastPose() : body.sampledPose;
+        double angle = 2.0*Math.acos(Math.min(1.0, Math.abs(previous.orientation().dot(now.orientation()))));
+        for (var entry : body.watches.entrySet()) {
+            Watch watch = entry.getValue();
+            if (watch.plot == null || watch.portal == null || watch.portal.isRemoved()) continue;
+            int parent = entry.getKey().node();
+            var mapping = parent == IplPieceMap.NATIVE ? null
+                : IplAtlasStraddleSession.sessionMapping(body.keys[parent]);
+            Pose3dc pose = mapping == null ? now : mapping.mapPose(now);
+            angle = Math.max(angle, IplApertureSweep.rotationAngle(watch.plot,
+                IplPieceMap.Aperture.of(watch.portal).toPlot(pose)));
+        }
+        double radius = 1.0;
+        BoundingBox3ic bounds = ship.getPlot().getBoundingBox();
+        for (int i = 0; i < 8; i++) {
+            var corner = new org.joml.Vector3d((i&1)==0 ? bounds.minX() : bounds.maxX()+1.0,
+                (i&2)==0 ? bounds.minY() : bounds.maxY()+1.0, (i&4)==0 ? bounds.minZ() : bounds.maxZ()+1.0);
+            radius = Math.max(radius, corner.distance(now.rotationPoint()));
+        }
+        int slices = IplTransitSettlement.angularSlices(angle, radius);
+        Pose3d start = new Pose3d(previous);
+        body.motion++;
+        for (int i = 1; i <= slices; i++) {
+            double fraction = (double)i/slices;
+            Pose3d observed = i == slices ? now : start.lerp(now, fraction, new Pose3d());
+            // Companion's pose lerp uses nlerp. Use equal angular fractions for the observed arc.
+            if (i != slices) observed.orientation().set(start.orientation()).slerp(now.orientation(), fraction);
+            sweepAll(body, ship, tick, observed, fraction, (double)(i-1)/slices);
+            body.sampledPose = observed;
+        }
+        body.sampledMappings.clear();
+        for (int node : body.liveNodes()) {
+            if (node == IplPieceMap.NATIVE) continue;
+            var mapping = IplAtlasStraddleSession.sessionMapping(body.keys[node]);
+            if (mapping != null) body.sampledMappings.put(node, mapping);
+        }
         settleCounts(body, ship);
-        body.sampledPose = new Pose3d(ship.logicalPose());
+    }
+
+    private static void rebindObservation(Body body, ServerSubLevel ship) {
+        if (body.owner != ship || body.pushedBody >= 0 && (body.pushedBody != Rapier3D.getID(ship)
+            || body.pushedLevel != ship.getLevel() || body.pushedScene != IplScenes.sceneHandle(ship.getLevel()))) {
+            // UUID survives an unload/replacement; a pose or image from the previous native
+            // body must not become the starting point of a sweep in this body's frame.
+            clearNativePieces(body);
+            body.owner = ship;
+            body.sampledPose = new Pose3d(ship.logicalPose());
+            body.sampledMappings.clear();
+            body.watches.clear();
+            body.fullSync = body.fullPush = true;
+        }
     }
 
     /** Pieces whose session vanished (portal removed, frame invalidated) fall back to their nearest live ancestor. */
@@ -294,11 +431,15 @@ public final class IplPieceTracker {
     private static void free(Body body, int node) {
         body.keys[node] = null;
         body.parent[node] = -1;
+        body.sampledMappings.remove(node);
+        // Watches are keyed by a numeric parent id. Once that id is reused by a DIFFERENT
+        // path, its old children must not sweep from the discarded parent's offset.
+        body.watches.keySet().removeIf(key -> key.node() == node);
     }
 
     // ------------------------------------------------------------------ apertures
 
-    private static void sweepAll(Body body, ServerSubLevel ship, int tick) {
+    private static void sweepAll(Body body, ServerSubLevel ship, int tick, Pose3dc observed, double fraction, double previousFraction) {
         // A newly entered piece may already intersect another portal this tick.
         // Visit newly opened nodes too; otherwise the first movement of the child
         // is lost and a nearby second aperture can be skipped permanently.
@@ -315,10 +456,14 @@ public final class IplPieceTracker {
                 IplStraddlePoseMap.StraddleMapping mapping = key == null ? null : IplAtlasStraddleSession.sessionMapping(key);
                 Portal entered = key == null ? null : IplAtlasStraddleSession.sessionPortal(key);
                 if (key != null && (level == null || mapping == null || entered == null)) continue;
-                Pose3d pose = mapping == null ? new Pose3d(ship.logicalPose()) : mapping.mapPose(ship.logicalPose());
+                var currentMapping = mapping == null ? null : IplStraddlePoseMap.StraddleMapping.interpolate(
+                    body.sampledMappings.get(node), mapping, fraction);
+                var previousMapping = mapping == null ? null : IplStraddlePoseMap.StraddleMapping.interpolate(
+                    body.sampledMappings.get(node), mapping, previousFraction);
+                Pose3d pose = currentMapping == null ? new Pose3d(observed) : currentMapping.mapPose(observed);
                 Pose3dc last = body.sampledPose == null ? ship.lastPose() : body.sampledPose;
-                Pose3d previous = mapping == null ? new Pose3d(last) : mapping.mapPose(last);
-                List<Portal> candidates = portalsNear(level, queryBox(ship, mapping, last));
+                Pose3d previous = previousMapping == null ? new Pose3d(last) : previousMapping.mapPose(last);
+                List<Portal> candidates = portalsNear(level, queryBox(ship, previous, pose));
                 for (int n = 1; n <= IplPieceMap.MAX_PIECE; n++) {
                     if (body.keys[n] == null || body.parent[n] != node) continue;
                     Portal own = IplAtlasStraddleSession.sessionPortal(body.keys[n]);
@@ -335,7 +480,7 @@ public final class IplPieceTracker {
                     // leaves through the front while its other arm enters through the back): edges
                     // only cut and hold their own material (the label-time material rule), so the two
                     // sibling sessions no longer compete for the voxels at the shared plane.
-                    plans.add(planAperture(body, ship, node, portal, pose, previous, tick));
+                    plans.add(planAperture(body, ship, node, portal, pose, previous, tick, fraction, previousFraction));
                 }
                 applyCrossings(body, ship, plans);
                 // Sessions opened during this pass can themselves enter another aperture.
@@ -353,14 +498,20 @@ public final class IplPieceTracker {
     private record Crossing(double time, long voxel, AperturePlan plan, boolean forward) {}
 
     private static AperturePlan planAperture(Body body, ServerSubLevel ship, int node, Portal portal,
-                                           Pose3dc pose, Pose3dc previous, int tick) {
+                                           Pose3dc pose, Pose3dc previous, int tick, double fraction, double previousFraction) {
         Watch watch = body.watches.computeIfAbsent(new WatchKey(node, portal.getUUID()), k -> new Watch());
-        IplPieceMap.Aperture world = IplPieceMap.Aperture.of(portal);
+        IplPieceMap.Aperture actualWorld = IplPieceMap.Aperture.of(portal);
+        if (watch.motion != body.motion) {
+            watch.motionWorldBefore = watch.world == null ? actualWorld : watch.world;
+            watch.world = actualWorld;
+            watch.motion = body.motion;
+        }
+        IplPieceMap.Aperture world = IplApertureSweep.interpolate(watch.motionWorldBefore, actualWorld, fraction);
+        IplPieceMap.Aperture beforeWorld = IplApertureSweep.interpolate(watch.motionWorldBefore, actualWorld, previousFraction);
         IplPieceMap.Aperture now = world.toPlot(pose);
         if (watch.sample != body.sample) {
-            watch.sampleBefore = watch.plot != null && watch.seenTick >= tick - 1 ? watch.plot : world.toPlot(previous);
+            watch.sampleBefore = watch.plot != null && watch.seenTick >= tick - 1 ? watch.plot : beforeWorld.toPlot(previous);
             watch.sample = body.sample;
-            watch.live = false;
         }
         IplPieceMap.Aperture before = watch.sampleBefore;
         int child = body.childOf(node, portal.getUUID());
@@ -392,7 +543,6 @@ public final class IplPieceTracker {
             if (child < 0) continue;
             setLabel(body, event.voxel, event.forward ? child : plan.parent);
             body.movedAt.put(event.voxel, event.time);
-            plan.watch.live = true;
         }
         for (AperturePlan plan : plans) {
             int child = body.childOf(plan.parent, plan.portal.getUUID());
@@ -400,7 +550,6 @@ public final class IplPieceTracker {
                 plan.watch.zone, plan.parent, child);
             // Geometric pre-arming, not a velocity forecast: the voxel already touches the aperture.
             if (child < 0 && current.bridging) child = openSession(body, ship, plan.parent, plan.portal);
-            plan.watch.live |= current.bridging;
             plan.watch.cut = current.cut;
         }
     }
@@ -415,7 +564,7 @@ public final class IplPieceTracker {
         body.map.setLabel(BlockPos.getX(packed), BlockPos.getY(packed), BlockPos.getZ(packed), label);
     }
 
-    private static int openSession(Body body, ServerSubLevel ship, int parentNode, Portal portal) {
+    static int openSession(Body body, ServerSubLevel ship, int parentNode, Portal portal) {
         int node = body.freeNode();
         if (node < 0) {
             if (!loggedNodeCap) {
@@ -431,8 +580,28 @@ public final class IplPieceTracker {
         if (!IplAtlasStraddleSession.open(key, ship, portal, node)) return -1;
         body.keys[node] = key;
         body.parent[node] = parentNode;
-        IplStraddleSessionSync.onSessionStart(ship.getLevel().getServer(), ship, key, portal);
-        return node;
+        body.fullSync = true; // even an empty context image needs its label-time reference edge
+        try {
+            IplStraddleSessionSync.onSessionStart(ship.getLevel().getServer(), ship, key, portal);
+            return node;
+        } catch (RuntimeException | LinkageError failure) {
+            // No material can own the node until this method returns. Roll back its image
+            // and any partial advertisement, without touching the already existing paths.
+            try {
+                IplStraddleSessionSync.onSessionEnd(ship.getLevel().getServer(), key, "open-failed");
+            } catch (RuntimeException | LinkageError cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            try {
+                IplAtlasStraddleSession.clear(key, "open-failed");
+            } catch (RuntimeException | LinkageError cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            } finally {
+                free(body, node);
+            }
+            LOG.warn("[IPL-PIECES] session publication failed for ship {} path={}", body.id, key.path(), failure);
+            return -1;
+        }
     }
 
     /** What one aperture did to the material of one piece during the last tick. */
@@ -604,19 +773,8 @@ public final class IplPieceTracker {
         return sum;
     }
 
-    /** Empty images retire immediately; a non-empty image is material history, not a leash. */
-    private static void retireEmptySessions(Body body, ServerSubLevel ship, int tick) {
-        List<Integer> nodes = body.liveNodes();
-        for (int i = nodes.size() - 1; i > 0; i--) {
-            int node = nodes.get(i);
-            if (body.keys[node] == null || body.subtreeMaterial(node) > 0) continue;
-            Watch watch = body.edgeWatch(node);
-            if (watch == null || !watch.liveAt(tick)) endSubtree(body, ship.getLevel().getServer(), node, "emptied");
-        }
-    }
-
     /** Ends session {@code node} with its chained sessions; their labels return to the parent piece. */
-    private static void endSubtree(Body body, MinecraftServer server, int node, String reason) {
+    static void endSubtree(Body body, MinecraftServer server, int node, String reason) {
         int up = body.parent[node];
         StraddleKey key = body.keys[node];
         int[] f = new int[IplPieceMap.MAX_PIECE + 1];
@@ -629,6 +787,7 @@ public final class IplPieceTracker {
             }
         }
         if (key != null) IplAtlasStraddleSession.clear(key, reason);
+        body.fullSync = true;
     }
 
     // ------------------------------------------------------------------ natives and clients
@@ -710,24 +869,26 @@ public final class IplPieceTracker {
     // ------------------------------------------------------------------ flips
 
     /**
-     * Ready when the native piece holds nothing and the root session holding the most material
-     * is through its aperture: the body completes its transit through that one portal, and the
-     * material of other root sessions follows it (README, section 2).
+     * Ready when the native piece holds nothing and exactly one root owns all material.
+     * Different material roots cannot silently follow an arbitrary largest root: they first
+     * need a geometrically clear, group-wide settlement.
      */
     @Nullable
     private static FlipChoice flipChoice(Body body, ServerSubLevel ship, int tick) {
         if (!body.hasSessions() || nativeHasMaterial(body, ship.getPlot())) return null;
         int best = -1;
         int bestMaterial = 0;
+        int materialRoots = 0;
         for (int node : body.liveNodes()) {
             if (node == IplPieceMap.NATIVE || body.parent[node] != IplPieceMap.NATIVE) continue;
             int material = body.subtreeMaterial(node);
+            if (material > 0) materialRoots++;
             if (material > bestMaterial) {
                 best = node;
                 bestMaterial = material;
             }
         }
-        if (best < 0) return null;
+        if (best < 0 || materialRoots != 1) return null;
         Watch watch = body.edgeWatch(best);
         if (watch != null && watch.cutAt(tick)) return null;
         Portal portal = IplAtlasStraddleSession.sessionPortal(body.keys[best]);
@@ -777,12 +938,16 @@ public final class IplPieceTracker {
         body.counts.clear();
         Arrays.fill(body.totals, 0);
         body.movedAt.clear();
+        body.owner = live;
         body.sampledPose = new Pose3d(live.logicalPose());
+        body.sampledMappings.clear();
         body.recount.addAll(body.map.sectionKeys());
         body.fullPush = true;
         body.fullSync = true;
+        body.pendingFlip = null;
         reconcile(body, live);
         settleCounts(body, live);
+        seedCurrentFrames(body, live, live.getLevel().getServer().getTickCount());
         // Before the next physics step: the natives still hold the labels of the old frame.
         pushEdges(body, live);
         pushLabels(body, live);
@@ -840,12 +1005,9 @@ public final class IplPieceTracker {
 
     // ------------------------------------------------------------------ portals
 
-    /** World bounds of a piece image ({@code mapping == null}: the body itself), with the query margin. */
-    private static AABB queryBox(ServerSubLevel ship, @Nullable IplStraddlePoseMap.StraddleMapping mapping,
-                                 Pose3dc previous) {
+    /** World bounds of two observed piece poses, with a conservative rotational query margin. */
+    private static AABB queryBox(ServerSubLevel ship, Pose3dc before, Pose3dc now) {
         BoundingBox3ic bounds = ship.getPlot().getBoundingBox();
-        Pose3dc now = mapping == null ? ship.logicalPose() : mapping.mapPose(ship.logicalPose());
-        Pose3dc before = mapping == null ? previous : mapping.mapPose(previous);
         // Union of actual endpoints plus a conservative rotational arc bound. In contrast
         // to an expanded current AABB this also works for a rotated portal image and >32 b/t.
         double minX = Double.POSITIVE_INFINITY, minY = minX, minZ = minX;

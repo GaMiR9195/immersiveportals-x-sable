@@ -533,7 +533,21 @@ impl SableDispatcher {
             g1.chart,
         );
 
+        // IPL pieces: a body straddling a portal has one collider per piece, each seeing
+        // the WHOLE voxel grid. Material that can never be this collider's piece (the
+        // part of an image buried in far-side terrain, or the passed part of the native
+        // collider in source terrain) would otherwise yield one cuboid manifold per voxel
+        // pair, only to be neutralized in the contact hook while the solver still pays
+        // for it. Skip those pairs before any manifold exists.
+        let pieces_1 = collider_info_1.and_then(|i| i.pieces.as_deref());
+        let pieces_2 = collider_info_2.pieces.as_deref();
+
         for (static_pos, dynamic_pos) in pairs.iter() {
+            if pieces_2.is_some_and(|p| !p.voxel_may_be(g2.piece, *dynamic_pos))
+                || pieces_1.is_some_and(|p| !p.voxel_may_be(g1.piece, *static_pos))
+            {
+                continue;
+            }
             let static_x = static_pos.x;
             let static_y = static_pos.y;
             let static_z = static_pos.z;

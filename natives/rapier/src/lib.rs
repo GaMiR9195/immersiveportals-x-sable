@@ -9,6 +9,7 @@ mod event_handler;
 mod groups;
 mod hooks;
 pub mod ipl_ext;
+mod joint_transit;
 mod joints;
 mod rope;
 mod scene;

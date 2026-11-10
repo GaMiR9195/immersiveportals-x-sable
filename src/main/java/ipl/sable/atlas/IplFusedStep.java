@@ -9,7 +9,7 @@ import ipl.sable.duck.IplPhysicsStepClock;
 import ipl.sable.mixin.PhysicsSystemAccessor;
 import ipl.sable.natives.IplRapierNatives;
 import ipl.sable.transit.IplShipPortalAnchor;
-import ipl.sable.transit.IplPieceTracker;
+import ipl.sable.transit.IplTransitController;
 import net.minecraft.CrashReport;
 import net.minecraft.ReportedException;
 import net.minecraft.server.MinecraftServer;
@@ -168,11 +168,7 @@ public final class IplFusedStep {
     private static void sampleTransit(List<Participant> participants, MinecraftServer server) {
         IplShipPortalAnchor.tickAll(server);
         for (Participant p : participants) {
-            runGuarded(p, () -> {
-                for (ServerSubLevel ship : p.container().getAllSubLevels()) {
-                    IplPieceTracker.samplePhysics(ship);
-                }
-            });
+            runGuarded(p, () -> IplTransitController.onPhysicsSample(p.container()));
         }
     }
 

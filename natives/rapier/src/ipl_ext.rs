@@ -19,14 +19,17 @@ use marten::Real;
 use rapier3d::glamx::DVec3;
 use rapier3d::math::Vec3;
 use rapier3d::prelude::ColliderHandle;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::scene::{LevelColliderID, PhysicsScene};
 
 /// Native ABI level probed by Java (`IplRapierNatives.nativeAbiLevel()`):
 /// 3 = piece labels + aperture edges (`setPieceSection`, `setPieceEdges`, `setImageNode`).
 /// 5 = label-time plot plane. 6 = complete reference aperture + observed material sweep.
-pub const IPL_NATIVE_ABI_LEVEL: jint = 6;
+/// 7 = internal joint warm-start reset after a group changes its native frame.
+/// 8 = rope point routing (`ropeIds`, `ropePointPositions`, `routeRopePoint`) and
+///     piece-aware voxel pair culling in the dispatcher.
+pub const IPL_NATIVE_ABI_LEVEL: jint = 8;
 
 /// Doubles per edge in `setPieceEdges`:
 /// `[parent child  ox oy oz  nx ny nz  wx wy wz halfW  hx hy hz halfH  zone slack
@@ -107,6 +110,31 @@ impl IplPieces {
             Some(s) => s[((x & 15) | ((y & 15) << 4) | ((z & 15) << 8)) as usize],
             None => 0,
         }
+    }
+
+    /// Cheap conservative pre-test for the dispatcher: can `voxel` (plot coordinates) be
+    /// classified as piece `node` by [`Self::classify_voxel`] this step? True when its
+    /// label already is `node`, or when it lies near the label-time aperture of an edge
+    /// that may relabel it. Everything else (the bulk of a body buried in the far-side
+    /// terrain behind a portal) cannot produce a surviving contact for that collider, so
+    /// no manifold is generated for it at all.
+    #[inline]
+    pub fn voxel_may_be(&self, node: u8, voxel: rapier3d::glamx::IVec3) -> bool {
+        const BAND: f64 = 8.0;
+        let label = self.label(voxel.x, voxel.y, voxel.z);
+        if label == node {
+            return true;
+        }
+        let centre = voxel.as_dvec3() + DVec3::splat(0.5);
+        self.edges.iter().any(|e| {
+            if label != e.parent && label != e.child {
+                return false;
+            }
+            let d = centre - e.plot_origin;
+            d.dot(e.plot_normal).abs() <= BAND
+                && d.dot(e.plot_axis_w).abs() <= e.plot_half_w.max(e.half_w) + BAND
+                && d.dot(e.plot_axis_h).abs() <= e.plot_half_h.max(e.half_h) + BAND
+        })
     }
 
     /// Classifies the body's OWN surface witness, not the midpoint between colliders.
@@ -434,10 +462,25 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImageNode<'loc
     else {
         return;
     };
+    let handle = ipl_unpack_handle(packed_handle);
     info.pieces
         .get_or_insert_with(Default::default)
         .image_nodes
-        .insert(ipl_unpack_handle(packed_handle), node as u8);
+        .insert(handle, node as u8);
+    // Mirror the node on the shape so the dispatcher can cull foreign material early.
+    let mut sim_data = scene
+        .sim_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(collider) = sim_data.collider_set.get_mut(handle)
+        && let Some(existing) = collider.shape().as_shape::<crate::collider::LevelCollider>().copied()
+        && existing.piece != node as u8
+    {
+        collider.set_shape(rapier3d::prelude::SharedShape::new(crate::collider::LevelCollider {
+            piece: node as u8,
+            ..existing
+        }));
+    }
 }
 
 /// Drop all piece data of a body (no straddle left): contacts are no longer clipped.
@@ -468,92 +511,6 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_clearPieces<'loca
     if changed {
         invalidate_piece_contacts(scene, body_id as LevelColliderID);
     }
-}
-
-/// Sable body ids in the impulse-joint component containing `body_id`.
-///
-/// `rigid_only != 0`: traverse only joints that make a RIGID assembly — both endpoints
-/// Sable ship bodies AND at least one ANGULAR axis locked (bearing/fixed/prismatic
-/// couplings). This excludes flexible links regardless of construction: native rope
-/// particle chains (endpoints aren't ship bodies) and rope/chain links built as
-/// one-block sub-levels joined by ball-type joints (linear-only locks) or springs
-/// (empty lock mask). This mode reports only genuinely rigid assemblies;
-/// the transit controller uses the full walk to keep flexible links together too.
-///
-/// `rigid_only == 0`: the full walk — every joint bridges.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_connectedSableBodyIds<'local>(
-    env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    scene_handle: jlong,
-    body_id: jint,
-    rigid_only: jboolean,
-) -> jni::objects::JIntArray<'local> {
-    if scene_handle == 0 || body_id < 0 {
-        return env.new_int_array(0).unwrap();
-    }
-    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let sable_data = scene
-        .sable_data
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(start) = sable_data
-        .rigid_bodies
-        .get(&(body_id as LevelColliderID))
-        .copied()
-    else {
-        return env.new_int_array(0).unwrap();
-    };
-    let sable_handles: HashSet<_> = sable_data.rigid_bodies.values().copied().collect();
-    let sim = scene
-        .sim_data
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut connected = HashSet::from([start]);
-    loop {
-        let mut changed = false;
-        for (_, joint) in sim.impulse_joint_set.iter() {
-            if joint.body1 == scene.world.ground_handle || joint.body2 == scene.world.ground_handle
-            {
-                continue;
-            }
-            if rigid_only != 0 {
-                if !sable_handles.contains(&joint.body1) || !sable_handles.contains(&joint.body2) {
-                    continue;
-                }
-                // Rope/chain links can be sub-levels too: a ball-type link (linear-only
-                // locks) or spring (empty mask) is flexible, not rigid. Rigid couplings
-                // (bearing = revolute, fixed) always lock at least one angular axis.
-                if !joint
-                    .data
-                    .locked_axes
-                    .intersects(rapier3d::prelude::JointAxesMask::ANG_AXES)
-                {
-                    continue;
-                }
-            }
-            if connected.contains(&joint.body1) && connected.insert(joint.body2) {
-                changed = true;
-            }
-            if connected.contains(&joint.body2) && connected.insert(joint.body1) {
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let mut ids: Vec<jint> = sable_data
-        .rigid_bodies
-        .iter()
-        .filter_map(|(id, handle)| connected.contains(handle).then_some(*id as jint))
-        .collect();
-    ids.sort_unstable();
-    let result = env.new_int_array(ids.len() as i32).unwrap();
-    if !ids.is_empty() {
-        env.set_int_array_region(&result, 0, &ids).unwrap();
-    }
-    result
 }
 
 // ---------------------------------------------------------------------------
@@ -783,6 +740,32 @@ mod piece_routing_tests {
         IplPieceEdge {
             slack: 0.0,
             ..edge(parent, child, x)
+        }
+    }
+
+    #[test]
+    fn dispatcher_cull_keeps_every_voxel_classification_can_reach() {
+        use rapier3d::glamx::IVec3;
+        let mut pieces = IplPieces::default();
+        pieces.edges = vec![edge(0, 1, 0.0)];
+        let mut labels = vec![0u8; 4096].into_boxed_slice();
+        labels[3] = 1; // voxel (3,0,0) already labelled as the image's piece
+        pieces.sections.insert((0, 0, 0), labels);
+        // Own label always passes; near the aperture either piece may own it.
+        assert!(pieces.voxel_may_be(1, IVec3::new(3, 0, 0)));
+        assert!(pieces.voxel_may_be(1, IVec3::new(-2, 0, 0)));
+        assert!(pieces.voxel_may_be(0, IVec3::new(3, 0, 0)));
+        // Native material buried far from the rectangle can never be the image's: no manifold.
+        assert!(!pieces.voxel_may_be(1, IVec3::new(-40, 0, 0)));
+        assert!(!pieces.voxel_may_be(1, IVec3::new(0, 30, 0)));
+        // ...and whatever could cross the plane this step is a superset of `classify_voxel`.
+        for x in -12..12 {
+            let voxel = IVec3::new(x, 0, 0);
+            let centre = voxel.as_dvec3() + DVec3::splat(0.5);
+            for shift in [-3.0, -1.0, 1.0, 3.0] {
+                let piece = pieces.classify_voxel(centre, voxel, |_, q| Some(q + DVec3::new(shift, 0.0, 0.0)));
+                assert!(pieces.voxel_may_be(piece, voxel), "x={x} shift={shift} piece={piece}");
+            }
         }
     }
 

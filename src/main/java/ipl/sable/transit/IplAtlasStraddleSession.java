@@ -72,6 +72,7 @@ public final class IplAtlasStraddleSession {
         /** Piece id of this session in the body's {@link IplPieceMap} (1..255). */
         final int node;
         IplStraddlePoseMap.StraddleMapping mapping;
+        IplPieceMap.Aperture aperture;
         long imageHandle = -1;
 
         Session(StraddleKey key, ServerSubLevel sub, Portal portal, ServerLevel source, ServerLevel dest,
@@ -86,6 +87,7 @@ public final class IplAtlasStraddleSession {
             this.destScene = destScene;
             this.realId = Rapier3D.getID(sub);
             this.node = node;
+            this.aperture = IplPieceMap.Aperture.of(portal);
         }
     }
 
@@ -93,7 +95,7 @@ public final class IplAtlasStraddleSession {
 
     /** Whether {@code portal} can carry a session at all (scale 1, live, loaded destination). */
     static boolean supports(ServerLevel source, Portal portal) {
-        if (portal.isRemoved() || portal.level() != source) return false;
+        if (portal.isRemoved() || !portal.isTeleportable() || portal.level() != source) return false;
         if (Math.abs(portal.getScaling() - 1.0) > 1e-9) {
             if (!loggedScaledSkip) {
                 loggedScaledSkip = true;
@@ -127,14 +129,29 @@ public final class IplAtlasStraddleSession {
         if (physical) {
             Vec3 shift = session.mapping.shift();
             Quaterniond rot = session.mapping.mapQuat(new Quaterniond());
-            session.imageHandle = IplRapierNatives.createImageCollider(
-                destScene, session.realId, shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
-            if (session.imageHandle < 0) {
-                LOG.warn("[IPL-IMAGE] image collider creation failed for ship {} portal {}",
-                    sub.getUniqueId(), portal.getUUID());
+            try {
+                session.imageHandle = IplRapierNatives.createImageCollider(
+                    destScene, session.realId, shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
+                if (session.imageHandle < 0) {
+                    LOG.warn("[IPL-IMAGE] image collider creation failed for ship {} portal {}",
+                        sub.getUniqueId(), portal.getUUID());
+                    return false;
+                }
+                IplRapierNatives.setImageNode(destScene, session.realId, session.imageHandle, node);
+            } catch (RuntimeException | LinkageError failure) {
+                // A handle allocated before node initialization failed is not yet in SESSIONS.
+                // The tracker cannot find/retire it, so the allocator must release it here.
+                if (session.imageHandle >= 0) {
+                    try {
+                        IplRapierNatives.removeImageCollider(destScene, session.realId, session.imageHandle);
+                    } catch (RuntimeException | LinkageError cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                }
+                LOG.warn("[IPL-IMAGE] image initialization failed for ship {} portal {}",
+                    sub.getUniqueId(), portal.getUUID(), failure);
                 return false;
             }
-            IplRapierNatives.setImageNode(destScene, session.realId, session.imageHandle, node);
         }
         SESSIONS.put(key, session);
         sessionsChanged();
@@ -149,24 +166,31 @@ public final class IplAtlasStraddleSession {
      */
     static void refreshShip(ServerSubLevel sub) {
         for (Session s : snapshot) {
-            if (s.sub != sub || !SESSIONS.containsKey(s.key)) continue;
+            if (!s.key.subLevelUuid().equals(sub.getUniqueId()) || !SESSIONS.containsKey(s.key)) continue;
             Session parent = s.key.isRoot() ? null : SESSIONS.get(s.key.parent());
-            if (s.portal.isRemoved() || s.bodyLevel != sub.getLevel() || (!s.key.isRoot() && parent == null)
+            ServerLevel source = parent == null ? sub.getLevel() : parent.dest;
+            if (s.sub != sub || s.realId != Rapier3D.getID(sub) || s.bodyLevel != sub.getLevel()
+                || (!s.key.isRoot() && parent == null) || source != s.source || !supports(source, s.portal)
+                || IplShipPortalAnchor.isAnchorShip(s.portal, sub.getUniqueId())
+                || source.getServer().getLevel(s.portal.getDestDim()) != s.dest
                 || IplScenes.sceneHandle(s.bodyLevel) != s.bodyScene || IplScenes.sceneHandle(s.dest) != s.destScene) {
                 clear(s.key, "frame-invalidated");
                 continue;
             }
             IplStraddlePoseMap.StraddleMapping local = IplStraddlePoseMap.StraddleMapping.of(s.portal);
             IplStraddlePoseMap.StraddleMapping mapping = parent == null ? local : parent.mapping.then(local);
-            if (mapping.sameAs(s.mapping)) continue;
+            IplPieceMap.Aperture aperture = IplPieceMap.Aperture.of(s.portal);
+            boolean moved = !mapping.sameAs(s.mapping);
+            if (!moved && aperture.equals(s.aperture)) continue;
             s.mapping = mapping;
-            if (s.imageHandle >= 0) {
+            s.aperture = aperture;
+            if (moved && s.imageHandle >= 0) {
                 Vec3 shift = mapping.shift();
                 Quaterniond rot = mapping.mapQuat(new Quaterniond());
                 IplRapierNatives.setImagePrefix(s.destScene, s.imageHandle,
                     shift.x, shift.y, shift.z, rot.x, rot.y, rot.z, rot.w);
             }
-            // Clients mirror the advertised geometry: a moved portal is re-advertised.
+            // A resized/turned rectangle can change while its full isometry stays identical.
             IplStraddleSessionSync.onSessionStart(sub.getLevel().getServer(), sub, s.key, s.portal);
         }
     }
