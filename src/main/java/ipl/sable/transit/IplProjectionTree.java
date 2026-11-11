@@ -2,6 +2,7 @@ package ipl.sable.transit;
 
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import ipl.sable.IplPerfDiagnostics;
 import ipl.sable.client.IplClientProjections;
 import ipl.sable.client.IplStraddleSessionStore;
 import net.minecraft.resources.ResourceKey;
@@ -27,12 +28,12 @@ import java.util.function.Consumer;
  * <p>Every interaction asks the same question -- "which piece is this plot point in?" -- and
  * gets the answer the physics uses: the label of the voxel, cut by the aperture plane only
  * inside the thin zone around an aperture ({@link IplPieceMap#classify}). Material that passed
- * a portal plane beside its frame keeps its piece; there is no half-space or tube anywhere.
+ * a portal plane beside its frame keeps its piece.
  *
  * <p>Server trees use the tracker's map and edges. Client trees use the mirrored labels and
  * rebuild the edges at the logical pose against the mirrored label-time rectangles.
  * Cached per thread and tick; server cache hits also require the latest sampled edge array,
- * because several material/geometry samples now occur within one game tick.
+ * because a game tick holds several material/geometry samples.
  */
 public final class IplProjectionTree {
 
@@ -283,8 +284,11 @@ public final class IplProjectionTree {
         }
         if (tree == null) {
             if (client) {
+                long start = IplPerfDiagnostics.ENABLED ? System.nanoTime() : 0L;
                 tree = build(sub, IplClientProjections.treeEntries(sub),
                     IplStraddleSessionStore.pieces(sub.getUniqueId()), null);
+                if (IplPerfDiagnostics.ENABLED)
+                    IplPerfDiagnostics.record(IplPerfDiagnostics.CLIENT_TREE, System.nanoTime() - start);
             } else {
                 tree = build(sub, IplAtlasStraddleSession.treeEntries(sub), serverPieces, serverEdges);
             }

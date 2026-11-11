@@ -227,10 +227,21 @@ public final class IplClientProjections {
 
     // ------------------------------------------------------------------ projection tree
 
-    /** Client clock for {@link IplProjectionTree}'s per-tick cache. */
+    private static long clientTicks;
+
+    /** Client tick tail: advances {@link #clientStamp}. */
+    public static void onClientTick() {
+        clientTicks++;
+    }
+
+    /**
+     * Per-tick key of the client caches (projection trees, render views). A client tick count,
+     * not {@code Minecraft.level}'s game time: Immersive Portals swaps that level for every
+     * portal pass, and each dimension has its own clock, so a projection into another dimension
+     * would drop and rebuild every cache on each pass switch.
+     */
     public static long clientStamp() {
-        ClientLevel level = Minecraft.getInstance().level;
-        return level == null ? 0L : level.getGameTime();
+        return clientTicks;
     }
 
     /** The mirrored server sessions of {@code sub} as projection-tree entries (none for ghosts). */

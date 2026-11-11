@@ -11,7 +11,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/** A body-independent portal path. Piece numbers belong to bodies, not to the group. */
+/** The portals a session chain went through, with the destination chart and composed isometry. */
 final class IplTransitPath {
     private final List<Portal> portals;
     private final ServerLevel destination;
@@ -36,17 +36,6 @@ final class IplTransitPath {
     int depth() { return portals.size(); }
 
     String parentKey() { return parentKey; }
-
-    boolean canOpenFor(ServerSubLevel ship) {
-        if (ship.isRemoved()) return false;
-        ServerLevel level = ship.getLevel();
-        for (Portal portal : portals) {
-            if (!IplAtlasStraddleSession.supports(level, portal)
-                || IplShipPortalAnchor.isAnchorShip(portal, ship.getUniqueId())) return false;
-            level = level.getServer().getLevel(portal.getDestDim());
-        }
-        return level == destination;
-    }
 
     @Nullable
     static IplTransitPath from(ServerSubLevel ship, IplPieceTracker.Body body, int node) {

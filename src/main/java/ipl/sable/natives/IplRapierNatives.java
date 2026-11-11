@@ -106,7 +106,7 @@ public final class IplRapierNatives {
 
     /**
      * ABI 8: rope points follow portals with their collision geometry (see
-     * {@code IplRopeTransit}); the dispatcher also culls voxel pairs that cannot belong to
+     * {@code IplRopeRouting}); the dispatcher also culls voxel pairs that cannot belong to
      * a collider's piece before any manifold is built.
      */
     public static final int ROPE_ROUTE_ABI = 8;

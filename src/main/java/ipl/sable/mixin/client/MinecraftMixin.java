@@ -1,6 +1,7 @@
 package ipl.sable.mixin.client;
 
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import ipl.sable.client.IplClientProjections;
 import ipl.sable.client.IplParentDimSync;
 import ipl.sable.client.IplSharedClock;
 import net.minecraft.client.Minecraft;
@@ -59,6 +60,7 @@ public abstract class MinecraftMixin {
     /** Transit bookkeeping runs after the whole tick, when every container is up to date. */
     @Inject(method = "tick", at = @At("TAIL"))
     private void ipl$applyTransitHandoffs(CallbackInfo ci) {
+        IplClientProjections.onClientTick();
         if (this.level != null) IplParentDimSync.applyPendingHandoffs();
     }
 }

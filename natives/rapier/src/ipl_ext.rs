@@ -14,7 +14,7 @@
 
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JDoubleArray};
-use jni::sys::{jboolean, jdouble, jint, jlong};
+use jni::sys::{jdouble, jint, jlong};
 use marten::Real;
 use rapier3d::glamx::DVec3;
 use rapier3d::math::Vec3;

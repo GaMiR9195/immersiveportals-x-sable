@@ -44,14 +44,17 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
- * Material-history tracker. Native-backed bodies are sampled before the first physics
- * substep and after every actual pose readback; tick tail retires empty sessions, publishes
- * label/reference geometry and selects completed flips. Stock-native fallback samples at tail.
+ * Material history of every body near a portal. Native-backed bodies are sampled before the
+ * first physics substep and after every pose readback; the tick tail settles each body
+ * ({@link IplSessionLifecycle}), publishes labels and reference geometry and offers completed
+ * flips to {@link IplTransitController}. Stock natives sample at the tick tail only.
+ *
+ * <p>Every body owns its own sessions, labels and sweep history. Joints never open a session
+ * on a body that does not touch an aperture: linked bodies are coupled only at the flip
+ * ({@link IplLinks}).
  *
  * <p>Finite-aperture events are applied in observed time order, including sibling faces and
- * newly reached nested frames. Missing occupied voxels at an aperture never acts as a timeout:
- * {@link IplSessionLifecycle} settles a completed body/joint group only after its whole material
- * envelope is clear of every live finite aperture.
+ * newly reached nested frames. An empty aperture is never a timeout.
  */
 public final class IplPieceTracker {
     private static final Logger LOG = LoggerFactory.getLogger("ipl-piece-tracker");
@@ -114,6 +117,8 @@ public final class IplPieceTracker {
         final LongOpenHashSet unpushed = new LongOpenHashSet();
         boolean fullSync = true;
         boolean fullPush = true;
+        /** Edges of the last label payload: an unchanged body sends nothing. */
+        @Nullable IplPieceMap.Edge[] syncedEdges;
         /** Where the natives hold this body's piece data ({@code nativeHasPieces}), to clear it on a change of body or scene. */
         @Nullable ServerLevel pushedLevel;
         long pushedScene;
@@ -232,15 +237,6 @@ public final class IplPieceTracker {
         return BODIES.get(ship.getUniqueId());
     }
 
-    /** A joint/actor mate joins the context before it touches an aperture itself. */
-    static Body trackForContext(ServerSubLevel ship) {
-        return BODIES.computeIfAbsent(ship.getUniqueId(), id -> {
-            Body body = new Body(ship);
-            body.sampledPose = new Pose3d(ship.logicalPose());
-            return body;
-        });
-    }
-
     /** Only final labels of this round are advertised, never its temporary canonicalization states. */
     static void publish(ServerSubLevel ship) {
         Body body = tracked(ship);
@@ -251,23 +247,12 @@ public final class IplPieceTracker {
         if (!body.hasSessions() && body.map.isEmpty() && body.watches.isEmpty()) BODIES.remove(body.id);
     }
 
-    /**
-     * Seeds the retained path at the current observed pose. A newly opened mate has no sweep
-     * watch yet; leaving it absent would omit its aperture from native contact classification.
-     */
-    static void settled(Body body, ServerSubLevel ship, int tick, int terminal, boolean empty) {
+    /** After a settlement moved material between frames: sweep again from the current pose. */
+    static void settled(Body body, ServerSubLevel ship, int tick) {
         body.owner = ship;
         body.sampledPose = new Pose3d(ship.logicalPose());
-        int root = terminal;
-        while (root > 0 && body.parent[root] > 0) root = body.parent[root];
         seedCurrentFrames(body, ship, tick);
-        settleCounts(body, ship);
-        body.pendingFlip = flipChoice(body, ship, tick);
-        // A zero-block connector is still a member of the Sable connection chain.
-        if (empty && root > 0) {
-            Portal portal = IplAtlasStraddleSession.sessionPortal(body.keys[root]);
-            if (portal != null) body.pendingFlip = new FlipChoice(body.keys[root], portal, root);
-        }
+        repaired(body, ship, tick);
     }
 
     /** Every retained/promoted frame needs contact geometry BEFORE another sample or tick. */
@@ -300,13 +285,6 @@ public final class IplPieceTracker {
         watch.motion = body.motion;
         watch.seenTick = tick;
         body.watches.put(key, watch);
-    }
-
-    /** Inherit paths, never a mate's labels or its observed sweep history. */
-    static void contextReady(Body body, ServerSubLevel ship, int tick) {
-        for (int node : body.liveNodes())
-            if (node != IplPieceMap.NATIVE) seedCurrentFrame(body, ship, node, tick);
-        repaired(body, ship, tick);
     }
 
     static void repaired(Body body, ServerSubLevel ship, int tick) {
@@ -479,7 +457,7 @@ public final class IplPieceTracker {
                     // Both faces of a bi-faced doorway are honest entrances (the U-shaped body that
                     // leaves through the front while its other arm enters through the back): edges
                     // only cut and hold their own material (the label-time material rule), so the two
-                    // sibling sessions no longer compete for the voxels at the shared plane.
+                    // sibling sessions never compete for the voxels at the shared plane.
                     plans.add(planAperture(body, ship, node, portal, pose, previous, tick, fraction, previousFraction));
                 }
                 applyCrossings(body, ship, plans);
@@ -737,6 +715,16 @@ public final class IplPieceTracker {
         body.counts.put(key, pairs);
     }
 
+    /** Whether the body has any block at all; a zero-block connector follows its group. */
+    static boolean hasBlocks(ServerSubLevel ship) {
+        for (PlotChunkHolder holder : ship.getPlot().getLoadedChunks()) {
+            LevelChunk chunk = holder.getChunk();
+            if (chunk == null) continue;
+            for (LevelChunkSection section : chunk.getSections()) if (!section.hasOnlyAir()) return true;
+        }
+        return false;
+    }
+
     /** Whether the native piece holds any block (labelled native, or in a section without labels). */
     private static boolean nativeHasMaterial(Body body, LevelPlot plot) {
         if (body.totals[IplPieceMap.NATIVE] > 0) return true;
@@ -849,6 +837,15 @@ public final class IplPieceTracker {
         body.nativeHasPieces = true;
     }
 
+    private static boolean sameEdges(IplPieceMap.Edge[] a, @Nullable IplPieceMap.Edge[] b) {
+        if (b == null || a.length != b.length) return false;
+        for (int i = 0; i < a.length; i++) {
+            if (a[i].parent != b[i].parent || a[i].child != b[i].child
+                || !a[i].aperture.equals(b[i].aperture) || !a[i].reference.equals(b[i].reference)) return false;
+        }
+        return true;
+    }
+
     /** Drops the piece data the natives hold for this body, if its scene is still alive. */
     private static void clearNativePieces(Body body) {
         if (body.nativeHasPieces && body.pushedLevel != null
@@ -859,10 +856,12 @@ public final class IplPieceTracker {
     }
 
     private static void pushLabels(Body body, ServerSubLevel ship) {
-        if (!body.fullSync && body.unsynced.isEmpty() && !body.hasSessions()) return;
+        IplPieceMap.Edge[] edges = body.map.edges();
+        if (!body.fullSync && body.unsynced.isEmpty() && sameEdges(edges, body.syncedEdges)) return;
         CompoundTag payload = body.map.encode(body.fullSync ? null : body.unsynced.toLongArray());
         body.fullSync = false;
         body.unsynced.clear();
+        body.syncedEdges = edges;
         IplStraddleSessionSync.sendLabels(ship.getLevel().getServer(), body.id, payload);
     }
 
