@@ -6,8 +6,7 @@
    through portals.
 4) Linux/macOS natives build script, multi-platform natives loader, far less console spam.
 5) Creative Physics Staff through portals: grab and lock through any chain of portals (blocks behind
-   a doorway no longer block it), drags survive cross-dimension moves, the beam follows the portals
-   it really went through without tangling.
+   a doorway no longer block it), drags survive cross-dimension moves, less tangling.
 6) Optimization, caching, less useless work.
 
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.
