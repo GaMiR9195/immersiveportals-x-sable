@@ -186,6 +186,8 @@ public final class IplShipFlip {
                     new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
                     new Vector3d(mappedAng.x, mappedAng.y, mappedAng.z));
             }
+            // Staff joints on the source body go while it is still valid; the sessions stay.
+            IplGrabChain.beforeCrossMove(ship);
             sourceContainer.removeSubLevel(ship, SubLevelRemovalReason.REMOVED);
         } catch (RuntimeException e) {
             LOG.error("[IPL-MOVE] move of {} failed; rolling back the copy", uuid, e);
@@ -195,6 +197,12 @@ public final class IplShipFlip {
                 LOG.error("[IPL-MOVE] rollback failed for {}", uuid, rollbackError);
             }
             return null;
+        }
+        try {
+            // Active staff drags continue on the successor (see IplGrabChain.afterCrossMove).
+            IplGrabChain.afterCrossMove(ship, moved, new Vector3d(slotDeltaX, 0.0, slotDeltaZ));
+        } catch (RuntimeException e) {
+            LOG.error("[IPL-MOVE] staff sessions of {} could not follow the move", uuid, e);
         }
         LOG.debug("[IPL-MOVE] {} moved {} -> {}", uuid, sourceLevel.dimension().location(),
             destination.dimension().location());

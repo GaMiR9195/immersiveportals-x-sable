@@ -269,6 +269,7 @@ public abstract class TrackingSystemMixin {
                 ServerPlayer viewer = level.getServer().getPlayerList().getPlayer(uuid);
                 if (viewer == null) continue;
                 tracking.add(uuid);
+                IplStraddleSessionSync.sendFrameTo(viewer, serverSubLevel.getUniqueId());
                 PacketRedirection.withForceRedirect(level, () -> sendFullSync(viewer, serverSubLevel, null));
                 // Straddle parity is server state (see IplStraddleSessionSync); a viewer
                 // starting to track mid-crossing needs the current session snapshot too.
@@ -347,6 +348,8 @@ public abstract class TrackingSystemMixin {
         SubLevelTrackingSystem self, ServerPlayer player, ServerSubLevel subLevel, CustomPacketPayload extraPacket,
         Operation<Void> original
     ) {
+        // The full sync is in the body's CURRENT chart: tell the client which one first.
+        IplStraddleSessionSync.sendFrameTo(player, subLevel.getUniqueId());
         PacketRedirection.withForceRedirect(level, () -> original.call(self, player, subLevel, extraPacket));
     }
 

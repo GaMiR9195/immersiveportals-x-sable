@@ -13,4 +13,8 @@ import java.util.UUID;
 public interface StaffServerHandlerAccessor {
     @Accessor(value = "draggingSessions")
     Map<UUID, Object> ipl$getDraggingSessions();
+
+    /** Resend this level's drag-session list to clients on the next handler tick. */
+    @Accessor(value = "draggingSessionsDirty")
+    void ipl$setDraggingSessionsDirty(boolean dirty);
 }

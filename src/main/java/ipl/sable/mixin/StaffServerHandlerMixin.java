@@ -7,12 +7,14 @@ import ipl.sable.transit.IplGrabChain;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
+import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
 import org.joml.Quaterniondc;
 import org.joml.Vector3dc;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
@@ -67,14 +69,33 @@ public abstract class StaffServerHandlerMixin {
         return IplGrabChain.adjustIncomingOrientation(playerId, new Quaterniond(orientation));
     }
 
+    /**
+     * After a cross-dimension move landed in a different plot slot, packets composed before
+     * the client re-bound its session still name the old plot-local anchor (see
+     * {@link IplStaffDragSessionControl#ipl$mapIncomingAnchor}).
+     */
+    @ModifyVariable(method = "drag", at = @At("HEAD"), argsOnly = true, ordinal = 1)
+    private Vector3dc ipl$compensateMovedPlot(
+        Vector3dc localAnchor,
+        UUID playerId, UUID subId, Vector3dc playerRelativeGoal, Vector3dc localAnchorArg,
+        Quaterniondc orientation
+    ) {
+        IplStaffDragSessionControl session = this.ipl$session(playerId);
+        return session == null ? localAnchor : session.ipl$mapIncomingAnchor(localAnchor);
+    }
+
     @Inject(method = "stopDragging", at = @At("HEAD"))
     private void ipl$endFrame(UUID playerId, CallbackInfo ci) {
-        Object session = ((StaffServerHandlerAccessor) (Object) this)
-            .ipl$getDraggingSessions().get(playerId);
-        if (session instanceof IplStaffDragSessionControl control) {
-            control.ipl$removeConstraint();
-        }
+        IplStaffDragSessionControl session = this.ipl$session(playerId);
+        if (session != null) session.ipl$removeConstraint();
         IplGrabChain.end(this.level.getServer(), playerId);
+    }
+
+    @Unique
+    @Nullable
+    private IplStaffDragSessionControl ipl$session(UUID playerId) {
+        Object session = ((StaffServerHandlerAccessor) (Object) this).ipl$getDraggingSessions().get(playerId);
+        return session instanceof IplStaffDragSessionControl control ? control : null;
     }
 
 }

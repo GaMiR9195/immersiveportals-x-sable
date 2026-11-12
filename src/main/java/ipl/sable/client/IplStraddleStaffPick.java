@@ -13,6 +13,8 @@ import ipl.sable.transit.IplProjectionTree;
 import ipl.sable.transit.IplStraddlePoseMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
@@ -77,7 +79,65 @@ public final class IplStraddleStaffPick {
      */
     private static final Map<UUID, Double> GRAB_DISTANCE = new HashMap<>();
 
+    /**
+     * Blocks whose hit lies within this distance of a portal plane (or beyond it) are behind
+     * that portal: a doorway built flush on a wall, a floor portal on the ground, the frame
+     * around a doorway. Ray and plane distances of such blocks differ only by rounding.
+     */
+    private static final double PLANE_TOLERANCE = 1.0e-3;
+
+    /** A pick's hit point is handed on unchanged; equality only has to absorb rounding. */
+    private static final double SAME_POINT_DISTANCE_SQ = 1.0e-12;
+
     private IplStraddleStaffPick() {}
+
+    /**
+     * Visible distance at which the staff ray enters the first portal in the player's own
+     * world, or {@link Double#MAX_VALUE}. Same portal filter as the through-portal walk, so
+     * "behind the portal" means exactly what that walk treats as the other side.
+     */
+    public static double firstPortalDistance(Player player, double range, float partialTick) {
+        Vec3 eye = player.getEyePosition(partialTick);
+        Vec3 end = eye.add(player.getViewVector(partialTick).scale(range));
+        return PortalUtils.raytracePortals(
+                player.level(), eye, end, true, portal -> portal.isInteractableBy(player))
+            .map(hit -> hit.getSecond().hitPos().distanceTo(eye))
+            .orElse(Double.MAX_VALUE);
+    }
+
+    /**
+     * Whether a hit at {@code visibleDistance} lies at or behind the first portal plane the ray
+     * enters ({@link #firstPortalDistance}): the portal shows the other side there, so such a hit
+     * is invisible. Unresolved distances ({@link Double#MAX_VALUE}) are never "behind".
+     */
+    public static boolean isBehindPortal(double visibleDistance, double portalDistance) {
+        return portalDistance < Double.MAX_VALUE && visibleDistance < Double.MAX_VALUE
+            && visibleDistance >= portalDistance - PLANE_TOLERANCE;
+    }
+
+    /** "Nothing hit" at the place of {@code hit}, for a ray along the player's view. */
+    public static BlockHitResult missAt(Player player, HitResult hit, float partialTick) {
+        Vec3 view = player.getViewVector(partialTick);
+        return BlockHitResult.miss(hit.getLocation(),
+            Direction.getNearest(view.x, view.y, view.z), BlockPos.containing(hit.getLocation()));
+    }
+
+    /**
+     * The exact client object the last pick resolved for this plot-space hit point, in ANY
+     * client level. Simulated looks the hit up in the player's own level only, which never
+     * finds a body living in another dimension (seen through a portal), and cannot tell a
+     * transit ghost from its successor when both occupy the same plot slot.
+     */
+    @Nullable
+    public static ClientSubLevel pickedSubAt(Vec3 plotPoint) {
+        for (PortalTarget target : PENDING_TARGETS.values()) {
+            if (target.hit().getLocation().distanceToSqr(plotPoint) < SAME_POINT_DISTANCE_SQ
+                && !target.sub().isRemoved()) {
+                return target.sub();
+            }
+        }
+        return null;
+    }
 
     /** Best projection hit for a ray, or null. Used by the staff fallback. */
     @Nullable
@@ -149,7 +209,10 @@ public final class IplStraddleStaffPick {
                 return new PortalTarget(sub, level, block, List.copyOf(path),
                     visible.imagePath(), traveled + blockDistance);
             }
-            if (block.getType() != HitResult.Type.MISS && blockDistance < portalDistance) return null;
+            // A block flush with (or behind) the portal plane is behind the doorway, not in
+            // front of it: only a block clearly before the plane stops the ray.
+            if (block.getType() != HitResult.Type.MISS
+                && blockDistance < portalDistance - PLANE_TOLERANCE) return null;
             if (portalHit.isEmpty() || portalDistance >= remaining) return null;
             Portal portal = portalHit.get().getFirst();
             if (portalDistance < 1.0e-5) {
@@ -229,14 +292,7 @@ public final class IplStraddleStaffPick {
      * seed the grab chain from it (traversed portals forward, image session inverse).
      */
     public static void beginDrag(ClientSubLevel sub) {
-        PortalTarget selected = PENDING_TARGETS.remove(sub.getUniqueId());
-        if (selected == null || selected.sub() != sub) {
-            DRAG_TARGETS.remove(sub.getUniqueId());
-            IplGrabChainClient.seedLocal(sub.getUniqueId(), List.of(), List.of());
-            return;
-        }
-        DRAG_TARGETS.put(sub.getUniqueId(), selected);
-        IplGrabChainClient.seedLocal(sub.getUniqueId(), selected.portals(), selected.imagePath());
+        seedFrom(sub, PENDING_TARGETS.remove(sub.getUniqueId()));
     }
 
     /**
@@ -248,14 +304,23 @@ public final class IplStraddleStaffPick {
      * capture is not consumed, because a following grab on the same body must still see it.
      */
     public static void beginLock(ClientSubLevel sub) {
-        PortalTarget selected = PENDING_TARGETS.get(sub.getUniqueId());
+        // Locking the body being dragged: its chain is already live (and may hold transits the
+        // pick never saw). Re-seeding it from an empty pick would only be rejected by the server.
+        if (IplGrabChainClient.hasLocalChainFor(sub.getUniqueId())) return;
+        seedFrom(sub, PENDING_TARGETS.get(sub.getUniqueId()));
+    }
+
+    /** Lock the captured pick of {@code sub} (if it is this object's) and seed the grab chain. */
+    private static void seedFrom(ClientSubLevel sub, @Nullable PortalTarget selected) {
+        UUID id = sub.getUniqueId();
+        long frame = IplParentDimSync.pickFrame(sub);
         if (selected == null || selected.sub() != sub) {
-            DRAG_TARGETS.remove(sub.getUniqueId());
-            IplGrabChainClient.seedLocal(sub.getUniqueId(), List.of(), List.of());
+            DRAG_TARGETS.remove(id);
+            IplGrabChainClient.seedLocal(id, List.of(), List.of(), frame);
             return;
         }
-        DRAG_TARGETS.put(sub.getUniqueId(), selected);
-        IplGrabChainClient.seedLocal(sub.getUniqueId(), selected.portals(), selected.imagePath());
+        DRAG_TARGETS.put(id, selected);
+        IplGrabChainClient.seedLocal(id, selected.portals(), selected.imagePath(), frame);
     }
 
     public static void clearDragTargets() {

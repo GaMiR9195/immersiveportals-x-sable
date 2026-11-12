@@ -2,6 +2,7 @@ package ipl.sable.transit;
 
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffServerHandler;
+import ipl.sable.atlas.IplScenes;
 import ipl.sable.duck.IplStaffDragSessionControl;
 import ipl.sable.mixin.StaffServerHandlerAccessor;
 import net.minecraft.core.registries.Registries;
@@ -18,6 +19,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
+import org.joml.Vector3dc;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -186,6 +188,68 @@ public final class IplGrabChain {
         }
     }
 
+    /**
+     * Cross-dimension move, BEFORE the source body is removed: drop the native staff joints
+     * that hold it while the body (and its pipeline) are still valid. The sessions survive.
+     */
+    public static void beforeCrossMove(ServerSubLevel ship) {
+        for (Object session : sessionsOf(PhysicsStaffServerHandler.get(ship.getLevel())).values()) {
+            if (session instanceof IplStaffDragSessionControl control && control.ipl$body() == ship) {
+                control.ipl$removeConstraint();
+            }
+        }
+    }
+
+    /**
+     * Cross-dimension move completed: Sable now holds the body as {@code successor} (same UUID)
+     * in the destination level. Every staff session of the old object continues on the
+     * successor in the destination level's handler -- same player, cursor vector, orientation,
+     * seed and grab chain. Without this the source handler dropped the session on its next tick
+     * (old object removed) and ended the chain, the client's next drag packet opened a fresh
+     * session with an EMPTY chain in the destination, and the cursor point of the player's world
+     * was applied in the other world: the body flew away.
+     *
+     * <p>Runs before {@link #onBodyTransit}, which then appends the crossed portal and reframes
+     * the (now live) session exactly like a same-dimension flip.
+     */
+    public static void afterCrossMove(ServerSubLevel from, ServerSubLevel successor, Vector3dc plotShift) {
+        PhysicsStaffServerHandler source = PhysicsStaffServerHandler.get(from.getLevel());
+        PhysicsStaffServerHandler destination = PhysicsStaffServerHandler.get(successor.getLevel());
+        if (source == destination) return;
+        Map<UUID, Object> sourceSessions = sessionsOf(source);
+        Map<UUID, Object> destinationSessions = sessionsOf(destination);
+        // Collect first: fastutil's map entries are index views and die with removal.
+        List<UUID> players = new ArrayList<>(1);
+        for (Map.Entry<UUID, Object> entry : sourceSessions.entrySet()) {
+            if (entry.getValue() instanceof IplStaffDragSessionControl control && control.ipl$body() == from) {
+                players.add(entry.getKey());
+            }
+        }
+        for (UUID player : players) {
+            Object session = sourceSessions.remove(player);
+            if (!(session instanceof IplStaffDragSessionControl control)) continue;
+            control.ipl$rebindBody(successor, plotShift);
+            Object displaced = destinationSessions.put(player, session);
+            if (displaced != session && displaced instanceof IplStaffDragSessionControl stale) {
+                stale.ipl$removeConstraint();
+            }
+            LOG.debug("[IPL-GRAB-CHAIN] staff session of {} follows body {} into {}",
+                player, successor.getUniqueId(), successor.getLevel().dimension().location());
+        }
+        if (!players.isEmpty()) {
+            accessor(source).ipl$setDraggingSessionsDirty(true);
+            accessor(destination).ipl$setDraggingSessionsDirty(true);
+        }
+    }
+
+    private static StaffServerHandlerAccessor accessor(PhysicsStaffServerHandler handler) {
+        return (StaffServerHandlerAccessor) (Object) handler;
+    }
+
+    private static Map<UUID, Object> sessionsOf(PhysicsStaffServerHandler handler) {
+        return accessor(handler).ipl$getDraggingSessions();
+    }
+
     // ------------------------------------------------------------------
     // Goal + packet mapping.
     // ------------------------------------------------------------------
@@ -193,19 +257,24 @@ public final class IplGrabChain {
     /**
      * Fold the absolute cursor goal (player world frame) through the chain into the
      * grabbed body's parent frame. Pure function of recorded events — no geometry
-     * inference. On a desync (chain endpoints disagree with reality) the goal passes
-     * through unchanged and the desync is logged: visible, never silently guessed around.
+     * inference. On a desync (chain endpoints disagree with reality) there is NO goal:
+     * the caller releases the grip instead of pulling the body to a point of another chart.
+     * The desync is logged: visible, never silently guessed around.
      */
+    @Nullable
     public static Vec3 mapGoal(ServerPlayer player, ServerSubLevel sub, Vec3 goal) {
         Frame frame = FRAMES.get(player.getUUID());
-        if (frame == null || !frame.subId.equals(sub.getUniqueId())) return goal;
         ServerLevel parent = sub.getLevel();
+        if (frame == null || !frame.subId.equals(sub.getUniqueId())) {
+            return player.level().dimension().equals(parent.dimension()) ? goal : null;
+        }
 
         if (frame.chain.isEmpty()) {
             if (!player.level().dimension().equals(parent.dimension())) {
                 frame.logDesync(LOG, "empty chain but player {} is in {} while body parent is {}",
                     player.getUUID(), player.level().dimension().location(),
                     parent.dimension().location());
+                return null;
             }
             return goal;
         }
@@ -217,7 +286,7 @@ public final class IplGrabChain {
             frame.logDesync(LOG, "chain endpoints {}->{} disagree with player {} / parent {}",
                 first.fromDim().location(), last.toDim().location(),
                 player.level().dimension().location(), parent.dimension().location());
-            return goal;
+            return null;
         }
 
         return IplGrabLink.fold(frame.chain, goal);
@@ -263,17 +332,25 @@ public final class IplGrabChain {
             var missed = IplStraddleSessionSync.hopsAfter(subId, Long.parseLong(sourceFrame));
             if (missed == null || resolved == null) {
                 // Never guess a transform or bind an old visual pick to a new body.
-                for (ServerLevel any : player.server.getAllLevels()) {
-                    PhysicsStaffServerHandler.get(any).stopDragging(player.getUUID());
-                }
-                McRemoteProcedureCall.tellClientToInvoke(player,
-                    "ipl.sable.client.IplGrabChainClient.RemoteCallables.rejectSeed", subUuid, frame.seedId);
+                rejectSeed(player, subUuid, frame.seedId);
                 LOG.warn("[IPL-GRAB-CHAIN] invalid or expired pick frame {} for {}", sourceFrame, subId);
                 return;
             }
-            frame.chain = resolved;
+            List<IplGrabLink> chain = resolved;
+            for (var hop : missed) chain = IplGrabLink.append(chain, hop.link());
+            // The seeded chain must end in the world that owns the body NOW. A pick of an
+            // instance the server no longer has there would otherwise bind a cursor of one
+            // chart to a body of another.
+            ServerLevel owner = IplScenes.ownerLevel(player.server, subId);
+            ResourceKey<Level> end = chainEnd(player, chain);
+            if (owner != null && !end.equals(owner.dimension())) {
+                rejectSeed(player, subUuid, frame.seedId);
+                LOG.warn("[IPL-GRAB-CHAIN] seed for {} ends in {} but the body is in {} (pick frame {})",
+                    subId, end.location(), owner.dimension().location(), sourceFrame);
+                return;
+            }
+            frame.chain = chain;
             for (var hop : missed) {
-                frame.chain = IplGrabLink.append(frame.chain, hop.link());
                 frame.revision++;
                 if (!isIdentity(hop.link().rotation())) frame.pendingRotations.add(
                     new PendingRotation(frame.revision, new Quaterniond(hop.link().rotation())));
@@ -332,6 +409,20 @@ public final class IplGrabChain {
         return List.copyOf(chain);
     }
 
+    /** Stop every staff session of the player and tell its client the pick was refused. */
+    private static void rejectSeed(ServerPlayer player, String subUuid, String seedId) {
+        for (ServerLevel any : player.server.getAllLevels()) {
+            PhysicsStaffServerHandler.get(any).stopDragging(player.getUUID());
+        }
+        McRemoteProcedureCall.tellClientToInvoke(player,
+            "ipl.sable.client.IplGrabChainClient.RemoteCallables.rejectSeed", subUuid, seedId);
+    }
+
+    /** The world a chain leads into from the player's world. */
+    private static ResourceKey<Level> chainEnd(ServerPlayer player, List<IplGrabLink> chain) {
+        return chain.isEmpty() ? player.level().dimension() : chain.get(chain.size() - 1).toDim();
+    }
+
     @Nullable
     private static List<IplGrabLink> failSeed(ServerPlayer player, CompoundTag path, String reason) {
         LOG.warn("[IPL-GRAB-CHAIN] seed rejected for {} ({}): {}", player.getUUID(), reason, path);
@@ -356,9 +447,7 @@ public final class IplGrabChain {
     private static IplStaffDragSessionControl liveSession(MinecraftServer server, UUID playerId) {
         // Drag sessions live in the handler of the level that owns the grabbed body.
         for (ServerLevel level : server.getAllLevels()) {
-            PhysicsStaffServerHandler handler = PhysicsStaffServerHandler.get(level);
-            Object session = ((StaffServerHandlerAccessor) (Object) handler)
-                .ipl$getDraggingSessions().get(playerId);
+            Object session = sessionsOf(PhysicsStaffServerHandler.get(level)).get(playerId);
             if (session instanceof IplStaffDragSessionControl control) return control;
         }
         return null;

@@ -18,8 +18,10 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
+import org.joml.Vector3dc;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Mutable;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
@@ -45,7 +47,8 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
     @Shadow @Final private Vector3d playerRelativeGoal;
     @Shadow @Final private Vector3d localGoal;
     @Shadow @Final private Quaterniond orientation;
-    @Shadow @Final private ServerSubLevel subLevel;
+    // Mutable: a cross-dimension move continues the SAME drag on the successor object.
+    @Shadow @Final @Mutable private ServerSubLevel subLevel;
     @Shadow private PhysicsConstraintHandle constraint;
     @Shadow private void attachConstraint(SubLevelPhysicsSystem physicsSystem) {}
 
@@ -53,6 +56,16 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
     private final Vector3d ipl$playerEyeInterpolationStart = new Vector3d();
     @Unique
     private boolean ipl$hasPlayerEyeInterpolationStart;
+
+    /** Packet anchors are copies of one stored vector: equal up to rounding only. */
+    @Unique
+    private static final double IPL_SAME_ANCHOR_DISTANCE_SQ = 1.0e-12;
+
+    /** Pre-move plot anchor still sent by the client until it re-binds to the successor. */
+    @Unique
+    private Vector3d ipl$staleAnchor;
+    @Unique
+    private final Vector3d ipl$anchorShift = new Vector3d();
 
     /**
      * @author IPL-Sable
@@ -116,6 +129,14 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
                 this.localGoal.x, this.localGoal.y, this.localGoal.z
             )
         );
+        if (goal == null) {
+            // Frame desync: the chain does not lead from the player's world to the body's.
+            // A cursor point of one chart applied in another flings the body across the
+            // world, so hold no grip until the chain is consistent again (seed, rebase or
+            // release); the body keeps its own momentum meanwhile.
+            this.ipl$removeConstraint();
+            return;
+        }
         this.localGoal.set(goal.x, goal.y, goal.z);
 
         // Stock position spring: no derivative-of-packet target, artificial lead or
@@ -208,6 +229,38 @@ public abstract class StaffDragSessionMixin implements IplStaffDragSessionContro
         this.constraint = null;
         // Match Simulated's release semantics: remove the joint, without changing body velocity.
         if (handle != null) handle.remove();
+    }
+
+    @Override
+    public ServerSubLevel ipl$body() {
+        return this.subLevel;
+    }
+
+    @Override
+    public void ipl$rebindBody(ServerSubLevel successor, Vector3dc plotShift) {
+        // The joint belonged to the source body and was detached before that body was removed;
+        // the next physics substep attaches a fresh one in the destination pipeline.
+        this.ipl$removeConstraint();
+        this.subLevel = successor;
+        if (plotShift.lengthSquared() > 0.0) {
+            this.ipl$staleAnchor = new Vector3d(this.plotAnchor);
+            this.ipl$anchorShift.set(plotShift);
+            this.plotAnchor.add(plotShift);
+        } else {
+            this.ipl$staleAnchor = null;
+        }
+    }
+
+    @Override
+    public Vector3dc ipl$mapIncomingAnchor(Vector3dc anchor) {
+        Vector3d stale = this.ipl$staleAnchor;
+        if (stale == null) return anchor;
+        if (stale.distanceSquared(anchor) < IPL_SAME_ANCHOR_DISTANCE_SQ) {
+            return new Vector3d(anchor).add(this.ipl$anchorShift);
+        }
+        // The client switched to the successor's plot: compensation is over.
+        this.ipl$staleAnchor = null;
+        return anchor;
     }
 
     /**

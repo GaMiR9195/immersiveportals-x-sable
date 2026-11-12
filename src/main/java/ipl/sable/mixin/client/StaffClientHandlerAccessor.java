@@ -1,5 +1,6 @@
 package ipl.sable.mixin.client;
 
+import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
@@ -24,4 +25,8 @@ public interface StaffClientHandlerAccessor {
 
     @Invoker(value = "stopDragging")
     void ipl$stopDragging();
+
+    /** Continue the local drag on another client object of the same body (transit successor). */
+    @Accessor(value = "dragSession")
+    void ipl$setDragSession(PhysicsStaffClientHandler.ClientDragSession session);
 }

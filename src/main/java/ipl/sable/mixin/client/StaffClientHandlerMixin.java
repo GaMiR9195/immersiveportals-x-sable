@@ -3,6 +3,7 @@ package ipl.sable.mixin.client;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
+import dev.ryanhcode.sable.ActiveSableCompanion;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
@@ -14,6 +15,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Position;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.HitResult;
@@ -59,6 +61,15 @@ public abstract class StaffClientHandlerMixin {
         // lengths, the only frame in which a local hit and a through-portal hit are comparable.
         double localVisible = IplStraddleStaffPick.visibleRayLength(player, local, tickDelta);
         double projectionVisible = IplStraddleStaffPick.visibleRayLength(player, projection, tickDelta);
+        // The vanilla pick ignores portals: it also finds the wall, ground or frame BEHIND a
+        // doorway, which the player cannot see (the portal shows the other side there). Such a
+        // hit is no candidate at all -- it used to beat every body seen through the portal
+        // whenever anything stood behind the portal plane within reach, so grabbing and locking
+        // through portals mostly failed. Same plane test as the through-portal walk.
+        double portalAhead = IplStraddleStaffPick.firstPortalDistance(player, range, tickDelta);
+        boolean localHidden = IplStraddleStaffPick.isBehindPortal(localVisible, portalAhead);
+        if (localHidden) localVisible = Double.MAX_VALUE;
+        if (IplStraddleStaffPick.isBehindPortal(projectionVisible, portalAhead)) projectionVisible = Double.MAX_VALUE;
         double nearestHere = Math.min(localVisible, projectionVisible);
         if (through != null && through.visibleDistance() <= nearestHere + 1.0e-4) {
             return through.hit();
@@ -71,8 +82,34 @@ public abstract class StaffClientHandlerMixin {
             IplStraddleStaffPick.rememberLocalProjection(player, projection);
             return projection;
         }
+        if (localHidden) {
+            // Nothing usable in front of the portal and nothing grabbable through it.
+            return IplStraddleStaffPick.missAt(player, local, tickDelta);
+        }
         IplStraddleStaffPick.rememberLocalProjection(player, local);
         return local;
+    }
+
+    /**
+     * Simulated resolves the picked plot point in the player's own level only. A body seen
+     * through a cross-dimension portal lives in another client level, so grab and lock fell
+     * into "nothing hit". Use the exact object the pick resolved, then stock, then any level.
+     */
+    @WrapOperation(
+        method = "onItemUsed",
+        at = @At(
+            value = "INVOKE",
+            target = "Ldev/ryanhcode/sable/ActiveSableCompanion;getContainingClient(Lnet/minecraft/core/Position;)Ldev/ryanhcode/sable/sublevel/ClientSubLevel;"
+        )
+    )
+    private ClientSubLevel ipl$pickedBodyInAnyLevel(
+        ActiveSableCompanion helper, Position position, Operation<ClientSubLevel> original
+    ) {
+        Vec3 point = new Vec3(position.x(), position.y(), position.z());
+        ClientSubLevel picked = IplStraddleStaffPick.pickedSubAt(point);
+        if (picked != null) return picked;
+        ClientSubLevel own = original.call(helper, position);
+        return own != null ? own : IplClientProjections.findSubLevelAtPlot(point);
     }
 
     /**

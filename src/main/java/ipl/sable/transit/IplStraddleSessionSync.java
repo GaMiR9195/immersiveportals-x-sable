@@ -179,6 +179,21 @@ public final class IplStraddleSessionSync {
         broadcast(server, shipId);
     }
 
+    /**
+     * Full-sync bootstrap, sent BEFORE Sable's start-tracking: the body's current coordinate-
+     * frame generation. A client that forgot the body (stop-tracking, left the range) restarts
+     * at frame 0 while the server's counter kept every past flip; without this its session
+     * snapshot waited for a frame that never came and every staff pick of the body named a
+     * frame the server could no longer explain, so the grab was rejected.
+     */
+    public static void sendFrameTo(ServerPlayer viewer, UUID shipId) {
+        McRemoteProcedureCall.tellClientToInvoke(
+            viewer,
+            "ipl.sable.client.IplParentDimSync.RemoteCallables.trackFrame",
+            shipId.toString(), Long.toString(frame(shipId))
+        );
+    }
+
     /** Track-start bootstrap: give one viewer the ship's current sessions and labels. */
     public static void sendSnapshotTo(ServerPlayer viewer, UUID shipId) {
         send(viewer, shipId, encode(shipId));

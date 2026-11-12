@@ -182,11 +182,27 @@ natively in exactly one level (stock Sable model); the far side of a portal is a
 - A ring pushed through a portal is no longer cut by the infinite plane. After a same-dimension
   flip the old frame no longer announces an empty session list. `tests/render` and `tests/gl`
   follow the production API.
+- **Creative Physics Staff across a cross-dimension move.** The drag session held the old body
+  object: the move removed it, the session and its grab chain ended, and the next drag packet
+  opened a new session with an empty chain in the destination, so the cursor point of the
+  player's world pulled the body in the other world and it flew away. Sessions now continue on
+  the successor (`IplGrabChain.afterCrossMove`, plot-slot shift included), the client re-binds
+  its drag to the successor instead of releasing when the ghost goes, and a frame desync releases
+  the grip instead of applying a goal of the wrong chart.
+- **Staff grab/lock through portals.** The vanilla pick (which ignores portals) found walls,
+  ground or frames behind the doorway and beat every body seen through it; such hits are no
+  candidates now, and blocks flush with a portal plane no longer stop the through-portal ray. A
+  body living in another dimension is resolved in its own client level. A client that forgot a
+  body restarted its coordinate frame at 0 and every later seed was rejected: full syncs now
+  carry the current frame (`trackFrame`). A pick on a transit ghost names the ghost's frame, and
+  a seed whose chain does not end in the body's world is rejected instead of silently desyncing.
+- **Staff beam path.** The beam no longer threads the grab-chain history portal by portal like a
+  rope: every stretch of the traversed chain that composes to the identity is dropped (not only
+  adjacent inverse pairs), a chain that folds to nothing draws a straight beam
+  (`IplBeamRouteSolver`). No portal outside the chain is ever used; physics is unchanged.
 
 ### Known limitations
 
-- Worlds saved with ships inside `ipl_sable:sublevels` are NOT migrated: disassemble such ships
-  with 0.5.x before upgrading.
 - Self-collision through a portal is not implemented (image and body are one Rapier body).
 - A spring tied to the world, rather than to another sub-level, is invisible to Sable's link
   contract; its body flips alone.
@@ -195,8 +211,6 @@ natively in exactly one level (stock Sable model); the far side of a portal is a
 - Multiple aperture cuts through one block are not fully represented by the one-plane
   renderer/entity collision. Range draws use triangles, so Iris packs that tessellate terrain may
   not draw piece sections at a portal.
-- Not verified in game in this pass: test jointed chains, springs, ropes, rotating rings and
-  staff loops on a copy of a world (`-Dipl.perfDiagnostics=true` for timings).
 
 ## [0.5.3]
 

@@ -1,5 +1,6 @@
 package ipl.sable.client;
 
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.simulated_team.simulated.SimulatedClient;
 import dev.simulated_team.simulated.content.physics_staff.PhysicsStaffClientHandler;
 import ipl.sable.mixin.client.StaffClientHandlerAccessor;
@@ -11,6 +12,7 @@ import net.minecraft.nbt.StringTag;
 import net.minecraft.client.player.LocalPlayer;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
+import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -70,6 +72,15 @@ public final class IplGrabChainClient {
         return List.of();
     }
 
+    /** True while the local player DRAGS {@code subId} and its predicted chain is live. */
+    public static boolean hasLocalChainFor(UUID subId) {
+        ChainState mine = local;
+        if (mine == null || !mine.subId().equals(subId)) return false;
+        PhysicsStaffClientHandler.ClientDragSession session =
+            SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER.getDragSession();
+        return session != null && session.dragSubLevel().getUniqueId().equals(subId);
+    }
+
     public static long chainFrame(UUID ownerId, UUID subId) {
         LocalPlayer player = Minecraft.getInstance().player;
         ChainState state = player != null && player.getUUID().equals(ownerId) ? local : SNAPSHOTS.get(ownerId);
@@ -86,8 +97,9 @@ public final class IplGrabChainClient {
      *
      * @param pickPath        portals the pick ray traversed FORWARD, in order
      * @param imagePath session path from the body to the clicked image, root first
+     * @param sourceFrame body coordinate frame the pick SAW ({@link IplParentDimSync#pickFrame})
      */
-    public static void seedLocal(UUID subId, List<Portal> pickPath, List<Portal> imagePath) {
+    public static void seedLocal(UUID subId, List<Portal> pickPath, List<Portal> imagePath, long sourceFrame) {
         List<IplGrabLink> chain = List.of();
         ListTag steps = new ListTag();
         for (Portal portal : pickPath) {
@@ -105,11 +117,31 @@ public final class IplGrabChainClient {
         CompoundTag encodedPath = new CompoundTag();
         encodedPath.put("steps", steps);
         String seedId = UUID.randomUUID().toString();
-        local = new ChainState(subId, 0L, chain, IplParentDimSync.frame(subId), seedId);
+        local = new ChainState(subId, 0L, chain, sourceFrame, seedId);
         McRemoteProcedureCallClient.tellServerToInvoke(
             "ipl.sable.transit.IplGrabChain.RemoteCallables.seedChain",
-            subId.toString(), encodedPath, Long.toString(IplParentDimSync.frame(subId)), seedId
+            subId.toString(), encodedPath, Long.toString(sourceFrame), seedId
         );
+    }
+
+    /**
+     * Cross-dimension move: the local drag held the old client object, which is now a transit
+     * ghost and will be removed. Simulated would read that removal as "grabbed body gone" and
+     * release. The server already continues the same session on the successor (same UUID,
+     * same chain, same seed), so the client continues on the successor too: plot-local anchor
+     * shifted with the plot slot, the SAME orientation object (rebase RPCs keep rotating it),
+     * the same hold distance.
+     */
+    public static void rebindDragToSuccessor(ClientSubLevel ghost, ClientSubLevel successor, Vector3d plotShift) {
+        PhysicsStaffClientHandler handler = SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;
+        PhysicsStaffClientHandler.ClientDragSession session = handler.getDragSession();
+        if (session == null || session.dragSubLevel() != ghost || successor == ghost) return;
+        Vector3d anchor = new Vector3d(session.dragLocalAnchor()).add(plotShift);
+        ((StaffClientHandlerAccessor) (Object) handler).ipl$setDragSession(
+            new PhysicsStaffClientHandler.ClientDragSession(
+                successor, anchor, session.dragOrientation(), session.distance()));
+        LOG.debug("[IPL-GRAB-CHAIN-C] drag of {} continues on its successor in {}",
+            successor.getUniqueId(), successor.getLevel().dimension().location());
     }
 
     /** Drag ended locally. The server clears its side from its own stop hook. */

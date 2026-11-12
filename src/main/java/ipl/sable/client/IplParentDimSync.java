@@ -87,22 +87,61 @@ public final class IplParentDimSync {
         final RemoteCallables.PortalMapping mapping;
         @Nullable final Portal surrogate;
         final long startMs;
+        /** Frame the ghost still SHOWS (the one before the move); picks on it name this frame. */
+        final long fromFrame;
         int readyTicks;
         boolean stopDeferred;
 
         Ghost(ClientSubLevel sub, ResourceKey<Level> toDim, RemoteCallables.PortalMapping mapping,
-              @Nullable Portal surrogate, long startMs) {
+              @Nullable Portal surrogate, long startMs, long fromFrame) {
             this.sub = sub;
             this.toDim = toDim;
             this.mapping = mapping;
             this.surrogate = surrogate;
             this.startMs = startMs;
+            this.fromFrame = fromFrame;
         }
     }
 
     private IplParentDimSync() {}
 
     public static long frame(UUID id) { return FRAMES.getOrDefault(id, 0L); }
+
+    /**
+     * Coordinate frame of what a pick of {@code sub} actually saw. A transit ghost keeps
+     * showing the pre-move frame although the body's frame already advanced at the move RPC;
+     * a pick on it must name that older frame so the server appends the move it missed.
+     */
+    public static long pickFrame(ClientSubLevel sub) {
+        Ghost ghost = ghostOf(sub);
+        return ghost != null ? ghost.fromFrame : frame(sub.getUniqueId());
+    }
+
+    /** Destination level of a transit ghost, or null when {@code sub} is not a ghost. */
+    @Nullable
+    public static ResourceKey<Level> ghostDestination(ClientSubLevel sub) {
+        Ghost ghost = ghostOf(sub);
+        return ghost != null ? ghost.toDim : null;
+    }
+
+    /**
+     * A plot-local point of a transit ghost, expressed in the body's destination world: on the
+     * successor once it exists (its plot may sit in another slot), else on the ghost's own pose
+     * mapped through the crossing portal. Null when {@code sub} is not a ghost.
+     */
+    @Nullable
+    public static Vec3 ghostPointInDestination(ClientSubLevel sub, Vec3 plotPoint, float partialTick) {
+        Ghost ghost = ghostOf(sub);
+        if (ghost == null) return null;
+        ClientSubLevel successor = ghostSuccessor(sub);
+        if (successor != null) {
+            Vector3d shift = plotShift(sub, successor);
+            return successor.renderPose(partialTick)
+                .transformPosition(plotPoint.add(shift.x, shift.y, shift.z));
+        }
+        Pose3d mapped = ghost.mapping.mapPose(new Pose3d(sub.renderPose(partialTick)));
+        return mapped.transformPosition(plotPoint);
+    }
 
     private static void enterFrame(UUID id, long next) {
         long old = frame(id);
@@ -201,9 +240,15 @@ public final class IplParentDimSync {
     }
 
     public static boolean isGhost(ClientSubLevel sub) {
-        if (GHOSTS.isEmpty() || sub == null) return false;
+        return ghostOf(sub) != null;
+    }
+
+    /** The transit ghost whose old client object is {@code sub}, or null. */
+    @Nullable
+    private static Ghost ghostOf(@Nullable ClientSubLevel sub) {
+        if (GHOSTS.isEmpty() || sub == null) return null;
         Ghost ghost = GHOSTS.get(sub.getUniqueId());
-        return ghost != null && ghost.sub == sub;
+        return ghost != null && ghost.sub == sub ? ghost : null;
     }
 
     /** A moved body's new client object, hidden until the ghost hands over. */
@@ -216,9 +261,8 @@ public final class IplParentDimSync {
     /** The crossing portal a ghost keeps rendering through (live entity preferred). */
     @Nullable
     public static Portal ghostPortalFor(ClientSubLevel sub) {
-        if (GHOSTS.isEmpty() || sub == null) return null;
-        Ghost ghost = GHOSTS.get(sub.getUniqueId());
-        if (ghost == null || ghost.sub != sub) return null;
+        Ghost ghost = ghostOf(sub);
+        if (ghost == null) return null;
         Portal live = IplStraddleSessionStore.findLivePortal(sub.getLevel(), ghost.mapping.portalId());
         return live != null ? live : ghost.surrogate;
     }
@@ -226,9 +270,8 @@ public final class IplParentDimSync {
     /** The successor a ghost hands over to, once Sable tracks it in the destination level. */
     @Nullable
     public static ClientSubLevel ghostSuccessor(ClientSubLevel sub) {
-        if (GHOSTS.isEmpty() || sub == null) return null;
-        Ghost ghost = GHOSTS.get(sub.getUniqueId());
-        if (ghost == null || ghost.sub != sub) return null;
+        Ghost ghost = ghostOf(sub);
+        if (ghost == null) return null;
         ClientSubLevel successor = IplClientProjections.findClientSub(sub.getUniqueId(), ghost.toDim);
         return successor == sub ? null : successor;
     }
@@ -300,6 +343,8 @@ public final class IplParentDimSync {
         SubLevelContainer destination = SubLevelContainer.getContainer(level);
         if (destination == null || !(destination.getSubLevel(id) instanceof ClientSubLevel successor)) return;
         Vector3d shift = plotShift(ghost.sub, successor);
+        // The local staff drag continues on the successor before the ghost can be removed.
+        IplGrabChainClient.rebindDragToSuccessor(ghost.sub, successor, shift);
         continueHistory(ghost, successor, shift);
         Pose3d logical = ghost.mapping.mapPose(new Pose3d(ghost.sub.logicalPose()));
         Pose3d last = ghost.mapping.mapPose(new Pose3d(ghost.sub.lastPose()));
@@ -396,6 +441,12 @@ public final class IplParentDimSync {
     }
 
     private static void finalizeGhost(UUID id, Ghost ghost) {
+        // A successor tracked before the move never ran continueFromGhost: re-bind here, or the
+        // ghost's removal would read as "grabbed body removed" and end the drag.
+        ClientSubLevel successor = IplClientProjections.findClientSub(id, ghost.toDim);
+        if (successor != null && successor != ghost.sub) {
+            IplGrabChainClient.rebindDragToSuccessor(ghost.sub, successor, plotShift(ghost.sub, successor));
+        }
         SubLevelContainer container = ghost.sub.isRemoved() ? null : SubLevelContainer.getContainer(ghost.sub.getLevel());
         if (container != null) {
             // Its stop-tracking is still in flight: swallow it when it arrives.
@@ -433,6 +484,25 @@ public final class IplParentDimSync {
         }
 
         /**
+         * Full-sync bootstrap (sent before Sable's start-tracking): the body's current frame on
+         * the server. A body this client forgot restarted at frame 0; a full sync is always in
+         * the current chart, so adopt it -- unless a transit of this body is in flight here,
+         * whose own RPCs carry the frames in order.
+         */
+        public static void trackFrame(String subLevelUuid, String coordinateFrame) {
+            UUID id = UUID.fromString(subLevelUuid);
+            long serverFrame = Long.parseLong(coordinateFrame);
+            if (GHOSTS.containsKey(id) || PENDING_HANDOFFS.containsKey(id)) return;
+            // Only a body this client does not show at all: a live instance keeps its frame
+            // through its own handoff/move RPCs, which must never be pre-empted.
+            if (IplClientProjections.findClientSub(id) != null) return;
+            if (serverFrame > frame(id)) {
+                LOG.debug("[IPL-PARENT-SYNC] adopt frame {} for {} (was {})", serverFrame, id, frame(id));
+                enterFrame(id, serverFrame);
+            }
+        }
+
+        /**
          * Cross-dimension move, delivered before Sable's stop-tracking of the old object.
          * The old object becomes a ghost; the successor arrives via start-tracking in the
          * destination level (or is already tracked there) and takes over once it has geometry.
@@ -455,7 +525,7 @@ public final class IplParentDimSync {
                 Portal surrogate = IplStraddleSessionStore.resolveHandoffPortal(
                     mapping.portalId(), portalNbtB64, old.getLevel());
                 ResourceKey<Level> to = dimensionKey(toDimensionId);
-                Ghost ghost = new Ghost(old, to, mapping, surrogate, System.currentTimeMillis());
+                Ghost ghost = new Ghost(old, to, mapping, surrogate, System.currentTimeMillis(), frame(id));
                 GHOSTS.put(id, ghost);
                 // Смена кадра ниже заменяет сессии и метки старого кадра; призрак рисует их
                 // копию, пока не придёт первый снимок преемника.

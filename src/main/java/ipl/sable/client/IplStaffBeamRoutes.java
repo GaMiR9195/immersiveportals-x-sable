@@ -163,44 +163,73 @@ public final class IplStaffBeamRoutes {
         UUID owner, Level staffLevel, Vec3 staffStart,
         ClientSubLevel sub, Vec3 localAnchor, float partialTick
     ) {
-        Level parent = sub.getLevel();
-        if (parent == null) return null;
-        Vec3 nativeAnchor = sub.renderPose(partialTick).transformPosition(localAnchor);
+        if (sub.getLevel() == null) return null;
+        BodyPoint body = bodyPoint(sub, localAnchor, partialTick);
 
+        // Frame-continuity validation: the chain must start in the staff world, each link
+        // must continue where the previous one ended, and it must end where the body lives.
+        // A mismatch is a transient desync (snapshot in flight during a hop) — return null
+        // and let retention bridge it rather than drawing a wrong-frame beam.
         List<IplGrabLink> links = visualChain(owner, sub.getUniqueId());
-        Vec3 target = nativeAnchor;
+        if (!body.dim().equals(continuousEnd(staffLevel.dimension(), links))) return null;
+
+        Vec3 target = body.point();
         Quaterniond imageRotation = new Quaterniond();
-        boolean targetsImage = false;
 
         // Straddle refinement: the grabbed anchor is visible where its PIECE is. An anchor in
         // a session piece is seen through every portal of that piece's path, so the beam
         // threads each aperture and ends on the image. The piece is a property of the
         // material (it changes only at an aperture plane, where both representations
-        // coincide), so the switch is continuous and cannot flicker.
-        IplProjectionTree tree = IplProjectionTree.of(sub);
-        IplProjectionTree.Node piece = tree.node(tree.pieceOfPlot(localAnchor.x, localAnchor.y, localAnchor.z));
-        if (piece != null) {
-            for (Portal portal : piece.pathPortals()) {
-                IplGrabLink link = IplGrabLink.forward(portal);
-                links = IplGrabLink.append(links, link);
-                target = link.transform(target);
-                imageRotation.premul(link.rotation());
+        // coincide), so the switch is continuous and cannot flicker. A ghost has no pieces
+        // of its own (its successor owns them).
+        if (!body.ghost()) {
+            IplProjectionTree tree = IplProjectionTree.of(sub);
+            IplProjectionTree.Node piece = tree.node(tree.pieceOfPlot(localAnchor.x, localAnchor.y, localAnchor.z));
+            if (piece != null) {
+                List<IplGrabLink> path = piece.pathPortals().stream().map(IplGrabLink::forward).toList();
+                if (continuousEnd(body.dim(), path) == null) return null;
+                for (IplGrabLink link : path) {
+                    links = IplGrabLink.append(links, link);
+                    target = link.transform(target);
+                    imageRotation.premul(link.rotation());
+                }
             }
-            targetsImage = true;
         }
 
-        // Frame-continuity validation: the route must start in the staff world and each
-        // link must continue where the previous one ended. A mismatch is a transient
-        // desync (snapshot in flight during a hop) — return null and let retention
-        // bridge it rather than drawing a wrong-frame beam.
-        ResourceKey<Level> at = staffLevel.dimension();
+        // Draw the traversed portals without the detours that lead back where they started
+        // (see IplBeamRouteSolver): same endpoint, same pull, no rope-like tangling.
+        links = IplBeamRouteSolver.solve(links, staffStart);
+        return new Route(staffLevel, staffStart, target, links, imageRotation, owner);
+    }
+
+    /** The grabbed point of a body and the world it lives in. */
+    private record BodyPoint(ResourceKey<Level> dim, Vec3 point, boolean ghost) {}
+
+    /**
+     * A transit ghost (old client object of a cross-dimension move) still shows the body, but
+     * the body -- and the chain, after the ordered rebase -- already live in the destination
+     * world. The ghost therefore answers with the same point there: on the successor once it
+     * exists, else on the ghost mapped through the crossing portal.
+     */
+    private static BodyPoint bodyPoint(ClientSubLevel sub, Vec3 localAnchor, float partialTick) {
+        ResourceKey<Level> destination = IplParentDimSync.ghostDestination(sub);
+        if (destination != null) {
+            Vec3 point = IplParentDimSync.ghostPointInDestination(sub, localAnchor, partialTick);
+            if (point != null) return new BodyPoint(destination, point, true);
+        }
+        return new BodyPoint(sub.getLevel().dimension(),
+            sub.renderPose(partialTick).transformPosition(localAnchor), false);
+    }
+
+    /** World a chain starting in {@code from} leads into, or null when a link does not continue. */
+    @Nullable
+    private static ResourceKey<Level> continuousEnd(ResourceKey<Level> from, List<IplGrabLink> links) {
+        ResourceKey<Level> at = from;
         for (IplGrabLink link : links) {
             if (!link.fromDim().equals(at)) return null;
             at = link.toDim();
         }
-        if (!targetsImage && !at.equals(parent.dimension())) return null;
-
-        return new Route(staffLevel, staffStart, target, links, imageRotation, owner);
+        return at;
     }
 
     /** Target as seen through a window: unfold every portal into the eye's frame. */
