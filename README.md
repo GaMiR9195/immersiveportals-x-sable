@@ -19,7 +19,7 @@ and got tired of portals working like shit.
 
 Goal: ships (and other physics-assembled sub-levels) can:
 - render correctly when they’re halfway through a portal (clipped at the frame, on both sides)
-- keep working physics on both sides while straddling
+- keep original working physics on both sides while straddling
 - move through dimensions as one continuous motion (not a hard teleport)
 - carry portals on themselves, bound like a monolith
 - pass portals through portals
@@ -56,20 +56,20 @@ Deep nerd notes live in `README060NEW.md`. `docs/atlas_portal_physics_spec.md` i
 the other `docs/` specs describe the removed 0.5.x model.
 
 # What works
-- Sub-levels save/load natively in any dimension (stock Sable storage).
 - Portal straddle rendering (including portals-in-portals).
 - Straddle physics: the “through” part collides with the destination world as if it really were there.
   Standing/walking/riding on the through-part behaves as it should (friction included).
 - Block interaction on the through-part: break/place + outlines + prediction + redstone + pistons + block entities.
-- Create machines on ships (drills, deployers, etc.) interact with the parent world (world-frame routing).
 - Physics staff: lock/drag works on the through-part from either side.
 - Jointed builds, springs and ropes cross portals without blocking each other.
 - Dimension stack seams: IP vertical stacking portals behave (scaled/inverted stacks: transit works).
 
 # Known limitations
-- Performance (sub-level stuttering)
-- DH + Voxy support
-- Bugs
+- Projections are pointing to original, many blocks will behave strange
+- DH, Voxy, Iris, Entity Culling support (right now, not forever)
+- Standing on projections sucks, sublevel tp could trigger player tp.
+- Shading is broken, sometimes "in ground" shading is applied
+- Bugs...
 
 # Build
 NeoForge 1.21.1, JDK 21: `./gradlew jarJar` → jar in `build/libs/`
