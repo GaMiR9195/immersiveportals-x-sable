@@ -133,6 +133,13 @@ natively in exactly one level (stock Sable model); the far side of a portal is a
 
 ### Fixed
 
+- **Tail of a body vanished at the end of a crossing into another dimension.** The last blocks
+  still on the source side were see-through for the last ~1.5–2 ticks of the crossing. The server
+  moves the body once it has fully passed, but the client still draws the poses from before; the
+  transit ghost switched to its successor's sessions and labels (the state after the move) as soon
+  as the successor was tracked, and that frame has no piece for the tail. The `move` RPC now
+  carries the frame boundary like `handoff`, and the ghost keeps the frame it left until the
+  delayed render stream reaches it; the successor takes over only after that.
 - **Client lag while a body touches a portal into another dimension** (worse with every body of a
   jointed build that has an image there). Immersive Portals animate-ticks the remote level around
   the portal every other tick; Sable's sub-level animate tick got the portal images from the

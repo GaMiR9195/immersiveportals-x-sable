@@ -95,7 +95,10 @@ public final class IplStraddleSessionStore {
         final List<CompoundTag> labels = new ArrayList<>(2);
     }
 
-    /** The old frame of a cross-dimension move, drawn by the ghost until its successor reports. */
+    /**
+     * The old frame of a cross-dimension move, drawn by the ghost until the delayed render
+     * stream reaches the move (its poses until then are from before it).
+     */
     private record GhostView(List<SessionPortal> sessions, IplPieceMap pieces) {}
 
     private static final Map<UUID, NavigableMap<Long, DeferredFrame>> FUTURE = new HashMap<>();
@@ -187,9 +190,12 @@ public final class IplStraddleSessionStore {
             if (list == null) return NO_VIEW;
             return new RenderView(pieces(id), 0, 0, IplPieceMap.NATIVE, resolve(list, sub.getLevel()));
         }
+        // The successor's sessions and labels are the server's state from the move on. Until the
+        // delayed stream shows that tick, the ghost (on its own poses or its successor's, mapped
+        // back) is drawn where the body has not completed the crossing yet: only the frame it
+        // left owns the material still on the source side.
         ClientSubLevel successor = IplParentDimSync.ghostSuccessor(sub);
-        if (successor != null) return ghostView(sub, successor);
-        // Until the successor is tracked the ghost keeps its own (old) frame, poses included.
+        if (successor != null && IplParentDimSync.ghostShowsSuccessorFrame(sub)) return ghostView(sub, successor);
         GhostView old = GHOST_VIEWS.get(id);
         return old == null ? NO_VIEW
             : new RenderView(old.pieces(), 0, 0, IplPieceMap.NATIVE, resolve(old.sessions(), sub.getLevel()));

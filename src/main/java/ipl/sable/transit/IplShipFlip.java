@@ -161,10 +161,13 @@ public final class IplShipFlip {
         Vec3 mappedLin = portal.transformLocalVec(new Vec3(linear.x, linear.y, linear.z));
         Vec3 mappedAng = portal.transformLocalVec(new Vec3(angular.x, angular.y, angular.z));
 
+        // Frame boundary on the shared timeline, as for a same-dimension handoff: this tick's
+        // snapshot (the pose that completed the crossing) is still the old frame.
+        int firstDestinationTick = sourceContainer.trackingSystem().getInterpolationTick();
         endSessions(server, uuid, "move");
         IplStraddleSessionSync.advanceFrame(uuid, portal);
         // The ghost bridge must reach clients BEFORE Sable's stop-tracking packet.
-        sendMove(server, ship, sourceLevel, destination, portal, pose);
+        sendMove(server, ship, sourceLevel, destination, portal, pose, firstDestinationTick);
         teleportRiders(ship, sourceLevel, destination, portal, movedRiders);
 
         ServerSubLevel moved;
@@ -328,7 +331,7 @@ public final class IplShipFlip {
     }
 
     private static void sendMove(MinecraftServer server, ServerSubLevel ship, ServerLevel from, ServerLevel to,
-                                 Portal portal, Pose3d destinationPose) {
+                                 Portal portal, Pose3d destinationPose, int firstDestinationTick) {
         Set<ServerPlayer> players = new HashSet<>(recipients(server, ship, to, destinationPose.position()));
         for (UUID id : ship.getTrackingPlayers()) {
             ServerPlayer player = server.getPlayerList().getPlayer(id);
@@ -342,7 +345,8 @@ public final class IplShipFlip {
             McRemoteProcedureCall.tellClientToInvoke(player,
                 "ipl.sable.client.IplParentDimSync.RemoteCallables.move",
                 ship.getUniqueId().toString(), from.dimension().location().toString(),
-                to.dimension().location().toString(), transform, nbt, frame, inverse);
+                to.dimension().location().toString(), transform, nbt, Integer.toString(firstDestinationTick),
+                frame, inverse);
         }
     }
 

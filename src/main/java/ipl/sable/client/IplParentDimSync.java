@@ -5,6 +5,7 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3d;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.network.client.ClientSableInterpolationState;
 import dev.ryanhcode.sable.network.client.SubLevelSnapshotInterpolator;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
@@ -89,18 +90,43 @@ public final class IplParentDimSync {
         final long startMs;
         /** Frame the ghost still SHOWS (the one before the move); picks on it name this frame. */
         final long fromFrame;
+        /** First snapshot tick of the successor's frame; earlier poses belong to {@link #fromFrame}. */
+        final int firstDestinationTick;
         int readyTicks;
         boolean stopDeferred;
 
         Ghost(ClientSubLevel sub, ResourceKey<Level> toDim, RemoteCallables.PortalMapping mapping,
-              @Nullable Portal surrogate, long startMs, long fromFrame) {
+              @Nullable Portal surrogate, long startMs, long fromFrame, int firstDestinationTick) {
             this.sub = sub;
             this.toDim = toDim;
             this.mapping = mapping;
             this.surrogate = surrogate;
             this.startMs = startMs;
             this.fromFrame = fromFrame;
+            this.firstDestinationTick = firstDestinationTick;
         }
+
+        /**
+         * Whether the delayed render stream has reached the move. Before that the body is drawn
+         * at poses from before the move, which only the frame it left describes (its tail may
+         * still lie on the source side of the crossing).
+         */
+        boolean showsSuccessorFrame() {
+            return streamReached(IplSharedClock.get(), firstDestinationTick);
+        }
+    }
+
+    /**
+     * Whether the delayed render stream has entered the frame that begins at server tick
+     * {@code firstDestinationTick} (server completion is authority).
+     */
+    private static boolean streamReached(ClientSableInterpolationState clock, int firstDestinationTick) {
+        // lastInterpolationTick includes the older endpoint.
+        if (clock.lastInterpolationTick >= firstDestinationTick - 1) return true;
+        // With a configured delay > 1.5, Sable's stopped clock can saturate before
+        // the last snapshot. Permit the frame map there; preserve the delayed poses.
+        return clock.isStopped()
+            && clock.getTickPointer() >= firstDestinationTick - 1 + 1.5 - clock.getInterpolationDelay() - 1.0e-8;
     }
 
     private IplParentDimSync() {}
@@ -267,6 +293,12 @@ public final class IplParentDimSync {
         return live != null ? live : ghost.surrogate;
     }
 
+    /** Whether the transit ghost {@code sub} is drawn in its successor's frame yet (see {@link Ghost#showsSuccessorFrame}). */
+    public static boolean ghostShowsSuccessorFrame(ClientSubLevel sub) {
+        Ghost ghost = ghostOf(sub);
+        return ghost != null && ghost.showsSuccessorFrame();
+    }
+
     /** The successor a ghost hands over to, once Sable tracks it in the destination level. */
     @Nullable
     public static ClientSubLevel ghostSuccessor(ClientSubLevel sub) {
@@ -403,7 +435,9 @@ public final class IplParentDimSync {
             ClientSubLevel successor = IplClientProjections.findClientSub(entry.getKey(), ghost.toDim);
             boolean ready = successor != null && successor != ghost.sub && hasGeometry(successor);
             ghost.readyTicks = ready ? ghost.readyTicks + 1 : 0;
-            if (ghost.readyTicks >= GHOST_READY_TICKS || now - ghost.startMs > GHOST_TIMEOUT_MS) {
+            // The successor draws only its own frame: it takes over once the stream shows that frame.
+            boolean handOver = ghost.readyTicks >= GHOST_READY_TICKS && ghost.showsSuccessorFrame();
+            if (handOver || now - ghost.startMs > GHOST_TIMEOUT_MS) {
                 finalizeGhost(entry.getKey(), ghost);
             }
         }
@@ -509,7 +543,7 @@ public final class IplParentDimSync {
          */
         public static void move(
             String subLevelUuid, String fromDimensionId, String toDimensionId, String portalTransform,
-            String portalNbtB64, String coordinateFrame, String inverseGrabLink
+            String portalNbtB64, String firstDestinationTick, String coordinateFrame, String inverseGrabLink
         ) {
             UUID id = UUID.fromString(subLevelUuid);
             long destinationFrame = Long.parseLong(coordinateFrame);
@@ -525,10 +559,11 @@ public final class IplParentDimSync {
                 Portal surrogate = IplStraddleSessionStore.resolveHandoffPortal(
                     mapping.portalId(), portalNbtB64, old.getLevel());
                 ResourceKey<Level> to = dimensionKey(toDimensionId);
-                Ghost ghost = new Ghost(old, to, mapping, surrogate, System.currentTimeMillis(), frame(id));
+                Ghost ghost = new Ghost(old, to, mapping, surrogate, System.currentTimeMillis(), frame(id),
+                    Integer.parseInt(firstDestinationTick));
                 GHOSTS.put(id, ghost);
                 // Смена кадра ниже заменяет сессии и метки старого кадра; призрак рисует их
-                // копию, пока не придёт первый снимок преемника.
+                // копию, пока отложенный поток отрисовки не дойдёт до тика переезда.
                 IplStraddleSessionStore.captureGhostView(id);
             }
             enterFrame(id, destinationFrame);
@@ -553,15 +588,8 @@ public final class IplParentDimSync {
             PortalMapping mapping = PortalMapping.decode(handoff.portalTransform());
             ClientSubLevelContainer container = ClientSubLevelContainer.getContainer(client.getLevel());
             if (container == null) return false;
-            var clock = container.getInterpolation();
-            // Server completion is authority. lastInterpolationTick includes the older endpoint.
-            boolean reached = clock.lastInterpolationTick >= handoff.firstDestinationTick() - 1;
-            // With a configured delay > 1.5, Sable's stopped clock can saturate before
-            // the last snapshot. Permit the frame map there; preserve the delayed poses.
-            boolean stoppedAtEnd = clock.isStopped()
-                && clock.getTickPointer() >= handoff.firstDestinationTick() - 1
-                    + 1.5 - clock.getInterpolationDelay() - 1.0e-8;
-            if (!force && !reached && !stoppedAtEnd && !mapping.hasFullyClearedSourcePlane(client)) return false;
+            if (!force && !streamReached(container.getInterpolation(), handoff.firstDestinationTick())
+                && !mapping.hasFullyClearedSourcePlane(client)) return false;
             if (handoff.destinationFrame() <= frame(id)) return true;
             if (handoff.destinationFrame() != frame(id) + 1L) {
                 throw new IllegalStateException("Missing coordinate-frame handoff for " + id);
