@@ -1,5 +1,8 @@
 package ipl.sable.mixin.client;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import ipl.sable.client.IplClientProjections;
 import ipl.sable.transit.IplProjectionRaycast;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.level.BlockGetter;
@@ -18,6 +21,10 @@ import org.spongepowered.asm.mixin.Mixin;
  * result. Straddling/foreign ships are masked out of that stock pass and cast per frame;
  * nested frame casts carry {@code doNotProject} and fall straight through to stock. The
  * same algorithm serves the server ({@code ServerLevelMixin}).
+ *
+ * <p>Random animate ticks run without portal images ({@link IplClientProjections#withoutImages}):
+ * Sable's sub-level animate tick would sample an image with its native pose, which turns into
+ * a huge sampling box around the remote level's portal (see there).
  */
 @Mixin(value = ClientLevel.class, priority = 1200)
 public abstract class ClientLevelMixin implements BlockGetter {
@@ -36,5 +43,11 @@ public abstract class ClientLevelMixin implements BlockGetter {
             plan.unmask();
         }
         return plan.finish(base);
+    }
+
+    /** Wraps the whole method, Sable's TAIL hook ({@code sable$subLevelAnimateTick}) included. */
+    @WrapMethod(method = "animateTick(III)V")
+    private void ipl$animateTickWithoutImages(int x, int y, int z, Operation<Void> original) {
+        IplClientProjections.withoutImages(() -> original.call(x, y, z));
     }
 }

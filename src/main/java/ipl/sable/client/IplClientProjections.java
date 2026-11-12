@@ -179,7 +179,7 @@ public final class IplClientProjections {
      */
     @Nullable
     public static List<SubLevel> intersectingImages(Level level, BoundingBox3dc bounds) {
-        if (IplStraddleSessionStore.isIdle()) return null;
+        if (IplStraddleSessionStore.isIdle() || imagesSuppressedHere()) return null;
         List<SubLevel> out = null;
         for (ClientLevel candidateLevel : clientLevels()) {
             SubLevelContainer container = SubLevelContainer.getContainer((Level) candidateLevel);
@@ -197,6 +197,47 @@ public final class IplClientProjections {
             }
         }
         return out;
+    }
+
+    // ------------------------------------------------------------------ image-free scopes
+
+    /** Thread that currently runs an image-free scope (client thread only in practice). */
+    @Nullable private static volatile Thread imageFreeThread;
+    private static int imageFreeDepth;
+
+    /**
+     * Runs {@code body} with portal IMAGES left out of Sable's spatial queries on this thread.
+     *
+     * <p>For callers that use a hit sub-level's native {@code logicalPose()} directly, which is
+     * wrong for an image (it lives in another chart, usually another level). The case that
+     * matters is Sable's random animate tick ({@code ClientLevelMixin.sable$subLevelAnimateTick}):
+     * it maps the query point into the plot with the native pose and samples
+     * {@code 667 * volume / 32^3} positions of {@code (point ± 16) ∩ plotBounds}. For an image the
+     * point lands tens to hundreds of blocks off the plot; {@code BoundingBox3i.set} reorders the
+     * corners, so the disjoint "intersection" becomes the gap between them and its volume, not
+     * zero. Immersive Portals animate-ticks the remote level around the portal every other tick,
+     * so each body with an image there cost thousands of bridged plot reads per tick on the
+     * client thread. Animate ticks are cosmetic: the real body gets them in its own level.
+     */
+    public static void withoutImages(Runnable body) {
+        Thread current = Thread.currentThread();
+        Thread previous = imageFreeThread;
+        if (previous != null && previous != current) {
+            body.run(); // another thread owns the scope; never suppress across threads
+            return;
+        }
+        imageFreeThread = current;
+        imageFreeDepth++;
+        try {
+            body.run();
+        } finally {
+            if (--imageFreeDepth == 0) imageFreeThread = null;
+        }
+    }
+
+    private static boolean imagesSuppressedHere() {
+        Thread owner = imageFreeThread;
+        return owner != null && owner == Thread.currentThread();
     }
 
     /** Whether this client sub-level currently has a piece beyond a portal. */

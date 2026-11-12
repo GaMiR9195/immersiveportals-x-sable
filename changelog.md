@@ -133,6 +133,14 @@ natively in exactly one level (stock Sable model); the far side of a portal is a
 
 ### Fixed
 
+- **Client lag while a body touches a portal into another dimension** (worse with every body of a
+  jointed build that has an image there). Immersive Portals animate-ticks the remote level around
+  the portal every other tick; Sable's sub-level animate tick got the portal images from the
+  spatial-query splice and sampled them with their native pose. The query point landed far off
+  the plot and `BoundingBox3i` turned the empty intersection into the gap box between them:
+  thousands of bridged plot reads per image per tick on the client thread (vanilla profiler: ~75%
+  of client time in `imm_ptl_client_tick`, 13 TPS). Animate ticks now run without images
+  (`ClientLevelMixin`, `IplClientProjections.withoutImages`); the body keeps its own level's.
 - **Jointed builds.** A spring (or any link) across a portal no longer teleports the partner
   that has not crossed, and its session holds until both sides crossed. Linked bodies that do
   not touch an aperture no longer get images, sessions, sweeps and label traffic: in a chain at a
