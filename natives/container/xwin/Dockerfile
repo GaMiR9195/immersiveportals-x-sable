@@ -5,6 +5,7 @@ ARG RUST_VERSION
 RUN rustup default ${RUST_VERSION}
 RUN rustup target add x86_64-pc-windows-msvc
 RUN rustup target add aarch64-pc-windows-msvc
+ENV XWIN_SDK_VERSION=10.0.22621
 RUN cargo xwin cache xwin
 
 WORKDIR /
