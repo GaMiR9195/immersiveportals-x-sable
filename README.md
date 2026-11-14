@@ -1,4 +1,4 @@
-# v0.6.0 (WIP)
+# v0.6.0
 1) New foundation: the `ipl_sable:sublevels` hosting dimension is gone. Ships live natively in one level
    (stock Sable model); the far side of a portal is an Atlas **projection** of the same body.
 2) Multi-portal and chained straddling, seamless same-dimension flips and cross-dimension moves.
