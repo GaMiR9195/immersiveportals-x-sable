@@ -1,13 +1,5 @@
-# v0.6.0 (WIP)
-1) New foundation: the `ipl_sable:sublevels` hosting dimension is gone. Ships live natively in one level
-   (stock Sable model); the far side of a portal is an Atlas **projection** of the same body.
-2) Multi-portal and chained straddling, seamless same-dimension flips and cross-dimension moves.
-3) Jointed builds: every body crosses on its own, the linked group flips together. Ropes collide
-   through portals.
-4) Linux/macOS natives build script, multi-platform natives loader, far less console spam.
-5) Creative Physics Staff through portals: grab and lock through any chain of portals (blocks behind
-   a doorway no longer block it), drags survive cross-dimension moves, less tangling.
-6) Optimization, caching, less useless work.
+# v0.6.1 (WIP)
+1) replace with "Explaining how visual router for Flywheel, Veil and block entities works".
 
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.
 
