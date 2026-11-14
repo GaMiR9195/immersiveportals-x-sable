@@ -81,8 +81,6 @@ public class RenderStates {
     
     public static boolean renderedScalingPortal = false;
     
-    public static boolean isRenderingPortalWeather = false;
-    
     public static void updatePreRenderInfo(
         float newPartialTick
     ) {

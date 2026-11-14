@@ -223,17 +223,22 @@ public final class IplTransitController {
         long scene = IplScenes.sceneHandle(source);
         int[] ids = bodyIds(crossing.steps());
         List<ServerSubLevel> moved = new ArrayList<>(crossing.steps().size());
-        for (Step step : crossing.steps()) {
-            ServerSubLevel ship = step.ship();
-            if (ship.isRemoved() || !flipped.add(ship.getUniqueId())) continue;
-            ServerSubLevel live = step.choice() == null
-                ? follow(server, ship, crossing.portal(), movedRiders)
-                : flipBody(server, ship, step.choice(), movedRiders);
-            if (live == null) {
-                LOG.error("[IPL-TRANSIT] {} declined its group's flip after preflight", ship.getUniqueId());
-                continue;
+        IplShipFlip.beginCrossing();
+        try {
+            for (Step step : crossing.steps()) {
+                ServerSubLevel ship = step.ship();
+                if (ship.isRemoved() || !flipped.add(ship.getUniqueId())) continue;
+                ServerSubLevel live = step.choice() == null
+                    ? follow(server, ship, crossing.portal(), movedRiders)
+                    : flipBody(server, ship, step.choice(), movedRiders);
+                if (live == null) {
+                    LOG.error("[IPL-TRANSIT] {} declined its group's flip after preflight", ship.getUniqueId());
+                    continue;
+                }
+                moved.add(live);
             }
-            moved.add(live);
+        } finally {
+            IplShipFlip.endCrossing();
         }
         IplLinks.invalidate();
         boolean whole = moved.size() == crossing.steps().size();

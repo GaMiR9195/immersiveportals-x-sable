@@ -1,6 +1,8 @@
 package qouteall.imm_ptl.core.mixin.client.render;
 
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.sugar.Local;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.platform.Lighting;
@@ -24,6 +26,7 @@ import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import ipl.sable.SableBridge;
+import ipl.sable.render.clip.IplClipPlanes;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.entity.Entity;
@@ -136,6 +139,33 @@ public abstract class MixinLevelRenderer implements IEWorldRenderer {
     @Mutable
     private ObjectArrayList<SectionRenderDispatcher.RenderSection> visibleSections;
     
+    /**
+     * Every level render is one clip pass with its own matrices; inside a portal pass the portal
+     * clip covers the whole render (see {@link FrontClipping}). Nested portal renders stack.
+     */
+    @WrapMethod(method = "renderLevel")
+    private void ip_clipPass(
+        DeltaTracker deltaTracker, boolean renderBlockOutline, Camera camera, GameRenderer gameRenderer,
+        LightTexture lightTexture, Matrix4f modelView, Matrix4f projection, Operation<Void> original
+    ) {
+        IplClipPlanes.beginPass(projection, modelView);
+        try {
+            FrontClipping.beginLevelPass();
+            original.call(deltaTracker, renderBlockOutline, camera, gameRenderer, lightTexture, modelView, projection);
+        } finally {
+            IplClipPlanes.endPass();
+        }
+    }
+
+    /** The sky is at infinity, not behind the portal plane: it is never cut. */
+    @WrapMethod(method = "renderSky")
+    private void ip_unclippedSky(
+        Matrix4f modelView, Matrix4f projection, float partialTick, Camera camera,
+        boolean isFoggy, Runnable fogSetup, Operation<Void> original
+    ) {
+        IplClipPlanes.suppressed(() -> original.call(modelView, projection, partialTick, camera, isFoggy, fogSetup));
+    }
+
     @Inject(
         method = "renderLevel",
         at = @At(
@@ -391,41 +421,6 @@ public abstract class MixinLevelRenderer implements IEWorldRenderer {
         CrossPortalEntityRenderer.afterRenderingEntity(entity);
     }
     
-    @Inject(
-        method = "renderLevel",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/LevelRenderer;renderSnowAndRain(Lnet/minecraft/client/renderer/LightTexture;FDDD)V"
-        )
-    )
-    private void beforeRenderingWeather(
-        DeltaTracker deltaTracker, boolean bl, Camera camera, GameRenderer gameRenderer, LightTexture lightTexture, Matrix4f modelView, Matrix4f matrix4f2, CallbackInfo ci
-    ) {
-        if (PortalRendering.isRendering()) {
-            FrontClipping.setupInnerClipping(
-                PortalRendering.getActiveClippingPlane(),
-                modelView, 0
-            );
-            RenderStates.isRenderingPortalWeather = true;
-        }
-    }
-    
-    @Inject(
-        method = "renderLevel",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/LevelRenderer;renderSnowAndRain(Lnet/minecraft/client/renderer/LightTexture;FDDD)V",
-            shift = At.Shift.AFTER
-        )
-    )
-    private void afterRenderingWeather(
-        DeltaTracker deltaTracker, boolean bl, Camera camera, GameRenderer gameRenderer, LightTexture lightTexture, Matrix4f matrix4f, Matrix4f matrix4f2, CallbackInfo ci
-    ) {
-        if (PortalRendering.isRendering()) {
-            FrontClipping.disableClipping();
-            RenderStates.isRenderingPortalWeather = false;
-        }
-    }
     
     //avoid render glowing entities when rendering portal
     @Redirect(

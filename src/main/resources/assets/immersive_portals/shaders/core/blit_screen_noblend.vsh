@@ -1,4 +1,5 @@
 #version 150
+// ipl:no-clip (screen space)
 
 in vec3 Position;
 

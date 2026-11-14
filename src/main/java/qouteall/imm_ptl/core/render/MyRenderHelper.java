@@ -20,6 +20,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 import org.apache.commons.lang3.Validate;
 import org.joml.Matrix4f;
+import ipl.sable.render.clip.IplClipPlanes;
 import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.McHelper;
@@ -236,6 +237,10 @@ public class MyRenderHelper {
      */
     @IPVanillaCopy
     public static void renderScreenTriangle(int r, int g, int b, int a) {
+        IplClipPlanes.suppressed(() -> drawScreenTriangle(r, g, b, a));
+    }
+
+    private static void drawScreenTriangle(int r, int g, int b, int a) {
         ShaderInstance shader = GameRenderer.getPositionColorShader();
         Validate.notNull(shader);
         
@@ -372,6 +377,7 @@ public class MyRenderHelper {
         Validate.notNull(shader, "shader is null");
         
         shader.setSampler("DiffuseSampler", textureProvider.getColorTextureId());
+        IplClipPlanes.suppress();
         shader.apply();
         BufferBuilder bufferBuilder = RenderSystem.renderThreadTesselator().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.BLIT_SCREEN);
         bufferBuilder.addVertex(0.0f, 0.0f, 0.0f);
@@ -380,6 +386,7 @@ public class MyRenderHelper {
         bufferBuilder.addVertex(0.0f, 1.0f, 0.0f);
         BufferUploader.draw(bufferBuilder.buildOrThrow());
         shader.clear();
+        IplClipPlanes.unsuppress();
 
         RenderSystem.depthMask(true);
         RenderSystem.colorMask(true, true, true, true);

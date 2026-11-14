@@ -9,9 +9,12 @@ import dev.ryanhcode.sable.neoforge.mixinhelper.compatibility.flywheel.SubLevelE
 import dev.ryanhcode.sable.neoforge.mixinterface.compatibility.flywheel.BlockEntityStorageExtension;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.client.IplParentDimSync;
+import ipl.sable.render.route.IplGeometryRouting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.level.block.entity.BlockEntity;
+
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -21,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.function.Predicate;
 
 /**
  * Flywheel visuals (Create cogs, shafts...) of sub-levels that cross portals.
@@ -52,6 +56,8 @@ public final class IplFlywheelFallback {
     private static final Map<ClientSubLevel, SubLevelEmbedding> EMBEDDINGS = new WeakHashMap<>();
     /** Block entities taken out of Flywheel, per sub-level of the current level. */
     private static final Map<ClientSubLevel, Taken> TAKEN = new WeakHashMap<>();
+    /** A non-straddling body gives a model up this much before it reaches another body's aperture. */
+    private static final double ADOPTION_LEAD = 1.0;
 
     private static final class Taken {
         /** Removal queued: BER draws them once Flywheel has dropped them. */
@@ -87,30 +93,39 @@ public final class IplFlywheelFallback {
             }
             IplPieceRender.Frame frame = IplPieceRender.frameFor(sub);
             Taken taken = TAKEN.get(sub);
-            if (frame == null && taken == null) continue;
+            boolean nearApertures = frame == null && IplGeometryRouting.hasApertures(level);
+            if (frame == null && taken == null && !nearApertures) continue;
             if (taken == null) TAKEN.put(sub, taken = new Taken());
-            update(visuals, frame, info, taken);
+            update(visuals, keeper(sub, frame), info, taken);
             if (frame == null && taken.out.isEmpty() && taken.back.isEmpty()) TAKEN.remove(sub);
         }
     }
 
-    private static void update(VisualManager<BlockEntity> visuals, IplPieceRender.Frame frame,
+    /**
+     * Whether Flywheel may keep drawing a block entity of {@code sub}: not when its model reaches an
+     * aperture zone of {@code sub}'s own pieces, nor, for a body that does not straddle, when it
+     * comes near another body's aperture (its renderer routes it through, see {@link IplGeometryRouting}).
+     */
+    private static Predicate<BlockEntity> keeper(ClientSubLevel sub, @Nullable IplPieceRender.Frame frame) {
+        if (frame != null) return be -> IplPieceRender.flywheelKeeps(frame, be);
+        return be -> !IplGeometryRouting.isNearAperture(sub, be, ADOPTION_LEAD);
+    }
+
+    private static void update(VisualManager<BlockEntity> visuals, Predicate<BlockEntity> keeps,
                                SubLevelEmbedding info, Taken taken) {
         Set<BlockEntity> visualized = identitySet();
         if (info != null) visualized.addAll(info.blockEntities());
-        if (frame != null) {
-            for (BlockEntity be : visualized) {
-                if (IplPieceRender.flywheelKeeps(frame, be.getBlockPos())) continue;
-                visuals.queueRemove(be);
-                taken.out.add(be);
-                taken.back.remove(be);
-            }
+        for (BlockEntity be : visualized) {
+            if (keeps.test(be)) continue;
+            visuals.queueRemove(be);
+            taken.out.add(be);
+            taken.back.remove(be);
         }
         for (Iterator<BlockEntity> it = taken.out.iterator(); it.hasNext(); ) {
             BlockEntity be = it.next();
             if (be.isRemoved()) {
                 it.remove();
-            } else if (frame == null || IplPieceRender.flywheelKeeps(frame, be.getBlockPos())) {
+            } else if (keeps.test(be)) {
                 visuals.queueAdd(be);
                 it.remove();
                 taken.back.add(be);

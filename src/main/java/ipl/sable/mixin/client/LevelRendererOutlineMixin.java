@@ -89,7 +89,7 @@ public abstract class LevelRendererOutlineMixin {
 
         IplClientProjections.StraddleProjection projection = ipl$projectionFor(clientOwner, piece);
         Pose3dc pose = projection != null ? projection.mappedPose() : piece.mapping.mapPose(real);
-        IplStraddleRenderState.set(clientOwner, pose, piece.id);
+        IplStraddleRenderState.set(clientOwner, pose, piece.id, real);
         try {
             return original.call(context, camera, target, deltaTracker, poseStack, bufferSource);
         } finally {

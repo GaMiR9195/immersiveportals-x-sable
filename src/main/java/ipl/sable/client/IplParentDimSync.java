@@ -77,10 +77,16 @@ public final class IplParentDimSync {
     /** Stop-tracking packets of ghosts removed before they arrived — swallowed silently. */
     private static final Map<ResourceKey<Level>, Integer> EXPECTED_STOPS = new HashMap<>();
 
+    /** {@code group}: the bodies flipped in the same crossing, this one included. */
     private record PendingHandoff(
         String dimensionId, String portalTransform, String portalNbtB64,
-        int firstDestinationTick, long destinationFrame, String inverseGrabLink
-    ) {}
+        int firstDestinationTick, long destinationFrame, String inverseGrabLink, List<UUID> group
+    ) {
+        boolean sameFlip(PendingHandoff other) {
+            return firstDestinationTick == other.firstDestinationTick && group.equals(other.group)
+                && portalTransform.equals(other.portalTransform);
+        }
+    }
 
     private static final class Ghost {
         final ClientSubLevel sub;
@@ -212,29 +218,27 @@ public final class IplParentDimSync {
         return result;
     }
 
-    /** Client tick tail: drains same-dimension handoffs, then advances transit ghosts. */
+    /**
+     * Client tick tail: drains same-dimension handoffs, then advances transit ghosts. The bodies
+     * of one crossing are rebased in the same tick, once every one of them is visually clear:
+     * a link between two of them is never drawn from the new chart into the old one.
+     */
     public static void applyPendingHandoffs() {
-        if (!PENDING_HANDOFFS.isEmpty()) {
-            Iterator<Map.Entry<UUID, ArrayDeque<PendingHandoff>>> iterator =
-                PENDING_HANDOFFS.entrySet().iterator();
-            while (iterator.hasNext()) {
-                Map.Entry<UUID, ArrayDeque<PendingHandoff>> entry = iterator.next();
-                ArrayDeque<PendingHandoff> pending = entry.getValue();
-                try {
-                    // Several ordered flips can queue before the delayed stream catches up;
-                    // apply every transform in order (portal chains, self-recursive portals).
-                    while (!pending.isEmpty()) {
-                        PendingHandoff next = pending.peekFirst();
-                        if (!RemoteCallables.applyHandoffWhenVisuallyClear(entry.getKey(), next, false)) break;
-                        pending.removeFirst();
-                    }
-                    if (pending.isEmpty()) iterator.remove();
-                } catch (RuntimeException e) {
-                    // One broken body must not stall the others or crash the client tick.
-                    IplStraddleSessionStore.clearAllVisualState(entry.getKey());
-                    iterator.remove();
-                    LOG.error("[IPL-PARENT-SYNC] failed deferred handoff for {}", entry.getKey(), e);
+        for (UUID id : new ArrayList<>(PENDING_HANDOFFS.keySet())) {
+            ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.get(id);
+            if (pending == null) continue; // drained with its crossing
+            try {
+                // Several ordered flips can queue before the delayed stream catches up;
+                // apply every transform in order (portal chains, self-recursive portals).
+                while (!pending.isEmpty() && RemoteCallables.applyCrossing(pending.peekFirst())) {
+                    // applyCrossing removed the head of every member, this one included
                 }
+                if (pending.isEmpty()) PENDING_HANDOFFS.remove(id, pending);
+            } catch (RuntimeException e) {
+                // One broken body must not stall the others or crash the client tick.
+                IplStraddleSessionStore.clearAllVisualState(id);
+                PENDING_HANDOFFS.remove(id);
+                LOG.error("[IPL-PARENT-SYNC] failed deferred handoff for {}", id, e);
             }
         }
         tickGhosts();
@@ -257,6 +261,18 @@ public final class IplParentDimSync {
             }
         }
         return mapped;
+    }
+
+    /** {@link #mapPendingDestinationSnapshotBack} for points (rope snapshots), in place. */
+    public static void mapPendingDestinationPointsBack(UUID subLevelId, int gameTick, List<Vector3d> points) {
+        ArrayDeque<PendingHandoff> pending = PENDING_HANDOFFS.get(subLevelId);
+        if (pending == null || pending.isEmpty()) return;
+        for (Iterator<PendingHandoff> it = pending.descendingIterator(); it.hasNext();) {
+            PendingHandoff handoff = it.next();
+            if (gameTick < handoff.firstDestinationTick()) continue;
+            RemoteCallables.PortalMapping mapping = RemoteCallables.PortalMapping.decode(handoff.portalTransform());
+            for (Vector3d point : points) mapping.mapPointInverse(point);
+        }
     }
 
     // ------------------------------------------------------------------ transit ghosts
@@ -500,7 +516,8 @@ public final class IplParentDimSync {
          */
         public static void handoff(
             String subLevelUuid, String dimensionId, String portalTransform,
-            String portalNbtB64, String firstDestinationTick, String coordinateFrame, String inverseGrabLink
+            String portalNbtB64, String firstDestinationTick, String coordinateFrame, String inverseGrabLink,
+            String group
         ) {
             UUID id = UUID.fromString(subLevelUuid);
             long destinationFrame = Long.parseLong(coordinateFrame);
@@ -512,7 +529,7 @@ public final class IplParentDimSync {
             }
             var queue = PENDING_HANDOFFS.computeIfAbsent(id, ignored -> new ArrayDeque<>());
             PendingHandoff next = new PendingHandoff(dimensionId, portalTransform, portalNbtB64,
-                Integer.parseInt(firstDestinationTick), destinationFrame, inverseGrabLink);
+                Integer.parseInt(firstDestinationTick), destinationFrame, inverseGrabLink, decodeGroup(group, id));
             queue.addLast(next);
             // Drained at the client tick tail (applyPendingHandoffs).
         }
@@ -579,7 +596,50 @@ public final class IplParentDimSync {
             for (PendingHandoff handoff : pending) applyHandoffWhenVisuallyClear(id, handoff, true);
         }
 
+        private static List<UUID> decodeGroup(String group, UUID self) {
+            List<UUID> members = new ArrayList<>();
+            for (String part : group.split(",")) {
+                if (!part.isBlank()) members.add(UUID.fromString(part.trim()));
+            }
+            if (!members.contains(self)) members.add(self);
+            return List.copyOf(members);
+        }
+
+        /**
+         * Applies {@code head} together with the same flip of every other member of its crossing,
+         * once all of them are visually clear. A member still waiting on an earlier flip holds
+         * the crossing back; a member without this flip pending (applied, or not tracked by this
+         * client) does not.
+         */
+        private static boolean applyCrossing(PendingHandoff head) {
+            for (UUID member : head.group()) {
+                ArrayDeque<PendingHandoff> queue = PENDING_HANDOFFS.get(member);
+                if (queue == null || queue.stream().noneMatch(head::sameFlip)) continue;
+                PendingHandoff first = queue.peekFirst();
+                if (first == null || !first.sameFlip(head) || !isVisuallyClear(member, first)) return false;
+            }
+            for (UUID member : head.group()) {
+                ArrayDeque<PendingHandoff> queue = PENDING_HANDOFFS.get(member);
+                PendingHandoff first = queue == null ? null : queue.peekFirst();
+                if (first == null || !first.sameFlip(head)) continue;
+                if (!applyHandoffWhenVisuallyClear(member, first, true)) return false;
+                queue.removeFirst();
+                if (queue.isEmpty()) PENDING_HANDOFFS.remove(member, queue);
+            }
+            return true;
+        }
+
+        private static boolean isVisuallyClear(UUID id, PendingHandoff handoff) {
+            ClientSubLevel client = IplClientProjections.findClientSub(id, dimensionKey(handoff.dimensionId()));
+            if (client == null) return true;
+            ClientSubLevelContainer container = ClientSubLevelContainer.getContainer(client.getLevel());
+            if (container == null) return false;
+            return streamReached(container.getInterpolation(), handoff.firstDestinationTick())
+                || PortalMapping.decode(handoff.portalTransform()).hasFullyClearedSourcePlane(client);
+        }
+
         private static boolean applyHandoffWhenVisuallyClear(UUID id, PendingHandoff handoff, boolean force) {
+            if (!force && !isVisuallyClear(id, handoff)) return false;
             ClientSubLevel client = IplClientProjections.findClientSub(id, dimensionKey(handoff.dimensionId()));
             if (client == null) {
                 enterFrame(id, Math.max(frame(id), handoff.destinationFrame()));
@@ -588,8 +648,6 @@ public final class IplParentDimSync {
             PortalMapping mapping = PortalMapping.decode(handoff.portalTransform());
             ClientSubLevelContainer container = ClientSubLevelContainer.getContainer(client.getLevel());
             if (container == null) return false;
-            if (!force && !streamReached(container.getInterpolation(), handoff.firstDestinationTick())
-                && !mapping.hasFullyClearedSourcePlane(client)) return false;
             if (handoff.destinationFrame() <= frame(id)) return true;
             if (handoff.destinationFrame() != frame(id) + 1L) {
                 throw new IllegalStateException("Missing coordinate-frame handoff for " + id);
@@ -636,6 +694,8 @@ public final class IplParentDimSync {
                     swept.maxZ = Math.max(swept.maxZ, corner.z);
                 }
             }
+            // Strands held on the body follow it in the same tick (their snapshots share its clock).
+            IplRopeChartSync.rebase(clientSubLevel, mapping::mapPoint);
             IplStraddleRenderCache.invalidateActivePasses();
             // Rebuild Sable's cached render pose from the separately mapped endpoints.
             ((ClientSubLevelAccessor) clientSubLevel).ipl$setLastRenderPosePartialTick(-1.0f);
@@ -677,37 +737,31 @@ public final class IplParentDimSync {
                 );
             }
 
-            Pose3d mapPose(Pose3d sourcePose) {
-                Vector3d offset = new Vector3d(
-                    sourcePose.position().x() - origin.x,
-                    sourcePose.position().y() - origin.y,
-                    sourcePose.position().z() - origin.z
-                ).mul(scale);
-                rotation.transform(offset);
+            /** Source-chart point → destination chart, in place. */
+            Vector3d mapPoint(Vector3d point) {
+                point.sub(origin.x, origin.y, origin.z).mul(scale);
+                rotation.transform(point);
+                return point.add(destination.x, destination.y, destination.z);
+            }
 
+            /** Destination-chart point → source chart, in place. */
+            Vector3d mapPointInverse(Vector3d point) {
+                point.sub(destination.x, destination.y, destination.z);
+                new Quaterniond(rotation).invert().transform(point);
+                return point.div(scale).add(origin.x, origin.y, origin.z);
+            }
+
+            Pose3d mapPose(Pose3d sourcePose) {
                 Pose3d destinationPose = new Pose3d(sourcePose);
-                destinationPose.position().set(
-                    destination.x + offset.x, destination.y + offset.y, destination.z + offset.z
-                );
+                mapPoint(destinationPose.position());
                 destinationPose.orientation().set(new Quaterniond(rotation).mul(sourcePose.orientation()));
                 return destinationPose;
             }
 
             public Pose3d mapPoseInverse(Pose3d destinationPose) {
-                Vector3d offset = new Vector3d(
-                    destinationPose.position().x() - destination.x,
-                    destinationPose.position().y() - destination.y,
-                    destinationPose.position().z() - destination.z
-                );
-                Quaterniond inverseRotation = new Quaterniond(rotation).invert();
-                inverseRotation.transform(offset);
-                offset.div(scale);
-
                 Pose3d sourcePose = new Pose3d(destinationPose);
-                sourcePose.position().set(
-                    origin.x + offset.x, origin.y + offset.y, origin.z + offset.z
-                );
-                sourcePose.orientation().set(inverseRotation.mul(destinationPose.orientation()));
+                mapPointInverse(sourcePose.position());
+                sourcePose.orientation().set(new Quaterniond(rotation).invert().mul(destinationPose.orientation()));
                 return sourcePose;
             }
 

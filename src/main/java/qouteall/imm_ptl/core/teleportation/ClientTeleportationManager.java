@@ -458,7 +458,7 @@ public class ClientTeleportationManager {
         LocalPlayer player, ClientLevel fromWorld, ClientLevel toWorld, Vec3 newEyePos
     ) {
         Validate.isTrue(!WorldRenderInfo.isRendering());
-        Validate.isTrue(!FrontClipping.isClippingEnabled);
+        Validate.isTrue(!FrontClipping.isClippingEnabled());
         Validate.isTrue(!PacketRedirectionClient.getIsProcessingRedirectedMessage());
         
         Entity vehicle = player.getVehicle();

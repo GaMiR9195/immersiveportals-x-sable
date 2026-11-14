@@ -212,6 +212,7 @@ public class CrossPortalEntityRenderer {
                 collidingPortal.getInnerClipping(), matrixStack.last().pose(), 0
             );
             renderEntity(entity, collidingPortal, matrixStack);
+            client.renderBuffers().bufferSource().endBatch();
             FrontClipping.disableClipping();
         }
     }

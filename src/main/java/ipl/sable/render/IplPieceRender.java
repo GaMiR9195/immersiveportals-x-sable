@@ -18,10 +18,13 @@ import ipl.sable.transit.IplApertureSweep;
 import ipl.sable.transit.IplProjectionTree;
 import ipl.sable.transit.IplStraddlePoseMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector3d;
@@ -31,7 +34,6 @@ import org.lwjgl.opengl.GL11C;
 import org.lwjgl.opengl.GL14C;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL15C;
-import org.lwjgl.opengl.GL30;
 import org.lwjgl.system.MemoryUtil;
 import qouteall.q_misc_util.my_util.Plane;
 
@@ -295,10 +297,9 @@ public final class IplPieceRender {
         if (splitEdges == null) return;
         for (int k = 0; k < splitEdges.size(); k++) {
             IntArrayList[] lists = splits.get(k);
-            IplClipUniformPatcher.patchForSubLevel(frame.sub, keepPlane(splitEdges.get(k), node, draw.pose), null);
+            IplPieceClip.set(keepPlane(splitEdges.get(k), node, draw.pose));
             multiDraw(access, lists[0].elements(), lists[1].elements(), lists[0].size());
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE1);
-            GL11.glDisable(GL30.GL_CLIP_DISTANCE2);
+            IplPieceClip.clear();
         }
     }
 
@@ -403,8 +404,8 @@ public final class IplPieceRender {
     // ------------------------------------------------------------------ block entities
 
     /**
-     * Extra zone depth of block entities: their models reach past their block (cogwheels, water
-     * wheels), so the ones near an aperture are drawn by both pieces, each cut by the plane.
+     * Least extra zone depth of a block entity: renderers may under-report how far their model
+     * reaches past the block (an opening chest lid), see {@link #modelReach}.
      */
     private static final double BE_SLACK = 1.0;
     /** Flywheel gives a block entity up this much earlier: its removal applies a frame later. */
@@ -438,24 +439,59 @@ public final class IplPieceRender {
         if (frame == null || be == null || Sable.HELPER.getContainingClient(be) != filterSub) return false;
         BlockPos pos = be.getBlockPos();
         int label = frame.label(pos.getX(), pos.getY(), pos.getZ());
-        IplPieceMap.Edge e = blockEntityEdge(frame.edges, pos, frame.view.label(pos.getX(), pos.getY(), pos.getZ()), label, BE_SLACK);
+        IplPieceMap.Edge e = blockEntityEdge(frame, be, label, 0.0);
         return filterEdge == null ? e != null || label != filterNode : e != filterEdge;
     }
 
-    /** Whether Flywheel may keep drawing the block entity at {@code pos} with the native piece. */
-    public static boolean flywheelKeeps(Frame frame, BlockPos pos) {
+    /** The piece the block of {@code be} belongs to. */
+    public static int blockEntityPiece(Frame frame, BlockEntity be) {
+        BlockPos pos = be.getBlockPos();
+        return frame.label(pos.getX(), pos.getY(), pos.getZ());
+    }
+
+    /** Whether Flywheel may keep drawing {@code be} with the native piece. */
+    public static boolean flywheelKeeps(Frame frame, BlockEntity be) {
+        BlockPos pos = be.getBlockPos();
         int label = frame.label(pos.getX(), pos.getY(), pos.getZ());
-        return label == frame.view.nativeNode()
-            && blockEntityEdge(frame.edges, pos, frame.view.label(pos.getX(), pos.getY(), pos.getZ()), label, BE_SLACK + FLYWHEEL_LEAD) == null;
+        return label == frame.view.nativeNode() && blockEntityEdge(frame, be, label, FLYWHEEL_LEAD) == null;
+    }
+
+    /** The first aperture edge of {@code label} that the model of {@code be} reaches, if any. */
+    @Nullable
+    private static IplPieceMap.Edge blockEntityEdge(Frame frame, BlockEntity be, int label, double lead) {
+        BlockPos pos = be.getBlockPos();
+        int original = frame.view.label(pos.getX(), pos.getY(), pos.getZ());
+        double cx = pos.getX() + 0.5, cy = pos.getY() + 0.5, cz = pos.getZ() + 0.5;
+        @Nullable AABB bounds = renderBounds(be);
+        for (IplPieceMap.Edge e : frame.edges) {
+            if (e.parent != label && e.child != label) continue;
+            if (e.splits(original, label, cx, cy, cz, modelReach(e, bounds, cx, cy, cz) + lead)) return e;
+        }
+        return null;
+    }
+
+    /**
+     * How far past its own block the model reaches along the edge normal: the support of the
+     * renderer's bounds around the block centre minus the block's own support, at least
+     * {@link #BE_SLACK}. Unbounded renderers reach everything.
+     */
+    private static double modelReach(IplPieceMap.Edge e, @Nullable AABB bounds, double cx, double cy, double cz) {
+        if (bounds == null) return BE_SLACK;
+        if (!Double.isFinite(bounds.getXsize() + bounds.getYsize() + bounds.getZsize())) {
+            return Double.POSITIVE_INFINITY;
+        }
+        IplPieceMap.Aperture a = e.aperture;
+        double nx = Math.abs(a.nx()), ny = Math.abs(a.ny()), nz = Math.abs(a.nz());
+        double support = nx * bounds.getXsize() * 0.5 + ny * bounds.getYsize() * 0.5 + nz * bounds.getZsize() * 0.5
+            + Math.abs((bounds.getCenter().x - cx) * a.nx() + (bounds.getCenter().y - cy) * a.ny()
+                + (bounds.getCenter().z - cz) * a.nz());
+        return Math.max(BE_SLACK, support - e.reach);
     }
 
     @Nullable
-    private static IplPieceMap.Edge blockEntityEdge(IplPieceMap.Edge[] edges, BlockPos pos, int original, int label, double modelReach) {
-        double cx = pos.getX() + 0.5, cy = pos.getY() + 0.5, cz = pos.getZ() + 0.5;
-        for (IplPieceMap.Edge e : edges) {
-            if (e.parent != label && e.child != label) continue;
-            if (e.splits(original, label, cx, cy, cz, modelReach)) return e;
-        }
-        return null;
+    static AABB renderBounds(BlockEntity be) {
+        BlockEntityRenderer<BlockEntity> renderer =
+            Minecraft.getInstance().getBlockEntityRenderDispatcher().getRenderer(be);
+        return renderer == null ? null : renderer.getRenderBoundingBox(be);
     }
 }

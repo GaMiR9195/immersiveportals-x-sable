@@ -11,6 +11,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
+import ipl.sable.render.clip.IplClipPlanes;
 import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.portal.Portal;
@@ -74,7 +75,7 @@ public class ViewAreaRenderer {
             }
         }
         else {
-            FrontClipping.disableClipping();
+            IplClipPlanes.suppress();
         }
         
         GlStateManager._enableDepthTest();
@@ -87,14 +88,6 @@ public class ViewAreaRenderer {
         shader.MODEL_VIEW_MATRIX.set(modelViewMatrix);
         shader.PROJECTION_MATRIX.set(projectionMatrix);
         
-        // Sable-fork fix: portal_area's GLSL injection (in
-        // shader_transformation.yaml) was changed to use the entity-style
-        // `dot((ModelViewMat * vec4(Position, 1)).xyz, eq)` form, so it needs
-        // the eye-space form of the equation. For portal_area's specific case
-        // both forms yield identical clip distances (its Position is already
-        // camera-relative-world and its ModelViewMat is a pure rotation), but
-        // passing `true` keeps the math consistent with the GLSL.
-        FrontClipping.updateClippingEquationUniformForCurrentShader(true);
         
         shader.apply();
         
@@ -119,6 +112,9 @@ public class ViewAreaRenderer {
         
         if (PortalRendering.isRendering()) {
             FrontClipping.disableClipping();
+        }
+        if (!doClip) {
+            IplClipPlanes.unsuppress();
         }
         
         CHelper.checkGlError();

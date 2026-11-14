@@ -26,15 +26,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *       {@code VanillaSubLevelRenderDispatcher.renderAfterSections}.</li>
  * </ul>
  *
- * <p>All portal clipping of this mod is attached to the chunked path:
- * {@code ChunkedRenderDataMixin} targets {@code renderChunkedSubLevel}, and
- * {@code IplClipUniformPatcher.patchPortalClipForVanillaSubLevel} converts IP's slot-0
- * {@code iportal_ClippingEquation} into exactly that path's plot-local input space. On the
- * one-block path IP's camera-relative WORLD-space equation would be dotted against an
- * EYE-space position ({@code n_world dot (R_view * p) == (R_view^T * n_world) dot p}): the
- * cut normal turns with the camera, a one-block body in a portal shows a triangular corner
- * cut that changes as the player looks around, and the slot-1/slot-2 sub-level cut is
- * missing entirely.
+ * <p>Piece draws of straddling bodies (SKIP/FULL/RANGES/SPLIT per section) are attached to the
+ * chunked path: {@code ChunkedRenderDataMixin} targets {@code renderChunkedSubLevel}. The
+ * one-block path batches every one-block body into ONE mesh that is drained later, so it cannot
+ * be drawn per piece or per pose.
  *
  * <p>Routing every body to the chunked path is a configuration Sable supports itself:
  * {@code isSingleBlock} already returns false for blocks tagged

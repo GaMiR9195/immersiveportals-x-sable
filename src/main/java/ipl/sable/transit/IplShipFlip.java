@@ -112,9 +112,11 @@ public final class IplShipFlip {
         endSessions(server, uuid, "flip");
         IplStraddleSessionSync.advanceFrame(uuid, portal);
         ship.updateBoundingBox();
+        List<UUID> group = crossingGroup != null ? crossingGroup : new ArrayList<>(1);
+        group.add(uuid);
         PENDING_HANDOFFS.add(new PendingHandoff(ship, encodePortalTransform(portal),
             IplStraddleSessionSync.encodePortal(portal), container.trackingSystem().getInterpolationTick(),
-            IplStraddleSessionSync.frame(uuid), IplGrabLink.inverse(portal).encode()));
+            IplStraddleSessionSync.frame(uuid), IplGrabLink.inverse(portal).encode(), group));
         LOG.debug("[IPL-FLIP] {} teleported through {}", uuid, portal.getUUID());
         return ship;
     }
@@ -303,10 +305,27 @@ public final class IplShipFlip {
 
     // ------------------------------------------------------------------ client sync
 
+    /**
+     * {@code group}: every body that flipped in the same crossing (one linked group through one
+     * portal, filled while the crossing runs). Clients rebase all of them in the same frame, so
+     * links between them (springs, ropes, bearings) never span the old and the new chart.
+     */
     private record PendingHandoff(ServerSubLevel body, String transform, String portalNbt,
-                                  int firstDestinationTick, long destinationFrame, String inverseGrabLink) {}
+                                  int firstDestinationTick, long destinationFrame, String inverseGrabLink,
+                                  List<UUID> group) {}
 
     private static final List<PendingHandoff> PENDING_HANDOFFS = new ArrayList<>();
+    /** Bodies flipped by the crossing in progress, null outside one. */
+    @Nullable private static List<UUID> crossingGroup;
+
+    /** Starts a crossing: the following flips share one client handoff group. */
+    public static void beginCrossing() {
+        crossingGroup = new ArrayList<>();
+    }
+
+    public static void endCrossing() {
+        crossingGroup = null;
+    }
 
     /** Sends queued same-dimension handoffs (after the tracking system emitted this tick). */
     public static void flushHandoffs(MinecraftServer server) {
@@ -321,13 +340,23 @@ public final class IplShipFlip {
                     "ipl.sable.client.IplParentDimSync.RemoteCallables.handoff",
                     body.getUniqueId().toString(), body.getLevel().dimension().location().toString(),
                     pending.transform(), pending.portalNbt(), Integer.toString(pending.firstDestinationTick()),
-                    Long.toString(pending.destinationFrame()), pending.inverseGrabLink());
+                    Long.toString(pending.destinationFrame()), pending.inverseGrabLink(), encodeGroup(pending.group()));
             }
         }
     }
 
     public static void clearPending() {
         PENDING_HANDOFFS.clear();
+        crossingGroup = null;
+    }
+
+    private static String encodeGroup(List<UUID> group) {
+        StringBuilder sb = new StringBuilder();
+        for (UUID id : group) {
+            if (!sb.isEmpty()) sb.append(',');
+            sb.append(id);
+        }
+        return sb.toString();
     }
 
     private static void sendMove(MinecraftServer server, ServerSubLevel ship, ServerLevel from, ServerLevel to,
