@@ -15,6 +15,7 @@ import ipl.sable.client.IplStraddleRenderCache;
 import ipl.sable.client.IplStraddleRenderState;
 import ipl.sable.render.IplBlockEntityRenderScope;
 import ipl.sable.render.IplSubLevelBlockEntityPass;
+import ipl.sable.render.route.IplPortalModels;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -99,6 +100,7 @@ public abstract class LevelRendererProjectionMixin {
         IplStraddleRenderCache.begin(this.level);
         // Свой набор «уже нарисованных глобальных BE» на каждый (в т.ч. вложенный) проход.
         IplSubLevelBlockEntityPass.beginLevelPass();
+        IplPortalModels.beginPass(this.level, camera.getPosition());
     }
 
     @Inject(method = "renderLevel", at = @At("RETURN"))
@@ -108,6 +110,7 @@ public abstract class LevelRendererProjectionMixin {
     ) {
         IplStraddleRenderCache.end(this.level);
         IplSubLevelBlockEntityPass.endLevelPass();
+        IplPortalModels.endPass(this.level);
     }
 
     /**
@@ -230,6 +233,26 @@ public abstract class LevelRendererProjectionMixin {
             sublevels, cameraPosition.x, cameraPosition.y, cameraPosition.z,
             VeilRenderBridge.create(frustum), spectator
         );
+    }
+
+    /**
+     * Block-entity stage of this pass: every model that passes a portal opening writes the parts
+     * that are in this level — its own level's, and the ones coming through portals.
+     */
+    @Inject(
+        method = "renderLevel",
+        at = @At(
+            value = "FIELD",
+            target = "Lnet/minecraft/client/renderer/LevelRenderer;globalBlockEntities:Ljava/util/Set;",
+            shift = At.Shift.BEFORE,
+            ordinal = 0
+        )
+    )
+    private void ipl$drawPortalModels(
+        DeltaTracker deltaTracker, boolean bl, Camera camera, GameRenderer gameRenderer,
+        LightTexture lightTexture, Matrix4f modelView, Matrix4f projection, CallbackInfo ci
+    ) {
+        IplPortalModels.drawPass(this.renderBuffers.bufferSource());
     }
 
     @Inject(

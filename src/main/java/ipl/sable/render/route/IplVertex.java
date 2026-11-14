@@ -1,8 +1,14 @@
 package ipl.sable.render.route;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import org.joml.Matrix3d;
+import org.joml.Matrix4d;
+import org.joml.Vector3d;
 
-/** One recorded vertex with every attribute the renderer set; cut vertices are interpolated. */
+/**
+ * One recorded vertex in route space with every attribute the renderer set; vertices created
+ * on a cut are interpolated.
+ */
 final class IplVertex {
 	double x, y, z;
 	boolean hasColor, hasUv, hasUv1, hasUv2, hasNormal;
@@ -10,7 +16,7 @@ final class IplVertex {
 	float u, v;
 	int u1, v1, u2, v2;
 	float nx, ny, nz;
-	/** Written by the renderer; false for a vertex created on a cut. */
+	/** Written by the renderer at this position; false for cut vertices and vertices lying on a cut plane. */
 	boolean original = true;
 
 	static IplVertex lerp(IplVertex p, IplVertex q, double t) {
@@ -31,6 +37,11 @@ final class IplVertex {
 		return o;
 	}
 
+	/** The same vertex, excluded from welds and gap samples (it lies on a cut plane). */
+	IplVertex detached() {
+		return lerp(this, this, 0.0);
+	}
+
 	private static int mix(int p, int q, double t) {
 		return (int) Math.round(p + (q - p) * t);
 	}
@@ -40,16 +51,35 @@ final class IplVertex {
 		return dx * dx + dy * dy + dz * dz;
 	}
 
-	void writeTo(VertexConsumer out) {
-		out.addVertex((float) x, (float) y, (float) z);
+	Vector3d position() {
+		return new Vector3d(x, y, z);
+	}
+
+	/** Writes this vertex placed by {@code placement}. */
+	void writeTo(VertexConsumer out, Placement placement) {
+		Vector3d p = placement.position.transformPosition(x, y, z, placement.scratch);
+		out.addVertex((float) p.x, (float) p.y, (float) p.z);
 		if (hasColor) out.setColor(r, g, b, a);
 		if (hasUv) out.setUv(u, v);
 		if (hasUv1) out.setUv1(u1, v1);
 		if (hasUv2) out.setUv2(u2, v2);
 		if (hasNormal) {
-			float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
-			if (len > 1e-6f) out.setNormal(nx / len, ny / len, nz / len);
-			else out.setNormal(nx, ny, nz);
+			Vector3d n = placement.normal.transform(nx, ny, nz, placement.scratch);
+			double length = n.length();
+			if (length > 1.0e-6) n.div(length);
+			out.setNormal((float) n.x, (float) n.y, (float) n.z);
+		}
+	}
+
+	/** Route space → camera-relative space of a draw, and its rotation for normals. */
+	static final class Placement {
+		final Matrix4d position;
+		final Matrix3d normal;
+		private final Vector3d scratch = new Vector3d();
+
+		Placement(Matrix4d position) {
+			this.position = position;
+			this.normal = position.get3x3(new Matrix3d());
 		}
 	}
 }

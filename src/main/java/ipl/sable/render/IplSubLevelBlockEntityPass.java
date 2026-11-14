@@ -36,9 +36,9 @@ import java.util.Set;
  * складывает вершины в {@code BufferSource}, а шейдер выполняется при {@code endBatch()}.
  * Поэтому каждый пересекающий портал саб-уровень рисует свои BE внутри
  * {@link IplBlockEntityRenderScope#renderAndFlush}: проход по куску (фильтр
- * {@link IplPieceRender#rejectsBlockEntity}, у BE в зоне апертуры — плоскость апертуры), и только
- * ПОСЛЕ него буфер сбрасывается — вне любого BER (сброс внутри BER ломает общий буфер catnip —
- * краш «Not building!»).
+ * {@link IplPieceRender#rejectsBlockEntity}; модели, проходящие проём, забирает
+ * {@code IplPortalModels}), и только ПОСЛЕ него буфер сбрасывается — вне любого BER (сброс
+ * внутри BER ломает общий буфер catnip — краш «Not building!»).
  *
  * <p><b>Что рисуется сверх оригинала Sable</b> (одной и той же матрицей саб-уровня — для
  * проекции уже отображённой — и «локальной» камерой, как у Sable):
@@ -48,7 +48,7 @@ import java.util.Set;
  *       проекции верёвки остались бы «на старом месте», а под Sodium в тот же цикл попадают
  *       верёвки саб-уровней ЧУЖИХ измерений), поэтому такие BE он пропускает
  *       ({@link #shouldSkipGlobalLoopCall}).</li>
- *   <li>BE, изъятые из Flywheel ({@link IplFlywheelFallback}): не целиком в родном куске. BER
+ *   <li>BE, изъятые из Flywheel ({@link IplFlywheelFallback}): не в родном куске. BER
  *       вызывается с «выключенным» Flywheel ({@link #isForcingVanillaRender()}), иначе Create
  *       пропустил бы отрисовку, считая, что её сделает Flywheel.</li>
  * </ul>
@@ -103,6 +103,19 @@ public final class IplSubLevelBlockEntityPass {
      */
     public static boolean isForcingVanillaRender() {
         return forceVanilla > 0 && RenderSystem.isOnRenderThread();
+    }
+
+    /**
+     * Запускает {@code draw} с «выключенным» Flywheel: BER рисуют и то, что обычно инстансит
+     * Flywheel (запись моделей, проходящих портал, — {@code IplModelCapture}).
+     */
+    public static void runForcingVanilla(Runnable draw) {
+        forceVanilla++;
+        try {
+            draw.run();
+        } finally {
+            forceVanilla--;
+        }
     }
 
     /** HEAD {@code renderSingleBE} (после проверки пропуска): BE нарисована в текущем теле. */

@@ -3,6 +3,7 @@ package ipl.sable.client;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * BE проекции рисуются «от имени» уровня, которому принадлежит корабль.
@@ -17,16 +18,21 @@ import net.minecraft.client.multiplayer.ClientLevel;
  *
  * <p><b>Решение.</b> IP в своих проходах порталов делает то же самое: на время отрисовки чужого
  * мира подменяет {@code Minecraft.level}. Здесь подмена ещё уже — только на время вызовов BER
- * одной межизмеренческой проекции; сброс буфера ({@code endBatch}) и всё остальное в проходе
- * идут уже с исходным уровнем. Для проекций внутри одного измерения ничего не меняется.
+ * одной межизмеренческой проекции (или записи модели, идущей через портал); сброс буфера
+ * ({@code endBatch}) и всё остальное в проходе идут уже с исходным уровнем. Для проекций внутри
+ * одного измерения ничего не меняется.
  */
 public final class IplProjectionLevelScope {
 
     private IplProjectionLevelScope() {}
 
     public static void runInOwnerLevel(ClientSubLevel sub, Runnable draw) {
+        runInLevel(sub == null ? null : sub.getLevel(), draw);
+    }
+
+    /** Runs {@code draw} with {@code Minecraft.level} = {@code owner} (unchanged when null). */
+    public static void runInLevel(@Nullable ClientLevel owner, Runnable draw) {
         Minecraft minecraft = Minecraft.getInstance();
-        ClientLevel owner = sub == null ? null : sub.getLevel();
         ClientLevel current = minecraft.level;
         if (owner == null || current == null || owner == current) {
             draw.run();

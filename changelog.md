@@ -8,14 +8,14 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ### Changed
 
-- **One clip system for every renderer** (\`IplClipPlanes\`, \`IplClipShaderInjector\`). The portal
+- **One clip system for every renderer** (`IplClipPlanes`, `IplClipShaderInjector`). The portal
   clip and the aperture cuts of Sable pieces are evaluated in clip space from each shader's own
-  \`gl_Position\` (\`gl_ClipDistance[i] = dot(gl_Position, ipl_ClipPlanes[i])\`). The planes come
+  `gl_Position` (`gl_ClipDistance[i] = dot(gl_Position, ipl_ClipPlanes[i])`). The planes come
   pre-transformed by the view-projection of the level pass being rendered, so the cut needs no
   knowledge of a shader's attributes or matrices: vanilla, entities, block entities and text,
   Sodium, Iris (gbuffers, Sodium and DH patches), Flywheel (both backends), Veil, Sable
   sub-levels and any other world shader are cut the same way. Removed: the per-shader YAML
-  transformation list, the world/eye/plot-local equation variants, \`EntityShaderNames\`, the
+  transformation list, the world/eye/plot-local equation variants, `EntityShaderNames`, the
   shader-name program registry and the cached-equation fallbacks.
 - **The portal clip covers the whole portal pass.** It used to be switched on only around
   terrain layers and the entity/block-entity section, so everything flushed or drawn outside
@@ -24,44 +24,55 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
   up inside the portal. Now every draw of a portal pass is cut; only screen-space work
   (sky, post chains, Veil post-processing, IP's full-screen passes) is exempt. Nested passes
   stack and restore. Renderers with their own projection (LOD mods) can use
-  \`IplClipPlanes.clipSpaceEquations(viewProjection, out)\`.
-- Block entities whose model reaches past their block (springs, cogwheels, water wheels) join
-  an aperture's split zone by their renderer's bounds; both pieces draw them and each writes the
-  parts routed to it (see below), projections included.
-
-- **Block-entity models near an opening are routed by path, never cut by a plane**
-  (\`IplGeometryRouting\`, \`IplLinkTopology\`, \`IplModelRecorder\`). Every block-entity draw near an
-  active opening (ropes, springs, chains, connectors, the straddling body's own long models) is
-  recorded whole; each part is where the path to it from the holder's block leads, and a path
-  goes through only where it passes the opening itself. Paths follow the model's surface
-  (shared vertices, the two halves of a primitive cut at the opening); separate parts are
-  joined nearest-first by their gaps. The holder's state is the piece of its block, so either
-  end of a link may hold it. A normal draw writes the parts that went through no opening, the
-  projection draw of a straddling body writes the parts of its own models that went through
-  its edge, and the pass of the passed piece runs the world's and other bodies' renderers at
-  the portal-mapped pose (every body at its real pose) and writes their parts that went
-  through. A link that sags under the frame or wraps a frame post is not cut there; only
-  primitives that pass the opening are split, at the opening. Replaces the cone "seen from
-  the anchor" and the aperture-plane cut of the body's block entities.
-- \`-Dipl.portalDiagnostics=true\` also logs the complete clip state of a sub-level draw inside a
+  `IplClipPlanes.clipSpaceEquations(viewProjection, out)`.
+- **Models that pass portals are drawn in the frame each part is in** (`render/route`:
+  `IplPortalModels`, `IplOpenings`, `IplRouteFrame`, `IplRouteSolver`, `IplRoutedModel`).
+  Every flat teleporting portal is an opening: world portals, portals on bodies and the global
+  portals of dimension stacking, with no straddling body needed. A block-entity model whose
+  bounds come near an opening (ropes, springs, chains, connectors, long shafts, any renderer,
+  Veil render types included) is recorded once per frame at its real pose, independent of the
+  pass being drawn. A primitive that crosses a portal plane inside the finite opening is cut
+  there into its front part, the part through the opening and the parts beside it; paths from
+  the block the model hangs on follow the model's surface (the cut, shared vertices, a shared
+  vertex lying on the plane) and the nearest gaps between separate parts. Each path walks a
+  tree of frames (a portal path per frame, exit faces lead back, coplanar faces of a two-sided
+  portal are one crossing), so nested portals and dimension stacking are ordinary deeper
+  frames. Every level pass (main view, each portal view, nested ones) writes exactly the parts
+  whose frame is in its level, placed through the portals: every part exists once, on its side
+  of every opening, and a part beside the frame never moves. The holder's frame is the piece of
+  its block, so either end of a link may hold it. Replaces the per-edge block-entity passes, the
+  aperture-plane cut of block entities and the "images" drawn only in a straddling body's pass.
+- **Flywheel hands over by the same rule** (`IplFlywheelFallback`): a visual whose model passes
+  an opening, of the world or of any body, is taken out of Flywheel and recorded from its
+  renderer with Flywheel reported unsupported; a straddling body's visual outside its native
+  piece is drawn by its piece pass as before. A scan around openings (every 10 ticks per level)
+  finds visuals and models that no pass draws this frame.
+- `-Dipl.portalDiagnostics=true` also logs the complete clip state of a sub-level draw inside a
   portal pass (program, clip uniform, enabled clip distances, portal plane, side of the pose).
-- The clip writes go at the exits of \`main\` (end and every \`return\`) instead of renaming it, so
+- The clip writes go at the exits of `main` (end and every `return`) instead of renaming it, so
   other shader preprocessors can still use main's locals (Veil's dynamic-buffer recompile of
-  \`rendertype_solid\` etc. failed with \`undefined variable "pos"\`); Veil runs the clip
+  `rendertype_solid` etc. failed with `undefined variable "pos"`); Veil runs the clip
   preprocessor last.
 
 ### Fixed
 
+- A rope (or any long model) through a portal was also drawn behind and around the entrance:
+  routing only knew the apertures of straddling bodies and the normal draw of a model wrote its
+  passed parts too once no body straddled. Now the passed parts exist only beyond the exit.
+- The part of a model that had not entered yet vanished near the rim of a portal: cut parts
+  beside the opening took the state of the part through it, and models lost their route when
+  the bounds of a link were reported in world space for a body. Parts beside a finite opening
+  keep their side; both bound interpretations are tested.
+- A link pushed into a portal by its far end (not the block that holds it) was never routed.
 - Ropes of a crossing group no longer fly across the portal distance at the flip
-  (\`IplRopeChartSync\`). Rope snapshots are kept in the chart the client shows for the holder's
+  (`IplRopeChartSync`). Rope snapshots are kept in the chart the client shows for the holder's
   body, like the body poses: points received while the flip is pending are mapped back, and the
   strand's current, previous and buffered points are rebased in the same tick as the body.
 - Removed the sign/BE-specific patches (shader-bind re-enabling of slot 0 with a cached
   equation, the whole-piece infinite-plane cut of block entities).
-- Block-entity cuts of a projection used the real pose's aperture plane instead of the mapped one.
-- IP's pooled GL buffers and vertex arrays (\`GLResourceCache\`) are real objects (\`glCreate*\` when
-  direct state access is available) instead of reserved \`glGen*\` names, so Veil's DSA calls
-  (\`glNamedBuffer*\`, \`glVertexArray*\`) work on them.
+- IP's pooled GL buffers and vertex arrays (`GLResourceCache`) are real objects (`glCreate*` when
+  direct state access is available) instead of reserved `glGen*` names, so Veil's DSA calls
+  (`glNamedBuffer*`, `glVertexArray*`) work on them.
 - Bodies flipped in one linked crossing are rebased on the client in the same tick: a spring
   (or any link) between them no longer stretches towards the old coordinates for a frame after
   the transition ends.

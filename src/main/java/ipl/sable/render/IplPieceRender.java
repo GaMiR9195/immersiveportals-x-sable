@@ -13,18 +13,16 @@ import ipl.sable.client.IplParentDimSync;
 import ipl.sable.client.IplStraddleRenderCache;
 import ipl.sable.client.IplStraddleRenderState;
 import ipl.sable.client.IplStraddleSessionStore;
+import ipl.sable.render.route.IplPortalModels;
 import ipl.sable.transit.IplPieceMap;
 import ipl.sable.transit.IplApertureSweep;
 import ipl.sable.transit.IplProjectionTree;
 import ipl.sable.transit.IplStraddlePoseMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector3d;
@@ -403,44 +401,34 @@ public final class IplPieceRender {
 
     // ------------------------------------------------------------------ block entities
 
-    /**
-     * Least extra zone depth of a block entity: renderers may under-report how far their model
-     * reaches past the block (an opening chest lid), see {@link #modelReach}.
-     */
-    private static final double BE_SLACK = 1.0;
-    /** Flywheel gives a block entity up this much earlier: its removal applies a frame later. */
-    private static final double FLYWHEEL_LEAD = 1.0;
-
     @Nullable private static ClientSubLevel filterSub;
     @Nullable private static Frame filterFrame;
     private static int filterNode;
-    @Nullable private static IplPieceMap.Edge filterEdge;
 
     /**
-     * Until {@link #endBlockEntityFilter}, block entities of {@code sub} are drawn only when they
-     * belong to piece {@code node}: wholly ({@code edge} null) or inside the zone of {@code edge}.
+     * Until {@link #endBlockEntityFilter}, block entities of {@code sub} are drawn only when their
+     * block belongs to piece {@code node}.
      */
-    public static void beginBlockEntityFilter(ClientSubLevel sub, Frame frame, int node, @Nullable IplPieceMap.Edge edge) {
+    public static void beginBlockEntityFilter(ClientSubLevel sub, Frame frame, int node) {
         filterSub = sub;
         filterFrame = frame;
         filterNode = node;
-        filterEdge = edge;
     }
 
     public static void endBlockEntityFilter() {
         filterSub = null;
         filterFrame = null;
-        filterEdge = null;
     }
 
-    /** Whether the active filter drops {@code be} (HEAD of every sub-level BE draw). */
+    /**
+     * Whether the active filter drops {@code be} (HEAD of every sub-level BE draw): a model that
+     * passes an opening is claimed by {@link IplPortalModels} (it draws every part in its own
+     * frame, whatever piece its block is in); any other belongs to the piece of its block.
+     */
     public static boolean rejectsBlockEntity(BlockEntity be) {
         Frame frame = filterFrame;
         if (frame == null || be == null || Sable.HELPER.getContainingClient(be) != filterSub) return false;
-        BlockPos pos = be.getBlockPos();
-        int label = frame.label(pos.getX(), pos.getY(), pos.getZ());
-        IplPieceMap.Edge e = blockEntityEdge(frame, be, label, 0.0);
-        return filterEdge == null ? e != null || label != filterNode : e != filterEdge;
+        return IplPortalModels.claim(be, null) || blockEntityPiece(frame, be) != filterNode;
     }
 
     /** The piece the block of {@code be} belongs to. */
@@ -449,49 +437,8 @@ public final class IplPieceRender {
         return frame.label(pos.getX(), pos.getY(), pos.getZ());
     }
 
-    /** Whether Flywheel may keep drawing {@code be} with the native piece. */
-    public static boolean flywheelKeeps(Frame frame, BlockEntity be) {
-        BlockPos pos = be.getBlockPos();
-        int label = frame.label(pos.getX(), pos.getY(), pos.getZ());
-        return label == frame.view.nativeNode() && blockEntityEdge(frame, be, label, FLYWHEEL_LEAD) == null;
-    }
-
-    /** The first aperture edge of {@code label} that the model of {@code be} reaches, if any. */
-    @Nullable
-    private static IplPieceMap.Edge blockEntityEdge(Frame frame, BlockEntity be, int label, double lead) {
-        BlockPos pos = be.getBlockPos();
-        int original = frame.view.label(pos.getX(), pos.getY(), pos.getZ());
-        double cx = pos.getX() + 0.5, cy = pos.getY() + 0.5, cz = pos.getZ() + 0.5;
-        @Nullable AABB bounds = renderBounds(be);
-        for (IplPieceMap.Edge e : frame.edges) {
-            if (e.parent != label && e.child != label) continue;
-            if (e.splits(original, label, cx, cy, cz, modelReach(e, bounds, cx, cy, cz) + lead)) return e;
-        }
-        return null;
-    }
-
-    /**
-     * How far past its own block the model reaches along the edge normal: the support of the
-     * renderer's bounds around the block centre minus the block's own support, at least
-     * {@link #BE_SLACK}. Unbounded renderers reach everything.
-     */
-    private static double modelReach(IplPieceMap.Edge e, @Nullable AABB bounds, double cx, double cy, double cz) {
-        if (bounds == null) return BE_SLACK;
-        if (!Double.isFinite(bounds.getXsize() + bounds.getYsize() + bounds.getZsize())) {
-            return Double.POSITIVE_INFINITY;
-        }
-        IplPieceMap.Aperture a = e.aperture;
-        double nx = Math.abs(a.nx()), ny = Math.abs(a.ny()), nz = Math.abs(a.nz());
-        double support = nx * bounds.getXsize() * 0.5 + ny * bounds.getYsize() * 0.5 + nz * bounds.getZsize() * 0.5
-            + Math.abs((bounds.getCenter().x - cx) * a.nx() + (bounds.getCenter().y - cy) * a.ny()
-                + (bounds.getCenter().z - cz) * a.nz());
-        return Math.max(BE_SLACK, support - e.reach);
-    }
-
-    @Nullable
-    static AABB renderBounds(BlockEntity be) {
-        BlockEntityRenderer<BlockEntity> renderer =
-            Minecraft.getInstance().getBlockEntityRenderDispatcher().getRenderer(be);
-        return renderer == null ? null : renderer.getRenderBoundingBox(be);
+    /** Whether {@code be}'s block is in the native piece (drawn at the body's own pose). */
+    public static boolean isNativeBlockEntity(Frame frame, BlockEntity be) {
+        return blockEntityPiece(frame, be) == frame.view.nativeNode();
     }
 }

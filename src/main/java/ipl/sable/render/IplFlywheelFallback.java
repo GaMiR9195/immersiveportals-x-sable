@@ -3,20 +3,24 @@ package ipl.sable.render;
 import dev.engine_room.flywheel.api.visualization.VisualManager;
 import dev.engine_room.flywheel.impl.visualization.VisualManagerImpl;
 import dev.engine_room.flywheel.impl.visualization.VisualizationManagerImpl;
+import dev.engine_room.flywheel.impl.visualization.storage.BlockEntityStorage;
+import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.neoforge.mixinhelper.compatibility.flywheel.SubLevelEmbedding;
 import dev.ryanhcode.sable.neoforge.mixinterface.compatibility.flywheel.BlockEntityStorageExtension;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.client.IplParentDimSync;
-import ipl.sable.render.route.IplGeometryRouting;
+import ipl.sable.render.route.IplOpenings;
+import ipl.sable.render.route.IplPortalModels;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
-
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -27,17 +31,20 @@ import java.util.WeakHashMap;
 import java.util.function.Predicate;
 
 /**
- * Flywheel visuals (Create cogs, shafts...) of sub-levels that cross portals.
+ * Flywheel visuals (Create cogs, shafts, any instanced block-entity visual) near portals.
  *
- * <p>Flywheel draws a sub-level's visuals in one embedded environment at the REAL pose and only
- * in its own level's pass: it cannot cut them at an aperture nor draw them at a projection's
- * mapped pose. So, per visual, while a body has session images: a block entity that is not
- * wholly in the native piece (another piece's label, or near an aperture) is taken out of
- * Flywheel ({@code queueRemove}) and drawn by its BER in the piece passes of
- * {@link IplSubLevelBlockEntityPass}; it goes back ({@code queueAdd}) once it is wholly native
- * again or the sessions end. Everything else keeps instancing. Removal and addition apply on
- * Flywheel's next frame plan, so a taken block entity is drawn by BER from the moment Flywheel
- * no longer has it until the moment Flywheel has it again: never by both, never by none.
+ * <p>Flywheel instances a visual in one environment at its real pose and only in the pass of
+ * its own level: it can neither split a model at an opening nor draw it beyond a portal. So,
+ * per visual, Flywheel gives a block entity up ({@code queueRemove}) while
+ * <ul>
+ *   <li>its model passes an opening ({@link IplPortalModels#isRouted}, world and bodies alike):
+ *       its renderer is recorded and routed;</li>
+ *   <li>it belongs to a straddling body's piece other than the native one: the piece pass of its
+ *       body draws it at the piece's mapped pose ({@link IplSubLevelBlockEntityPass}).</li>
+ * </ul>
+ * It is given back ({@code queueAdd}) once neither holds. Removal and addition apply on
+ * Flywheel's next frame; until then the visual stays Flywheel's, and in between the renderer
+ * draws it: never by both, never by none. Everything else keeps instancing.
  *
  * <p>The environment of a hidden transit successor is collapsed as a whole
  * ({@code FlywheelEmbeddedEnvironmentMixin}). Loaded only with Flywheel present.
@@ -56,16 +63,23 @@ public final class IplFlywheelFallback {
     private static final Map<ClientSubLevel, SubLevelEmbedding> EMBEDDINGS = new WeakHashMap<>();
     /** Block entities taken out of Flywheel, per sub-level of the current level. */
     private static final Map<ClientSubLevel, Taken> TAKEN = new WeakHashMap<>();
-    /** A non-straddling body gives a model up this much before it reaches another body's aperture. */
-    private static final double ADOPTION_LEAD = 1.0;
+    /** A body this close to an opening may have models that pass it (long models reach out of the body). */
+    private static final double BODY_REACH = 16.0;
+    /** Block entities of the current level's world taken out of Flywheel. */
+    private static Taken worldTaken = new Taken();
+    @Nullable private static Level worldTakenLevel;
 
     private static final class Taken {
-        /** Removal queued: BER draws them once Flywheel has dropped them. */
+        /** Removal queued: the renderer draws them once Flywheel has dropped them. */
         final Set<BlockEntity> out = identitySet();
-        /** Addition queued: BER keeps drawing them until Flywheel has them again. */
+        /** Addition queued: the renderer keeps drawing them until Flywheel has them again. */
         final Set<BlockEntity> back = identitySet();
-        /** What BER draws this frame: taken and not visualized. */
+        /** What the body's piece passes draw this frame: taken and not visualized. */
         List<BlockEntity> draw = List.of();
+
+        boolean isEmpty() {
+            return out.isEmpty() && back.isEmpty();
+        }
     }
 
     private static <T> Set<T> identitySet() {
@@ -77,14 +91,19 @@ public final class IplFlywheelFallback {
         HIDDEN.clear();
         ClientLevel level = Minecraft.getInstance().level;
         VisualizationManagerImpl manager = VisualizationManagerImpl.get(level);
-        ClientSubLevelContainer container = SubLevelContainer.getContainer(level);
-        if (manager == null || container == null) return;
+        if (manager == null) return;
         VisualManager<BlockEntity> visuals = manager.blockEntities();
+        BlockEntityStorage storage = storage(visuals);
+        updateBodies(level, visuals, storage);
+        updateWorld(level, visuals, storage);
+    }
+
+    private static void updateBodies(ClientLevel level, VisualManager<BlockEntity> visuals, BlockEntityStorage storage) {
+        if (!(SubLevelContainer.getContainer(level) instanceof ClientSubLevelContainer container)) return;
         // Flywheel's BE storage carries Sable's extension (its compat mixin), as in Simulated.
-        BlockEntityStorageExtension storage =
-            (BlockEntityStorageExtension) ((VisualManagerImpl<?, ?>) visuals).getStorage();
+        BlockEntityStorageExtension embeddings = (BlockEntityStorageExtension) storage;
         for (ClientSubLevel sub : container.getAllSubLevels()) {
-            SubLevelEmbedding info = storage.sable$getEmbeddingInfo(sub);
+            SubLevelEmbedding info = embeddings.sable$getEmbeddingInfo(sub);
             if (info == null) EMBEDDINGS.remove(sub);
             else EMBEDDINGS.put(sub, info);
             if (IplParentDimSync.isSuppressedSuccessor(sub)) {
@@ -93,33 +112,47 @@ public final class IplFlywheelFallback {
             }
             IplPieceRender.Frame frame = IplPieceRender.frameFor(sub);
             Taken taken = TAKEN.get(sub);
-            boolean nearApertures = frame == null && IplGeometryRouting.hasApertures(level);
-            if (frame == null && taken == null && !nearApertures) continue;
+            if (frame == null && taken == null && !IplOpenings.anyNear(level, sub.boundingBox().toMojang(), BODY_REACH)) continue;
             if (taken == null) TAKEN.put(sub, taken = new Taken());
-            update(visuals, keeper(sub, frame), info, taken);
-            if (frame == null && taken.out.isEmpty() && taken.back.isEmpty()) TAKEN.remove(sub);
+            Collection<BlockEntity> visualized = info == null ? List.of() : info.blockEntities();
+            update(visuals, keeper(frame), visualized, taken);
+            if (frame == null && taken.isEmpty()) TAKEN.remove(sub);
         }
     }
 
+    /** World block entities whose models pass an opening (found by the routing's candidate scan). */
+    private static void updateWorld(ClientLevel level, VisualManager<BlockEntity> visuals, BlockEntityStorage storage) {
+        if (worldTakenLevel != level) {
+            worldTaken = new Taken();
+            worldTakenLevel = level;
+        }
+        List<BlockEntity> visualized = new ArrayList<>();
+        for (BlockEntity be : IplPortalModels.candidates(level)) {
+            if (Sable.HELPER.getContainingClient(be) == null && storage.visualAtPos(be.getBlockPos().asLong()) != null) {
+                visualized.add(be);
+            }
+        }
+        update(visuals, be -> !IplPortalModels.isRouted(be), visualized, worldTaken);
+    }
+
     /**
-     * Whether Flywheel may keep drawing a block entity of {@code sub}: not when its model reaches an
-     * aperture zone of {@code sub}'s own pieces, nor, for a body that does not straddle, when it
-     * comes near another body's aperture (its renderer routes it through, see {@link IplGeometryRouting}).
+     * Whether Flywheel may keep drawing a block entity: not when its model passes an opening,
+     * nor, for a straddling body, when its block is outside the native piece.
      */
-    private static Predicate<BlockEntity> keeper(ClientSubLevel sub, @Nullable IplPieceRender.Frame frame) {
-        if (frame != null) return be -> IplPieceRender.flywheelKeeps(frame, be);
-        return be -> !IplGeometryRouting.isNearAperture(sub, be, ADOPTION_LEAD);
+    private static Predicate<BlockEntity> keeper(@Nullable IplPieceRender.Frame frame) {
+        return be -> !IplPortalModels.isRouted(be) && (frame == null || IplPieceRender.isNativeBlockEntity(frame, be));
     }
 
     private static void update(VisualManager<BlockEntity> visuals, Predicate<BlockEntity> keeps,
-                               SubLevelEmbedding info, Taken taken) {
+                               Collection<BlockEntity> visualizedNow, Taken taken) {
         Set<BlockEntity> visualized = identitySet();
-        if (info != null) visualized.addAll(info.blockEntities());
+        visualized.addAll(visualizedNow);
         for (BlockEntity be : visualized) {
             if (keeps.test(be)) continue;
             visuals.queueRemove(be);
             taken.out.add(be);
             taken.back.remove(be);
+            IplPortalModels.notice(be);
         }
         for (Iterator<BlockEntity> it = taken.out.iterator(); it.hasNext(); ) {
             BlockEntity be = it.next();
@@ -129,6 +162,7 @@ public final class IplFlywheelFallback {
                 visuals.queueAdd(be);
                 it.remove();
                 taken.back.add(be);
+                IplPortalModels.notice(be);
             }
         }
         // Not accepted again (Flywheel refused it) or already back: nothing left to cover.
@@ -139,11 +173,32 @@ public final class IplFlywheelFallback {
         taken.draw = draw;
     }
 
+    @SuppressWarnings("unchecked")
+    private static BlockEntityStorage storage(VisualManager<BlockEntity> visuals) {
+        return ((VisualManagerImpl<BlockEntity, BlockEntityStorage>) visuals).getStorage();
+    }
+
     public static boolean isHiddenEnvironment(Object environment) {
         return HIDDEN.contains(environment);
     }
 
-    /** Block entities of {@code sub} whose Flywheel visual is not drawn and that BER must draw. */
+    /** Whether Flywheel draws {@code be} this frame (only the current level's Flywheel draws anything). */
+    public static boolean isVisualized(BlockEntity be) {
+        Level level = be.getLevel();
+        if (level == null || level != Minecraft.getInstance().level) return false;
+        VisualizationManagerImpl manager = VisualizationManagerImpl.get(level);
+        return manager != null && storage(manager.blockEntities()).visualAtPos(be.getBlockPos().asLong()) != null;
+    }
+
+    /**
+     * Whether a world block entity was given back to Flywheel and is not drawn by it yet (the
+     * routing keeps drawing it). Bodies' returning block entities are drawn by their body pass.
+     */
+    public static boolean isReturning(BlockEntity be) {
+        return worldTaken.back.contains(be);
+    }
+
+    /** Block entities of {@code sub} whose Flywheel visual is not drawn and that its piece passes must draw. */
     public static List<BlockEntity> visualizedBlockEntities(ClientSubLevel sub) {
         Taken taken = TAKEN.get(sub);
         if (taken != null) return taken.draw;
