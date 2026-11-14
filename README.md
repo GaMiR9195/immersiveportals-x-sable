@@ -1,5 +1,5 @@
 # v0.6.1 (WIP)
-1) replace with "Explaining how visual router for Flywheel, Veil and block entities works".
+1) replace with "Explaining how visual router for Flywheel, Veil and block entities works" + update in description What's the trick below.
 
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.
 
