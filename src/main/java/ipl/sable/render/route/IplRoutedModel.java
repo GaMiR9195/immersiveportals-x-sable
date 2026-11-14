@@ -7,6 +7,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4d;
+import org.joml.Vector3d;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -21,41 +22,54 @@ import java.util.Set;
  * draws of it. A pass of level L writes exactly the parts whose frame is in L, placed by the
  * frame's map, so every part exists once — on its side of every opening.
  */
-final class IplRoutedModel {
+final class IplRoutedModel implements IplPortalModel {
 
-	static final IplRoutedModel EMPTY = new IplRoutedModel(List.of(), null, null);
+	static final IplRoutedModel EMPTY = new IplRoutedModel(List.of(), null, null, null);
 
 	/** Openings this far from the model's geometry cannot be passed by it. */
 	private static final double GEOMETRY_MARGIN = 2.0 * IplRouteRect.RIM;
+	/** Geometry this close to a plane counts as on it (neither side). */
+	private static final double SIDE_EPSILON = 1.0e-6;
 	/** Most openings one model is routed through (cost bound; portal loops). */
 	private static final int MAX_OPENINGS = 32;
 
 	private final List<IplModelRecorder.Recording> recordings;
 	@Nullable private final IplRouteFrame anchorFrame;
 	/** Parts in recording order; null when the whole model is in {@link #anchorFrame}. */
-	@Nullable private final List<IplRouteSolver.Part> parts;
-	private final Set<Level> levels = Collections.newSetFromMap(new IdentityHashMap<>());
+	@Nullable private final List<IplPrimitiveCutter.Part> parts;
+	/** World box of the parts in each level they are drawn in. */
+	private final Map<Level, AABB> bounds = new IdentityHashMap<>(2);
 
 	private IplRoutedModel(List<IplModelRecorder.Recording> recordings, @Nullable IplRouteFrame anchorFrame,
-						   @Nullable List<IplRouteSolver.Part> parts) {
+						   @Nullable List<IplPrimitiveCutter.Part> parts, @Nullable AABB box) {
 		this.recordings = recordings;
 		this.anchorFrame = anchorFrame;
 		this.parts = parts;
-		if (anchorFrame == null) return;
+		if (anchorFrame == null || box == null) return;
+		Set<IplRouteFrame> frames = Collections.newSetFromMap(new IdentityHashMap<>());
 		for (IplModelRecorder.Recording r : recordings) {
-			if (parts == null || r.primitiveSize == 0) levels.add(anchorFrame.level);
+			if (parts == null || r.primitiveSize == 0) frames.add(anchorFrame);
 		}
-		if (parts != null) for (IplRouteSolver.Part p : parts) levels.add(p.frame.level);
+		if (parts != null) for (IplPrimitiveCutter.Part p : parts) frames.add(p.frame);
+		for (IplRouteFrame f : frames) {
+			AABB placed = IplPortalModel.transform(box, f.toLevel);
+			bounds.merge(f.level, placed, AABB::minmax);
+		}
 	}
+
 
 	static IplRoutedModel route(IplModelRecorder recorder, IplModelAnchor anchor) {
 		AABB box = recorder.bounds();
 		if (box == null) return EMPTY;
 		List<IplModelRecorder.Recording> recordings = recorder.recordings();
-		List<IplRouteOpening> openings = openingsNear(anchor.frame(), box);
-		if (openings.isEmpty()) return new IplRoutedModel(recordings, anchor.frame(), null);
-		return new IplRoutedModel(recordings, anchor.frame(),
-			IplRouteSolver.solve(recordings, openings, anchor.point(), anchor.frame()));
+		List<IplRouteOpening> openings = crossed(openingsNear(anchor.frame(), box), recordings, anchor.point());
+		if (openings.isEmpty()) return new IplRoutedModel(recordings, anchor.frame(), null, box);
+		long start = IplPortalModelDiagnostics.start();
+		List<IplPrimitiveCutter.Part> parts = IplRouteSolver.solve(recordings, openings, anchor.point(), anchor.frame());
+		int primitives = 0;
+		for (IplModelRecorder.Recording r : recordings) primitives += r.primitives();
+		IplPortalModelDiagnostics.solved(start, primitives, parts.size());
+		return new IplRoutedModel(recordings, anchor.frame(), parts, box);
 	}
 
 	/**
@@ -82,12 +96,54 @@ final class IplRoutedModel {
 		return out;
 	}
 
-	boolean drawsIn(Level level) {
-		return levels.contains(level);
+	/**
+	 * Of {@code near}, the openings whose plane has the geometry (or the anchor) on both sides:
+	 * no path can pass any other. Most models near an opening pass none and are never cut.
+	 */
+	private static List<IplRouteOpening> crossed(List<IplRouteOpening> near, List<IplModelRecorder.Recording> recordings,
+												 Vector3d anchor) {
+		if (near.isEmpty()) return near;
+		List<IplRouteOpening> out = new ArrayList<>(near.size());
+		for (IplRouteOpening o : near) {
+			IplRouteRect rect = o.rect();
+			double anchorSide = rect.side(anchor.x, anchor.y, anchor.z);
+			boolean front = anchorSide > SIDE_EPSILON, back = anchorSide < -SIDE_EPSILON;
+			for (IplModelRecorder.Recording r : recordings) {
+				for (IplVertex v : r.vertices) {
+					double d = rect.side(v);
+					front |= d > SIDE_EPSILON;
+					back |= d < -SIDE_EPSILON;
+					if (front && back) break;
+				}
+				if (front && back) break;
+			}
+			if (front && back) out.add(o);
+		}
+		return out;
 	}
 
-	/** Writes the parts in {@code level}'s frames, relative to {@code camera}, into {@code buffers}. */
-	void emit(Level level, MultiBufferSource buffers, Vec3 camera) {
+	/** For diagnostics: the anchor's frame depth and how many parts each frame depth holds. */
+	String summary() {
+		if (anchorFrame == null) return "empty";
+		if (parts == null) return "anchorDepth=" + anchorFrame.depth + " uncut";
+		Map<Integer, Integer> byDepth = new java.util.TreeMap<>();
+		for (IplPrimitiveCutter.Part p : parts) byDepth.merge(p.frame.depth, 1, Integer::sum);
+		return "anchorDepth=" + anchorFrame.depth + " partsByDepth=" + byDepth;
+	}
+
+	@Override
+	public boolean drawsIn(Level level) {
+		return bounds.containsKey(level);
+	}
+
+	@Override
+	@Nullable
+	public AABB boundsIn(Level level) {
+		return bounds.get(level);
+	}
+
+	@Override
+	public void emit(Level level, MultiBufferSource buffers, Vec3 camera) {
 		if (!drawsIn(level)) return;
 		Map<IplRouteFrame, IplVertex.Placement> placements = new IdentityHashMap<>(2);
 		int next = 0;
@@ -101,7 +157,7 @@ final class IplRoutedModel {
 			}
 			VertexConsumer out = null;
 			for (; next < parts.size() && parts.get(next).recording == r; next++) {
-				IplRouteSolver.Part part = parts.get(next);
+				IplPrimitiveCutter.Part part = parts.get(next);
 				if (part.frame.level != level) continue;
 				if (out == null) out = buffers.getBuffer(recording.type);
 				recording.emit(out, part.polygon, placement(placements, part.frame, camera));

@@ -64,6 +64,38 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
   the bounds of a link were reported in world space for a body. Parts beside a finite opening
   keep their side; both bound interpretations are tested.
 - A link pushed into a portal by its far end (not the block that holds it) was never routed.
+- Routing cost: only models whose bounds are cut by an opening's plane are recorded; models that
+  merely come near one draw as usual, and a recorded model whose geometry stays on one side of
+  every plane is never cut. Separate pieces of a model are joined through a spatial grid (a
+  minimum spanning tree, near-linear) instead of a quadratic nearest search, welds use packed
+  primitive keys. A ship sliding through a portal no longer costs tens of milliseconds a frame.
+- Create cogs (and any Flywheel visual) vanished near and inside portals — for good after the
+  veto below, until a block update re-added them. Sable's `BlockEntityStorageMixin` overrides
+  `remove` and calls `Storage.remove`, so `BlockEntityStorage.posLookup` keeps every removed
+  visual: `visualAtPos` reported visuals that no longer existed, the renderer never drew a
+  handed cog and a given-back cog was never queued again. Flywheel's record is now its
+  `visuals` map (`FlywheelStorageAccessor`), read only at Flywheel's flush, where its frame
+  plan is synced; the renderer's turn follows the queue (vetoed at a flush → drawn from the next
+  frame; given back → drawn until a flush finds the visual).
+- Flywheel re-adds block entities on its own (every section compile through
+  `VisualizationHelper.tryAddBlockEntity`, block updates, Sable's one-block bodies): a handed
+  block entity is vetoed in Flywheel's storage (`FlywheelStorageVetoMixin`) until it is given
+  back, instead of being removed again and again.
+- A rope (spring, any routed model) near a portal cost hundreds of milliseconds a second and
+  flickered: the coinciding planes of one doorway (both faces, the reverse portal seen through
+  the entry) each cut every primitive again, and every cut also split at the four rim planes —
+  1 080 primitives became 23 473 parts. Openings sharing their rectangle are one cut
+  (`IplRouteCut`), crossing it is one crossing, and a part is split at the rim only when it
+  reaches past it.
+- A model hanging on a body block that lies across a portal plane (a rope's free constraint on
+  the ground in the doorway) jumped between both sides with every flip of the block's piece
+  label. The anchor now takes the side of the plane its block centre is on near the plane, as the
+  split terrain of that block does.
+- Block entities drawn by their renderers beside Sable's own pass (handed-over visuals of a body
+  in a portal) are culled against the frustum of the pass, and so are routed models.
+- `-Dipl.portalModelDiagnostics=true` logs once a second what portal routing cost (models
+  recorded, cut, drawn directly, milliseconds) and every change of a model's reach, of its split
+  between portal frames and of a Flywheel hand-over.
 - Ropes of a crossing group no longer fly across the portal distance at the flip
   (`IplRopeChartSync`). Rope snapshots are kept in the chart the client shows for the holder's
   body, like the body poses: points received while the flip is pending are mapped back, and the

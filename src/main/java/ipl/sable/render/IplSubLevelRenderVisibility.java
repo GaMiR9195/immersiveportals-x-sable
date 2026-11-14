@@ -85,6 +85,13 @@ public final class IplSubLevelRenderVisibility {
         return new double[]{center.x - hx, center.y - hy, center.z - hz, center.x + hx, center.y + hy, center.z + hz};
     }
 
+    /** Whether a world box can be in view of the pass being drawn (always in light-view passes). */
+    public static boolean inPassFrustum(AABB box) {
+        if (IrisInterface.invoker.isRenderingShadowMap()) return true;
+        var frustum = ((IEWorldRenderer) Minecraft.getInstance().levelRenderer).portal_getFrustum();
+        return frustum == null || frustum.isVisible(box);
+    }
+
     private static boolean inFrustum(double[] b, double margin) {
         var frustum = ((IEWorldRenderer) Minecraft.getInstance().levelRenderer).portal_getFrustum();
         return frustum == null || frustum.isVisible(new AABB(

@@ -4,6 +4,7 @@ import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import ipl.sable.client.IplStraddleRenderCache;
 import ipl.sable.client.IplStraddleRenderState;
 import ipl.sable.client.IplStraddleSessionStore;
 import ipl.sable.render.IplPieceRender;
@@ -18,7 +19,9 @@ import org.joml.Matrix4d;
 import org.joml.Vector3d;
 import qouteall.imm_ptl.core.portal.Portal;
 
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Where the model of a block entity hangs: the centre of its block in the world space of its
@@ -33,10 +36,12 @@ record IplModelAnchor(ClientLevel level, @Nullable ClientSubLevel owner, Matrix4
 	static IplModelAnchor of(BlockEntity be) {
 		if (be.isRemoved() || !(be.getLevel() instanceof ClientLevel level)) return null;
 		ClientSubLevel owner = Sable.HELPER.getContainingClient(be);
-		Matrix4d plotToWorld = owner == null ? new Matrix4d() : realPose(owner).bakeIntoMatrix(new Matrix4d());
+		Matrix4d plotToWorld = owner == null ? IDENTITY : plotToWorld(owner);
 		BlockPos pos = be.getBlockPos();
 		Vector3d point = plotToWorld.transformPosition(new Vector3d(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5));
-		return new IplModelAnchor(level, owner, plotToWorld, pos, point, frameOf(be, owner, level));
+		IplRouteFrame frame = frameOf(be, owner, level);
+		if (owner != null) frame = settle(frame, point);
+		return new IplModelAnchor(level, owner, plotToWorld, pos, point, frame);
 	}
 
 	/** Block space of the block entity → world space (the pose a renderer draws it with). */
@@ -72,6 +77,21 @@ record IplModelAnchor(ClientLevel level, @Nullable ClientSubLevel owner, Matrix4
 		return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
 	}
 
+	/** Shared, never mutated. */
+	private static final Matrix4d IDENTITY = new Matrix4d();
+	/** Plot → world of each body this render frame (one pose per body and frame). */
+	private static final Map<ClientSubLevel, Matrix4d> POSES = new IdentityHashMap<>();
+	private static long posesFrame = Long.MIN_VALUE;
+
+	private static Matrix4d plotToWorld(ClientSubLevel owner) {
+		long frame = IplStraddleRenderCache.frameId();
+		if (frame != posesFrame) {
+			POSES.clear();
+			posesFrame = frame;
+		}
+		return POSES.computeIfAbsent(owner, o -> realPose(o).bakeIntoMatrix(new Matrix4d()));
+	}
+
 	/** The body pose of this frame's native draw (the piece frame's snapshot when it straddles). */
 	private static Pose3dc realPose(ClientSubLevel owner) {
 		IplPieceRender.Frame frame = IplPieceRender.frameFor(owner);
@@ -83,6 +103,37 @@ record IplModelAnchor(ClientLevel level, @Nullable ClientSubLevel owner, Matrix4
 			IplStraddleRenderState.resumePose();
 		}
 	}
+
+	/**
+	 * A body block lying across an opening's plane is drawn split by that plane (its piece's
+	 * label decides only away from the plane), so the model hanging on it takes the side of its
+	 * anchor point: in front of the entry → the frame before it; behind an opening of its frame →
+	 * the frame beyond it. A label that flips while the block lies on the plane then moves
+	 * nothing, and the anchor changes frame exactly when it crosses, like the geometry.
+	 */
+	private static IplRouteFrame settle(IplRouteFrame frame, Vector3d p) {
+		if (frame.parent != null && frame.entry != null) {
+			IplRouteRect entry = frame.parent.rectOf(frame.entry);
+			if (inZone(entry, p) && entry.side(p.x, p.y, p.z) >= 0.0) return frame.parent;
+		}
+		for (IplOpening opening : IplOpenings.of(frame.level)) {
+			IplRouteRect rect = frame.rectOf(opening);
+			if (!inZone(rect, p) || rect.side(p.x, p.y, p.z) >= 0.0) continue;
+			IplRouteFrame next = frame.through(opening);
+			if (next != null && next != frame.parent) return next;
+		}
+		return frame;
+	}
+
+	/** Within a block's reach of the plane, over the opening. */
+	private static boolean inZone(IplRouteRect rect, Vector3d p) {
+		double side = rect.side(p.x, p.y, p.z);
+		if (Math.abs(side) > ZONE) return false;
+		return rect.containsOnPlane(p.x - rect.normal.x * side, p.y - rect.normal.y * side, p.z - rect.normal.z * side);
+	}
+
+	/** Half the diagonal of a block: a block whose centre is this close may lie across the plane. */
+	private static final double ZONE = 0.87;
 
 	/** The frame of the block's piece: the root, or the portal path of the session that holds it. */
 	private static IplRouteFrame frameOf(BlockEntity be, @Nullable ClientSubLevel owner, ClientLevel level) {

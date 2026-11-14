@@ -65,6 +65,8 @@
     "client.FlywheelEmbeddedEnvironmentMixin",
     "client.FlywheelEnvironmentStorageMixin",
     "client.FlywheelVisualizationManagerMixin",
+    "client.FlywheelStorageVetoMixin",
+    "client.FlywheelStorageAccessor",
     "client.RenderSectionAccessor",
     "client.GlStateManagerMixin",
     "client.VeilPostProcessingMixin",

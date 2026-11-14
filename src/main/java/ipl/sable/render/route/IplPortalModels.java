@@ -2,7 +2,9 @@ package ipl.sable.render.route;
 
 import ipl.sable.client.IplStraddleRenderCache;
 import ipl.sable.client.IplStraddleSessionStore;
+import ipl.sable.client.IplParentDimSync;
 import ipl.sable.render.IplFlywheelFallback;
+import ipl.sable.render.IplSubLevelRenderVisibility;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -31,28 +33,35 @@ import java.util.function.Consumer;
  * long shafts, any renderer's model — the same rule for every renderer, Flywheel visuals
  * included (they are handed to their renderers near an opening, {@link IplFlywheelFallback}).
  *
- * <p>A model is <em>routed</em> when its bounds come near an opening of its frame
+ * <p>A model <em>crosses</em> when its bounds are cut by the plane of an opening of its frame
  * ({@link IplOpenings}: every flat teleporting portal, global portals of dimension stacking
- * included). A routed model is recorded once per render frame at its real pose
- * ({@link IplModelCapture}), cut where it passes openings and split into the frames its paths
- * lead to ({@link IplRoutedModel}). Every level pass of the frame — the main view and each
+ * included). A crossing model is recorded once per render frame at its real pose
+ * ({@link IplModelCapture}), cut where it really passes openings and split into the frames its
+ * paths lead to ({@link IplRoutedModel}). Every level pass of the frame — the main view and each
  * portal view, nested passes included — then writes exactly the parts whose frame is in that
  * level, placed through the portals: what went in is drawn beyond the exit and nowhere else,
- * what did not stays, and a part beside a finite opening never moves.
+ * what did not stays, and a part beside a finite opening never moves. Models that only come
+ * near an opening are drawn as usual; a Flywheel visual handed over there is drawn by its
+ * renderer here, uncut ({@link IplDirectModel}).
  *
- * <p>The normal draws of a routed model are claimed ({@link #claim}): the dispatcher funnel and
- * the piece passes of straddling bodies skip it, and the pass writes it at its block-entity
+ * <p>The normal draws of a crossing model are claimed ({@link #claim}): the dispatcher funnel
+ * and the piece passes of straddling bodies skip it, and the pass writes it at its block-entity
  * stage ({@link #drawPass}) or at the claim, whichever comes later. Render thread only.
  */
 public final class IplPortalModels {
 
-	/** A model is routed while its bounds are this close to an opening (covers Flywheel's one-frame handover). */
-	private static final double REACH_MARGIN = 1.5;
+	/** A model crosses when its bounds are cut by an opening's plane this close to the opening. */
+	private static final double CROSS_MARGIN = 0.0625;
+	/** Flywheel hands a visual over this far ahead, so its renderer has it before it crosses. */
+	private static final double FLYWHEEL_LEAD = 1.5;
 	/**
-	 * An unbounded renderer (tracks, arcs, beams) is routed while an opening is this close to its
-	 * block; its recorded geometry then decides exactly.
+	 * An unbounded renderer (tracks, arcs, beams) is recorded while an opening is this close to
+	 * its block; its recorded geometry then decides exactly.
 	 */
 	private static final double UNBOUNDED_REACH = 32.0;
+
+	/** How close a model is to the openings of its frame. */
+	private enum Reach { NONE, NEAR, CROSSING }
 
 	/** Flywheel is optional; its classes are touched only when it is present. */
 	private static final class Flywheel {
@@ -74,8 +83,8 @@ public final class IplPortalModels {
 	}
 
 	private static final ArrayDeque<Pass> PASSES = new ArrayDeque<>();
-	private static final Map<BlockEntity, Boolean> ROUTED = new IdentityHashMap<>();
-	private static final Map<BlockEntity, IplRoutedModel> MODELS = new IdentityHashMap<>();
+	private static final Map<BlockEntity, Reach> REACH = new IdentityHashMap<>();
+	private static final Map<BlockEntity, IplPortalModel> MODELS = new IdentityHashMap<>();
 	/** Models whose renderer failed to record: drawn as they are from then on. */
 	private static final Set<BlockEntity> UNROUTABLE = Collections.newSetFromMap(new WeakHashMap<>());
 	private static long frame = Long.MIN_VALUE;
@@ -88,7 +97,10 @@ public final class IplPortalModels {
 	public static void beginPass(@Nullable ClientLevel level, Vec3 camera) {
 		if (level == null) return;
 		sync();
-		if (PASSES.isEmpty()) IplModelCandidates.refresh(IplPortalModels::isRouted);
+		if (PASSES.isEmpty()) {
+			IplPortalModelDiagnostics.frame();
+			IplModelCandidates.refresh(IplPortalModels::isNearOpening);
+		}
 		PASSES.addLast(new Pass(level, camera));
 	}
 
@@ -104,30 +116,30 @@ public final class IplPortalModels {
 	}
 
 	/**
-	 * The block-entity stage of the current level pass: writes the parts of every routed model
-	 * that are in this level (the level's own models and images coming through portals).
+	 * The block-entity stage of the current level pass: writes the parts of every model drawn
+	 * here that are in this level (the level's own models and images coming through portals).
 	 */
 	public static void drawPass(MultiBufferSource buffers) {
 		Pass pass = PASSES.peekLast();
 		if (pass == null || IrisInterface.invoker.isRenderingShadowMap()) return;
 		pass.stageDone = true;
 		for (BlockEntity be : IplModelCandidates.all()) {
-			if (isDrawnRouted(be)) write(pass, be, buffers);
-			else IplModelCandidates.forget(be);
+			if (isDrawnHere(be)) write(pass, be, buffers);
+			else if (!isNearOpening(be)) IplModelCandidates.forget(be);
 		}
 	}
 
 	// ------------------------------------------------------------------ draws
 
-	/** The block-entity draw funnel: a routed model is claimed, anything else is drawn by {@code draw}. */
+	/** The block-entity draw funnel: a crossing model is claimed, anything else is drawn by {@code draw}. */
 	public static void render(BlockEntity be, MultiBufferSource buffers, Consumer<MultiBufferSource> draw) {
 		if (!claim(be, buffers)) draw.accept(buffers);
 	}
 
 	/**
-	 * Claims a normal draw of {@code be} when its model is routed: the caller must not draw it.
-	 * Outside level passes (shadow maps, GUI) nothing is claimed. {@code buffers}: where the
-	 * draw would have gone, or null for the pass's buffers.
+	 * Claims a normal draw of {@code be} when its model crosses an opening: the caller must not
+	 * draw it. Outside level passes (shadow maps, GUI) nothing is claimed. {@code buffers}: where
+	 * the draw would have gone, or null for the pass's buffers.
 	 */
 	public static boolean claim(BlockEntity be, @Nullable MultiBufferSource buffers) {
 		if (IplModelCapture.isCapturing()) return false;
@@ -138,90 +150,135 @@ public final class IplPortalModels {
 		return true;
 	}
 
-	/** Known block entities of {@code level} whose models may pass an opening (copy). */
-	public static List<BlockEntity> candidates(Level level) {
-		return new ArrayList<>(IplModelCandidates.of(level));
-	}
-
 	/** Lets the next stages see a model that no draw claims (Flywheel visuals handed over). */
 	public static void notice(BlockEntity be) {
 		IplModelCandidates.add(be);
 	}
 
+	/** Known block entities of {@code level} near an opening (copy). */
+	public static List<BlockEntity> candidates(Level level) {
+		return new ArrayList<>(IplModelCandidates.of(level));
+	}
+
 	private static void write(Pass pass, BlockEntity be, MultiBufferSource buffers) {
 		if (!pass.written.add(be)) return;
-		model(be).emit(pass.level, buffers, pass.camera);
+		IplPortalModel model = model(be);
+		if (!model.drawsIn(pass.level)) return;
+		AABB bounds = model.boundsIn(pass.level);
+		if (bounds != null && !IplSubLevelRenderVisibility.inPassFrustum(bounds)) return;
+		long start = IplPortalModelDiagnostics.start();
+		model.emit(pass.level, buffers, pass.camera);
+		IplPortalModelDiagnostics.written(start);
 	}
 
-	// ------------------------------------------------------------------ routing
+	// ------------------------------------------------------------------ reach
 
-	/** Whether the model of {@code be} is routed through openings this frame. */
+	/** Whether the model of {@code be} crosses an opening this frame (it is routed and claimed). */
 	public static boolean isRouted(BlockEntity be) {
-		sync();
-		Boolean known = ROUTED.get(be);
-		if (known != null) return known;
-		boolean routed = !UNROUTABLE.contains(be) && computeRouted(be);
-		ROUTED.put(be, routed);
-		return routed;
+		return reach(be) == Reach.CROSSING;
 	}
 
-	private static boolean computeRouted(BlockEntity be) {
+	/** Whether the model of {@code be} is near an opening this frame (Flywheel hands it over). */
+	public static boolean isNearOpening(BlockEntity be) {
+		return reach(be) != Reach.NONE;
+	}
+
+	private static Reach reach(BlockEntity be) {
+		sync();
+		Reach known = REACH.get(be);
+		if (known != null) return known;
+		Reach reach = UNROUTABLE.contains(be) ? Reach.NONE : computeReach(be);
+		REACH.put(be, reach);
+		return reach;
+	}
+
+	private static Reach computeReach(BlockEntity be) {
 		Level level = be.getLevel();
-		if (!(level instanceof ClientLevel)) return false;
-		if (IplOpenings.of(level).isEmpty() && IplStraddleSessionStore.isIdle()) return false;
+		if (!(level instanceof ClientLevel)) return Reach.NONE;
+		if (IplOpenings.of(level).isEmpty() && IplStraddleSessionStore.isIdle()) return Reach.NONE;
 		IplModelAnchor anchor = IplModelAnchor.of(be);
-		if (anchor == null) return false;
+		// A hidden transit successor draws nothing (its ghost does).
+		if (anchor == null || anchor.owner() != null && IplParentDimSync.isSuppressedSuccessor(anchor.owner())) {
+			return Reach.NONE;
+		}
+		Reach reach = reachOf(be, anchor);
+		IplPortalModelDiagnostics.reach(be, reach.name(), anchor.frame().depth);
+		return reach;
+	}
+
+	private static Reach reachOf(BlockEntity be, IplModelAnchor anchor) {
 		List<AABB> boxes = anchor.modelBoxes(be);
 		Vector3d p = anchor.point();
-		AABB block = new AABB(p.x, p.y, p.z, p.x, p.y, p.z);
+		Reach reach = Reach.NONE;
 		for (IplRouteFrame f = anchor.frame(); f != null; f = f.parent) {
 			for (IplOpening opening : IplOpenings.of(f.level)) {
 				IplRouteRect rect = f.rectOf(opening);
-				if (boxes == null ? rect.near(block, UNBOUNDED_REACH) : nearAny(rect, boxes)) return true;
+				if (boxes == null) {
+					if (rect.near(new AABB(p.x, p.y, p.z, p.x, p.y, p.z), UNBOUNDED_REACH)) return Reach.CROSSING;
+					continue;
+				}
+				for (AABB box : boxes) {
+					if (!rect.near(box, FLYWHEEL_LEAD)) continue;
+					reach = Reach.NEAR;
+					if (crosses(rect, box, p)) return Reach.CROSSING;
+				}
 			}
 		}
-		return false;
+		return reach;
 	}
 
-	private static boolean nearAny(IplRouteRect rect, List<AABB> boxes) {
-		for (AABB box : boxes) if (rect.near(box, REACH_MARGIN)) return true;
-		return false;
+	/** Whether geometry in {@code box} hanging at {@code anchor} may be on both sides of {@code rect}'s opening. */
+	private static boolean crosses(IplRouteRect rect, AABB box, Vector3d anchor) {
+		if (rect.straddledBy(box, CROSS_MARGIN)) return true;
+		if (!rect.near(box, CROSS_MARGIN)) return false;
+		double anchorSide = rect.side(anchor.x, anchor.y, anchor.z);
+		return anchorSide != 0.0 && Math.signum(anchorSide) != rect.sideOf(box);
 	}
 
-	/** Routed models are drawn here; so are Flywheel visuals on their way back to Flywheel. */
-	private static boolean isDrawnRouted(BlockEntity be) {
+	// ------------------------------------------------------------------ models
+
+	/** Crossing models, and Flywheel visuals of the world handed to their renderers, are drawn here. */
+	private static boolean isDrawnHere(BlockEntity be) {
 		if (be.isRemoved()) return false;
-		return isRouted(be) || Flywheel.LOADED && IplFlywheelFallback.isReturning(be);
+		return isRouted(be) || Flywheel.LOADED && IplFlywheelFallback.isHandedOver(be);
 	}
 
-	private static IplRoutedModel model(BlockEntity be) {
+	private static IplPortalModel model(BlockEntity be) {
 		sync();
-		IplRoutedModel model = MODELS.get(be);
+		IplPortalModel model = MODELS.get(be);
 		if (model == null) {
-			model = record(be);
+			model = build(be);
 			MODELS.put(be, model);
 		}
 		return model;
 	}
 
-	private static IplRoutedModel record(BlockEntity be) {
+	private static IplPortalModel build(BlockEntity be) {
 		IplModelAnchor anchor = IplModelAnchor.of(be);
 		if (anchor == null) return IplRoutedModel.EMPTY;
-		boolean drawFlywheelParts = Flywheel.LOADED && !IplFlywheelFallback.isVisualized(be);
+		boolean drawFlywheelParts = Flywheel.LOADED && !IplFlywheelFallback.flywheelDraws(be);
 		float partialTick = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
-		IplModelRecorder recorder = IplModelCapture.capture(be, anchor, partialTick, drawFlywheelParts);
+		if (!isRouted(be)) {
+			IplPortalModelDiagnostics.direct();
+			return new IplDirectModel(be, anchor, partialTick, drawFlywheelParts);
+		}
+		long start = IplPortalModelDiagnostics.start();
+		IplModelRecorder recorder = IplModelCapture.record(be, anchor, partialTick, drawFlywheelParts);
+		IplPortalModelDiagnostics.recorded(start);
 		if (recorder == null) {
 			UNROUTABLE.add(be);
 			return IplRoutedModel.EMPTY;
 		}
-		return IplRoutedModel.route(recorder, anchor);
+		IplRoutedModel routed = IplRoutedModel.route(recorder, anchor);
+		if (IplPortalModelDiagnostics.ENABLED) IplPortalModelDiagnostics.route(be, routed.summary());
+		return routed;
 	}
 
 	private static void sync() {
 		long current = IplStraddleRenderCache.frameId();
 		if (current == frame) return;
 		frame = current;
-		ROUTED.clear();
+		REACH.clear();
 		MODELS.clear();
 	}
 }

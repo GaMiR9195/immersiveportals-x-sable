@@ -16,7 +16,11 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.fml.ModList;
+import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
+import net.minecraft.world.phys.AABB;
+import org.joml.Matrix4d;
 import org.joml.Matrix4f;
+import org.joml.Vector3d;
 import org.joml.Vector3dc;
 import org.joml.Vector3f;
 
@@ -281,15 +285,38 @@ public final class IplSubLevelBlockEntityPass {
             localCamera.x + rotationPoint.x(), localCamera.y + rotationPoint.y(), localCamera.z + rotationPoint.z()));
         PoseStack poseStack = new PoseStack();
         poseStack.mulPose(transformation);
+        Matrix4d plotToWorld = sub.renderPose().bakeIntoMatrix(new Matrix4d());
         try {
             for (BlockEntity be : extras) {
-                if (be.isRemoved()) continue;
+                if (be.isRemoved() || !mayBeVisible(be, plotToWorld)) continue;
                 renderer.renderSingleBE(be, poseStack, partialTick,
                     rotationPoint.x(), rotationPoint.y(), rotationPoint.z());
             }
         } finally {
             extension.sable$setCameraPosition(null);
         }
+    }
+
+    /**
+     * Отсечение BE, рисуемых сверх Sable (их могут быть сотни у корабля в портале): по рамке
+     * рендерера в текущей позе отрисовки и фрустуму текущего прохода. Глобальные BE (верёвки,
+     * рамки которых бывают и мировыми, и бесконечными) не отсекаются.
+     */
+    private static boolean mayBeVisible(BlockEntity be, Matrix4d plotToWorld) {
+        BlockEntityRenderer<BlockEntity> renderer = Minecraft.getInstance().getBlockEntityRenderDispatcher().getRenderer(be);
+        if (renderer == null || renderer.shouldRenderOffScreen(be)) return true;
+        AABB box = renderer.getRenderBoundingBox(be);
+        if (!Double.isFinite(box.minX + box.minY + box.minZ + box.maxX + box.maxY + box.maxZ)) return true;
+        double minX = Double.POSITIVE_INFINITY, minY = minX, minZ = minX;
+        double maxX = Double.NEGATIVE_INFINITY, maxY = maxX, maxZ = maxX;
+        Vector3d c = new Vector3d();
+        for (int i = 0; i < 8; i++) {
+            plotToWorld.transformPosition((i & 1) == 0 ? box.minX : box.maxX, (i & 2) == 0 ? box.minY : box.maxY,
+                (i & 4) == 0 ? box.minZ : box.maxZ, c);
+            minX = Math.min(minX, c.x); minY = Math.min(minY, c.y); minZ = Math.min(minZ, c.z);
+            maxX = Math.max(maxX, c.x); maxY = Math.max(maxY, c.y); maxZ = Math.max(maxZ, c.z);
+        }
+        return IplSubLevelRenderVisibility.inPassFrustum(new AABB(minX, minY, minZ, maxX, maxY, maxZ));
     }
 
     /**

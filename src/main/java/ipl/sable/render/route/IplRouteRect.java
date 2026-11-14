@@ -4,6 +4,8 @@ import net.minecraft.world.phys.AABB;
 import org.joml.Matrix4d;
 import org.joml.Vector3d;
 
+import java.util.List;
+
 /**
  * An opening placed in route space: the world space of the level a model is recorded in, where a
  * deeper frame's portal appears through the inverse of the frame's map. All tests are finite:
@@ -16,6 +18,7 @@ final class IplRouteRect {
 	static final double RIM = 1.0e-3;
 	private static final double COPLANAR_COS = 0.9999;
 	private static final double COPLANAR_DISTANCE = 1.0e-4;
+	private static final double SIZE_EPSILON = 1.0e-3;
 
 	final IplOpening opening;
 	/** The frame's map from route space into the opening's level (shape refinement only). */
@@ -108,10 +111,49 @@ final class IplRouteRect {
 		return (p.x - origin.x) * axis.x + (p.y - origin.y) * axis.y + (p.z - origin.z) * axis.z;
 	}
 
+	/** Whether both are one rectangle (either facing): one plane, one area. */
+	boolean coincides(IplRouteRect other) {
+		if (!coplanar(other) || origin.distanceSquared(other.origin) > COPLANAR_DISTANCE) return false;
+		if (Math.abs(u.dot(other.u)) > COPLANAR_COS) {
+			return Math.abs(halfU - other.halfU) < SIZE_EPSILON && Math.abs(halfV - other.halfV) < SIZE_EPSILON;
+		}
+		return Math.abs(u.dot(other.v)) > COPLANAR_COS
+			&& Math.abs(halfU - other.halfV) < SIZE_EPSILON && Math.abs(halfV - other.halfU) < SIZE_EPSILON;
+	}
+
+	/** Whether every vertex lies over the opening (between its edge planes, plus {@link #RIM}). */
+	boolean overOpening(List<IplVertex> vertices) {
+		for (IplVertex p : vertices) {
+			double dx = p.x - origin.x, dy = p.y - origin.y, dz = p.z - origin.z;
+			if (Math.abs(dx * u.x + dy * u.y + dz * u.z) > halfU + RIM) return false;
+			if (Math.abs(dx * v.x + dy * v.y + dz * v.z) > halfV + RIM) return false;
+		}
+		return true;
+	}
+
 	/** Whether both rectangles lie in one plane (either facing). */
 	boolean coplanar(IplRouteRect other) {
 		return Math.abs(normal.dot(other.normal)) > COPLANAR_COS
 			&& Math.abs(side(other.origin.x, other.origin.y, other.origin.z)) < COPLANAR_DISTANCE;
+	}
+
+	/**
+	 * Whether the plane cuts through {@code box} where the box comes within {@code margin} of the
+	 * opening: geometry in the box may be on both sides of this opening.
+	 */
+	boolean straddledBy(AABB box, double margin) {
+		if (!near(box, margin)) return false;
+		double cx = (box.minX + box.maxX) * 0.5, cy = (box.minY + box.maxY) * 0.5, cz = (box.minZ + box.maxZ) * 0.5;
+		double ex = (box.maxX - box.minX) * 0.5, ey = (box.maxY - box.minY) * 0.5, ez = (box.maxZ - box.minZ) * 0.5;
+		return Math.abs(side(cx, cy, cz)) <= support(normal, ex, ey, ez);
+	}
+
+	/** Which side of the plane {@code box} lies on: 1 front, -1 back, 0 cut by the plane. */
+	int sideOf(AABB box) {
+		double cx = (box.minX + box.maxX) * 0.5, cy = (box.minY + box.maxY) * 0.5, cz = (box.minZ + box.maxZ) * 0.5;
+		double r = support(normal, (box.maxX - box.minX) * 0.5, (box.maxY - box.minY) * 0.5, (box.maxZ - box.minZ) * 0.5);
+		double d = side(cx, cy, cz);
+		return d > r ? 1 : d < -r ? -1 : 0;
 	}
 
 	/** Whether {@code box} comes within {@code margin} of the opening (separating axes of the rectangle). */
