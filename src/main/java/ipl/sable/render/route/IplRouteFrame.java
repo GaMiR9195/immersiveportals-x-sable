@@ -67,20 +67,6 @@ final class IplRouteFrame {
 		return child;
 	}
 
-	/**
-	 * The frame after crossing the plane of {@code passed} inside its opening: front to back
-	 * enters it when it belongs to this frame; back to front leaves this frame when it is the
-	 * entry. Any other crossing (another frame's opening) changes nothing.
-	 */
-	IplRouteFrame cross(IplRouteOpening passed, boolean frontToBack) {
-		if (frontToBack) {
-			if (passed.frame() != this) return this;
-			IplRouteFrame next = through(passed.opening());
-			return next == null ? this : next;
-		}
-		return parent != null && passed.frame() == parent && passed.opening().sameAs(entry) ? parent : this;
-	}
-
 	/** {@code opening} of this frame's level placed in route space. */
 	IplRouteRect rectOf(IplOpening opening) {
 		return rects.computeIfAbsent(opening, o -> IplRouteRect.of(o, toLevel, fromLevel));

@@ -7,8 +7,8 @@ import java.util.List;
 /**
  * One physical cut: openings that share their rectangle (both faces of a two-sided portal, the
  * exit face of a pair seen through its entry, either face of it) are one plane in route space.
- * A primitive is cut once per such plane, and crossing it is one crossing: the first of its
- * openings that moves the frame decides ({@link #crossedFrom}).
+ * A model is split once per such plane, through the one face its anchor selects
+ * ({@link IplRouteSolver}).
  *
  * @param rect    the rectangle, facing like the first of its openings
  * @param members the openings (1-based indices into the route's opening list), positive when the
@@ -33,18 +33,5 @@ record IplRouteCut(IplRouteRect rect, int[] members) {
 			cuts.set(index, new IplRouteCut(existing.rect, members));
 		}
 		return cuts;
-	}
-
-	/**
-	 * The frame after crossing this plane inside its opening, from {@code frame}: front to back of
-	 * {@link #rect} when {@code frontToBack}. Each opening is crossed in its own direction; the
-	 * first that changes the frame is the crossing.
-	 */
-	IplRouteFrame crossedFrom(IplRouteFrame frame, boolean frontToBack, List<IplRouteOpening> openings) {
-		for (int member : members) {
-			IplRouteFrame next = frame.cross(openings.get(Math.abs(member) - 1), frontToBack == member > 0);
-			if (next != frame) return next;
-		}
-		return frame;
 	}
 }

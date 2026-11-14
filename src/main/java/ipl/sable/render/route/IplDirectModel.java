@@ -8,13 +8,11 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4d;
 
-import java.util.List;
-
 /**
  * A model wholly in one frame: its renderer draws straight into each pass of that frame's level,
  * placed through the frame's portals. Nothing is recorded or cut, so this costs what the normal
- * draw costs. Used for models near an opening that do not reach across it, and for Flywheel
- * visuals handed to their renderers.
+ * draw costs. Used for Flywheel visuals handed to their renderers that are not near enough to an
+ * opening to be routed.
  */
 final class IplDirectModel implements IplPortalModel {
 
@@ -38,8 +36,8 @@ final class IplDirectModel implements IplPortalModel {
 	@Override
 	@Nullable
 	public AABB boundsIn(Level level) {
-		List<AABB> boxes = anchor.modelBoxes(be);
-		return boxes == null ? null : IplPortalModel.transform(boxes.get(0), anchor.frame().toLevel);
+		IplModelAnchor.ModelBounds bounds = anchor.modelBounds(be);
+		return bounds == null ? null : IplPortalModel.transform(bounds.boxes().get(0), anchor.frame().toLevel);
 	}
 
 	@Override

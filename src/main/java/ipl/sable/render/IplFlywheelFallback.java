@@ -54,6 +54,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *       is synced), and the renderer's turn follows the queue: vetoed at a flush → the renderer
  *       draws from the next frame (the visual is gone by then); given back → the renderer keeps
  *       drawing until a later flush finds the visual in Flywheel's record. Never none.</li>
+ *   <li>A handed visual goes back only after it has not been wanted for {@link #RELEASE_NANOS}:
+ *       a model hovering at the threshold (a body sliding along a portal, a vibrating link) is
+ *       not handed back and forth every frame.</li>
  *   <li>Flywheel's record is its {@code visuals} map, not {@code visualAtPos}: Sable's storage
  *       mixin never clears {@code posLookup} on removal ({@code FlywheelStorageAccessor}).</li>
  * </ul>
@@ -66,6 +69,8 @@ public final class IplFlywheelFallback {
 
     /** A body this close to an opening may have models that reach it (long models reach out of the body). */
     private static final double BODY_REACH = 16.0;
+    /** How long a handed block entity must stay unwanted before it goes back to Flywheel. */
+    private static final long RELEASE_NANOS = 750_000_000L;
 
     /** Environments collapsed in the current pass. Render thread only. */
     private static final Set<Object> HIDDEN = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -81,6 +86,8 @@ public final class IplFlywheelFallback {
     private static final Set<BlockEntity> RETURNING = Collections.newSetFromMap(new WeakHashMap<>());
     /** Handed block entities per body of the current level (for its body passes). */
     private static final Map<ClientSubLevel, List<BlockEntity>> BY_BODY = new WeakHashMap<>();
+    /** When each handed block entity was last wanted by its renderer (render thread only). */
+    private static final Map<BlockEntity, Long> LAST_WANTED = new WeakHashMap<>();
 
     /** Whether Flywheel must refuse {@code be} now ({@code FlywheelStorageVetoMixin}). */
     public static boolean isVetoed(BlockEntity be) {
@@ -136,7 +143,9 @@ public final class IplFlywheelFallback {
      */
     private static void reconcile(ClientLevel level, VisualManager<BlockEntity> visuals, Map<Object, ?> record,
                                   Set<BlockEntity> wanted) {
+        long now = System.nanoTime();
         for (BlockEntity be : wanted) {
+            LAST_WANTED.put(be, now);
             RETURNING.remove(be);
             if (!VETOED.add(be)) continue;
             if (record.containsKey(be)) visuals.queueRemove(be);
@@ -144,7 +153,10 @@ public final class IplFlywheelFallback {
         }
         for (BlockEntity be : new ArrayList<>(VETOED)) {
             if (be.getLevel() != level || wanted.contains(be)) continue;
+            Long last = LAST_WANTED.get(be);
+            if (!be.isRemoved() && last != null && now - last < RELEASE_NANOS) continue;
             VETOED.remove(be);
+            LAST_WANTED.remove(be);
             if (be.isRemoved()) continue;
             RETURNING.add(be);
             IplPortalModels.notice(be);

@@ -22,10 +22,12 @@ import java.util.function.Predicate;
 
 /**
  * Block entities whose models may have to be routed, per level. A model is noticed when a draw
- * of it is claimed, when Flywheel gives it up, and by a scan around every opening that runs
- * every {@link #SCAN_INTERVAL_TICKS} ticks per level: the scan finds models that no pass of
- * this frame draws (their level is only seen through a portal, or not at all) and Flywheel
- * visuals, which never reach a block-entity renderer. Render thread only; weak references.
+ * of it is claimed, when Flywheel gives it up, and by a scan around every opening: the scan finds
+ * models that no pass of this frame draws (their block is out of view and only the model is seen
+ * through a portal, or their level is only seen through one) and Flywheel visuals, which never
+ * reach a block-entity renderer. Bodies move, so their block entities are scanned every frame (a
+ * fast body must not wait for a scan); the static world every {@link #SCAN_INTERVAL_TICKS} ticks.
+ * Render thread only; weak references.
  */
 final class IplModelCandidates {
 
@@ -61,17 +63,17 @@ final class IplModelCandidates {
 		return out;
 	}
 
-	/** Scans the levels whose interval has passed and adds what {@code routed} accepts. */
+	/** Scans the bodies of every level, and the world of levels whose interval has passed; adds what {@code routed} accepts. */
 	static void refresh(Predicate<BlockEntity> routed) {
 		for (ClientLevel level : ClientWorldLoader.getClientWorlds()) {
+			List<IplRouteRect> zones = zones(level);
+			if (zones.isEmpty()) continue;
+			scanBodies(level, zones, routed);
 			long time = level.getGameTime();
 			Long last = SCANNED.get(level);
 			if (last != null && time >= last && time - last < SCAN_INTERVAL_TICKS) continue;
 			SCANNED.put(level, time);
-			List<IplRouteRect> zones = zones(level);
-			if (zones.isEmpty()) continue;
 			scanWorld(level, zones, routed);
-			scanBodies(level, zones, routed);
 		}
 	}
 

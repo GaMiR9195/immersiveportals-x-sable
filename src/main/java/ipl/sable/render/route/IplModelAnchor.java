@@ -26,22 +26,32 @@ import java.util.Map;
 /**
  * Where the model of a block entity hangs: the centre of its block in the world space of its
  * level, with a body at its REAL pose (never a projection's mapped pose), and the route frame of
- * that block. A block of a straddling body that went through a portal is in its piece's frame,
- * so either end of a link may be the one that holds the model.
+ * that block. The frame is the piece of the block exactly as the body's terrain is drawn
+ * ({@link IplPieceRender#blockEntityPiece}: the server's label carried through the crossings the
+ * block's centre made since, at the drawn pose), so a model and the block it stands on are always
+ * on the same side; it is never guessed from the side of a plane, which for a two-sided portal
+ * would pick the opposite face.
  */
 record IplModelAnchor(ClientLevel level, @Nullable ClientSubLevel owner, Matrix4d plotToWorld, BlockPos pos,
 					  Vector3d point, IplRouteFrame frame) {
+
+	/** Extra slack around a body's swept box: slerp between two poses bulges past both. */
+	private static final double SWEEP_SLACK = 0.25;
+
+	/**
+	 * The world boxes a renderer may draw in, and how far that geometry moves per tick (0 for the
+	 * world): decisions that take effect later (a Flywheel hand-over) lead by it.
+	 */
+	record ModelBounds(List<AABB> boxes, double lead) {}
 
 	@Nullable
 	static IplModelAnchor of(BlockEntity be) {
 		if (be.isRemoved() || !(be.getLevel() instanceof ClientLevel level)) return null;
 		ClientSubLevel owner = Sable.HELPER.getContainingClient(be);
-		Matrix4d plotToWorld = owner == null ? IDENTITY : plotToWorld(owner);
+		Matrix4d plotToWorld = owner == null ? IDENTITY : poses(owner).render;
 		BlockPos pos = be.getBlockPos();
 		Vector3d point = plotToWorld.transformPosition(new Vector3d(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5));
-		IplRouteFrame frame = frameOf(be, owner, level);
-		if (owner != null) frame = settle(frame, point);
-		return new IplModelAnchor(level, owner, plotToWorld, pos, point, frame);
+		return new IplModelAnchor(level, owner, plotToWorld, pos, point, frameOf(be, owner, level));
 	}
 
 	/** Block space of the block entity → world space (the pose a renderer draws it with). */
@@ -50,46 +60,56 @@ record IplModelAnchor(ClientLevel level, @Nullable ClientSubLevel owner, Matrix4
 	}
 
 	/**
-	 * World boxes the renderer may draw in: its bounds as block-space coordinates of the level
-	 * (placed by the body pose) and, for a body, also as plain world coordinates (renderers of
-	 * links report the world box of their points). Null when the renderer is unbounded.
+	 * Where the renderer may draw: its bounds as block-space coordinates of the level (for a body,
+	 * swept over the body's motion during this tick, so a fast body is caught before its model
+	 * reaches an opening) and, for a body, also as plain world coordinates (renderers of links
+	 * report the world box of their points), widened by the same motion. Null when the renderer is
+	 * unbounded.
 	 */
 	@Nullable
-	List<AABB> modelBoxes(BlockEntity be) {
+	ModelBounds modelBounds(BlockEntity be) {
 		BlockEntityRenderer<BlockEntity> renderer = Minecraft.getInstance().getBlockEntityRenderDispatcher().getRenderer(be);
 		AABB local = renderer == null ? null : renderer.getRenderBoundingBox(be);
 		if (local == null) local = new AABB(pos);
 		if (!Double.isFinite(local.minX + local.minY + local.minZ + local.maxX + local.maxY + local.maxZ)) return null;
-		if (owner == null) return List.of(local);
-		return List.of(transform(local, plotToWorld), local);
+		if (owner == null) return new ModelBounds(List.of(local), 0.0);
+		Poses poses = poses(owner);
+		AABB last = IplPortalModel.transform(local, poses.last);
+		AABB logical = IplPortalModel.transform(local, poses.logical);
+		double lead = Math.max(cornerShift(last, logical), 0.0);
+		AABB swept = IplPortalModel.transform(local, poses.render).minmax(last).minmax(logical)
+			.inflate(lead > 0.0 ? lead * SWEEP_SLACK : 0.0);
+		return new ModelBounds(List.of(swept, local.inflate(lead)), lead);
 	}
 
-	private static AABB transform(AABB box, Matrix4d m) {
-		double minX = Double.POSITIVE_INFINITY, minY = minX, minZ = minX;
-		double maxX = Double.NEGATIVE_INFINITY, maxY = maxX, maxZ = maxX;
-		Vector3d c = new Vector3d();
-		for (int i = 0; i < 8; i++) {
-			m.transformPosition((i & 1) == 0 ? box.minX : box.maxX, (i & 2) == 0 ? box.minY : box.maxY,
-				(i & 4) == 0 ? box.minZ : box.maxZ, c);
-			minX = Math.min(minX, c.x); minY = Math.min(minY, c.y); minZ = Math.min(minZ, c.z);
-			maxX = Math.max(maxX, c.x); maxY = Math.max(maxY, c.y); maxZ = Math.max(maxZ, c.z);
-		}
-		return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
+	/** Upper bound of how far the box moved between two placements. */
+	private static double cornerShift(AABB a, AABB b) {
+		double dx = Math.max(Math.abs(a.minX - b.minX), Math.abs(a.maxX - b.maxX));
+		double dy = Math.max(Math.abs(a.minY - b.minY), Math.abs(a.maxY - b.maxY));
+		double dz = Math.max(Math.abs(a.minZ - b.minZ), Math.abs(a.maxZ - b.maxZ));
+		return Math.sqrt(dx * dx + dy * dy + dz * dz);
 	}
 
 	/** Shared, never mutated. */
 	private static final Matrix4d IDENTITY = new Matrix4d();
-	/** Plot → world of each body this render frame (one pose per body and frame). */
-	private static final Map<ClientSubLevel, Matrix4d> POSES = new IdentityHashMap<>();
+
+	/** Plot → world of a body: at its real render pose, and at the two tick poses it lies between. */
+	private record Poses(Matrix4d render, Matrix4d last, Matrix4d logical) {}
+
+	/** Poses of each body this render frame (one set per body and frame). */
+	private static final Map<ClientSubLevel, Poses> POSES = new IdentityHashMap<>();
 	private static long posesFrame = Long.MIN_VALUE;
 
-	private static Matrix4d plotToWorld(ClientSubLevel owner) {
+	private static Poses poses(ClientSubLevel owner) {
 		long frame = IplStraddleRenderCache.frameId();
 		if (frame != posesFrame) {
 			POSES.clear();
 			posesFrame = frame;
 		}
-		return POSES.computeIfAbsent(owner, o -> realPose(o).bakeIntoMatrix(new Matrix4d()));
+		return POSES.computeIfAbsent(owner, o -> new Poses(
+			realPose(o).bakeIntoMatrix(new Matrix4d()),
+			o.lastPose().bakeIntoMatrix(new Matrix4d()),
+			o.logicalPose().bakeIntoMatrix(new Matrix4d())));
 	}
 
 	/** The body pose of this frame's native draw (the piece frame's snapshot when it straddles). */
@@ -103,37 +123,6 @@ record IplModelAnchor(ClientLevel level, @Nullable ClientSubLevel owner, Matrix4
 			IplStraddleRenderState.resumePose();
 		}
 	}
-
-	/**
-	 * A body block lying across an opening's plane is drawn split by that plane (its piece's
-	 * label decides only away from the plane), so the model hanging on it takes the side of its
-	 * anchor point: in front of the entry → the frame before it; behind an opening of its frame →
-	 * the frame beyond it. A label that flips while the block lies on the plane then moves
-	 * nothing, and the anchor changes frame exactly when it crosses, like the geometry.
-	 */
-	private static IplRouteFrame settle(IplRouteFrame frame, Vector3d p) {
-		if (frame.parent != null && frame.entry != null) {
-			IplRouteRect entry = frame.parent.rectOf(frame.entry);
-			if (inZone(entry, p) && entry.side(p.x, p.y, p.z) >= 0.0) return frame.parent;
-		}
-		for (IplOpening opening : IplOpenings.of(frame.level)) {
-			IplRouteRect rect = frame.rectOf(opening);
-			if (!inZone(rect, p) || rect.side(p.x, p.y, p.z) >= 0.0) continue;
-			IplRouteFrame next = frame.through(opening);
-			if (next != null && next != frame.parent) return next;
-		}
-		return frame;
-	}
-
-	/** Within a block's reach of the plane, over the opening. */
-	private static boolean inZone(IplRouteRect rect, Vector3d p) {
-		double side = rect.side(p.x, p.y, p.z);
-		if (Math.abs(side) > ZONE) return false;
-		return rect.containsOnPlane(p.x - rect.normal.x * side, p.y - rect.normal.y * side, p.z - rect.normal.z * side);
-	}
-
-	/** Half the diagonal of a block: a block whose centre is this close may lie across the plane. */
-	private static final double ZONE = 0.87;
 
 	/** The frame of the block's piece: the root, or the portal path of the session that holds it. */
 	private static IplRouteFrame frameOf(BlockEntity be, @Nullable ClientSubLevel owner, ClientLevel level) {

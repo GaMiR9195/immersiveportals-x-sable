@@ -31,13 +31,13 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
   portals of dimension stacking, with no straddling body needed. A block-entity model whose
   bounds come near an opening (ropes, springs, chains, connectors, long shafts, any renderer,
   Veil render types included) is recorded once per frame at its real pose, independent of the
-  pass being drawn. A primitive that crosses a portal plane inside the finite opening is cut
-  there into its front part, the part through the opening and the parts beside it; paths from
-  the block the model hangs on follow the model's surface (the cut, shared vertices, a shared
-  vertex lying on the plane) and the nearest gaps between separate parts. Each path walks a
-  tree of frames (a portal path per frame, exit faces lead back, coplanar faces of a two-sided
-  portal are one crossing), so nested portals and dimension stacking are ordinary deeper
-  frames. Every level pass (main view, each portal view, nested ones) writes exactly the parts
+  pass being drawn. Each physical cut (coincident faces of one doorway) is passed through one
+  face, chosen by the block the model hangs on (the face it passed, else the face whose front
+  holds it). That face's passage — behind its plane and over its opening — is its far frame,
+  everything else (in front, or beside the rim on either side) its near frame; primitives are
+  cut exactly at the passage's five planes (`IplRouteSolver`). Frames form a tree (a portal
+  path per frame), so nested portals and dimension stacking are ordinary deeper frames. Every
+  level pass (main view, each portal view, nested ones) writes exactly the parts
   whose frame is in its level, placed through the portals: every part exists once, on its side
   of every opening, and a part beside the frame never moves. The holder's frame is the piece of
   its block, so either end of a link may hold it. Replaces the per-edge block-entity passes, the
@@ -87,10 +87,29 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
   1 080 primitives became 23 473 parts. Openings sharing their rectangle are one cut
   (`IplRouteCut`), crossing it is one crossing, and a part is split at the rim only when it
   reaches past it.
-- A model hanging on a body block that lies across a portal plane (a rope's free constraint on
-  the ground in the doorway) jumped between both sides with every flip of the block's piece
-  label. The anchor now takes the side of the plane its block centre is on near the plane, as the
-  split terrain of that block does.
+- Models (rope, spring, any routed BER) flickered while passing a portal and parts near the rim
+  switched sides: frames came from a search over the model's surface plus nearest-gap joins
+  between separate pieces, so they depended on how the model happened to be split this frame
+  and on the order it was written in. The frame of a part is now a function of its position
+  only (the face's passage, see above): deterministic, continuous at the rim, no joins, no
+  search, a few plane tests per vertex.
+- Block entities of a body (cogs, chests, signs, swivel bearings, springs) showed up on the far
+  side of the exit, and a spring glued into one body vanished on the near side: near a portal
+  the anchor took the frame behind ANY opening its block centre was behind — with a two-sided
+  portal it is always behind one of the two faces, and a body without a session moved too. The
+  anchor's frame is now only the piece of its block, exactly as the terrain is drawn (server
+  label carried through the crossings of the block centre at the drawn pose), and the face is
+  chosen by the side the block is on.
+- A fast body's models reached across an opening before they were routed (and Flywheel visuals
+  before they were handed over), so they were drawn whole for a frame or more on the wrong side.
+  Bounds are swept over the body's motion during the tick, the hand-over leads by twice that
+  motion, and the RECORDED geometry decides what is cut. Every model near an opening is drawn
+  by the routing (whole when it reaches across nothing), so nothing switches between two draw
+  paths when it starts or stops crossing.
+- Flywheel visuals at the hand-over threshold went back and forth every frame; a handed visual
+  now goes back only after 0.75 s unwanted. Bodies' block entities are scanned around openings
+  every frame (the world every 10 ticks), so a fast body's model seen only through a portal is
+  not missing until the next scan.
 - Block entities drawn by their renderers beside Sable's own pass (handed-over visuals of a body
   in a portal) are culled against the frustum of the pass, and so are routed models.
 - `-Dipl.portalModelDiagnostics=true` logs once a second what portal routing cost (models

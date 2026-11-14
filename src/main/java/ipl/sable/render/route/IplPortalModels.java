@@ -33,27 +33,35 @@ import java.util.function.Consumer;
  * long shafts, any renderer's model — the same rule for every renderer, Flywheel visuals
  * included (they are handed to their renderers near an opening, {@link IplFlywheelFallback}).
  *
- * <p>A model <em>crosses</em> when its bounds are cut by the plane of an opening of its frame
- * ({@link IplOpenings}: every flat teleporting portal, global portals of dimension stacking
- * included). A crossing model is recorded once per render frame at its real pose
- * ({@link IplModelCapture}), cut where it really passes openings and split into the frames its
- * paths lead to ({@link IplRoutedModel}). Every level pass of the frame — the main view and each
+ * <p>A model is <em>routed</em> when its bounds — swept over its body's motion during the tick,
+ * so speed never lets it slip past — come near an opening of its frame ({@link IplOpenings}:
+ * every flat teleporting portal, global portals of dimension stacking included). A routed model
+ * is recorded once per render frame at its real pose ({@link IplModelCapture}); its RECORDED
+ * geometry, not the bounds its renderer reports, decides what is cut and which frame every part
+ * is in ({@link IplRouteSolver}, {@link IplRoutedModel}). A model that does not reach across stays
+ * whole; it is drawn by the same path, so nothing switches between two ways of drawing when it
+ * starts or stops crossing. Every level pass of the frame — the main view and each
  * portal view, nested passes included — then writes exactly the parts whose frame is in that
  * level, placed through the portals: what went in is drawn beyond the exit and nowhere else,
- * what did not stays, and a part beside a finite opening never moves. Models that only come
- * near an opening are drawn as usual; a Flywheel visual handed over there is drawn by its
- * renderer here, uncut ({@link IplDirectModel}).
+ * what did not stays, and a part beside a finite opening never moves. A Flywheel visual handed
+ * over ahead of that is drawn by its renderer here, uncut ({@link IplDirectModel}).
  *
- * <p>The normal draws of a crossing model are claimed ({@link #claim}): the dispatcher funnel
+ * <p>The normal draws of a routed model are claimed ({@link #claim}): the dispatcher funnel
  * and the piece passes of straddling bodies skip it, and the pass writes it at its block-entity
  * stage ({@link #drawPass}) or at the claim, whichever comes later. Render thread only.
  */
 public final class IplPortalModels {
 
-	/** A model crosses when its bounds are cut by an opening's plane this close to the opening. */
-	private static final double CROSS_MARGIN = 0.0625;
-	/** Flywheel hands a visual over this far ahead, so its renderer has it before it crosses. */
-	private static final double FLYWHEEL_LEAD = 1.5;
+	/**
+	 * A model is routed while its swept bounds are this close to an opening, plus its motion per
+	 * tick: it is recorded before any of it can reach across, at any speed.
+	 */
+	private static final double ROUTE_MARGIN = 1.0;
+	/**
+	 * Flywheel hands a visual over this far ahead, plus twice its motion per tick: the hand-over
+	 * applies in Flywheel's next frame, so its renderer has it before it is routed.
+	 */
+	private static final double FLYWHEEL_LEAD = 2.0;
 	/**
 	 * An unbounded renderer (tracks, arcs, beams) is recorded while an opening is this close to
 	 * its block; its recorded geometry then decides exactly.
@@ -61,7 +69,7 @@ public final class IplPortalModels {
 	private static final double UNBOUNDED_REACH = 32.0;
 
 	/** How close a model is to the openings of its frame. */
-	private enum Reach { NONE, NEAR, CROSSING }
+	private enum Reach { NONE, NEAR, ROUTED }
 
 	/** Flywheel is optional; its classes are touched only when it is present. */
 	private static final class Flywheel {
@@ -173,12 +181,12 @@ public final class IplPortalModels {
 
 	// ------------------------------------------------------------------ reach
 
-	/** Whether the model of {@code be} crosses an opening this frame (it is routed and claimed). */
+	/** Whether the model of {@code be} is routed this frame (recorded, split by its geometry, claimed). */
 	public static boolean isRouted(BlockEntity be) {
-		return reach(be) == Reach.CROSSING;
+		return reach(be) == Reach.ROUTED;
 	}
 
-	/** Whether the model of {@code be} is near an opening this frame (Flywheel hands it over). */
+	/** Whether the model of {@code be} is near an opening this frame (Flywheel hands it over ahead). */
 	public static boolean isNearOpening(BlockEntity be) {
 		return reach(be) != Reach.NONE;
 	}
@@ -207,37 +215,28 @@ public final class IplPortalModels {
 	}
 
 	private static Reach reachOf(BlockEntity be, IplModelAnchor anchor) {
-		List<AABB> boxes = anchor.modelBoxes(be);
+		IplModelAnchor.ModelBounds bounds = anchor.modelBounds(be);
 		Vector3d p = anchor.point();
 		Reach reach = Reach.NONE;
 		for (IplRouteFrame f = anchor.frame(); f != null; f = f.parent) {
 			for (IplOpening opening : IplOpenings.of(f.level)) {
 				IplRouteRect rect = f.rectOf(opening);
-				if (boxes == null) {
-					if (rect.near(new AABB(p.x, p.y, p.z, p.x, p.y, p.z), UNBOUNDED_REACH)) return Reach.CROSSING;
+				if (bounds == null) {
+					if (rect.near(new AABB(p.x, p.y, p.z, p.x, p.y, p.z), UNBOUNDED_REACH)) return Reach.ROUTED;
 					continue;
 				}
-				for (AABB box : boxes) {
-					if (!rect.near(box, FLYWHEEL_LEAD)) continue;
-					reach = Reach.NEAR;
-					if (crosses(rect, box, p)) return Reach.CROSSING;
+				for (AABB box : bounds.boxes()) {
+					if (rect.near(box, ROUTE_MARGIN + bounds.lead())) return Reach.ROUTED;
+					if (rect.near(box, FLYWHEEL_LEAD + 2.0 * bounds.lead())) reach = Reach.NEAR;
 				}
 			}
 		}
 		return reach;
 	}
 
-	/** Whether geometry in {@code box} hanging at {@code anchor} may be on both sides of {@code rect}'s opening. */
-	private static boolean crosses(IplRouteRect rect, AABB box, Vector3d anchor) {
-		if (rect.straddledBy(box, CROSS_MARGIN)) return true;
-		if (!rect.near(box, CROSS_MARGIN)) return false;
-		double anchorSide = rect.side(anchor.x, anchor.y, anchor.z);
-		return anchorSide != 0.0 && Math.signum(anchorSide) != rect.sideOf(box);
-	}
-
 	// ------------------------------------------------------------------ models
 
-	/** Crossing models, and Flywheel visuals of the world handed to their renderers, are drawn here. */
+	/** Routed models, and Flywheel visuals of the world handed to their renderers, are drawn here. */
 	private static boolean isDrawnHere(BlockEntity be) {
 		if (be.isRemoved()) return false;
 		return isRouted(be) || Flywheel.LOADED && IplFlywheelFallback.isHandedOver(be);

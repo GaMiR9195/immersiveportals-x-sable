@@ -16,12 +16,9 @@ final class IplVertex {
 	float u, v;
 	int u1, v1, u2, v2;
 	float nx, ny, nz;
-	/** Written by the renderer at this position; false for cut vertices and vertices lying on a cut plane. */
-	boolean original = true;
 
 	static IplVertex lerp(IplVertex p, IplVertex q, double t) {
 		IplVertex o = new IplVertex();
-		o.original = false;
 		o.x = p.x + (q.x - p.x) * t;
 		o.y = p.y + (q.y - p.y) * t;
 		o.z = p.z + (q.z - p.z) * t;
@@ -35,11 +32,6 @@ final class IplVertex {
 		o.ny = (float) (p.ny + (q.ny - p.ny) * t);
 		o.nz = (float) (p.nz + (q.nz - p.nz) * t);
 		return o;
-	}
-
-	/** The same vertex, excluded from welds and gap samples (it lies on a cut plane). */
-	IplVertex detached() {
-		return lerp(this, this, 0.0);
 	}
 
 	private static int mix(int p, int q, double t) {
