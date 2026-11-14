@@ -93,6 +93,8 @@ public final class IplPortalModels {
 	private static final ArrayDeque<Pass> PASSES = new ArrayDeque<>();
 	private static final Map<BlockEntity, Reach> REACH = new IdentityHashMap<>();
 	private static final Map<BlockEntity, IplPortalModel> MODELS = new IdentityHashMap<>();
+	/** Route sessions: labels each routed model keeps between frames ({@link IplRouteMemory}). */
+	private static final Map<BlockEntity, IplRouteMemory> MEMORY = new WeakHashMap<>();
 	/** Models whose renderer failed to record: drawn as they are from then on. */
 	private static final Set<BlockEntity> UNROUTABLE = Collections.newSetFromMap(new WeakHashMap<>());
 	private static long frame = Long.MIN_VALUE;
@@ -215,6 +217,9 @@ public final class IplPortalModels {
 	}
 
 	private static Reach reachOf(BlockEntity be, IplModelAnchor anchor) {
+		// A held session: part of the model went through and stays routed wherever it is now.
+		IplRouteMemory memory = MEMORY.get(be);
+		if (memory != null && memory.holding && memory.level == anchor.level()) return Reach.ROUTED;
 		IplModelAnchor.ModelBounds bounds = anchor.modelBounds(be);
 		Vector3d p = anchor.point();
 		Reach reach = Reach.NONE;
@@ -262,13 +267,16 @@ public final class IplPortalModels {
 			return new IplDirectModel(be, anchor, partialTick, drawFlywheelParts);
 		}
 		long start = IplPortalModelDiagnostics.start();
-		IplModelRecorder recorder = IplModelCapture.record(be, anchor, partialTick, drawFlywheelParts);
+		IplRouteMemory memory = MEMORY.computeIfAbsent(be, ignored -> new IplRouteMemory());
+		memory.frame = frame;
+		IplModelRecorder recorder = IplModelCapture.record(be, anchor, partialTick, drawFlywheelParts, memory.recorder);
 		IplPortalModelDiagnostics.recorded(start);
 		if (recorder == null) {
 			UNROUTABLE.add(be);
+			MEMORY.remove(be);
 			return IplRoutedModel.EMPTY;
 		}
-		IplRoutedModel routed = IplRoutedModel.route(recorder, anchor);
+		IplRoutedModel routed = IplRoutedModel.route(recorder, anchor, memory);
 		if (IplPortalModelDiagnostics.ENABLED) IplPortalModelDiagnostics.route(be, routed.summary());
 		return routed;
 	}
@@ -279,5 +287,9 @@ public final class IplPortalModels {
 		frame = current;
 		REACH.clear();
 		MODELS.clear();
+		// A session that holds nothing ends once its model is no longer routed.
+		if (!MEMORY.isEmpty()) {
+			MEMORY.entrySet().removeIf(e -> e.getKey().isRemoved() || !e.getValue().holding && e.getValue().frame < current - 1);
+		}
 	}
 }

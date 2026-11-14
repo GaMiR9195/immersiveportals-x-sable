@@ -41,11 +41,15 @@ final class IplModelCapture {
 		return depth > 0;
 	}
 
-	/** Records the model in route space (absolute world coordinates of its level); null on failure. */
+	/**
+	 * Records the model in route space (world coordinates of its level, relative to the anchor)
+	 * into {@code recorder}, which is reset first; null on failure.
+	 */
 	@Nullable
-	static IplModelRecorder record(BlockEntity be, IplModelAnchor anchor, float partialTick, boolean drawFlywheelParts) {
+	static IplModelRecorder record(BlockEntity be, IplModelAnchor anchor, float partialTick, boolean drawFlywheelParts,
+								   IplModelRecorder recorder) {
 		Vector3d origin = anchor.point();
-		IplModelRecorder recorder = new IplModelRecorder(origin);
+		recorder.reset(origin);
 		Matrix4d toOrigin = new Matrix4d().translation(-origin.x, -origin.y, -origin.z);
 		return render(be, anchor, toOrigin, recorder, partialTick, drawFlywheelParts) ? recorder : null;
 	}

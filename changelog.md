@@ -42,6 +42,26 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
   of every opening, and a part beside the frame never moves. The holder's frame is the piece of
   its block, so either end of a link may hold it. Replaces the per-edge block-entity passes, the
   aperture-plane cut of block entities and the "images" drawn only in a straddling body's pass.
+- **Model routing keeps a session per model: labels instead of planes** (`IplRouteMemory`,
+  `IplFrameKey`, `IplRouteSolver`). Every primitive keeps the frame its centre is in between
+  render frames; it changes only when the centre passes a face through the opening's finite area
+  (shape included), measured in the face's own coordinates so moving portals never fake a pass.
+  What went through stays through wherever it goes (sideways behind the portal, around the rim,
+  far away) — the "tube" (passage extruded along the normal) is gone, so no part vanishes at any
+  angle; what went around the rim never counts as passed. The face is no longer re-chosen every
+  frame from the side of the holder's infinite plane: a link whose holder slides behind the portal
+  plane or wholly through it keeps its routing, and the session is held as long as any part is in
+  another frame than its holder, however far the model gets; an unresolvable path (portal
+  unloaded for a moment) is held for 10 s. A body flip re-expresses labels through the portal
+  isometry. Primitives are matched by index (layout unchanged, holder motion compensated) or by
+  the nearest previous centre; new ones are seeded by the old holder rule. Cuts happen only at
+  faces next to a primitive's frame and only from the side of its centre, recursively for nested
+  frames, so two portals at once and nested portals follow the same rule.
+- **Routing cost.** Recordings are flat reusable arrays (no object per vertex, no list per
+  primitive), cut pieces are index lists into them, parts are per-primitive frame indices plus a
+  piece stream, and replay in a part's own level is a plain offset (full-attribute vertices use the
+  one-call `addVertex` path); a recorder is reused by its model every frame. Openings are looked
+  up by id through a per-frame map, resolved frame paths are memoized per frame.
 - **Flywheel hands over by the same rule** (`IplFlywheelFallback`): a visual whose model passes
   an opening, of the world or of any body, is taken out of Flywheel and recorded from its
   renderer with Flywheel reported unsupported; a straddling body's visual outside its native

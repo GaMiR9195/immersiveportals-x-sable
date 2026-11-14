@@ -66,6 +66,39 @@ final class IplRouteRect {
 		return opening.rectangular || opening.shapeContains(toLevel.transformPosition(new Vector3d(x, y, z)));
 	}
 
+	/** Coordinate along {@link #u} relative to the centre. */
+	double lu(double x, double y, double z) {
+		return (x - origin.x) * u.x + (y - origin.y) * u.y + (z - origin.z) * u.z;
+	}
+
+	/** Coordinate along {@link #v} relative to the centre. */
+	double lv(double x, double y, double z) {
+		return (x - origin.x) * v.x + (y - origin.y) * v.y + (z - origin.z) * v.z;
+	}
+
+	/** Whether the point of the plane at {@code (pu, pv)} (rectangle coordinates) lies in the opening. */
+	boolean containsLocal(double pu, double pv) {
+		if (Math.abs(pu) > halfU + RIM || Math.abs(pv) > halfV + RIM) return false;
+		if (opening.rectangular) return true;
+		return opening.shapeContains(toLevel.transformPosition(new Vector3d(
+			origin.x + u.x * pu + v.x * pv, origin.y + u.y * pu + v.y * pv, origin.z + u.z * pu + v.z * pv)));
+	}
+
+	/**
+	 * Parameter {@code t} in [0, 1] where a point moving from {@code (x0, y0, z0)} (seen against
+	 * {@code before}, this face one frame earlier) to {@code (x1, y1, z1)} (against this face) passes
+	 * the opening front-to-back ({@code forward}) or back-to-front, interpolated in the face's own
+	 * coordinates so a moving portal does not fake a crossing; NaN when it does not pass the opening.
+	 */
+	double crossing(IplRouteRect before, double x0, double y0, double z0, double x1, double y1, double z1, boolean forward) {
+		double s0 = before.side(x0, y0, z0), s1 = side(x1, y1, z1);
+		if (forward ? !(s0 >= 0.0 && s1 < 0.0) : !(s0 < 0.0 && s1 >= 0.0)) return Double.NaN;
+		double t = s0 / (s0 - s1);
+		double u0 = before.lu(x0, y0, z0), v0 = before.lv(x0, y0, z0);
+		double pu = u0 + (lu(x1, y1, z1) - u0) * t, pv = v0 + (lv(x1, y1, z1) - v0) * t;
+		return containsLocal(pu, pv) ? t : Double.NaN;
+	}
+
 	/** Whether a point lies over the opening: its projection along the normal is in the opening. */
 	boolean over(double x, double y, double z) {
 		double s = side(x, y, z);
@@ -117,6 +150,17 @@ final class IplRouteRect {
 	double[][] passageRegion() {
 		double[][] out = new double[5][];
 		out[0] = new double[]{-normal.x, -normal.y, -normal.z, normal.dot(origin)};
+		out[1] = inside(u, halfU, 1.0);
+		out[2] = inside(u, halfU, -1.0);
+		out[3] = inside(v, halfV, 1.0);
+		out[4] = inside(v, halfV, -1.0);
+		return out;
+	}
+
+	/** The mirror of {@link #passageRegion}: in front of the plane and over the opening. */
+	double[][] frontRegion() {
+		double[][] out = new double[5][];
+		out[0] = new double[]{normal.x, normal.y, normal.z, -normal.dot(origin)};
 		out[1] = inside(u, halfU, 1.0);
 		out[2] = inside(u, halfU, -1.0);
 		out[3] = inside(v, halfV, 1.0);

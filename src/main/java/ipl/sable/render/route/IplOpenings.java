@@ -12,6 +12,7 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,7 @@ import java.util.UUID;
 public final class IplOpenings {
 
 	private static final Map<Level, List<IplOpening>> BY_LEVEL = new IdentityHashMap<>();
+	private static final Map<Level, Map<UUID, IplOpening>> BY_ID = new IdentityHashMap<>();
 	private static final Map<Level, IplRouteFrame> ROOTS = new IdentityHashMap<>();
 	private static long frame = Long.MIN_VALUE;
 
@@ -47,8 +49,17 @@ public final class IplOpenings {
 
 	@Nullable
 	static IplOpening byId(Level level, UUID id) {
-		for (IplOpening o : of(level)) if (o.id.equals(id)) return o;
-		return null;
+		List<IplOpening> openings = of(level);
+		if (openings.isEmpty()) return null;
+		if (openings.size() <= 4) {
+			for (IplOpening o : openings) if (o.id.equals(id)) return o;
+			return null;
+		}
+		return BY_ID.computeIfAbsent(level, l -> {
+			Map<UUID, IplOpening> map = new HashMap<>(openings.size() * 2);
+			for (IplOpening o : openings) map.putIfAbsent(o.id, o);
+			return map;
+		}).get(id);
 	}
 
 	/** The shared root frame of models recorded in {@code level}'s world space. */
@@ -71,6 +82,7 @@ public final class IplOpenings {
 		if (current == frame) return;
 		frame = current;
 		BY_LEVEL.clear();
+		BY_ID.clear();
 		ROOTS.clear();
 	}
 
