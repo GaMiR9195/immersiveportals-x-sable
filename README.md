@@ -1,5 +1,17 @@
-# v0.6.1 (WIP)
-1) replace with "Explaining how visual router for Flywheel, Veil and block entities works" + update in description What's the trick below.
+# v0.6.1
+- **Visual router for block-entity models**: ropes, springs, chains, shafts — anything drawn by a
+  block-entity renderer, Flywheel visual or Veil shader — is recorded once per frame, cut exactly at
+  the portal opening and every part is drawn on its own side: what went in comes out of the exit,
+  what didn't stays. Works through several portals at once and nested portals.
+- **Parts follow their holder**: each part's side is found by walking the model from the block that
+  holds it, so nothing is left hanging at the entrance or beyond the exit when the holder pulls it
+  back, and a part that went around the frame never counts as passed.
+- **No flickering for models**: a model stays routed while what it really drew is near
+  the opening, not only while its renderer's (often stale) bounds are.
+- **Openings are a bit larger than their frame** (`-Dipl.sable.apertureGrace`, default 0.125 blocks):
+  bodies Rapier rests slightly inside the frame or that slide along the rim pass cleanly.
+- **Joints hold**: a body on springs, ropes or bearings is never thrown through a portal wholesale by
+  geometry; commands moved to `/ipxsable`.
 
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.
 
@@ -33,6 +45,9 @@ The fork keeps exactly that native model and adds **projections**:
   on the collider of its block’s piece (requires patched natives; see below).
 - Rendering: the same render data is drawn again at the mapped pose; only blocks inside the thin
   zone at the portal are clipped by its plane.
+- Visual router: block-entity models near a portal (BER, Flywheel, Veil) are recorded, cut at the
+  opening and each part is drawn beyond the exit or before the entry, depending on which side its
+  connection to the holding block puts it.
 - Chains: a piece that straddles another portal opens a child projection, as deep as you like
   (255 pieces per body).
 - Transit: once a body is fully through, it flips (same dim: pose teleport; other dim: native move
