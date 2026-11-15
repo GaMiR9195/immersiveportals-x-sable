@@ -58,6 +58,33 @@ and used through portals, and the third-person camera behaves around portals.
   screen, at most a quarter of the portal's own rectangle). A portal seen through a gap last frame
   does not stall the GPU waiting for this frame's query.
 - The mod event that filters portals runs only for portals that are actually on screen.
+- **No GPU wait every frame for a hidden portal.** An opening that completed queries found hidden
+  two frames in a row, while neither the view (under 0.5 blocks, 3 degrees per frame) nor the portal
+  moved, is skipped without waiting for this frame's query. Teleports and camera jumps always wait,
+  as before. Before, such a portal stalled the pipeline in every frame it stayed on screen.
+- **Sodium cave culling in the player's own view.** IP replaced Sodium's occlusion-culling decision
+  with its portal-pass rule, which is "off" outside portals, so the main view drew every cave
+  section. The main view now uses Sodium's own decision.
+- **Cave culling in portal passes at any distance.** For flat portals Sodium's section search starts
+  from the sections the opening passes through (`PortalApertureSections`), not from the camera's
+  section behind the destination plane, so occlusion culling is exact there and runs at every
+  distance (it used to run only within 5 blocks of the portal).
+- **Portal passes are bounded in the world, not only on screen.** The four planes through the eye
+  and the edges of a pass's screen rectangle, carried through the portal, cull sections, entities
+  and block entities that cannot reach its pixels (`PortalScreenCulling.getRegionPlanes`). Nested,
+  oblique and partly covered portals render a fraction of their world.
+- **Sodium's entity culling stays on in portal frames.** It was off in every frame with a visible
+  portal; now a pass uses it whenever it built the current section graph
+  (`WorldRenderInfo.getCurrentPassId`).
+
+### Compatibility
+
+- **EntityCulling** is supported and no longer reported as incompatible. Its culling, traced from
+  the player's camera, is paused in portal passes (which use their own culling); entities drawn in
+  a portal pass count as seen, so its tick culling keeps them animated; its tracing thread reads
+  the player's level instead of the level IP is rendering at that moment.
+- **More Culling** works unchanged: its frustum and camera checks go through the pass's own frustum
+  and camera, which now include the portal pass bounds above.
 
 ### Internal
 

@@ -24,6 +24,11 @@
     "sodium.MixinSodiumViewport",
     "sodium.MixinSodiumWorldRenderer"
   ],
+  "client": [
+    "entityculling.MixinEntityCullingBlockProvider",
+    "entityculling.MixinEntityCullingLevelRenderer",
+    "entityculling.MixinEntityCullingModBase"
+  ],
   "injectors": {
     "defaultRequire": 1
   }

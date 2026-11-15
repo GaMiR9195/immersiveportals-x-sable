@@ -1,5 +1,6 @@
 package qouteall.imm_ptl.core.render;
 
+import ipl.sable.render.IplForeignPerspective;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
@@ -82,18 +83,26 @@ public class FrustumCuller {
         if (!IPCGlobal.doUseAdvancedFrustumCulling) {
             return null;
         }
-        if (IrisInterface.invoker.isRenderingShadowMap()) {
+        if (IrisInterface.invoker.isRenderingShadowMap() || IplForeignPerspective.isRendering()) {
+            // a shadow map or another mod's camera: the portal's bounds do not apply
             return null;
         }
         
         if (PortalRendering.isRendering()) {
             Portal renderingPortal = PortalRendering.getRenderingPortal();
             
-            // do inner frustum culling
+            // do inner frustum culling, narrowed to the screen rectangle the pass draws into
             
-            return renderingPortal.getPortalShape().getInnerFrustumCullingFunc(
+            BoxPredicateF inner = renderingPortal.getPortalShape().getInnerFrustumCullingFunc(
                 renderingPortal, new Vec3(cameraX, cameraY, cameraZ)
             );
+            BoxPredicateF region = getRegionCullingFunc(cameraX, cameraY, cameraZ);
+            if (inner == null || region == null) {
+                return inner != null ? inner : region;
+            }
+            return (minX, minY, minZ, maxX, maxY, maxZ) ->
+                inner.test(minX, minY, minZ, maxX, maxY, maxZ)
+                    || region.test(minX, minY, minZ, maxX, maxY, maxZ);
         }
         else {
             if (!IPCGlobal.useSuperAdvancedFrustumCulling) {
@@ -120,6 +129,38 @@ public class FrustumCuller {
         }
         
         return null;
+    }
+    
+    /**
+     * Culls camera-relative boxes outside the side planes of the current portal pass
+     * ({@link PortalScreenCulling#getRegionPlanes()}).
+     */
+    private static @Nullable BoxPredicateF getRegionCullingFunc(
+        double cameraX, double cameraY, double cameraZ
+    ) {
+        double[] planes = PortalScreenCulling.getRegionPlanes();
+        if (planes == null) {
+            return null;
+        }
+        float[] p = new float[16];
+        for (int i = 0; i < 16; i += 4) {
+            p[i] = (float) planes[i];
+            p[i + 1] = (float) planes[i + 1];
+            p[i + 2] = (float) planes[i + 2];
+            p[i + 3] = (float) (planes[i + 3] + planes[i] * cameraX + planes[i + 1] * cameraY + planes[i + 2] * cameraZ);
+        }
+        return (minX, minY, minZ, maxX, maxY, maxZ) -> {
+            for (int i = 0; i < 16; i += 4) {
+                float a = p[i], b = p[i + 1], c = p[i + 2];
+                float x = a >= 0 ? maxX : minX;
+                float y = b >= 0 ? maxY : minY;
+                float z = c >= 0 ? maxZ : minZ;
+                if (a * x + b * y + c * z + p[i + 3] < 0) {
+                    return true;
+                }
+            }
+            return false;
+        };
     }
     
     @Nullable

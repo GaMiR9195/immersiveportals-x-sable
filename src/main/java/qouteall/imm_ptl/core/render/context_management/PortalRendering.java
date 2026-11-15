@@ -9,9 +9,11 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.IPGlobal;
+import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
 import qouteall.imm_ptl.core.portal.Mirror;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.shape.BoxPortalShape;
+import qouteall.imm_ptl.core.render.PortalApertureSections;
 import qouteall.imm_ptl.core.render.PortalScreenCulling;
 import qouteall.imm_ptl.core.render.VisibleSectionDiscovery;
 import qouteall.imm_ptl.core.render.renderer.PortalRenderer;
@@ -130,15 +132,13 @@ public class PortalRendering {
     }
     
     /**
-     * This only has effects with Sodium. In vanilla it uses {@link VisibleSectionDiscovery}.
+     * Whether Sodium's cave culling runs in the current portal pass. In vanilla it uses
+     * {@link VisibleSectionDiscovery}.
      * <br>
-     * As I tested, cave culling can optimize 20% when you are very close to the portal.
-     * But its optimization is negligible when you are 5 blocks from the portal.
-     * <br>
-     * And if something is behind the portal destination, cave culling may cull wrongly.
-     * If the camera is close to the portal, having wrong culling is nearly impossible.
-     * <br>
-     * So the conclusion is to only enable cave culling when close to the portal.
+     * For flat portals the search starts from the sections of the opening
+     * ({@link PortalApertureSections}), so culling is exact at any distance. Other shapes start
+     * from the camera, which lies behind the destination plane where blocks could cull wrongly,
+     * so there it only runs close to the portal.
      */
     public static boolean shouldEnableSodiumCaveCulling() {
         if (isRendering()) {
@@ -146,6 +146,10 @@ public class PortalRendering {
             
             if (renderingPortal.getPortalShape() instanceof BoxPortalShape) {
                 return false;
+            }
+            
+            if (SodiumInterface.invoker.isSodiumPresent() && PortalApertureSections.isSupported(renderingPortal)) {
+                return true;
             }
             
             Vec3 currentCameraPos = CHelper.getCurrentCameraPos();

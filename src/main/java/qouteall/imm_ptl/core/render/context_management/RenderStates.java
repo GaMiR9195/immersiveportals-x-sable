@@ -104,6 +104,7 @@ public class RenderStates {
         lastPortalRenderInfos = portalRenderInfos;
         portalRenderInfos = new ArrayList<>();
         portalsRenderedThisFrame = 0;
+        WorldRenderInfo.onFrameStart();
         
         FogRendererContext.update();
         

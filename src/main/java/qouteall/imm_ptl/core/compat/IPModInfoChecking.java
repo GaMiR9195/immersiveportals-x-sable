@@ -33,6 +33,7 @@ import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 @SuppressWarnings("resource")
 public class IPModInfoChecking {
@@ -40,6 +41,9 @@ public class IPModInfoChecking {
     private static final Logger LOGGER = LogUtils.getLogger();
     
     private static final boolean IS_TEST = false;
+    
+    /** Mods listed as incompatible upstream that this fork supports. */
+    private static final Set<String> SUPPORTED_MOD_IDS = Set.of("entityculling");
     
     public static record ModIncompatInfo(
         String modId,
@@ -50,7 +54,8 @@ public class IPModInfoChecking {
         @Nullable String link
     ) {
         boolean isModLoadedWithinVersion() {
-            return O_O.isModLoadedWithinVersion(modId, startVersion, endVersion);
+            return !SUPPORTED_MOD_IDS.contains(modId)
+                && O_O.isModLoadedWithinVersion(modId, startVersion, endVersion);
         }
         
         String getVersionRangeStr() {

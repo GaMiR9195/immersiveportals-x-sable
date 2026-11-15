@@ -5,11 +5,14 @@ import de.nick1st.imm_ptl.events.ClientPortalTickEvent;
 import de.nick1st.imm_ptl.events.PortalDisposeEvent;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.profiling.ProfilerFiller;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
 import org.apache.commons.lang3.Validate;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Vector3f;
 import org.slf4j.Logger;
+import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.portal.animation.ClientPortalAnimationManagement;
 import qouteall.imm_ptl.core.render.GlQueryObject;
@@ -33,12 +36,37 @@ import java.util.UUID;
 public class PortalRenderInfo implements AutoCloseable {
     
     private static final Logger LOGGER = LogUtils.getLogger();
+    
+    // A view counts as unchanged between frames within these limits (walking, sprinting, slow turns).
+    private static final double STEADY_MOVE_SQ = 0.5 * 0.5;
+    private static final double STEADY_LOOK_DOT = Math.cos(Math.toRadians(3));
+    // Completed queries in a row that must find the opening hidden before it is trusted to stay so.
+    private static final int CONFIRMED_HIDDEN_FRAMES = 2;
 
     public static class Visibility {
         public GlQueryObject lastFrameQuery;
         public GlQueryObject thisFrameQuery;
         public Boolean lastFrameRendered;
         public Boolean thisFrameRendered;
+        
+        /** Completed queries in a row with no visible sample. */
+        int hiddenFrames;
+        /** Eye, portal position and look direction of the previous query. */
+        @Nullable Vec3 lastEye;
+        @Nullable Vec3 lastPortalPos;
+        final Vector3f lastLook = new Vector3f();
+        
+        /** Records this frame's view; true when it barely differs from the previous one. */
+        boolean updateSteady(Vec3 eye, Vec3 portalPos, Vector3f look) {
+            boolean steady = lastEye != null && lastPortalPos != null
+                && lastEye.distanceToSqr(eye) < STEADY_MOVE_SQ
+                && lastPortalPos.distanceToSqr(portalPos) < STEADY_MOVE_SQ
+                && lastLook.dot(look) > STEADY_LOOK_DOT;
+            lastEye = eye;
+            lastPortalPos = portalPos;
+            lastLook.set(look);
+            return steady;
+        }
         
         public Visibility() {
             lastFrameQuery = null;
@@ -235,14 +263,23 @@ public class PortalRenderInfo implements AutoCloseable {
         GlQueryObject lastFrameQuery = visibility.lastFrameQuery;
         GlQueryObject thisFrameQuery = visibility.acquireThisFrameQuery();
         thisFrameQuery.performQuerySampleNumPassed(queryRendering);
+        boolean steady = visibility.updateSteady(
+            CHelper.getCurrentCameraPos(), portal.getOriginPos(), RenderStates.originalCamera.getLookVector()
+        );
         
         if (lastFrameQuery == null) {
+            visibility.hiddenFrames = 0;
             return fetchNow(thisFrameQuery, minSamples);
         }
         
         long lastFrameSamples = lastFrameQuery.fetchSampleCount();
+        visibility.hiddenFrames = lastFrameSamples == 0 ? visibility.hiddenFrames + 1 : 0;
+        // Hidden for several frames while neither the view nor the portal moved (no teleport,
+        // no jump): it stays hidden, so there is nothing to stall for. Should it open up, this
+        // frame's query shows it next frame.
+        boolean confirmedHidden = steady && visibility.hiddenFrames >= CONFIRMED_HIDDEN_FRAMES;
         boolean noPredict = renderInfo.isFrequentlyMispredicted() || QueryManager.queryStallCounter <= 3;
-        if (lastFrameSamples == 0 && noPredict) {
+        if (lastFrameSamples == 0 && noPredict && !confirmedHidden) {
             return fetchNow(thisFrameQuery, minSamples);
         }
         

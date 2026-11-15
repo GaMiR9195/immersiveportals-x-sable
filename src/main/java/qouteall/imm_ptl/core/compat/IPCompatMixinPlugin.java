@@ -45,6 +45,10 @@ public class IPCompatMixinPlugin implements IMixinConfigPlugin {
             return flywheelLoaded;
         }
         
+        if (mixinClassName.contains("EntityCulling")) {
+            return modList.getModFileById("entityculling") != null;
+        }
+        
         if (mixinClassName.contains("CardinalComp")) {
             boolean cardinalCompLoaded = modList.getModFileById("cardinal-components-base") != null;
             return cardinalCompLoaded;

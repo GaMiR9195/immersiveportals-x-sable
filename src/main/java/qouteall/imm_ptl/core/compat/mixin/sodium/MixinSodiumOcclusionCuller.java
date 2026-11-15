@@ -1,9 +1,14 @@
 package qouteall.imm_ptl.core.compat.mixin.sodium;
 
+import ipl.sable.render.IplForeignPerspective;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.caffeinemc.mods.sodium.client.render.chunk.RenderSection;
 import net.caffeinemc.mods.sodium.client.render.chunk.lists.RenderSectionVisitor;
+import net.caffeinemc.mods.sodium.client.render.chunk.occlusion.GraphDirectionSet;
 import net.caffeinemc.mods.sodium.client.render.chunk.occlusion.OcclusionCuller;
+import net.caffeinemc.mods.sodium.client.render.chunk.occlusion.VisibilityEncoding;
 import net.caffeinemc.mods.sodium.client.render.viewport.Viewport;
+import net.caffeinemc.mods.sodium.client.util.collections.WriteQueue;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
@@ -14,13 +19,18 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.render.PortalApertureSections;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
 @Mixin(OcclusionCuller.class)
 public abstract class MixinSodiumOcclusionCuller {
+    @Shadow(remap = false)
+    private int outOfWorldRadius;
+    
     @Shadow(remap = false)
     protected abstract RenderSection getRenderSection(int x, int y, int z);
     
@@ -29,13 +39,24 @@ public abstract class MixinSodiumOcclusionCuller {
         throw new RuntimeException();
     }
     
+    @Shadow(remap = false)
+    private static void visitNeighbors(WriteQueue<RenderSection> queue, RenderSection section, int outgoing, int frame) {
+        throw new RuntimeException();
+    }
+    
     @Unique
     private @Nullable SectionPos ip_modifiedStartPoint;
+    
+    /** Sections of the rendering portal's opening that seed the search, or null. */
+    @Unique
+    private long @Nullable [] ip_apertureSeeds;
+    
+    @Unique
+    private final ObjectArrayList<RenderSection> ip_enteredSeeds = new ObjectArrayList<>();
     
     @Unique
     private static boolean ip_tolerantInitialFrustumTestFail;
     
-    // update the iteration start point modification value
     @SuppressWarnings("ConstantValue")
     @ModifyVariable(
         method = "findVisible", at = @At("HEAD"), argsOnly = true, remap = false
@@ -44,31 +65,80 @@ public abstract class MixinSodiumOcclusionCuller {
         boolean originalValue,
         RenderSectionVisitor visitor, Viewport viewport, float searchDistance, boolean useOcclusionCulling, int frame
     ) {
-        boolean doUseOcclusionCulling = PortalRendering.shouldEnableSodiumCaveCulling();
-        
         ip_modifiedStartPoint = null;
+        ip_apertureSeeds = null;
         ip_tolerantInitialFrustumTestFail = false;
         
-        if (PortalRendering.isRendering()) {
-            Portal portal = PortalRendering.getRenderingPortal();
+        if (!PortalRendering.isRendering() || IplForeignPerspective.isRendering()) {
+            // the player's own view or another mod's camera: Sodium decides
+            return originalValue;
+        }
+        
+        Portal portal = PortalRendering.getRenderingPortal();
+        
+        ip_apertureSeeds = PortalApertureSections.collect(portal);
+        if (ip_apertureSeeds != null) {
+            // smartCull already reflects PortalRendering.shouldEnableSodiumCaveCulling()
+            return originalValue;
+        }
+        
+        boolean doUseOcclusionCulling = PortalRendering.shouldEnableSodiumCaveCulling();
+        
+        Vec3 cameraPos = CHelper.getCurrentCameraPos();
+        ip_modifiedStartPoint = portal.getPortalShape().getModifiedVisibleSectionIterationOrigin(
+            portal, cameraPos
+        );
+        if (ip_modifiedStartPoint != null) {
+            doUseOcclusionCulling = false;
             
-            Vec3 cameraPos = CHelper.getCurrentCameraPos();
-            ip_modifiedStartPoint = portal.getPortalShape().getModifiedVisibleSectionIterationOrigin(
-                portal, cameraPos
+            RenderSection renderSection = getRenderSection(
+                ip_modifiedStartPoint.x(), ip_modifiedStartPoint.y(), ip_modifiedStartPoint.z()
             );
-            if (ip_modifiedStartPoint != null) {
-                doUseOcclusionCulling = false;
-                
-                RenderSection renderSection = getRenderSection(
-                    ip_modifiedStartPoint.x(), ip_modifiedStartPoint.y(), ip_modifiedStartPoint.z()
-                );
-                if (renderSection != null && !isWithinFrustum(viewport, renderSection)) {
-                    ip_tolerantInitialFrustumTestFail = true;
-                }
+            if (renderSection != null && !isWithinFrustum(viewport, renderSection)) {
+                ip_tolerantInitialFrustumTestFail = true;
             }
         }
         
         return doUseOcclusionCulling;
+    }
+    
+    /**
+     * Seeds the search with the sections of the portal's opening instead of the camera's section.
+     * Each seed is entered like the camera's section (all paths out of it are open), and the
+     * outward-direction mask stays relative to the camera, which every line of sight of the pass
+     * leaves through the opening.
+     */
+    @Inject(method = "init", at = @At("HEAD"), cancellable = true, remap = false)
+    private void ip_seedFromAperture(
+        RenderSectionVisitor visitor, WriteQueue<RenderSection> queue, Viewport viewport,
+        boolean useOcclusionCulling, int frame, CallbackInfo ci
+    ) {
+        long[] seeds = ip_apertureSeeds;
+        if (seeds == null) {
+            return;
+        }
+        ci.cancel();
+        outOfWorldRadius = -1;
+        
+        // mark every seed before enqueuing neighbors, so that no seed is entered through a face
+        ObjectArrayList<RenderSection> entered = ip_enteredSeeds;
+        for (long pos : seeds) {
+            RenderSection section = getRenderSection(SectionPos.x(pos), SectionPos.y(pos), SectionPos.z(pos));
+            if (section == null || section.getLastVisibleFrame() == frame || !isWithinFrustum(viewport, section)) {
+                continue;
+            }
+            section.setLastVisibleFrame(frame);
+            section.setIncomingDirections(GraphDirectionSet.NONE);
+            visitor.visit(section);
+            entered.add(section);
+        }
+        for (RenderSection section : entered) {
+            int outgoing = useOcclusionCulling
+                ? VisibilityEncoding.getConnections(section.getVisibilityData())
+                : GraphDirectionSet.ALL;
+            visitNeighbors(queue, section, outgoing, frame);
+        }
+        entered.clear();
     }
     
     // apply start point modification

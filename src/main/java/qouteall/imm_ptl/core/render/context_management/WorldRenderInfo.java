@@ -5,6 +5,7 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.phys.Vec3;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
 import org.apache.commons.lang3.Validate;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix3f;
@@ -74,6 +75,12 @@ public class WorldRenderInfo {
     
     private static @Nullable List<UUID> renderingDescCache = null;
     
+    // Every world pass (the frame's root pass and each pushed render info) has its own id,
+    // so per-pass state can tell whether it was produced by the pass being rendered.
+    private static long passIdCounter = 0;
+    private static long rootPassId = 0;
+    private static final LongArrayList passIdStack = new LongArrayList();
+    
     // should use the builder
     private WorldRenderInfo(
         ClientLevel world, Vec3 cameraPos,
@@ -102,12 +109,24 @@ public class WorldRenderInfo {
     
     public static void pushRenderInfo(WorldRenderInfo worldRenderInfo) {
         renderInfoStack.push(worldRenderInfo);
+        passIdStack.add(++passIdCounter);
         renderingDescCache = null;
     }
     
     public static void popRenderInfo() {
         renderInfoStack.pop();
+        passIdStack.removeLong(passIdStack.size() - 1);
         renderingDescCache = null;
+    }
+    
+    /** Starts the root pass of a frame. */
+    public static void onFrameStart() {
+        rootPassId = ++passIdCounter;
+    }
+    
+    /** Id of the world pass being rendered; unique within the session. */
+    public static long getCurrentPassId() {
+        return passIdStack.isEmpty() ? rootPassId : passIdStack.getLong(passIdStack.size() - 1);
     }
     
     public static void adjustCameraPos(Camera camera) {

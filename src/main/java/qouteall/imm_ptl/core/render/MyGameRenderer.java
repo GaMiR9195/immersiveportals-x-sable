@@ -31,6 +31,7 @@ import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.IPCGlobal;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.block_manipulation.BlockManipulationClient;
+import qouteall.imm_ptl.core.compat.EntityCullingCompat;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
 import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumRenderingContext;
@@ -254,9 +255,15 @@ public class MyGameRenderer {
         //invoke rendering
         invokeWrapper.accept(() -> {
             client.getProfiler().push("render_portal_content");
-            client.gameRenderer.renderLevel(
-                client.getTimer()
-            );
+            EntityCullingCompat.beginForeignView();
+            try {
+                client.gameRenderer.renderLevel(
+                    client.getTimer()
+                );
+            }
+            finally {
+                EntityCullingCompat.endForeignView();
+            }
             client.getProfiler().pop();
         });
         

@@ -5,8 +5,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Matrix4d;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
+import org.joml.Vector4d;
 import qouteall.imm_ptl.core.IPCGlobal;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.shape.RectangularPortalShape;
@@ -31,6 +33,10 @@ import java.util.List;
  * plane is culled: it is the far end of a portal loop and can never be seen through the surface
  * it lies on.
  *
+ * <p>The pass behind a portal is also bounded in the world: the four planes through the eye and
+ * the edges of its rectangle, carried through the portal, cull sections, entities and block
+ * entities that cannot reach those pixels ({@link #getRegionPlanes}).
+ *
  * <p>Occlusion by blocks is decided by the GPU query; {@link #minVisibleSamples} is its threshold.
  * {@link IPCGlobal#earlyFrustumCullingPortal} switches the screen test off (for comparisons).
  * Render thread only.
@@ -41,12 +47,24 @@ public final class PortalScreenCulling {
 	private static final float EDGE_MARGIN_PIXELS = 2.0f;
 	private static final double ON_PLANE_EPSILON = 1.0e-3;
 	private static final double NEAR_DISTANCE = 0.2;
+	// NDC depths of the two points that span each region plane (about 0.1 and 1 block away)
+	private static final double PLANE_NEAR_NDC_Z = 0.0;
+	private static final double PLANE_FAR_NDC_Z = 0.9;
+	private static final float FULL_SCREEN_EDGE = 0.999f;
 	private static final int MAX_DEPTH = 64;
 	private static final int MAX_POINTS = 10;
 
 	/** NDC rectangles (min x, min y, max x, max y) of the enclosing passes; [0] is the screen. */
 	private static final float[][] REGIONS = new float[MAX_DEPTH + 1][4];
 	private static int regionDepth = 0;
+
+	/** Side planes (a, b, c, d each; world coordinates of that pass) bounding each pass. */
+	private static final double[][] REGION_PLANES = new double[MAX_DEPTH + 1][16];
+	private static final boolean[] HAS_REGION_PLANES = new boolean[MAX_DEPTH + 1];
+
+	/** View-projection and camera of the candidate search at each layer. */
+	private static final Matrix4f[] LAYER_VIEW_PROJECTION = new Matrix4f[MAX_DEPTH + 1];
+	private static final Vec3[] LAYER_CAMERA = new Vec3[MAX_DEPTH + 1];
 
 	/** Accepted portals of the search at each layer, with their rectangles. */
 	private static final List<IdentityHashMap<Portal, float[]>> CANDIDATES = new ArrayList<>();
@@ -78,6 +96,10 @@ public final class PortalScreenCulling {
 
 	static {
 		setFullScreen(REGIONS[0]);
+		for (int i = 0; i <= MAX_DEPTH; i++) {
+			LAYER_VIEW_PROJECTION[i] = new Matrix4f();
+			LAYER_CAMERA[i] = Vec3.ZERO;
+		}
 	}
 
 	private PortalScreenCulling() {}
@@ -89,6 +111,10 @@ public final class PortalScreenCulling {
 		CANDIDATES.get(layer).clear();
 		VIEW_PROJECTION.set(projection).mul(modelView);
 		cameraPos = camera;
+		if (layer <= MAX_DEPTH) {
+			LAYER_VIEW_PROJECTION[layer].set(VIEW_PROJECTION);
+			LAYER_CAMERA[layer] = camera;
+		}
 		RenderTarget target = Minecraft.getInstance().getMainRenderTarget();
 		screenWidth = Math.max(1, target.width);
 		screenHeight = Math.max(1, target.height);
@@ -124,7 +150,12 @@ public final class PortalScreenCulling {
 		if (regionDepth >= MAX_DEPTH) return;
 		float[] region = outerLayer < CANDIDATES.size() ? CANDIDATES.get(outerLayer).get(portal) : null;
 		float[] parent = REGIONS[regionDepth];
-		System.arraycopy(region != null ? region : parent, 0, REGIONS[++regionDepth], 0, 4);
+		float[] own = REGIONS[++regionDepth];
+		System.arraycopy(region != null ? region : parent, 0, own, 0, 4);
+		HAS_REGION_PLANES[regionDepth] = region != null
+			&& outerLayer <= MAX_DEPTH
+			&& !isFullScreen(own)
+			&& computeRegionPlanes(portal, outerLayer, own, REGION_PLANES[regionDepth]);
 	}
 
 	public static void onPopLayer() {
@@ -147,6 +178,66 @@ public final class PortalScreenCulling {
 		return Math.max(1L, (long) threshold);
 	}
 
+	/**
+	 * Side planes of the portal pass being rendered (a, b, c, d per plane; inside where
+	 * {@code a*x + b*y + c*z + d >= 0} in world coordinates), or null when it is not narrowed.
+	 */
+	public static double @Nullable [] getRegionPlanes() {
+		return regionDepth > 0 && HAS_REGION_PLANES[regionDepth] ? REGION_PLANES[regionDepth] : null;
+	}
+
+	private static boolean isFullScreen(float[] rect) {
+		return rect[0] <= -FULL_SCREEN_EDGE && rect[1] <= -FULL_SCREEN_EDGE
+			&& rect[2] >= FULL_SCREEN_EDGE && rect[3] >= FULL_SCREEN_EDGE;
+	}
+
+	/**
+	 * Planes through the outer pass's eye and the edges of {@code rect}, carried through
+	 * {@code portal} into the world of the pass behind it. The pass sees the same pixels, so
+	 * anything outside these planes cannot show up in it.
+	 */
+	private static boolean computeRegionPlanes(Portal portal, int outerLayer, float[] rect, double[] out) {
+		Matrix4d inverse = new Matrix4d(LAYER_VIEW_PROJECTION[outerLayer]).invert();
+		Vec3 eye = LAYER_CAMERA[outerLayer];
+		double[] xs = {rect[0], rect[2], rect[2], rect[0]};
+		double[] ys = {rect[1], rect[1], rect[3], rect[3]};
+		Vec3[] near = new Vec3[4];
+		Vec3[] far = new Vec3[4];
+		for (int i = 0; i < 4; i++) {
+			near[i] = unproject(inverse, xs[i], ys[i], PLANE_NEAR_NDC_Z, eye, portal);
+			far[i] = unproject(inverse, xs[i], ys[i], PLANE_FAR_NDC_Z, eye, portal);
+			if (near[i] == null || far[i] == null) return false;
+		}
+		Vec3 inside = unproject(
+			inverse, (rect[0] + rect[2]) * 0.5, (rect[1] + rect[3]) * 0.5, PLANE_FAR_NDC_Z, eye, portal
+		);
+		if (inside == null) return false;
+		for (int i = 0; i < 4; i++) {
+			Vec3 a = near[i];
+			Vec3 normal = far[i].subtract(a).cross(far[(i + 1) % 4].subtract(a));
+			double length = normal.length();
+			if (length < 1e-12) return false;
+			normal = normal.scale(1.0 / length);
+			double d = -normal.dot(a);
+			if (normal.dot(inside) + d < 0) {
+				normal = normal.reverse();
+				d = -d;
+			}
+			out[i * 4] = normal.x;
+			out[i * 4 + 1] = normal.y;
+			out[i * 4 + 2] = normal.z;
+			out[i * 4 + 3] = d;
+		}
+		return true;
+	}
+
+	/** World point (outer pass) at an NDC position, carried through {@code portal}. */
+	private static @Nullable Vec3 unproject(Matrix4d inverse, double x, double y, double z, Vec3 eye, Portal portal) {
+		Vector4d v = inverse.transform(new Vector4d(x, y, z, 1));
+		if (Math.abs(v.w) < 1e-12) return null;
+		return portal.transformPoint(new Vec3(v.x / v.w + eye.x, v.y / v.w + eye.y, v.z / v.w + eye.z));
+	}
+
 	private static void setFullScreen(float[] region) {
 		region[0] = -1;
 		region[1] = -1;
@@ -156,7 +247,7 @@ public final class PortalScreenCulling {
 
 	// ------------------------------------------------------------------ flat openings
 
-	private static boolean isFlat(Portal portal) {
+	public static boolean isFlat(Portal portal) {
 		return portal.getPortalShape() instanceof RectangularPortalShape
 			|| portal.getPortalShape() instanceof SpecialFlatPortalShape;
 	}
