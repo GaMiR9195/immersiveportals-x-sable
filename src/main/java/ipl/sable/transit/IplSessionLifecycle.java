@@ -141,14 +141,24 @@ final class IplSessionLifecycle {
             return false;
         }
 
-        boolean front(IplTransitPath path) { return IplTransitSettlement.inFront(envelope, aperture(path)); }
+        // Side tests are evidence only over the opening (finite aperture, never its infinite plane):
+        // material wholly beside the frame reached its side around the rim and keeps its labels, so a
+        // session is never closed or taken over just because the body crossed the plane beside it.
 
-        boolean behind(IplTransitPath path) { return IplTransitSettlement.behind(envelope, aperture(path)); }
+        boolean front(IplTransitPath path) {
+            IplPieceMap.Aperture a = aperture(path);
+            return IplTransitSettlement.inFront(envelope, a) && IplTransitSettlement.over(envelope, a, SLAB);
+        }
+
+        boolean behind(IplTransitPath path) {
+            IplPieceMap.Aperture a = aperture(path);
+            return IplTransitSettlement.behind(envelope, a) && IplTransitSettlement.over(envelope, a, SLAB);
+        }
 
         /** The whole body went through the first portal of the path. */
         boolean throughRoot(IplTransitPath path) {
-            return IplTransitSettlement.behind(envelope,
-                IplPieceMap.Aperture.of(path.portals().getFirst()).toPlot(pose));
+            IplPieceMap.Aperture a = IplPieceMap.Aperture.of(path.portals().getFirst()).toPlot(pose);
+            return IplTransitSettlement.behind(envelope, a) && IplTransitSettlement.over(envelope, a, SLAB);
         }
 
         boolean intersects(IplTransitPath path) {
@@ -199,18 +209,32 @@ final class IplSessionLifecycle {
             return frames.size();
         }
 
-        /** Geometry alone proves a direction: wholly in front returns, wholly behind passes. */
+        /**
+         * Geometry over the opening proves a direction: wholly in front returns, wholly behind passes.
+         * A body on a joint (any linked group) is held to the last: geometry only repairs a minority
+         * that disagrees with its labels (stale slivers), never moves the bulk of the body, because
+         * whatever hangs on the joint would be thrown into the blocks on the other side.
+         */
         void repairDirections() {
+            boolean linked = linked();
             for (int i = paths.size() - 1; i >= 0; i--) {
                 IplTransitPath path = paths.get(i);
                 int node = node(path);
-                if (node > 0 && front(path)) material.move(node, body.parent[node]);
+                if (node <= 0 || !front(path)) continue;
+                if (linked && material.counts[node] > material.counts[body.parent[node]]) continue;
+                material.move(node, body.parent[node]);
             }
             for (IplTransitPath path : paths) {
                 int node = node(path);
                 if (node <= 0 || subtreeMaterial(path) == 0 || !behind(path) || hasLoadedSibling(path)) continue;
+                if (linked && material.counts[body.parent[node]] > subtreeMaterial(path)) continue;
                 material.move(body.parent[node], node);
             }
+        }
+
+        /** The body is linked to others (joints, springs, ropes, connectors). */
+        boolean linked() {
+            return IplLinks.of(ship).members().size() > 1;
         }
 
         boolean hasLoadedSibling(IplTransitPath path) {

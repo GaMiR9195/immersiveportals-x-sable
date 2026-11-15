@@ -8,6 +8,28 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ### Changed
 
+- **Routed models are tethered to their holder** (`IplRouteSolver`, `IplRouteTopology`). The frame of
+  every part is walked each frame from the block that holds the model along the model itself: a step
+  between two touching primitives enters a frame only through the finite area of an opening (back
+  only through its entry), and each part takes its shortest connection to the holder. Replaces the
+  per-primitive labels kept between frames: a piece of a rope (Veil, Flywheel, any block-entity
+  model) that went into a portal is no longer left hanging at the entrance or beyond the exit when
+  the sub-level pulls it back or carries it away, and a part sticking out beside the rim of a holder
+  that went through follows it around the exit instead of staying behind. Touch graphs are built
+  once per recording layout (near-linear grid + Boruvka bridging of separate pieces) and rebuilt
+  when the layout changes or the model is torn apart; a model whose geometry stays on the holder's
+  side of every face is not walked at all.
+- **Routing cuts allocate nothing per primitive**: cut polygons live in a shared index arena, so
+  many models standing in a portal no longer churn the allocator every frame.
+- **Sessions of sub-levels are held to the last** (`IplSessionLifecycle`, `IplTransitSettlement`).
+  Side-of-plane evidence (direction repair, the "wholly through" vote of a settlement) counts only
+  over the opening, never over the infinite plane: a body that crossed the plane beside the frame
+  keeps its labels and its sessions. A body on a joint (any linked group: springs, ropes, bearings,
+  connectors) is never moved wholesale by geometry; only a disagreeing minority is repaired, so a
+  joint that slips out for a moment cannot throw what hangs on it into the blocks.
+- **Commands live under `/ipxsable`.** `/iplsable_portal anchor|unanchor|list` is now
+  `/ipxsable link_portal_to_nearest_sublevel true|false|list`.
+
 - **One clip system for every renderer** (`IplClipPlanes`, `IplClipShaderInjector`). The portal
   clip and the aperture cuts of Sable pieces are evaluated in clip space from each shader's own
   `gl_Position` (`gl_ClipDistance[i] = dot(gl_Position, ipl_ClipPlanes[i])`). The planes come

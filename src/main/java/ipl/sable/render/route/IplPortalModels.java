@@ -93,7 +93,7 @@ public final class IplPortalModels {
 	private static final ArrayDeque<Pass> PASSES = new ArrayDeque<>();
 	private static final Map<BlockEntity, Reach> REACH = new IdentityHashMap<>();
 	private static final Map<BlockEntity, IplPortalModel> MODELS = new IdentityHashMap<>();
-	/** Route sessions: labels each routed model keeps between frames ({@link IplRouteMemory}). */
+	/** What each routed model keeps between frames: recorder and touch graph ({@link IplRouteMemory}). */
 	private static final Map<BlockEntity, IplRouteMemory> MEMORY = new WeakHashMap<>();
 	/** Models whose renderer failed to record: drawn as they are from then on. */
 	private static final Set<BlockEntity> UNROUTABLE = Collections.newSetFromMap(new WeakHashMap<>());
@@ -217,7 +217,7 @@ public final class IplPortalModels {
 	}
 
 	private static Reach reachOf(BlockEntity be, IplModelAnchor anchor) {
-		// A held session: part of the model went through and stays routed wherever it is now.
+		// Part of the model is drawn beyond an opening: it stays routed wherever it is now.
 		IplRouteMemory memory = MEMORY.get(be);
 		if (memory != null && memory.holding && memory.level == anchor.level()) return Reach.ROUTED;
 		IplModelAnchor.ModelBounds bounds = anchor.modelBounds(be);

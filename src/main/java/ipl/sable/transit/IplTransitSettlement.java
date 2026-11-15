@@ -28,6 +28,22 @@ public final class IplTransitSettlement {
     public static boolean inFront(Bounds b, IplPieceMap.Aperture a) { return b != null && b.sideMin(a) > CLEARANCE; }
     public static boolean behind(Bounds b, IplPieceMap.Aperture a) { return b != null && b.sideMax(a) < -CLEARANCE; }
 
+    /**
+     * The envelope's footprint on the aperture plane lies within the opening (plus {@code margin}):
+     * material there that is wholly on one side of the plane has the opening between it and the
+     * other side, so the side is evidence of the opening. Beside the frame it is not — material
+     * reaches there around the rim, and a plane alone (an infinite one) would move it through a
+     * portal it never passed.
+     */
+    public static boolean over(Bounds b, IplPieceMap.Aperture a, double margin) {
+        if (b == null) return false;
+        double cx = (b.minX + b.maxX) * 0.5 - a.ox(), cy = (b.minY + b.maxY) * 0.5 - a.oy(), cz = (b.minZ + b.maxZ) * 0.5 - a.oz();
+        double u = cx * a.wx() + cy * a.wy() + cz * a.wz();
+        double v = cx * a.hx() + cy * a.hy() + cz * a.hz();
+        return Math.abs(u) + b.support(a.wx(), a.wy(), a.wz()) <= a.halfW() + margin
+                && Math.abs(v) + b.support(a.hx(), a.hy(), a.hz()) <= a.halfH() + margin;
+    }
+
     /** Exact SAT for an AABB and a finite oriented rectangle (a zero-thickness OBB). */
     public static boolean intersects(Bounds b, IplPieceMap.Aperture a) {
         if (b == null) return false;
