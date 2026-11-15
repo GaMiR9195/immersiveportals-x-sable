@@ -1,5 +1,6 @@
 package ipl.sable.render.route;
 
+import ipl.sable.transit.IplApertureGrace;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
@@ -54,8 +55,9 @@ public final class IplOpening {
 		this.axisW = vector(portal.getAxisW()).normalize();
 		this.axisH = vector(portal.getAxisH()).normalize();
 		this.normal = new Vector3d(axisW).cross(axisH).normalize();
-		this.halfW = portal.getWidth() * 0.5;
-		this.halfH = portal.getHeight() * 0.5;
+		// The same grown opening as the server's pieces and sessions (IplApertureGrace).
+		this.halfW = portal.getWidth() * 0.5 + IplApertureGrace.LATERAL;
+		this.halfH = portal.getHeight() * 0.5 + IplApertureGrace.LATERAL;
 		this.destinationOrigin = portal.getDestPos();
 		this.transform = portal.getFullSpaceTransformation();
 		this.rectangular = portal.getPortalShape() instanceof RectangularPortalShape;
@@ -98,8 +100,25 @@ public final class IplOpening {
 	 * Only called for non-rectangular shapes after the rectangle test.
 	 */
 	boolean shapeContains(Vector3d point) {
-		Vec3 from = new Vec3(point.x + normal.x * SHAPE_PROBE, point.y + normal.y * SHAPE_PROBE, point.z + normal.z * SHAPE_PROBE);
-		Vec3 to = new Vec3(point.x - normal.x * SHAPE_PROBE, point.y - normal.y * SHAPE_PROBE, point.z - normal.z * SHAPE_PROBE);
+		if (shapeHit(point.x, point.y, point.z)) return true;
+		// The grace of the opening (IplApertureGrace) for any shape: a point within it of the shape
+		// passes. Probed toward the centre, where every shape grows from.
+		double grace = IplApertureGrace.LATERAL;
+		if (grace <= 0.0) return false;
+		double dx = origin.x - point.x, dy = origin.y - point.y, dz = origin.z - point.z;
+		double along = dx * normal.x + dy * normal.y + dz * normal.z;
+		dx -= normal.x * along;
+		dy -= normal.y * along;
+		dz -= normal.z * along;
+		double len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+		if (len <= grace) return true;
+		double k = grace / len;
+		return shapeHit(point.x + dx * k, point.y + dy * k, point.z + dz * k);
+	}
+
+	private boolean shapeHit(double x, double y, double z) {
+		Vec3 from = new Vec3(x + normal.x * SHAPE_PROBE, y + normal.y * SHAPE_PROBE, z + normal.z * SHAPE_PROBE);
+		Vec3 to = new Vec3(x - normal.x * SHAPE_PROBE, y - normal.y * SHAPE_PROBE, z - normal.z * SHAPE_PROBE);
 		return portal.getPortalShape().raytracePortalShape(portal.getThisSideState(), from, to, SHAPE_PROBE) != null;
 	}
 

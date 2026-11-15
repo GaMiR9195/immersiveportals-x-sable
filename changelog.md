@@ -29,6 +29,26 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
   joint that slips out for a moment cannot throw what hangs on it into the blocks.
 - **Commands live under `/ipxsable`.** `/iplsable_portal anchor|unanchor|list` is now
   `/ipxsable link_portal_to_nearest_sublevel true|false|list`.
+- **Every opening is a little larger than its frame** (`IplApertureGrace`,
+  `-Dipl.sable.apertureGrace=<blocks>`, default 0.125, max 0.5, same value on client and server).
+  Pieces, sessions, joint/rope routing and model routing all test the same grown rectangle (any
+  portal shape: a point within the grace of the shape passes), so material that Rapier rests a hair
+  inside the frame, or that slides along the rim, passes cleanly instead of catching on the edge.
+  Immersive Portals' own rendering and teleportation are unchanged.
+- **A routed model is released by what it really drew** (`IplPortalModels`). It stays routed while
+  last frame's recorded geometry is within 2 blocks (plus its motion per tick) of an opening, not
+  only while its renderer's reported bounds are near: reported bounds are often the block, cached
+  or refreshed every few ticks. Before, a model crossing an opening could drop out of routing for
+  single frames (hundreds of ROUTED -> NEAR/NONE flips per second in a 20-spring test) and was then
+  drawn whole on its holder's side: springs and ropes whose holder had passed lost their part on the
+  entry side.
+- **Routing bookkeeping**: the anchor of a block entity is computed once per frame, so its reach and
+  its recording always agree; a model that recorded nothing no longer keeps a stale "held beyond an
+  opening" flag (it stayed routed and recorded forever); a renderer that throws while recorded is
+  drawn as it is that frame instead of not at all, and routing is retried after 600 frames instead of
+  never. Diagnostics report culled writes.
+- **Body scan near openings is per block entity**: only block entities of a body within 32 blocks of
+  an opening ask their renderer for bounds each frame, not every block entity of every body near one.
 
 - **One clip system for every renderer** (`IplClipPlanes`, `IplClipShaderInjector`). The portal
   clip and the aperture cuts of Sable pieces are evaluated in clip space from each shader's own

@@ -24,7 +24,7 @@ public final class IplPortalModelDiagnostics {
 	private static final Map<BlockEntity, String> LAST_ROUTE = new WeakHashMap<>();
 	private static long windowStart = System.nanoTime();
 	private static int frames, events;
-	private static int recorded, cut, direct, written, handedOut, handedBack;
+	private static int recorded, cut, direct, written, culled, handedOut, handedBack;
 	private static long recordNanos, solveNanos, writeNanos, primitives, parts;
 
 	private IplPortalModelDiagnostics() {}
@@ -45,6 +45,11 @@ public final class IplPortalModelDiagnostics {
 		solveNanos += System.nanoTime() - start;
 		primitives += primitiveCount;
 		parts += partCount;
+	}
+
+	/** A routed model's parts in a pass's level were outside the pass's frustum. */
+	static void culled() {
+		if (ENABLED) culled++;
 	}
 
 	static void direct() {
@@ -84,11 +89,11 @@ public final class IplPortalModelDiagnostics {
 		frames++;
 		long now = System.nanoTime();
 		if (now - windowStart < 1_000_000_000L) return;
-		LOG.info("portal models/s: frames={} recorded={} ({} ms) cut={} ({} ms, {} primitives -> {} parts) direct={} writes={} ({} ms) flywheel out={} back={}",
+		LOG.info("portal models/s: frames={} recorded={} ({} ms) cut={} ({} ms, {} primitives -> {} parts) direct={} writes={} ({} ms) culled={} flywheel out={} back={}",
 			frames, recorded, ms(recordNanos), cut, ms(solveNanos), primitives, parts, direct, written, ms(writeNanos),
-			handedOut, handedBack);
+			culled, handedOut, handedBack);
 		windowStart = now;
-		frames = events = recorded = cut = direct = written = handedOut = handedBack = 0;
+		frames = events = recorded = cut = direct = written = culled = handedOut = handedBack = 0;
 		recordNanos = solveNanos = writeNanos = primitives = parts = 0;
 	}
 

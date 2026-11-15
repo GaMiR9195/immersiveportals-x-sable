@@ -375,14 +375,15 @@ public final class IplPieceMap {
                            double wx, double wy, double wz, double halfW,
                            double hx, double hy, double hz, double halfH) {
 
-        /** The portal in its own level's world frame. */
+        /** The portal in its own level's world frame, grown by {@link IplApertureGrace#LATERAL}. */
         public static Aperture of(Portal portal) {
             Vec3 o = portal.getOriginPos();
             Vec3 n = portal.getNormal();
             Vec3 w = portal.getAxisW();
             Vec3 h = portal.getAxisH();
-            return new Aperture(o.x, o.y, o.z, n.x, n.y, n.z, w.x, w.y, w.z, portal.getWidth() * 0.5,
-                h.x, h.y, h.z, portal.getHeight() * 0.5);
+            double grace = IplApertureGrace.LATERAL;
+            return new Aperture(o.x, o.y, o.z, n.x, n.y, n.z, w.x, w.y, w.z, portal.getWidth() * 0.5 + grace,
+                h.x, h.y, h.z, portal.getHeight() * 0.5 + grace);
         }
 
         /** This world-frame rectangle in the plot frame of a body at {@code pose}. */

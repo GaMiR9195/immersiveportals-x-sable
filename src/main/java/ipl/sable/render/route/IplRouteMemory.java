@@ -2,6 +2,7 @@ package ipl.sable.render.route;
 
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -26,6 +27,8 @@ final class IplRouteMemory {
 	long frame = Long.MIN_VALUE;
 	/** Some part is in another frame than the holder's. */
 	boolean holding;
+	/** Route-space box of what the model drew in its last recording; null when it drew nothing. */
+	@Nullable AABB geometry;
 
 	// Layout of the last recording (render types and units per recording).
 	int recordings;
@@ -40,6 +43,7 @@ final class IplRouteMemory {
 	void reset() {
 		recordings = 0;
 		holding = false;
+		geometry = null;
 		topology.invalidate();
 	}
 

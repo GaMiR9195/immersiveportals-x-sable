@@ -67,6 +67,16 @@ public final class IplPortalModels {
 	 * its block; its recorded geometry then decides exactly.
 	 */
 	private static final double UNBOUNDED_REACH = 32.0;
+	/**
+	 * A routed model stays routed while the geometry it actually drew last frame is this close to
+	 * an opening, plus its motion per tick. Its renderer's reported bounds alone may be stale,
+	 * cached or too small (many mods report the block, or a box refreshed every few ticks); a model
+	 * whose real geometry still reaches the opening must never fall back to a whole draw in one
+	 * frame, which puts every part on the holder's side of the portal for that frame.
+	 */
+	private static final double RELEASE_MARGIN = 2.0;
+	/** Frames a model whose renderer failed to record is drawn as it is before routing is retried. */
+	private static final long RETRY_FRAMES = 600L;
 
 	/** How close a model is to the openings of its frame. */
 	private enum Reach { NONE, NEAR, ROUTED }
@@ -95,8 +105,11 @@ public final class IplPortalModels {
 	private static final Map<BlockEntity, IplPortalModel> MODELS = new IdentityHashMap<>();
 	/** What each routed model keeps between frames: recorder and touch graph ({@link IplRouteMemory}). */
 	private static final Map<BlockEntity, IplRouteMemory> MEMORY = new WeakHashMap<>();
-	/** Models whose renderer failed to record: drawn as they are from then on. */
-	private static final Set<BlockEntity> UNROUTABLE = Collections.newSetFromMap(new WeakHashMap<>());
+	/** Models whose renderer failed to record: drawn as they are until the given frame. */
+	private static final Map<BlockEntity, Long> UNROUTABLE = new WeakHashMap<>();
+	/** The anchor of each block entity asked about this frame (one per frame: reach and recording agree). */
+	private static final Map<BlockEntity, Object> ANCHORS = new IdentityHashMap<>();
+	private static final Object NO_ANCHOR = new Object();
 	private static long frame = Long.MIN_VALUE;
 
 	private IplPortalModels() {}
@@ -175,7 +188,10 @@ public final class IplPortalModels {
 		IplPortalModel model = model(be);
 		if (!model.drawsIn(pass.level)) return;
 		AABB bounds = model.boundsIn(pass.level);
-		if (bounds != null && !IplSubLevelRenderVisibility.inPassFrustum(bounds)) return;
+		if (bounds != null && !IplSubLevelRenderVisibility.inPassFrustum(bounds)) {
+			IplPortalModelDiagnostics.culled();
+			return;
+		}
 		long start = IplPortalModelDiagnostics.start();
 		model.emit(pass.level, buffers, pass.camera);
 		IplPortalModelDiagnostics.written(start);
@@ -197,7 +213,7 @@ public final class IplPortalModels {
 		sync();
 		Reach known = REACH.get(be);
 		if (known != null) return known;
-		Reach reach = UNROUTABLE.contains(be) ? Reach.NONE : computeReach(be);
+		Reach reach = unroutable(be) ? Reach.NONE : computeReach(be);
 		REACH.put(be, reach);
 		return reach;
 	}
@@ -206,7 +222,7 @@ public final class IplPortalModels {
 		Level level = be.getLevel();
 		if (!(level instanceof ClientLevel)) return Reach.NONE;
 		if (IplOpenings.of(level).isEmpty() && IplStraddleSessionStore.isIdle()) return Reach.NONE;
-		IplModelAnchor anchor = IplModelAnchor.of(be);
+		IplModelAnchor anchor = anchor(be);
 		// A hidden transit successor draws nothing (its ghost does).
 		if (anchor == null || anchor.owner() != null && IplParentDimSync.isSuppressedSuccessor(anchor.owner())) {
 			return Reach.NONE;
@@ -219,13 +235,18 @@ public final class IplPortalModels {
 	private static Reach reachOf(BlockEntity be, IplModelAnchor anchor) {
 		// Part of the model is drawn beyond an opening: it stays routed wherever it is now.
 		IplRouteMemory memory = MEMORY.get(be);
-		if (memory != null && memory.holding && memory.level == anchor.level()) return Reach.ROUTED;
+		boolean known = memory != null && memory.level == anchor.level();
+		if (known && memory.holding) return Reach.ROUTED;
 		IplModelAnchor.ModelBounds bounds = anchor.modelBounds(be);
+		// What it really drew last frame (route space of the same level): release hysteresis.
+		AABB drawn = known ? memory.geometry : null;
+		double release = RELEASE_MARGIN + (bounds == null ? 0.0 : bounds.lead());
 		Vector3d p = anchor.point();
 		Reach reach = Reach.NONE;
 		for (IplRouteFrame f = anchor.frame(); f != null; f = f.parent) {
 			for (IplOpening opening : IplOpenings.of(f.level)) {
 				IplRouteRect rect = f.rectOf(opening);
+				if (drawn != null && rect.near(drawn, release)) return Reach.ROUTED;
 				if (bounds == null) {
 					if (rect.near(new AABB(p.x, p.y, p.z, p.x, p.y, p.z), UNBOUNDED_REACH)) return Reach.ROUTED;
 					continue;
@@ -258,7 +279,7 @@ public final class IplPortalModels {
 	}
 
 	private static IplPortalModel build(BlockEntity be) {
-		IplModelAnchor anchor = IplModelAnchor.of(be);
+		IplModelAnchor anchor = anchor(be);
 		if (anchor == null) return IplRoutedModel.EMPTY;
 		boolean drawFlywheelParts = Flywheel.LOADED && !IplFlywheelFallback.flywheelDraws(be);
 		float partialTick = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
@@ -272,13 +293,35 @@ public final class IplPortalModels {
 		IplModelRecorder recorder = IplModelCapture.record(be, anchor, partialTick, drawFlywheelParts, memory.recorder);
 		IplPortalModelDiagnostics.recorded(start);
 		if (recorder == null) {
-			UNROUTABLE.add(be);
+			// Its draw is claimed already: draw it as it is this frame rather than not at all.
+			UNROUTABLE.put(be, frame + RETRY_FRAMES);
 			MEMORY.remove(be);
-			return IplRoutedModel.EMPTY;
+			return new IplDirectModel(be, anchor, partialTick, drawFlywheelParts);
 		}
 		IplRoutedModel routed = IplRoutedModel.route(recorder, anchor, memory);
 		if (IplPortalModelDiagnostics.ENABLED) IplPortalModelDiagnostics.route(be, routed.summary());
 		return routed;
+	}
+
+	/** The anchor of {@code be} this frame (null: removed, not in a client level). */
+	@Nullable
+	private static IplModelAnchor anchor(BlockEntity be) {
+		sync();
+		Object known = ANCHORS.get(be);
+		if (known == null) {
+			IplModelAnchor made = IplModelAnchor.of(be);
+			ANCHORS.put(be, made == null ? NO_ANCHOR : made);
+			return made;
+		}
+		return known == NO_ANCHOR ? null : (IplModelAnchor) known;
+	}
+
+	private static boolean unroutable(BlockEntity be) {
+		Long until = UNROUTABLE.get(be);
+		if (until == null) return false;
+		if (frame < until) return true;
+		UNROUTABLE.remove(be);
+		return false;
 	}
 
 	private static void sync() {
@@ -287,6 +330,7 @@ public final class IplPortalModels {
 		frame = current;
 		REACH.clear();
 		MODELS.clear();
+		ANCHORS.clear();
 		// A session that holds nothing ends once its model is no longer routed.
 		if (!MEMORY.isEmpty()) {
 			MEMORY.entrySet().removeIf(e -> e.getKey().isRemoved() || !e.getValue().holding && e.getValue().frame < current - 1);

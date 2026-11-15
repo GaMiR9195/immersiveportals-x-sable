@@ -48,9 +48,15 @@ final class IplRoutedModel implements IplPortalModel {
 
 	static IplRoutedModel route(IplModelRecorder recorder, IplModelAnchor anchor, IplRouteMemory memory) {
 		AABB box = recorder.bounds();
-		if (box == null) return EMPTY;
+		if (box == null) {
+			// Nothing drawn: nothing is held beyond an opening (a stale flag would keep it routed forever).
+			memory.holding = false;
+			memory.geometry = null;
+			return EMPTY;
+		}
 		long start = IplPortalModelDiagnostics.start();
 		IplRouteSolver.Result result = IplRouteSolver.solve(recorder, anchor, memory, box);
+		memory.geometry = box;
 		if (IplPortalModelDiagnostics.ENABLED) {
 			int primitives = 0;
 			for (IplModelRecorder.Recording r : recorder.recordings()) primitives += r.units();
