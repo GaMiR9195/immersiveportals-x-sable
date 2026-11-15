@@ -17,12 +17,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * Block reads of a chunk that belongs to ANOTHER level (a bridged plot chunk, see
  * {@link SubLevelContainerMixin}) use that chunk's own section layout.
  *
- * <p>{@code LevelAccelerator.getBlockState(LevelChunk, BlockPos)} считает индекс
- * секции и границы высоты по СВОЕМУ уровню. Коллизия сущностей строит акселератор по
- * уровню сущности, а проекция корабля из другого измерения читает чанк плота уровня-
- * владельца: у Overworld minSection = -4, у Nether/End = 0 — читалась чужая секция (воздух),
- * поэтому на проекции в другом измерении нельзя было стоять, хотя рейкасты (они идут через
- * {@code LevelChunk.getBlockState}) и рендер работали.
+ * <p>{@code LevelAccelerator.getBlockState(LevelChunk, BlockPos)} computes the section index
+ * and height bounds from its OWN level. Entity collision builds the accelerator for the entity's
+ * level, while a ship projected from another dimension reads the plot chunk of its owner level
+ * (Overworld minSection = -4, Nether/End = 0): without this the wrong section (air) would be
+ * read and the projection could not be stood on, although raycasts
+ * ({@code LevelChunk.getBlockState}) and rendering see it.
  */
 @Pseudo
 @Mixin(value = LevelAccelerator.class, remap = false)

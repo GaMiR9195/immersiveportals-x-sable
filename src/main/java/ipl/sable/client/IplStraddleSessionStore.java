@@ -512,11 +512,11 @@ public final class IplStraddleSessionStore {
     /**
      * A payload of the body's current frame stamped with the server tick it belongs to
      * ({@code IplStraddleSessionSync.TICK_KEY}). Sessions and labels describe the body at that
-     * tick, but the client draws the body {@code getInterpolationDelay()} ticks in the past:
-     * applied on arrival, a session that ended (a quick dip into a portal) removed the far
-     * half of blocks that were still drawn in the doorway, and labels moved blocks to the
-     * other side before they got there. They now wait until the shared interpolation clock
-     * shows that tick. Payloads of a frame the client has not entered yet keep the frame
+     * tick, but the client draws the body {@code getInterpolationDelay()} ticks in the past.
+     * Applied on arrival, an ended session (a quick dip into a portal) would remove the far half
+     * of blocks still drawn in the doorway, and labels would move blocks to the other side
+     * before they got there, so payloads wait until the shared interpolation clock shows that
+     * tick. Payloads of a frame the client has not entered yet keep the frame
      * deferral (already pose-synced by {@link #enterFrame}).
      */
     private record Timed(UUID ship, CompoundTag payload, String frame, boolean labels, int tick) {}

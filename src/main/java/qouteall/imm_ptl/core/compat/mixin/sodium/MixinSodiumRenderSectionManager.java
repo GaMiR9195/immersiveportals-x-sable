@@ -84,19 +84,15 @@ public class MixinSodiumRenderSectionManager implements IESodiumRenderSectionMan
     }
     
     /**
-     * The section visibility information will be wrong if rendered a portal.
-     * Just cancel this optimization.
-     * isSectionVisible() is currently only used for culling entities.
+     * Section visibility is wrong after a portal was rendered, so this optimization (only used to
+     * cull entities) is skipped then.
      *
-     * <p>IPL: одного счётчика {@code portalsRenderedThisFrame} мало. Видимость секций
-     * ({@code lastVisibleFrame == lastUpdatedFrame}) у менеджера одна на все проходы, а списки
-     * отрисовки IP подменяет по контекстам. Проход портала того же измерения всегда
-     * перестраивает граф ({@code scheduleTerrainUpdate} при входе), а корневой проход
-     * следующего кадра — только если камера сдвинулась. Пока игрок стоял, корневой проход
-     * отсекал сущностей по графу, построенному для камеры ПОРТАЛА, — существа возле портала
-     * (особенно за его бесконечной плоскостью) исчезали и появлялись при каждом движении
-     * камеры (и при закрытии сессии саб-уровня, которое перестраивает секции). Теперь если
-     * граф построен не для текущего контекста, отсечение сущностей просто не делаем.
+     * <p>The visibility ({@code lastVisibleFrame == lastUpdatedFrame}) is shared by all passes,
+     * while IP swaps the render lists per context. A same-dimension portal pass always rebuilds
+     * the graph ({@code scheduleTerrainUpdate} on entry); the root pass of the next frame only
+     * when the camera moved. A graph built for another context (a portal's camera) would make
+     * entities near a portal blink, so entity culling is skipped unless the graph belongs to
+     * the current context.
      */
     @Inject(method = "isSectionVisible", at = @At("HEAD"), cancellable = true)
     private void onIsSectionVisible(int x, int y, int z, CallbackInfoReturnable<Boolean> cir) {

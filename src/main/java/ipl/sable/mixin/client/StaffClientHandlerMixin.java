@@ -63,9 +63,8 @@ public abstract class StaffClientHandlerMixin {
         double projectionVisible = IplStraddleStaffPick.visibleRayLength(player, projection, tickDelta);
         // The vanilla pick ignores portals: it also finds the wall, ground or frame BEHIND a
         // doorway, which the player cannot see (the portal shows the other side there). Such a
-        // hit is no candidate at all -- it used to beat every body seen through the portal
-        // whenever anything stood behind the portal plane within reach, so grabbing and locking
-        // through portals mostly failed. Same plane test as the through-portal walk.
+        // hit is no candidate at all, otherwise it would beat every body seen through the portal.
+        // Same plane test as the through-portal walk.
         double portalAhead = IplStraddleStaffPick.firstPortalDistance(player, range, tickDelta);
         boolean localHidden = IplStraddleStaffPick.isBehindPortal(localVisible, portalAhead);
         if (localHidden) localVisible = Double.MAX_VALUE;

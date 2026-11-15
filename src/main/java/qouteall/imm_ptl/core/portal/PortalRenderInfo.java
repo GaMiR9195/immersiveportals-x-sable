@@ -13,7 +13,9 @@ import org.slf4j.Logger;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.portal.animation.ClientPortalAnimationManagement;
 import qouteall.imm_ptl.core.render.GlQueryObject;
+import qouteall.imm_ptl.core.render.PortalScreenCulling;
 import qouteall.imm_ptl.core.render.QueryManager;
+import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 import qouteall.q_misc_util.Helper;
@@ -215,67 +217,49 @@ public class PortalRenderInfo implements AutoCloseable {
     
     /**
      * Renders the opening's query and decides whether the portal's world is rendered: visible
-     * when at least {@link qouteall.imm_ptl.core.render.PortalScreenCulling#minVisibleSamples}
-     * samples passed, so gaps of a few pixels between blocks do not trigger a whole world pass.
+     * when at least {@link PortalScreenCulling#minVisibleSamples} samples passed, so a gap of a
+     * few pixels between blocks does not trigger a whole world pass.
+     *
+     * <p>With offset queries the result of the previous frame decides, unless the portal was
+     * fully hidden then and prediction is unreliable: then this frame's result is waited for.
      */
     public static boolean renderAndDecideVisibility(Portal portal, Runnable queryRendering) {
-        ProfilerFiller profiler = Minecraft.getInstance().getProfiler();
-        long minSamples = qouteall.imm_ptl.core.render.PortalScreenCulling.minVisibleSamples(
-            portal, qouteall.imm_ptl.core.render.context_management.PortalRendering.getPortalLayer()
-        );
+        if (!IPGlobal.offsetOcclusionQuery) {
+            return QueryManager.renderAndDecideVisible(portal, queryRendering);
+        }
         
-        boolean decision;
-        if (IPGlobal.offsetOcclusionQuery) {
-            PortalRenderInfo renderInfo = get(portal);
-            
-            List<UUID> renderingDescription = WorldRenderInfo.getRenderingDescription();
-            
-            Visibility visibility = renderInfo.getVisibility(renderingDescription);
-            
-            GlQueryObject lastFrameQuery = visibility.lastFrameQuery;
-            GlQueryObject thisFrameQuery = visibility.acquireThisFrameQuery();
-            
-            thisFrameQuery.performQuerySampleNumPassed(queryRendering);
-            
-            boolean noPredict =
-                renderInfo.isFrequentlyMispredicted() ||
-                    QueryManager.queryStallCounter <= 3;
-            
-            if (lastFrameQuery != null) {
-                long lastFrameSamples = lastFrameQuery.fetchSampleCount();
-                boolean lastFrameVisible = lastFrameSamples >= minSamples;
-                
-                if (!lastFrameVisible && thisFrameQuery.isResultAvailable()) {
-                    // already there: no wait
-                    decision = thisFrameQuery.fetchSampleCount() >= minSamples;
-                }
-                else if (!lastFrameVisible && lastFrameSamples > 0) {
-                    // seen through a gap last frame: stays culled until it opens up, without
-                    // stalling the pipeline every frame for it
-                    decision = false;
-                }
-                else if (!lastFrameVisible && noPredict) {
-                    profiler.push("fetch_this_frame");
-                    decision = thisFrameQuery.fetchSampleCount() >= minSamples;
-                    profiler.pop();
-                    QueryManager.queryStallCounter++;
-                }
-                else {
-                    decision = lastFrameVisible;
-                    renderInfo.updatePredictionStatus(visibility, decision);
-                }
-            }
-            else {
-                profiler.push("fetch_this_frame");
-                decision = thisFrameQuery.fetchSampleCount() >= minSamples;
-                profiler.pop();
-                QueryManager.queryStallCounter++;
-            }
+        long minSamples = PortalScreenCulling.minVisibleSamples(portal, PortalRendering.getPortalLayer());
+        PortalRenderInfo renderInfo = get(portal);
+        Visibility visibility = renderInfo.getVisibility(WorldRenderInfo.getRenderingDescription());
+        
+        GlQueryObject lastFrameQuery = visibility.lastFrameQuery;
+        GlQueryObject thisFrameQuery = visibility.acquireThisFrameQuery();
+        thisFrameQuery.performQuerySampleNumPassed(queryRendering);
+        
+        if (lastFrameQuery == null) {
+            return fetchNow(thisFrameQuery, minSamples);
         }
-        else {
-            decision = QueryManager.renderAndDecideVisible(portal, queryRendering);
+        
+        long lastFrameSamples = lastFrameQuery.fetchSampleCount();
+        boolean noPredict = renderInfo.isFrequentlyMispredicted() || QueryManager.queryStallCounter <= 3;
+        if (lastFrameSamples == 0 && noPredict) {
+            return fetchNow(thisFrameQuery, minSamples);
         }
+        
+        // A portal seen through a gap last frame stays culled until it opens up, without
+        // stalling the pipeline every frame for it.
+        boolean decision = lastFrameSamples >= minSamples;
+        renderInfo.updatePredictionStatus(visibility, decision);
         return decision;
+    }
+    
+    private static boolean fetchNow(GlQueryObject query, long minSamples) {
+        ProfilerFiller profiler = Minecraft.getInstance().getProfiler();
+        profiler.push("fetch_this_frame");
+        boolean visible = query.fetchSampleCount() >= minSamples;
+        profiler.pop();
+        QueryManager.queryStallCounter++;
+        return visible;
     }
     
     private static final Cleaner CLEANER = Cleaner.create();

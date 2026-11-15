@@ -1,10 +1,12 @@
 package qouteall.imm_ptl.core.block_manipulation;
 
 import com.mojang.logging.LogUtils;
+import ipl.sable.SableBridge;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
 import net.minecraft.resources.ResourceKey;
@@ -14,6 +16,7 @@ import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.util.Tuple;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ClipContext;
@@ -36,6 +39,7 @@ import qouteall.imm_ptl.core.portal.PortalUtils;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 
 import java.util.List;
+import java.util.UUID;
 
 @SuppressWarnings("resource")
 public class BlockManipulationServer {
@@ -100,12 +104,12 @@ public class BlockManipulationServer {
         if (player.level().dimension() == dimension) {
             // Frame-aware: plot-coordinate requests (Sable ship blocks) project to world
             // space through the owning sub-level's pose before measuring.
-            if (ipl.sable.SableBridge.frameAwareDistanceSqr(player.level(), playerPos, pos)
+            if (SableBridge.frameAwareDistanceSqr(player.level(), playerPos, pos)
                 < distanceSquare) {
                 return true;
             }
         }
-        else if (ipl.sable.SableBridge.isProjectedBlockWithinReach(player, dimension, requestPos, distanceSquare)) {
+        else if (SableBridge.isProjectedBlockWithinReach(player, dimension, requestPos, distanceSquare)) {
             // Sable: the block belongs to a ship owned by `dimension` whose piece reaches the
             // player's level through a portal (projection) -- measured at its image here.
             // Без этого взаимодействие с проекцией корабля из другого
@@ -119,11 +123,11 @@ public class BlockManipulationServer {
             if (portal.getDestDim() != dimension || !portal.isInteractableBy(player)) {
                 return false;
             }
-            net.minecraft.server.level.ServerLevel destLevel =
+            ServerLevel destLevel =
                 player.server.getLevel(portal.getDestDim());
             Vec3 transformed = portal.transformPoint(playerPos);
             double distSq = destLevel != null
-                ? ipl.sable.SableBridge.frameAwareDistanceSqr(destLevel, transformed, pos)
+                ? SableBridge.frameAwareDistanceSqr(destLevel, transformed, pos)
                 : transformed.distanceToSqr(pos);
             return distSq < distanceSquare * portal.getScale() * portal.getScale();
         });
@@ -180,7 +184,7 @@ public class BlockManipulationServer {
             ServerLevel world = player.server.getLevel(dimension);
             Validate.notNull(world, "missing %s", dimension.location());
             // Sable: a ship block seen through a portal may be owned by yet another level.
-            world = (ServerLevel) ipl.sable.SableBridge.plotAwareLevel(world, packet.getPos());
+            world = (ServerLevel) SableBridge.plotAwareLevel(world, packet.getPos());
             
             processPlayerActionIn(world, player, packet);
         }
@@ -200,7 +204,7 @@ public class BlockManipulationServer {
             ServerLevel world = player.server.getLevel(dimension);
             Validate.notNull(world, "missing %s", dimension.location());
             // Sable: a ship block seen through a portal may be owned by yet another level.
-            world = (ServerLevel) ipl.sable.SableBridge.plotAwareLevel(world, packet.getHitResult().getBlockPos());
+            world = (ServerLevel) SableBridge.plotAwareLevel(world, packet.getHitResult().getBlockPos());
             
             processUseItemOnIn(world, player, packet);
         }
@@ -213,12 +217,11 @@ public class BlockManipulationServer {
         public static void processInteractPacket(
             ServerPlayer player,
             ResourceKey<Level> dimension,
-            java.util.UUID portalId,
+            UUID portalId,
             byte[] packetBytes
         ) {
             FriendlyByteBuf buf = IPMcHelper.bytesToBuf(packetBytes);
-            net.minecraft.network.protocol.game.ServerboundInteractPacket packet =
-                net.minecraft.network.protocol.game.ServerboundInteractPacket.STREAM_CODEC.decode(buf);
+            ServerboundInteractPacket packet = ServerboundInteractPacket.STREAM_CODEC.decode(buf);
             ServerLevel world = player.server.getLevel(dimension);
             if (world == null) return;
             Portal portal = findInteractionPortal(player, portalId);
@@ -240,8 +243,8 @@ public class BlockManipulationServer {
     }
     
     @Nullable
-    private static Portal findInteractionPortal(ServerPlayer player, java.util.UUID portalId) {
-        net.minecraft.world.entity.Entity entity = player.serverLevel().getEntity(portalId);
+    private static Portal findInteractionPortal(ServerPlayer player, UUID portalId) {
+        Entity entity = player.serverLevel().getEntity(portalId);
         if (entity instanceof Portal portal) return portal;
         for (Portal global : GlobalPortalStorage.getGlobalPortals(player.level())) {
             if (global.getUUID().equals(portalId)) return global;

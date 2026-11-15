@@ -26,6 +26,7 @@ import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import ipl.sable.SableBridge;
+import ipl.sable.render.IplForeignPerspective;
 import ipl.sable.render.clip.IplClipPlanes;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
@@ -150,7 +151,7 @@ public abstract class MixinLevelRenderer implements IEWorldRenderer {
     ) {
         IplClipPlanes.beginPass(projection, modelView);
         try {
-            if (ipl.sable.render.IplForeignPerspective.isRendering()) {
+            if (IplForeignPerspective.isRendering()) {
                 // another camera (a shadow map, a mod's camera): none of the view's cuts apply
                 IplClipPlanes.suppressed(() -> original.call(
                     deltaTracker, renderBlockOutline, camera, gameRenderer, lightTexture, modelView, projection));

@@ -65,15 +65,12 @@ public abstract class ChunkedRenderDataMixin {
 			ci.cancel();
 			return;
 		}
-		// the bound program may have been made current with raw GL (see beforeDraw); its piece
-		// draws below include raw multi-draws that no draw hook sees
+		// The bound program may have been made current with raw GL, and the piece draws below
+		// include raw multi-draws that no draw hook sees.
 		IplProgramBindHook.beforeDraw();
 		IplClipDiagnostics.onSubLevelDraw(sub);
 		IplPieceRender.Frame frame = IplPieceRender.frameFor(sub);
-		if (frame == null) {
-			IplClipDiagnostics.onVanillaCall(false);
-			return;
-		}
+		if (frame == null) return;
 		int node = IplPieceRender.drawNode(sub, frame);
 		IplPieceRender.Draw draw = node < 0 ? null : IplPieceRender.begin(frame, node, sub.renderPose());
 		if (draw == null) {
@@ -81,7 +78,6 @@ public abstract class ChunkedRenderDataMixin {
 			ci.cancel();
 			return;
 		}
-		IplClipDiagnostics.onVanillaCall(true);
 		IplPieceClip.clear();
 		this.ipl$draw = draw;
 	}

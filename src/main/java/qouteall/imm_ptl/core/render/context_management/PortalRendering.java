@@ -12,6 +12,7 @@ import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.portal.Mirror;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.shape.BoxPortalShape;
+import qouteall.imm_ptl.core.render.PortalScreenCulling;
 import qouteall.imm_ptl.core.render.VisibleSectionDiscovery;
 import qouteall.imm_ptl.core.render.renderer.PortalRenderer;
 import qouteall.q_misc_util.my_util.Plane;
@@ -29,14 +30,14 @@ public class PortalRendering {
     private static boolean isRenderingOddNumberOfMirrorsCache = false;
     
     public static void pushPortalLayer(Portal portal) {
-        qouteall.imm_ptl.core.render.PortalScreenCulling.onPushLayer(portal, portalLayers.size());
+        PortalScreenCulling.onPushLayer(portal, portalLayers.size());
         portalLayers.push(portal);
         updateCache();
     }
     
     public static void popPortalLayer() {
         portalLayers.pop();
-        qouteall.imm_ptl.core.render.PortalScreenCulling.onPopLayer();
+        PortalScreenCulling.onPopLayer();
         updateCache();
     }
     

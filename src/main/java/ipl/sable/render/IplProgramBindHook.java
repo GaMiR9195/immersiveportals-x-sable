@@ -11,21 +11,27 @@ import qouteall.imm_ptl.core.IPGlobal;
 /**
  * Applies {@link IplClipPlanes} to the program that draws: on every program bind of every
  * pipeline (vanilla/Iris/Flywheel/Veil through {@code GlStateManager._glUseProgram}, Sodium
- * through its own {@code GlProgram.bind}) and to the bound program whenever the planes change.
+ * through its own {@code GlProgram.bind}), after every {@code ShaderInstance.apply()}, right
+ * before draws, and to the bound program whenever the planes change.
  *
  * <p>A program is clip-capable when it carries the injected {@value IplClipPlanes#UNIFORM}
  * uniform. Only then are the hardware clip distances enabled for it; any other program (compute,
  * screen-space, foreign pipelines) draws with them disabled, so it never reads clip distances it
  * does not write.
  *
- * <p>Nothing is cached per program: a program can be re-linked under the same id in the middle of
- * a frame (Veil recompiles programs on demand), which resets its uniforms and may move them, so
- * the location is looked up and the planes uploaded on every bind. The clip-distance enables are
- * written on every apply as well, never trusted to still be what was set last time.
+ * <p>Uniform locations are looked up on every application, never cached per program id: a
+ * program can be re-linked under the same id in the middle of a frame (Veil recompiles programs
+ * on demand), which resets its uniforms and may move them. Render thread only.
  */
 public final class IplProgramBindHook {
 
 	private static final float[] FOREIGN_EQUATIONS = new float[IplClipPlanes.SLOTS * 4];
+
+	/** Program and plane revision the last application was made for (draw-time check). */
+	private static int verifiedProgram = -1;
+	private static long verifiedRevision = Long.MIN_VALUE;
+	/** Clip distances written last; only an all-off state that is already off is skipped. */
+	private static int enabledMask;
 
 	private IplProgramBindHook() {}
 
@@ -46,20 +52,13 @@ public final class IplProgramBindHook {
 		apply(program, FOREIGN_EQUATIONS);
 	}
 
-	/** Program and plane revision the last apply was made for (draw-time check). */
-	private static int verifiedProgram = -1;
-	private static long verifiedRevision = Long.MIN_VALUE;
-
 	/**
-	 * Right before a draw: the program that will draw must hold the current planes.
+	 * Right before a draw: the program that draws must hold the current planes.
 	 *
-	 * <p>Bind-time application alone is not enough: programs also become current behind
-	 * {@code GlStateManager}'s back — Veil's non-DSA uniform upload binds a program with raw GL and
-	 * then restores {@code ShaderInstance.lastProgramId} with raw GL, after which vanilla's
-	 * {@code apply()} sees "already bound" and never binds again. Such a program draws with
-	 * whatever its clip uniform held (never uploaded: no cut at all) — sub-levels and other
-	 * vanilla-shader draws leaked out of portal passes exactly like that. The check costs one
-	 * {@code glGetInteger} per draw while a cut is active and nothing otherwise.
+	 * <p>Programs also become current behind {@code GlStateManager}'s back: Veil's non-DSA uniform
+	 * upload binds a program with raw GL and restores {@code ShaderInstance.lastProgramId} with raw
+	 * GL, after which vanilla's {@code apply()} sees "already bound" and never binds again. Costs
+	 * one {@code glGetInteger} per draw while a cut is active and nothing otherwise.
 	 */
 	public static void beforeDraw() {
 		if (!IPGlobal.enableClippingMechanism || !IplClipPlanes.anyActive()) return;
@@ -69,8 +68,8 @@ public final class IplProgramBindHook {
 	}
 
 	/**
-	 * End of {@code ShaderInstance.apply()}: uniform uploads of the shader (and of other mods
-	 * hooked into it) are done, the planes are written last. Unconditional while a cut is active.
+	 * End of {@code ShaderInstance.apply()}: the uniform uploads of the shader (and of mods hooked
+	 * into it) are done, so the planes are written last. Unconditional while a cut is active.
 	 */
 	public static void afterShaderApply() {
 		if (!IPGlobal.enableClippingMechanism || !IplClipPlanes.anyActive()) return;
@@ -103,9 +102,6 @@ public final class IplProgramBindHook {
 		}
 		setEnabled(mask);
 	}
-
-	/** What was written last; only an all-off state that is already off is skipped. */
-	private static int enabledMask;
 
 	private static void setEnabled(int mask) {
 		if (mask == 0 && enabledMask == 0) return;

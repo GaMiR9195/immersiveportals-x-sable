@@ -1,3 +1,17 @@
+# v0.6.2
+A bug-fixing release: portals look cleaner, cost less and behave better in third person.
+- **No more ghosts on portal surfaces**: ships, mobs, block entities and particles from behind a
+  portal's exit no longer show up "painted" on the portal, including in portal loops and with Veil.
+- **Fight and trade through portals**: mobs and other entities on the far side can be hit and used
+  like any other, with knockback, sweep attacks and reach working where the target really is.
+- **Third person feels right**: the camera stops at walls on the far side of a portal instead of
+  flying into them, picking through portals starts at your eyes, and view bobbing stays smooth.
+- **Particles and name tags face you** when you look at them through a rotated portal.
+- **Faster portals**: portals off screen or hidden behind blocks are skipped earlier, and a crack
+  between blocks no longer renders a whole world behind it. Flywheel no longer rebuilds every
+  visual when a portal leads far away.
+- **Tidier code**: dead code and outdated comments removed.
+
 # v0.6.1
 - **Visual router for block-entity models**: ropes, springs, chains, shafts — anything drawn by a
   block-entity renderer, Flywheel visual or Veil shader — is recorded once per frame, cut exactly at

@@ -1,12 +1,15 @@
 package qouteall.imm_ptl.core.render;
 
-import net.minecraft.client.Minecraft;
 import org.apache.commons.lang3.Validate;
 import org.lwjgl.opengl.GL15;
-import org.lwjgl.opengl.GL33;
 
 import java.util.ArrayList;
 
+/**
+ * A pooled occlusion query. Pooled objects are only ever used as {@code GL_SAMPLES_PASSED}
+ * counters: a query object's target is fixed by its first use, so mixing targets on recycled ids
+ * would fail.
+ */
 public class GlQueryObject {
     private int idQueryObject = -1;
     private boolean isQuerying = false;
@@ -16,46 +19,17 @@ public class GlQueryObject {
         this.idQueryObject = handle;
     }
     
-    /**
-     * Pooled query objects are always used as sample counters: a query object's target is fixed
-     * by its first use, so mixing ANY_SAMPLES_PASSED and SAMPLES_PASSED on recycled ids fails.
-     */
-    public void performQueryAnySamplePassed(Runnable renderingFunc) {
-        performQuerySampleNumPassed(renderingFunc);
-    }
-    
     public void performQuerySampleNumPassed(Runnable renderingFunc) {
-        performQuery(renderingFunc, GL15.GL_SAMPLES_PASSED);
-    }
-    
-    private void performQuery(Runnable renderingFunc, int glQueryType) {
         Validate.isTrue(isValid());
-        
         Validate.isTrue(!isQuerying);
         
-        GL15.glBeginQuery(glQueryType, idQueryObject);
-        
+        GL15.glBeginQuery(GL15.GL_SAMPLES_PASSED, idQueryObject);
         isQuerying = true;
-        
         renderingFunc.run();
-        
-        GL15.glEndQuery(glQueryType);
-        
+        GL15.glEndQuery(GL15.GL_SAMPLES_PASSED);
         isQuerying = false;
         
         hasResult = true;
-    }
-    
-    public boolean fetchQueryResult() {
-        return fetchSampleCount() != 0;
-    }
-    
-    /** Whether the result can be read without waiting for the GPU. */
-    public boolean isResultAvailable() {
-        Validate.isTrue(isValid());
-        Validate.isTrue(hasResult);
-        
-        return GL15.glGetQueryObjecti(idQueryObject, GL15.GL_QUERY_RESULT_AVAILABLE) != 0;
     }
     
     /** Samples that passed (waits for the result). */

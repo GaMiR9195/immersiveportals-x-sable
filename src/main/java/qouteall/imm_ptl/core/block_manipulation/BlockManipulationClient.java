@@ -1,18 +1,19 @@
 package qouteall.imm_ptl.core.block_manipulation;
 
+import ipl.sable.SableBridge;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.util.Tuple;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
@@ -95,40 +96,34 @@ public class BlockManipulationClient {
             return;
         }
         
-        Vec3 cameraPos = client.gameRenderer.getMainCamera().getPosition();
+        // Picking is done from the eyes, like vanilla's pick: in third person the camera is
+        // elsewhere (and may already be moved to a portal's far side by the cross-portal view).
+        Vec3 eyePos = client.player.getEyePosition(partialTick);
+        Vec3 viewVector = client.player.getViewVector(partialTick);
         
         double reachDistance = client.player.blockInteractionRange();
         double searchDistance = Math.max(reachDistance, client.player.entityInteractionRange());
-
-        PortalUtils.raytracePortalFromEntityView(client.player, partialTick, searchDistance, true, portal1 -> portal1.isInteractableBy(client.player)).ifPresent(pair -> {
+        
+        PortalUtils.raytracePortalFromEntityView(
+            client.player, partialTick, searchDistance, true, p -> p.isInteractableBy(client.player)
+        ).ifPresent(pair -> {
             Portal portal = pair.getFirst();
             Vec3 hitPos = pair.getSecond().hitPos();
-            double distanceToPortalPointing = hitPos.distanceTo(cameraPos);
-            // the portal is in front of whatever vanilla picked locally (block or entity)
-            if (distanceToPortalPointing < getCurrentTargetDistance() + 0.2) {
-                client.hitResult = createMissedHitResult(cameraPos, hitPos);
-                
-                if (distanceToPortalPointing < reachDistance) {
-                    updateTargetedBlockThroughPortal(
-                        cameraPos,
-                        client.player.getViewVector(partialTick),
-                        client.player.level().dimension(),
-                        distanceToPortalPointing,
-                        reachDistance,
-                        portal
-                    );
-                }
-                
-                updateTargetedEntityThroughPortal(
-                    cameraPos,
-                    client.player.getViewVector(partialTick),
-                    distanceToPortalPointing,
-                    portal
-                );
+            double distanceToPortalPointing = hitPos.distanceTo(eyePos);
+            if (distanceToPortalPointing >= getCurrentTargetDistance(eyePos) + 0.2) {
+                return;
             }
+            // The portal is in front of whatever vanilla picked locally (block or entity).
+            client.hitResult = createMissedHitResult(eyePos, hitPos);
+            client.crosshairPickEntity = null;
+            
+            if (distanceToPortalPointing < reachDistance) {
+                updateTargetedBlockThroughPortal(eyePos, viewVector, distanceToPortalPointing, reachDistance, portal);
+            }
+            updateTargetedEntityThroughPortal(eyePos, viewVector, distanceToPortalPointing, portal);
         });
         
-        if (ipl.sable.SableBridge.PRESENT) {
+        if (SableBridge.PRESENT) {
             retargetShipHit();
         }
     }
@@ -145,17 +140,13 @@ public class BlockManipulationClient {
      * piece was seen through a portal: its native-frame position is exactly the position
      * seen through the portal, unfolded. The outline stays on the hit either way; the
      * piece-aware outline renderer draws it only in the pass where that piece lives.
-     *
-     * <p>Раньше клик по проекции корабля из другого измерения шёл
-     * ванильным путём в уровень игрока: чтение блоков работало (мост плотов), а любая
-     * запись отклонялась — "взаимодействие частично работает".
      */
     private static void retargetShipHit() {
         HitResult target = remotePointedDim != null ? remoteHitResult : client.hitResult;
         if (!(target instanceof BlockHitResult blockHit) || blockHit.getType() != HitResult.Type.BLOCK) {
             return;
         }
-        ResourceKey<Level> owner = ipl.sable.SableBridge.clientPlotOwnerDimension(blockHit.getBlockPos());
+        ResourceKey<Level> owner = SableBridge.clientPlotOwnerDimension(blockHit.getBlockPos());
         if (owner == null || owner == remotePointedDim) {
             return;
         }
@@ -183,20 +174,19 @@ public class BlockManipulationClient {
      * destination's entities along the transformed ray.
      */
     private static void updateTargetedEntityThroughPortal(
-        Vec3 cameraPos, Vec3 viewVector, double beginDistance, Portal portal
+        Vec3 eyePos, Vec3 viewVector, double beginDistance, Portal portal
     ) {
         double entityRange = client.player.entityInteractionRange();
         if (beginDistance >= entityRange) return;
         ClientLevel world = ClientWorldLoader.getOptionalWorld(portal.getDestDim());
         if (world == null) return;
         
-        Vec3 from = portal.transformPoint(cameraPos.add(viewVector.scale(beginDistance)));
-        Vec3 to = portal.transformPoint(cameraPos.add(viewVector.scale(entityRange)));
+        Vec3 from = portal.transformPoint(eyePos.add(viewVector.scale(beginDistance)));
+        Vec3 to = portal.transformPoint(eyePos.add(viewVector.scale(entityRange)));
         double maxDistSq = from.distanceToSqr(to);
-        if (remotePointedDim != null && remoteHitResult != null
-            && remoteHitResult.getType() != HitResult.Type.MISS
-        ) {
-            maxDistSq = Math.min(maxDistSq, ipl.sable.SableBridge.frameAwareDistanceSqr(
+        if (remotePointedDim != null && !hitResultIsMissedOrNull(remoteHitResult)) {
+            // a block in front of the entity wins
+            maxDistSq = Math.min(maxDistSq, SableBridge.frameAwareDistanceSqr(
                 world, from, remoteHitResult.getLocation()));
         }
         
@@ -229,13 +219,10 @@ public class BlockManipulationClient {
         remotePointedDim = portal.getDestDim();
         remoteViewDim = null;
         remoteEntityPortalId = portal.getUUID();
-        client.hitResult = createMissedHitResult(cameraPos, cameraPos.add(viewVector.scale(beginDistance)));
         client.crosshairPickEntity = best.getEntity();
     }
     
-    private static double getCurrentTargetDistance() {
-        Vec3 cameraPos = client.gameRenderer.getMainCamera().getPosition();
-        
+    private static double getCurrentTargetDistance(Vec3 eyePos) {
         if (hitResultIsMissedOrNull(client.hitResult)) {
             return 23333;
         }
@@ -249,25 +236,19 @@ public class BlockManipulationClient {
         
         // Frame-aware: a local hit on a Sable sub-level is in PLOT coordinates; the raw
         // distance (~20M) would let the portal path wrongly steal priority from it.
-        return Math.sqrt(ipl.sable.SableBridge.frameAwareDistanceSqr(
-            client.level, cameraPos, client.hitResult.getLocation()));
+        return Math.sqrt(SableBridge.frameAwareDistanceSqr(
+            client.level, eyePos, client.hitResult.getLocation()));
     }
     
     private static void updateTargetedBlockThroughPortal(
-        Vec3 cameraPos,
+        Vec3 eyePos,
         Vec3 viewVector,
-        ResourceKey<Level> playerDimension,
         double beginDistance,
         double endDistance,
         Portal portal
     ) {
-        
-        Vec3 from = portal.transformPoint(
-            cameraPos.add(viewVector.scale(beginDistance))
-        );
-        Vec3 to = portal.transformPoint(
-            cameraPos.add(viewVector.scale(endDistance))
-        );
+        Vec3 from = portal.transformPoint(eyePos.add(viewVector.scale(beginDistance)));
+        Vec3 to = portal.transformPoint(eyePos.add(viewVector.scale(endDistance)));
         
         ClipContext context = new ClipContext(
             from,
@@ -296,9 +277,8 @@ public class BlockManipulationClient {
                 Vec3 start = rayTraceContext.getFrom();
                 Vec3 end = rayTraceContext.getTo();
                 
-                //correct the start pos to avoid being considered inside block
+                // moved back a little so the start is not considered inside the block
                 Vec3 correctedStart = start.subtract(end.subtract(start).scale(0.0015));
-//                Vec3d correctedStart = start;
                 VoxelShape solidShape = rayTraceContext.getBlockShape(blockState, world, blockPos);
                 BlockHitResult blockHitResult = world.clipWithInteractionOverride(
                     correctedStart, end, blockPos, solidShape, blockState
@@ -325,7 +305,7 @@ public class BlockManipulationClient {
         // (native ones in the dest world AND foreign straddle projections into it) are
         // invisible to it. Run the overlay-aware clip too; if it hits a ship (plot-coord
         // result) that is frame-closer than the terrain hit, prefer it.
-        if (ipl.sable.SableBridge.PRESENT) {
+        if (SableBridge.PRESENT) {
             BlockHitResult overlayHit = world.clip(new ClipContext(
                 from, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, client.player));
             if (overlayHit != null && overlayHit.getType() == HitResult.Type.BLOCK
@@ -334,7 +314,7 @@ public class BlockManipulationClient {
                 double terrainDistSq = hitResultIsMissedOrNull(remoteHitResult)
                     ? Double.MAX_VALUE
                     : from.distanceToSqr(remoteHitResult.getLocation());
-                double shipDistSq = ipl.sable.SableBridge.frameAwareDistanceSqr(
+                double shipDistSq = SableBridge.frameAwareDistanceSqr(
                     world, from, overlayHit.getLocation());
                 if (shipDistSq < terrainDistSq) {
                     remoteHitResult = overlayHit;

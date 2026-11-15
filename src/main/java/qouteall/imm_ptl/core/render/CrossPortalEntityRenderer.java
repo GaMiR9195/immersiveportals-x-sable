@@ -35,7 +35,6 @@ import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 import qouteall.imm_ptl.core.render.renderer.PortalRenderer;
 import qouteall.q_misc_util.Helper;
-import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.WeakHashMap;
 
@@ -184,35 +183,25 @@ public class CrossPortalEntityRenderer {
     ) {
         if (PortalRendering.isRendering()) {
             Portal renderingPortal = PortalRendering.getRenderingPortal();
-            // Two cuts: the pass's front clip (always on) and the colliding portal's
-            // destination plane as the object cut, so only the part that really went through
-            // the colliding portal shows, from any viewpoint.
-            if (!Portal.isFlippedPortal(renderingPortal, collidingPortal)
-                && !Portal.isReversePortal(renderingPortal, collidingPortal)
+            if (Portal.isFlippedPortal(renderingPortal, collidingPortal)
+                || Portal.isReversePortal(renderingPortal, collidingPortal)
             ) {
-                client.renderBuffers().bufferSource().endBatch();
-                FrontClipping.setupInnerClipping(
-                    collidingPortal.getInnerClipping(), matrixStack.last().pose(), 0
-                );
-                try {
-                    renderEntity(entity, collidingPortal, matrixStack);
-                    client.renderBuffers().bufferSource().endBatch();
-                }
-                finally {
-                    FrontClipping.disableClipping();
-                }
+                return;
             }
         }
-        else {
-            FrontClipping.disableClipping();
-            // don't draw the existing triangles with culling enabled
-            client.renderBuffers().bufferSource().endBatch();
-            
-            FrontClipping.setupInnerClipping(
-                collidingPortal.getInnerClipping(), matrixStack.last().pose(), 0
-            );
+        
+        // The already built triangles are drawn without the object cut.
+        FrontClipping.disableClipping();
+        client.renderBuffers().bufferSource().endBatch();
+        
+        // The pass's front clip stays on; the colliding portal's destination plane is the object
+        // cut, so only the part that really went through the colliding portal shows.
+        FrontClipping.setupInnerClipping(collidingPortal.getInnerClipping(), matrixStack.last().pose(), 0);
+        try {
             renderEntity(entity, collidingPortal, matrixStack);
             client.renderBuffers().bufferSource().endBatch();
+        }
+        finally {
             FrontClipping.disableClipping();
         }
     }

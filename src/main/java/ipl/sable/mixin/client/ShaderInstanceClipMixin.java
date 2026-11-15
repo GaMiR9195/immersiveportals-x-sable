@@ -14,16 +14,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import java.util.Map;
 
 /**
- * The clip uniform belongs to {@code IplProgramBindHook}, nobody else may write it.
+ * The clip uniform belongs to {@code IplProgramBindHook}; nobody else may write it.
  *
  * <p>Veil discovers every active uniform of a vanilla program ({@code updateLocations} TAIL) and
- * gives the ones it does not know a vanilla {@link Uniform} filled with ZEROS, which it uploads at
- * the end of every {@code apply()} — after the program was bound and the bind hook had uploaded
- * the planes. The clip uniform of every vanilla shader (sub-levels, entities, block entities,
- * particles, everything drawn through {@code ShaderInstance}) was overwritten with zero planes:
- * {@code dot(gl_Position, 0) = 0} keeps every vertex, so nothing drawn with them was ever cut in a
- * portal pass. Measured: the uniform read back from the GPU was all zeros while the planes were
- * right.
+ * gives the ones it does not know a vanilla {@link Uniform} filled with zeros, uploaded at the end
+ * of every {@code apply()}, after the bind hook has uploaded the planes. Zero planes keep every
+ * vertex ({@code dot(gl_Position, 0) = 0}), so everything drawn through {@code ShaderInstance}
+ * (sub-levels, entities, block entities, particles) would escape the portal cut.
  *
  * <ul>
  *   <li>Veil's uniforms for the clip planes are disarmed (location -1: their uploads are no-ops).</li>

@@ -19,8 +19,6 @@ import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 
 @Mixin(Camera.class)
 public abstract class MixinCamera implements IECamera {
-//    private static float lastClipSpaceResult = 1;
-    
     @Shadow
     private Vec3 position;
     @Shadow
@@ -61,20 +59,6 @@ public abstract class MixinCamera implements IECamera {
             cir.cancel();
         }
     }
-    
-//    @Inject(method = "getMaxZoom", at = @At("HEAD"), cancellable = true)
-//    private void onGetMaxZoomHead(float f, CallbackInfoReturnable<Float> cir) {
-//        if (PortalRendering.isRendering()) {
-//            cir.setReturnValue(lastClipSpaceResult);
-//            cir.cancel();
-//        }
-//    }
-//
-//    // TODO using global variable to pass may be problematic when multiple camera objects are used
-//    @Inject(method = "getMaxZoom", at = @At("RETURN"), cancellable = true)
-//    private void onGetMaxZoomReturn(float f, CallbackInfoReturnable<Float> cir) {
-//        lastClipSpaceResult = cir.getReturnValue();
-//    }
     
     // to let the player be rendered when rendering portal
     @Inject(method = "Lnet/minecraft/client/Camera;isDetached()Z", at = @At("HEAD"), cancellable = true)

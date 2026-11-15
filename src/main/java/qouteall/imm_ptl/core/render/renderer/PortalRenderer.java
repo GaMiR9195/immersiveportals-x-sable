@@ -2,13 +2,15 @@ package qouteall.imm_ptl.core.render.renderer;
 
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
+import ipl.sable.render.IplForeignPerspective;
+import it.unimi.dsi.fastutil.objects.Object2DoubleOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.minecraft.client.GraphicsStatus;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.culling.Frustum;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.Event;
 import net.neoforged.neoforge.common.NeoForge;
@@ -39,7 +41,6 @@ import qouteall.q_misc_util.Helper;
 
 import java.util.Comparator;
 import java.util.List;
-import java.util.function.Supplier;
 
 public abstract class PortalRenderer {
     
@@ -91,58 +92,49 @@ public abstract class PortalRenderer {
     public abstract boolean replaceFrameBufferClearing();
     
     protected List<Portal> getPortalsToRender(Matrix4f modelView) {
-        if (ipl.sable.render.IplForeignPerspective.isRendering()) {
+        if (IplForeignPerspective.isRendering()) {
             // a shadow map or another mod's camera: portal worlds are not rendered into it
             return List.of();
         }
-
-        // This plane is constant for the complete inner-world pass. Test it
-        // before any per-portal visibility work so hidden portals never reach
-        // the stencil query or recursive renderer.
+        
+        // constant for the whole pass: hidden portals never reach the query or a nested pass
         @Nullable Plane activeClip = PortalRendering.isRendering()
             ? PortalRendering.getActiveClippingPlane()
             : null;
-
+        
         ClientLevel world = client.level;
         assert world != null;
         Vec3 cameraPos = CHelper.getCurrentCameraPos();
         int layer = PortalRendering.getPortalLayer();
-        // one view-projection per pass; each portal costs four projected corners
         PortalScreenCulling.begin(layer, modelView, RenderSystem.getProjectionMatrix(), cameraPos);
         
         ObjectArrayList<Portal> renderables = new ObjectArrayList<>();
         for (Portal globalPortal : GlobalPortalStorage.getGlobalPortals(world)) {
-            if (!shouldSkipRenderingPortal(globalPortal, activeClip)
-                && PortalScreenCulling.accept(globalPortal, layer, activeClip)
-            ) {
+            if (isRenderable(globalPortal, layer, activeClip)) {
                 renderables.add(globalPortal);
             }
         }
-        
-        for (net.minecraft.world.entity.Entity e : world.entitiesForRendering()) {
-            if (e instanceof Portal portal
-                && !shouldSkipRenderingPortal(portal, activeClip)
-                && PortalScreenCulling.accept(portal, layer, activeClip)
-            ) {
+        for (Entity entity : world.entitiesForRendering()) {
+            if (entity instanceof Portal portal && isRenderable(portal, layer, activeClip)) {
                 renderables.add(portal);
             }
         }
         
-        int count = renderables.size();
-        if (count > 1) {
-            // nearest first; distances computed once, not per comparison
-            double[] distances = new double[count];
-            Integer[] order = new Integer[count];
-            for (int i = 0; i < count; i++) {
-                distances[i] = renderables.get(i).getDistanceToNearestPointInPortal(cameraPos);
-                order[i] = i;
+        if (renderables.size() > 1) {
+            Object2DoubleOpenHashMap<Portal> distances = new Object2DoubleOpenHashMap<>(renderables.size());
+            for (Portal portal : renderables) {
+                distances.put(portal, portal.getDistanceToNearestPointInPortal(cameraPos));
             }
-            java.util.Arrays.sort(order, (a, b) -> Double.compare(distances[a], distances[b]));
-            ObjectArrayList<Portal> sorted = new ObjectArrayList<>(count);
-            for (Integer i : order) sorted.add(renderables.get(i));
-            return sorted;
+            renderables.sort(Comparator.comparingDouble(distances::getDouble));
         }
         return renderables;
+    }
+    
+    /** Cheap tests first, the screen test next, the mod event (listeners may be slow) last. */
+    private static boolean isRenderable(Portal portal, int layer, @Nullable Plane activeClip) {
+        return !shouldSkipRenderingPortal(portal, activeClip)
+            && PortalScreenCulling.accept(portal, layer, activeClip)
+            && NeoForge.EVENT_BUS.post(new PortalRenderingPredicateEvent(portal)).canRender();
     }
     
     private static boolean shouldSkipRenderingPortal(Portal portal, @Nullable Plane activeClip) {
@@ -182,14 +174,8 @@ public abstract class PortalRenderer {
         if (distance > getRenderRange()) {
             return true;
         }
-        // view culling: PortalScreenCulling (exact, replaces the frustum box test)
-
-        if (PortalRendering.isInvalidRecursionRendering(portal)) {
-            return true;
-        }
         
-        boolean predicateTest = NeoForge.EVENT_BUS.post(new PortalRenderingPredicateEvent(portal)).canRender();
-        return !predicateTest;
+        return PortalRendering.isInvalidRecursionRendering(portal);
     }
 
     /** True when no point in this portal's thin aperture can survive the active inner clip. */

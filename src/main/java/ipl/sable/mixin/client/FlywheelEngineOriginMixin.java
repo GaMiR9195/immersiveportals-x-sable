@@ -12,12 +12,9 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Flywheel keeps instance positions relative to a render origin and, when the camera is farther
- * than a few hundred blocks from it, moves the origin and RECREATES EVERY VISUAL. A portal pass
- * whose camera is far from the player's (any portal leading more than that away in the same
- * level) moved the origin there and the next normal pass moved it back: all visuals of the level
- * were rebuilt twice per frame — a large FPS cost, and parts missing or blinking while rebuilt
- * visuals had no instances yet.
+ * Flywheel keeps instance positions relative to a render origin; when the camera gets a few
+ * hundred blocks away from it, the origin moves and every visual is recreated. A portal pass whose
+ * camera is far from the player's would move the origin back and forth twice per frame.
  *
  * <p>Portal passes keep the origin unless their camera is so far that float precision would
  * suffer ({@link #PASS_KEEP_DISTANCE}); only the player's own view moves it.

@@ -4,6 +4,7 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.client.IplStraddleRenderState;
 import ipl.sable.render.clip.IplClipPlanes;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.lwjgl.BufferUtils;
@@ -43,13 +44,10 @@ public final class IplClipDiagnostics {
     private static final Map<String, Long> LAST = new HashMap<>();
     private static final Int2ObjectOpenHashMap<String> WRITER = new Int2ObjectOpenHashMap<>();
     private static final FloatBuffer UNIFORM = BufferUtils.createFloatBuffer(IplClipPlanes.SLOTS * 4);
+    /** Programs whose failed upload was already reported. */
+    private static final IntOpenHashSet REPORTED = new IntOpenHashSet();
 
     private IplClipDiagnostics() {}
-
-    public static void onVanillaCall(boolean installed) {
-    }
-
-    private static final it.unimi.dsi.fastutil.ints.IntOpenHashSet REPORTED = new it.unimi.dsi.fastutil.ints.IntOpenHashSet();
 
     /** Right after an upload: an upload that does not land is reported once per program. */
     public static void afterUpload(int program, int location) {

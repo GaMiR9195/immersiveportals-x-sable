@@ -4,263 +4,134 @@ All notable changes to this project are documented in this file (most of the tim
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project tries to adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.1]
+## [0.6.2]
 
-### Changed
-
-- **Portal culling is exact, recursion-aware and ignores pixel gaps** (`PortalScreenCulling`).
-  Each candidate portal is reduced to the screen rectangle of its opening (four corners projected
-  with the pass's view-projection, computed once per pass, no allocations; clipping only when the
-  opening crosses the destination or near plane) and intersected with the rectangle of every
-  enclosing portal, so a nested portal (and every step of a portal loop) can only shrink and
-  recursion stops once nothing is left. Replaces the vanilla frustum box test of portals. Portals
-  off screen, behind the destination plane or lying on it (the far end of a loop facing the
-  viewer, which showed the wrong world in a flickering sliver) are never rendered. The occlusion
-  query counts samples: a portal's world is rendered only when at least
-  `-Dipl.portalMinVisibleFraction` (default 0.0025 %) of the screen, but never more than a quarter
-  of its own screen region, passes, so cracks between blocks no longer trigger whole world passes.
-  A portal seen through a gap last frame does not stall the GPU waiting for this frame's query; a
-  query result that is already available is used at once. Pooled query objects are used as sample
-  counters only.
-- **Flywheel and portals** (`FlywheelVisualizationManagerMixin`, `FlywheelEngineOriginMixin`).
-  - A portal pass whose camera was far from the player's (a same-level portal leading a few hundred
-    blocks away) moved Flywheel's render origin, and the next normal pass moved it back: every
-    visual of the level was recreated twice per frame (large FPS cost; parts missing or blinking
-    while rebuilt). Portal passes keep the origin unless their camera is over 4096 blocks away.
-  - Flywheel served a level only while it was `Minecraft.level`, which IP swaps for portal passes
-    and remote ticks, and section compiles read it from worker threads at random moments: block
-    entities went to Flywheel or to the vanilla list depending on timing — drawn twice (z-fighting,
-    flickering parts) or by nobody (missing parts), in the player's level and through portals.
-    Every client level is now served by its own manager, always.
-- **Veil zeroed the clip planes of every vanilla shader** (`ShaderInstanceClipMixin`). Veil
-  discovers every active uniform of a vanilla program and gives unknown ones a vanilla `Uniform`
-  filled with zeros, uploaded at the end of every `ShaderInstance.apply()` — after the bind hook
-  had written the planes. `dot(gl_Position, 0) = 0` keeps every vertex: sub-levels, entities, block
-  entities, particles and everything else drawn through `ShaderInstance` were never cut in portal
-  passes (the diagnostics read the uniform back as all zeros). Veil's uniforms for the planes are
-  disarmed (location -1) and the planes are written again at the end of every `apply()`.
-- **The program that draws always holds the clip planes** (`IplProgramBindHook.beforeDraw`). The
-  diagnostics showed the shader drawing sub-levels in portal passes with its clip uniform all zero
-  on the GPU (never uploaded: no cut), while the planes on the CPU were right. Programs also become
-  current behind `GlStateManager` (raw `glUseProgram`, e.g. Veil's non-DSA uniform upload restoring
-  `ShaderInstance.lastProgramId`), after which vanilla's `apply()` never binds them again, so a
-  bind hook alone never reaches them. Every `GlStateManager._drawElements` and every sub-level
-  draw now checks the current program against the plane revision it was last given (one
-  `glGetInteger` per draw while a cut is active, nothing otherwise) and uploads when needed.
-- **Clip state is re-asserted on every bind while a cut is active** (`IplProgramBindHook`): the
-  uniform is looked up and uploaded on each bind (programs can be re-linked under the same id
-  mid-frame, which resets them) and the clip-distance enables are written each time instead of
-  being trusted from the last write. `-Dipl.portalDiagnostics=true` logs, for every sub-level draw
-  that must be cut in a portal pass, the program, whether its vertex shader carries the clip
-  writer, the clip uniform read back from the GPU next to the expected value, and the enables.
-- **Nothing leaks out of a portal pass** (`PortalPassView`, `FrontClipping`).
-  - The after-level render stage (Veil fixed buffers, the physics staff overlay, mods drawing at
-    `AFTER_LEVEL`) runs inside the clip pass of the view it belongs to. It used to run after the
-    pass had closed: unclipped in a portal pass, or cut with the planes of the ENCLOSING portal
-    pass inside nested ones (objects from another portal's camera path showing in the opening).
-  - The pass clip can no longer be replaced: an object's own cut (entity crossing a portal, outer
-    clip, far-side image of an entity) goes to a separate clip slot and is applied together with
-    it. Entity images in portal passes are now cut by both planes and drawn from every viewpoint.
-  - Veil level-perspective renders (Sable's sky-light shadow map, mods' cameras) take no portal
-    cuts and render no portal worlds into their target.
-- **Billboards face the portal camera**: during a world render whose view is rotated by portals
-  (portal passes, third-person cross-portal view, GUI portals) the camera's orientation is the
-  effective one of the rendered world (mirrors folded in), so particles, name tags, beams, the
-  staff anchor and any mod billboard reading `Camera.rotation()` face the viewer; restored after
-  the after-level stage.
-- **Third-person view bobbing through portals**: the cross-portal view keeps view bobbing, and in
-  third person the bob only fades in the thin layer (< 0.4 blocks) where the detached camera could
-  be carried across a portal plane, measured from the real camera position instead of the
-  player's eyes.
-- **Hitting and interacting with entities through portals** (`CrossPortalPresence`). Entities on
-  the far side are picked like vanilla (pick radius, entity range along the look ray, a block in
-  front wins); attack and use packets are sent with the portal, and the server runs vanilla's own
-  handling with the player standing for that one action at its portal-transformed eyes in the
-  destination (reach, knockback direction, sweep, enchantments, events in the right frame), then
-  restores it exactly (section callback detached, velocity change carried back). Riding across a
-  portal is undone.
-
-- **Routed models are tethered to their holder** (`IplRouteSolver`, `IplRouteTopology`). The frame of
-  every part is walked each frame from the block that holds the model along the model itself: a step
-  between two touching primitives enters a frame only through the finite area of an opening (back
-  only through its entry), and each part takes its shortest connection to the holder. Replaces the
-  per-primitive labels kept between frames: a piece of a rope (Veil, Flywheel, any block-entity
-  model) that went into a portal is no longer left hanging at the entrance or beyond the exit when
-  the sub-level pulls it back or carries it away, and a part sticking out beside the rim of a holder
-  that went through follows it around the exit instead of staying behind. Touch graphs are built
-  once per recording layout (near-linear grid + Boruvka bridging of separate pieces) and rebuilt
-  when the layout changes or the model is torn apart; a model whose geometry stays on the holder's
-  side of every face is not walked at all.
-- **Routing cuts allocate nothing per primitive**: cut polygons live in a shared index arena, so
-  many models standing in a portal no longer churn the allocator every frame.
-- **Sessions of sub-levels are held to the last** (`IplSessionLifecycle`, `IplTransitSettlement`).
-  Side-of-plane evidence (direction repair, the "wholly through" vote of a settlement) counts only
-  over the opening, never over the infinite plane: a body that crossed the plane beside the frame
-  keeps its labels and its sessions. A body on a joint (any linked group: springs, ropes, bearings,
-  connectors) is never moved wholesale by geometry; only a disagreeing minority is repaired, so a
-  joint that slips out for a moment cannot throw what hangs on it into the blocks.
-- **Commands live under `/ipxsable`.** `/iplsable_portal anchor|unanchor|list` is now
-  `/ipxsable link_portal_to_nearest_sublevel true|false|list`.
-- **Every opening is a little larger than its frame** (`IplApertureGrace`,
-  `-Dipl.sable.apertureGrace=<blocks>`, default 0.125, max 0.5, same value on client and server).
-  Pieces, sessions, joint/rope routing and model routing all test the same grown rectangle (any
-  portal shape: a point within the grace of the shape passes), so material that Rapier rests a hair
-  inside the frame, or that slides along the rim, passes cleanly instead of catching on the edge.
-  Immersive Portals' own rendering and teleportation are unchanged.
-- **A routed model is released by what it really drew** (`IplPortalModels`). It stays routed while
-  last frame's recorded geometry is within 2 blocks (plus its motion per tick) of an opening, not
-  only while its renderer's reported bounds are near: reported bounds are often the block, cached
-  or refreshed every few ticks. Before, a model crossing an opening could drop out of routing for
-  single frames (hundreds of ROUTED -> NEAR/NONE flips per second in a 20-spring test) and was then
-  drawn whole on its holder's side: springs and ropes whose holder had passed lost their part on the
-  entry side.
-- **Routing bookkeeping**: the anchor of a block entity is computed once per frame, so its reach and
-  its recording always agree; a model that recorded nothing no longer keeps a stale "held beyond an
-  opening" flag (it stayed routed and recorded forever); a renderer that throws while recorded is
-  drawn as it is that frame instead of not at all, and routing is retried after 600 frames instead of
-  never. Diagnostics report culled writes.
-- **Body scan near openings is per block entity**: only block entities of a body within 32 blocks of
-  an opening ask their renderer for bounds each frame, not every block entity of every body near one.
-
-- **One clip system for every renderer** (`IplClipPlanes`, `IplClipShaderInjector`). The portal
-  clip and the aperture cuts of Sable pieces are evaluated in clip space from each shader's own
-  `gl_Position` (`gl_ClipDistance[i] = dot(gl_Position, ipl_ClipPlanes[i])`). The planes come
-  pre-transformed by the view-projection of the level pass being rendered, so the cut needs no
-  knowledge of a shader's attributes or matrices: vanilla, entities, block entities and text,
-  Sodium, Iris (gbuffers, Sodium and DH patches), Flywheel (both backends), Veil, Sable
-  sub-levels and any other world shader are cut the same way. Removed: the per-shader YAML
-  transformation list, the world/eye/plot-local equation variants, `EntityShaderNames`, the
-  shader-name program registry and the cached-equation fallbacks.
-- **The portal clip covers the whole portal pass.** It used to be switched on only around
-  terrain layers and the entity/block-entity section, so everything flushed or drawn outside
-  those brackets (sign text, chest and banner sheets, Flywheel, Veil, Sable sub-levels,
-  particles, clouds) was drawn unclipped between the virtual camera and the portal and showed
-  up inside the portal. Now every draw of a portal pass is cut; only screen-space work
-  (sky, post chains, Veil post-processing, IP's full-screen passes) is exempt. Nested passes
-  stack and restore. Renderers with their own projection (LOD mods) can use
-  `IplClipPlanes.clipSpaceEquations(viewProjection, out)`.
-- **Models that pass portals are drawn in the frame each part is in** (`render/route`:
-  `IplPortalModels`, `IplOpenings`, `IplRouteFrame`, `IplRouteSolver`, `IplRoutedModel`).
-  Every flat teleporting portal is an opening: world portals, portals on bodies and the global
-  portals of dimension stacking, with no straddling body needed. A block-entity model whose
-  bounds come near an opening (ropes, springs, chains, connectors, long shafts, any renderer,
-  Veil render types included) is recorded once per frame at its real pose, independent of the
-  pass being drawn. Each physical cut (coincident faces of one doorway) is passed through one
-  face, chosen by the block the model hangs on (the face it passed, else the face whose front
-  holds it). That face's passage — behind its plane and over its opening — is its far frame,
-  everything else (in front, or beside the rim on either side) its near frame; primitives are
-  cut exactly at the passage's five planes (`IplRouteSolver`). Frames form a tree (a portal
-  path per frame), so nested portals and dimension stacking are ordinary deeper frames. Every
-  level pass (main view, each portal view, nested ones) writes exactly the parts
-  whose frame is in its level, placed through the portals: every part exists once, on its side
-  of every opening, and a part beside the frame never moves. The holder's frame is the piece of
-  its block, so either end of a link may hold it. Replaces the per-edge block-entity passes, the
-  aperture-plane cut of block entities and the "images" drawn only in a straddling body's pass.
-- **Model routing keeps a session per model: labels instead of planes** (`IplRouteMemory`,
-  `IplFrameKey`, `IplRouteSolver`). Every primitive keeps the frame its centre is in between
-  render frames; it changes only when the centre passes a face through the opening's finite area
-  (shape included), measured in the face's own coordinates so moving portals never fake a pass.
-  What went through stays through wherever it goes (sideways behind the portal, around the rim,
-  far away) — the "tube" (passage extruded along the normal) is gone, so no part vanishes at any
-  angle; what went around the rim never counts as passed. The face is no longer re-chosen every
-  frame from the side of the holder's infinite plane: a link whose holder slides behind the portal
-  plane or wholly through it keeps its routing, and the session is held as long as any part is in
-  another frame than its holder, however far the model gets; an unresolvable path (portal
-  unloaded for a moment) is held for 10 s. A body flip re-expresses labels through the portal
-  isometry. Primitives are matched by index (layout unchanged, holder motion compensated) or by
-  the nearest previous centre; new ones are seeded by the old holder rule. Cuts happen only at
-  faces next to a primitive's frame and only from the side of its centre, recursively for nested
-  frames, so two portals at once and nested portals follow the same rule.
-- **Routing cost.** Recordings are flat reusable arrays (no object per vertex, no list per
-  primitive), cut pieces are index lists into them, parts are per-primitive frame indices plus a
-  piece stream, and replay in a part's own level is a plain offset (full-attribute vertices use the
-  one-call `addVertex` path); a recorder is reused by its model every frame. Openings are looked
-  up by id through a per-frame map, resolved frame paths are memoized per frame.
-- **Flywheel hands over by the same rule** (`IplFlywheelFallback`): a visual whose model passes
-  an opening, of the world or of any body, is taken out of Flywheel and recorded from its
-  renderer with Flywheel reported unsupported; a straddling body's visual outside its native
-  piece is drawn by its piece pass as before. A scan around openings (every 10 ticks per level)
-  finds visuals and models that no pass draws this frame.
-- `-Dipl.portalDiagnostics=true` also logs the complete clip state of a sub-level draw inside a
-  portal pass (program, clip uniform, enabled clip distances, portal plane, side of the pose).
-- The clip writes go at the exits of `main` (end and every `return`) instead of renaming it, so
-  other shader preprocessors can still use main's locals (Veil's dynamic-buffer recompile of
-  `rendertype_solid` etc. failed with `undefined variable "pos"`); Veil runs the clip
-  preprocessor last.
+Bug fixing and cleanup: nothing behind a portal leaks into its view any more, entities can be hit
+and used through portals, and the third-person camera behaves around portals.
 
 ### Fixed
 
-- A rope (or any long model) through a portal was also drawn behind and around the entrance:
-  routing only knew the apertures of straddling bodies and the normal draw of a model wrote its
-  passed parts too once no body straddled. Now the passed parts exist only beyond the exit.
-- The part of a model that had not entered yet vanished near the rim of a portal: cut parts
-  beside the opening took the state of the part through it, and models lost their route when
-  the bounds of a link were reported in world space for a body. Parts beside a finite opening
-  keep their side; both bound interpretations are tested.
-- A link pushed into a portal by its far end (not the block that holds it) was never routed.
-- Routing cost: only models whose bounds are cut by an opening's plane are recorded; models that
-  merely come near one draw as usual, and a recorded model whose geometry stays on one side of
-  every plane is never cut. Separate pieces of a model are joined through a spatial grid (a
-  minimum spanning tree, near-linear) instead of a quadratic nearest search, welds use packed
-  primitive keys. A ship sliding through a portal no longer costs tens of milliseconds a frame.
-- Create cogs (and any Flywheel visual) vanished near and inside portals — for good after the
-  veto below, until a block update re-added them. Sable's `BlockEntityStorageMixin` overrides
-  `remove` and calls `Storage.remove`, so `BlockEntityStorage.posLookup` keeps every removed
-  visual: `visualAtPos` reported visuals that no longer existed, the renderer never drew a
-  handed cog and a given-back cog was never queued again. Flywheel's record is now its
-  `visuals` map (`FlywheelStorageAccessor`), read only at Flywheel's flush, where its frame
-  plan is synced; the renderer's turn follows the queue (vetoed at a flush → drawn from the next
-  frame; given back → drawn until a flush finds the visual).
-- Flywheel re-adds block entities on its own (every section compile through
-  `VisualizationHelper.tryAddBlockEntity`, block updates, Sable's one-block bodies): a handed
-  block entity is vetoed in Flywheel's storage (`FlywheelStorageVetoMixin`) until it is given
-  back, instead of being removed again and again.
-- A rope (spring, any routed model) near a portal cost hundreds of milliseconds a second and
-  flickered: the coinciding planes of one doorway (both faces, the reverse portal seen through
-  the entry) each cut every primitive again, and every cut also split at the four rim planes —
-  1 080 primitives became 23 473 parts. Openings sharing their rectangle are one cut
-  (`IplRouteCut`), crossing it is one crossing, and a part is split at the rim only when it
-  reaches past it.
-- Models (rope, spring, any routed BER) flickered while passing a portal and parts near the rim
-  switched sides: frames came from a search over the model's surface plus nearest-gap joins
-  between separate pieces, so they depended on how the model happened to be split this frame
-  and on the order it was written in. The frame of a part is now a function of its position
-  only (the face's passage, see above): deterministic, continuous at the rim, no joins, no
-  search, a few plane tests per vertex.
-- Block entities of a body (cogs, chests, signs, swivel bearings, springs) showed up on the far
-  side of the exit, and a spring glued into one body vanished on the near side: near a portal
-  the anchor took the frame behind ANY opening its block centre was behind — with a two-sided
-  portal it is always behind one of the two faces, and a body without a session moved too. The
-  anchor's frame is now only the piece of its block, exactly as the terrain is drawn (server
-  label carried through the crossings of the block centre at the drawn pose), and the face is
-  chosen by the side the block is on.
-- A fast body's models reached across an opening before they were routed (and Flywheel visuals
-  before they were handed over), so they were drawn whole for a frame or more on the wrong side.
-  Bounds are swept over the body's motion during the tick, the hand-over leads by twice that
-  motion, and the RECORDED geometry decides what is cut. Every model near an opening is drawn
-  by the routing (whole when it reaches across nothing), so nothing switches between two draw
-  paths when it starts or stops crossing.
-- Flywheel visuals at the hand-over threshold went back and forth every frame; a handed visual
-  now goes back only after 0.75 s unwanted. Bodies' block entities are scanned around openings
-  every frame (the world every 10 ticks), so a fast body's model seen only through a portal is
-  not missing until the next scan.
-- Block entities drawn by their renderers beside Sable's own pass (handed-over visuals of a body
-  in a portal) are culled against the frustum of the pass, and so are routed models.
-- `-Dipl.portalModelDiagnostics=true` logs once a second what portal routing cost (models
-  recorded, cut, drawn directly, milliseconds) and every change of a model's reach, of its split
-  between portal frames and of a Flywheel hand-over.
-- Ropes of a crossing group no longer fly across the portal distance at the flip
-  (`IplRopeChartSync`). Rope snapshots are kept in the chart the client shows for the holder's
-  body, like the body poses: points received while the flip is pending are mapped back, and the
-  strand's current, previous and buffered points are rebased in the same tick as the body.
-- Removed the sign/BE-specific patches (shader-bind re-enabling of slot 0 with a cached
-  equation, the whole-piece infinite-plane cut of block entities).
-- IP's pooled GL buffers and vertex arrays (`GLResourceCache`) are real objects (`glCreate*` when
-  direct state access is available) instead of reserved `glGen*` names, so Veil's DSA calls
-  (`glNamedBuffer*`, `glVertexArray*`) work on them.
-- Bodies flipped in one linked crossing are rebased on the client in the same tick: a spring
-  (or any link) between them no longer stretches towards the old coordinates for a frame after
-  the transition ends.
+- **Nothing leaks out of a portal view.** Sub-levels, entities, block entities and particles behind
+  a portal's exit could show up "painted" on the portal surface, especially in portal loops.
+  - Veil filled the clip uniform of every vanilla shader with zeros after it had been set, which
+    disabled the portal cut. Veil's copies of that uniform are now disarmed, and the planes are
+    written again at the end of every `ShaderInstance.apply()` (`ShaderInstanceClipMixin`).
+  - A program made current with raw GL (Veil's uniform upload) never received the planes. The
+    program that draws is now checked right before every draw while a cut is active
+    (`IplProgramBindHook.beforeDraw`, one `glGetInteger` per draw, nothing otherwise).
+  - The after-level render stage (Veil fixed buffers, the staff overlay, mods drawing at
+    `AFTER_LEVEL`) is clipped as part of the view it belongs to, not with the planes of an
+    enclosing portal or not at all.
+  - An object's own cut (an entity crossing a portal, the far-side image of an entity) no longer
+    replaces the portal cut; both are applied together (new clip slot `IplClipPlanes.OBJECT`).
+  - Veil level-perspective renders (Sable's sky-light shadow map, other mods' cameras) take no
+    portal cuts and render no portal worlds into their target.
+- **Hitting and using entities through portals.** Entities on the far side are picked like vanilla
+  does it (pick radius, entity reach, a block in front wins). The server then runs vanilla's own
+  handling with the player standing, for that one action, at its eyes as seen from the far side, so
+  reach, knockback direction, sweep attacks and enchantments work in the right place
+  (`CrossPortalPresence`). Riding something across a portal is undone.
+- **Through-portal targeting in third person** starts at the player's eyes, like vanilla's pick,
+  instead of at the detached camera. A local entity hidden behind a portal is no longer kept as
+  the crosshair target.
+- **Third-person camera behind a portal collides with blocks on the far side** instead of flying
+  into walls there. The camera ray is split at the opening: blocks on this side stop it before the
+  portal, blocks behind the exit stop it on the far side, using vanilla's camera probe.
+- **Third-person view bobbing** stays on in the cross-portal view and only fades in a thin layer
+  (under 0.4 blocks) around a portal plane near the camera.
+- **Particles, name tags and beams face the portal camera.** In a view rotated by portals (portal
+  passes, the cross-portal view, GUI portals) the camera's orientation is the one of the rendered
+  world, so billboards face the viewer (`PortalPassView`).
+- **Flywheel and portals.** A portal leading far away in the same level no longer makes Flywheel
+  recreate every visual twice per frame (`FlywheelEngineOriginMixin`), and every client level is
+  served by its own visualization manager, so block entities are no longer drawn twice or not at
+  all depending on timing.
+
+### Performance
+
+- **Screen-space portal culling** (`PortalScreenCulling`). Each portal is reduced to the screen
+  rectangle of its opening and intersected with the rectangle of the portal it is seen through, so
+  nested portals and portal loops shrink and stop on their own. Replaces the frustum box test.
+  Compare with `/imm_ptl_client_debug early_cull_portal_disable` (and `_enable`).
+- **Gaps between blocks no longer trigger a whole world pass.** A portal's world is rendered only
+  when enough of its opening is visible (`-Dipl.portalMinVisibleFraction`, default 0.0025 % of the
+  screen, at most a quarter of the portal's own rectangle). A portal seen through a gap last frame
+  does not stall the GPU waiting for this frame's query.
+- The mod event that filters portals runs only for portals that are actually on screen.
+
+### Internal
+
+- Dead code removed (unused occlusion query paths, no-op clipping wrappers, an empty diagnostics
+  hook, commented-out blocks); fully-qualified class names replaced with imports; comments that
+  described old behaviour rewritten to describe the current one.
+- `-Dipl.portalDiagnostics=true` reports, for sub-level draws that must be cut, the program, its
+  clip writer, the clip uniform read back from the GPU next to the expected value and the enabled
+  clip distances.
+
+## [0.6.1]
+
+Portal routing for block-entity models: ropes, springs, chains and shafts that pass a portal are
+drawn on the right side of it.
+
+### Added
+
+- **Visual router for block-entity models** (`render/route`). Anything drawn by a block-entity
+  renderer, a Flywheel visual or a Veil shader near a portal is recorded once per frame, cut exactly
+  at the opening, and each part is drawn on its own side: what went in comes out of the exit, what
+  did not stays. Works with world portals, portals on bodies, dimension stacking, several portals at
+  once and nested portals.
+- **Parts follow their holder** (`IplRouteSolver`, `IplRouteTopology`). The side of each part is
+  found by walking the model from the block that holds it; a step enters a portal only through its
+  finite opening. Nothing is left hanging at the entrance or beyond the exit when the holder pulls
+  it back, and a part that went around the frame never counts as passed.
+- **Openings are a bit larger than their frame** (`-Dipl.sable.apertureGrace`, default 0.125
+  blocks, max 0.5, same value on client and server): bodies Rapier rests slightly inside the frame,
+  or that slide along the rim, pass cleanly. IP's own rendering and teleportation are unchanged.
+- **One clip system for every renderer** (`IplClipPlanes`, `IplClipShaderInjector`). Portal and
+  aperture cuts are evaluated in clip space from each shader's own `gl_Position`, so vanilla,
+  Sodium, Iris, Flywheel, Veil, Sable sub-levels and other world shaders are cut the same way. The
+  portal cut covers the whole portal pass; only screen-space work is exempt. LOD renderers can use
+  `IplClipPlanes.clipSpaceEquations(viewProjection, out)`.
+- `-Dipl.portalModelDiagnostics=true` logs once a second what portal routing cost and every change
+  of a model's routing or Flywheel hand-over.
+
+### Changed
+
+- **Commands live under `/ipxsable`**: `/iplsable_portal anchor|unanchor|list` is now
+  `/ipxsable link_portal_to_nearest_sublevel true|false|list`.
+- **Joints hold.** A body on springs, ropes, bearings or connectors is never moved through a portal
+  wholesale by geometry; only a disagreeing minority of its blocks is repaired. Side-of-plane
+  evidence counts only over the opening, never over the infinite plane.
+- **Flywheel hands over by the same rule** (`IplFlywheelFallback`): a visual whose model passes an
+  opening is taken out of Flywheel and drawn through the router; it goes back only after 0.75 s
+  unwanted, so it no longer flips every frame.
+- **A routed model is released by what it really drew**, not by its renderer's (often stale)
+  bounds, so models no longer drop out of routing for single frames.
+- **Routing is cheap**: recordings are flat reusable arrays, cuts allocate nothing per primitive,
+  the coinciding faces of one doorway are one cut, models that only come near an opening draw as
+  usual, and only block entities within 32 blocks of an opening are scanned.
+
+### Fixed
+
+- Ropes and other long models through a portal were also drawn behind and around the entrance.
+- Parts of a model vanished or switched sides near the rim of a portal; a link pushed into a portal
+  by its far end was never routed.
+- Models flickered while passing a portal, and a rope near a portal could cost hundreds of
+  milliseconds a second.
+- Fast bodies' models reached across an opening for a frame before they were routed.
+- Block entities of a body (cogs, chests, signs, swivel bearings, springs) showed up on the far side
+  of the exit, or vanished on the near side.
+- Create cogs (any Flywheel visual) vanished near and inside portals until a block update: Sable's
+  `BlockEntityStorageMixin` left removed visuals in Flywheel's lookup (`FlywheelStorageAccessor`,
+  `FlywheelStorageVetoMixin`).
+- Block entities drawn beside Sable's own pass, and routed models, are culled against the frustum
+  of the pass.
+- Ropes of a crossing group flew across the portal distance at the flip (`IplRopeChartSync`), and
+  links between bodies flipped in one crossing stretched for a frame.
+- Veil's dynamic-buffer recompile failed (`undefined variable "pos"`): the clip writes now go at
+  the exits of `main` and Veil runs the clip preprocessor last.
+- IP's pooled GL buffers and vertex arrays are real GL objects, so Veil's DSA calls work on them.
+- Removed the sign/block-entity specific clipping patches.
 
 ## [0.6.0] — WIP
 

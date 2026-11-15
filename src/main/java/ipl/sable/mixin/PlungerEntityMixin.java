@@ -20,8 +20,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * produce transiently), and in that exact case it draws the rope to the clobbered (0,0,0)
  * instead of the partner's synced plot position.
  *
- * <p>Fix: capture TARGET_POS at tick entry and restore it at tick exit when the client
- * zeroed a previously-valid target on a still-paired plunger (OTHER_PLUNGER_ID != -1).
+ * <p>TARGET_POS is captured at tick entry and restored at tick exit when the client zeroed a
+ * valid target on a still-paired plunger (OTHER_PLUNGER_ID != -1).
  * Unpaired plungers keep the intended zeroing.
  */
 @Pseudo

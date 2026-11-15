@@ -7,6 +7,7 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
+import qouteall.imm_ptl.core.IPCGlobal;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.shape.RectangularPortalShape;
 import qouteall.imm_ptl.core.portal.shape.SpecialFlatPortalShape;
@@ -17,76 +18,92 @@ import java.util.IdentityHashMap;
 import java.util.List;
 
 /**
- * Screen-space portal culling, allocation-free on the hot path.
+ * Screen-space portal culling.
  *
- * <p>A portal pass sees the world only through the screen rectangle of the portal it renders, and
- * a portal pass draws to the same pixels as the opening it was seen through. So every candidate
- * portal is reduced to the screen rectangle of its opening (four corners projected once with the
+ * <p>A portal pass draws only into the pixels of the opening it is seen through. Every candidate
+ * portal is therefore reduced to the screen rectangle of its opening (corners projected with the
  * pass's view-projection), intersected with the rectangle of the enclosing pass, and dropped when
- * nothing of it is left. Nested portals and portal loops can only shrink and stop by themselves.
+ * nothing is left. Nested portals and portal loops shrink with every layer and stop by themselves.
  *
- * <p>Only two cases need clipping, both rare: an opening crossing the pass's destination plane
- * (cut there, nothing behind it can be seen) and an opening crossing the camera's near plane. The
- * side planes are not clipped against: the rectangle is clamped to the parent's, which is exact
- * enough and conservative. An opening lying on the destination plane is culled (the far end of a
- * portal loop, which faces the viewer but can never be seen through the surface it is on).
+ * <p>Two cases need real clipping: an opening crossing the pass's destination plane (only the
+ * part in front of it can be seen) and an opening crossing the camera's near plane. Side planes
+ * are handled by clamping to the parent rectangle. An opening lying exactly on the destination
+ * plane is culled: it is the far end of a portal loop and can never be seen through the surface
+ * it lies on.
  *
- * <p>Occlusion by blocks stays with the GPU query; {@link #minVisibleSamples} is its threshold.
+ * <p>Occlusion by blocks is decided by the GPU query; {@link #minVisibleSamples} is its threshold.
+ * {@link IPCGlobal#earlyFrustumCullingPortal} switches the screen test off (for comparisons).
+ * Render thread only.
  */
 public final class PortalScreenCulling {
-	private static final double GAP_FRACTION = Double.parseDouble(System.getProperty("ipl.portalMinVisibleFraction", "0.000025"));
+	private static final double GAP_FRACTION =
+		Double.parseDouble(System.getProperty("ipl.portalMinVisibleFraction", "0.000025"));
 	private static final float EDGE_MARGIN_PIXELS = 2.0f;
 	private static final double ON_PLANE_EPSILON = 1.0e-3;
 	private static final double NEAR_DISTANCE = 0.2;
 	private static final int MAX_DEPTH = 64;
+	private static final int MAX_POINTS = 10;
 
-	// ---- region stack (NDC min x, min y, max x, max y) of the enclosing passes
+	/** NDC rectangles (min x, min y, max x, max y) of the enclosing passes; [0] is the screen. */
 	private static final float[][] REGIONS = new float[MAX_DEPTH + 1][4];
 	private static int regionDepth = 0;
 
-	// ---- candidate regions per layer
+	/** Accepted portals of the search at each layer, with their rectangles. */
 	private static final List<IdentityHashMap<Portal, float[]>> CANDIDATES = new ArrayList<>();
 
-	// ---- state of the current candidate search (render thread only)
-	private static final Matrix4f VP = new Matrix4f();
-	private static double camX, camY, camZ;
-	private static int screenW = 1, screenH = 1;
-	private static float marginX, marginY;
+	private static final Matrix4f VIEW_PROJECTION = new Matrix4f();
+	private static Vec3 cameraPos = Vec3.ZERO;
+	private static int screenWidth = 1;
+	private static int screenHeight = 1;
+	private static float marginX;
+	private static float marginY;
+
 	// scratch polygon: camera-relative points, then clip-space points
-	private static final double[] PX = new double[8], PY = new double[8], PZ = new double[8], PD = new double[8];
-	private static final double[] QX = new double[8], QY = new double[8], QZ = new double[8];
-	private static final float[] CX = new float[8], CY = new float[8], CZ = new float[8], CW = new float[8];
+	private static final double[] PX = new double[MAX_POINTS];
+	private static final double[] PY = new double[MAX_POINTS];
+	private static final double[] PZ = new double[MAX_POINTS];
+	private static final double[] DIST = new double[MAX_POINTS];
+	private static final double[] QX = new double[MAX_POINTS];
+	private static final double[] QY = new double[MAX_POINTS];
+	private static final double[] QZ = new double[MAX_POINTS];
+	private static final float[] CX = new float[MAX_POINTS];
+	private static final float[] CY = new float[MAX_POINTS];
+	private static final float[] CZ = new float[MAX_POINTS];
+	private static final float[] CW = new float[MAX_POINTS];
+	private static final float[] KX = new float[MAX_POINTS];
+	private static final float[] KY = new float[MAX_POINTS];
+	private static final float[] KZ = new float[MAX_POINTS];
+	private static final float[] KW = new float[MAX_POINTS];
 	private static final float[] OUT = new float[4];
 
 	static {
-		REGIONS[0][0] = -1; REGIONS[0][1] = -1; REGIONS[0][2] = 1; REGIONS[0][3] = 1;
+		setFullScreen(REGIONS[0]);
 	}
 
 	private PortalScreenCulling() {}
 
 	/** Start of a candidate search in the pass at {@code layer}, with that pass's matrices. */
-	public static void begin(int layer, Matrix4fc modelView, Matrix4fc projection, Vec3 cameraPos) {
+	public static void begin(int layer, Matrix4fc modelView, Matrix4fc projection, Vec3 camera) {
 		if (layer == 0) regionDepth = 0;
 		while (CANDIDATES.size() <= layer) CANDIDATES.add(new IdentityHashMap<>());
 		CANDIDATES.get(layer).clear();
-		VP.set(projection).mul(modelView);
-		camX = cameraPos.x;
-		camY = cameraPos.y;
-		camZ = cameraPos.z;
+		VIEW_PROJECTION.set(projection).mul(modelView);
+		cameraPos = camera;
 		RenderTarget target = Minecraft.getInstance().getMainRenderTarget();
-		screenW = Math.max(1, target.width);
-		screenH = Math.max(1, target.height);
-		marginX = EDGE_MARGIN_PIXELS * 2.0f / screenW;
-		marginY = EDGE_MARGIN_PIXELS * 2.0f / screenH;
+		screenWidth = Math.max(1, target.width);
+		screenHeight = Math.max(1, target.height);
+		marginX = EDGE_MARGIN_PIXELS * 2.0f / screenWidth;
+		marginY = EDGE_MARGIN_PIXELS * 2.0f / screenHeight;
 	}
 
-	/** Whether {@code portal} can show anything in the current search; records its region. */
+	/** Whether {@code portal} can show anything in the current search; records its rectangle. */
 	public static boolean accept(Portal portal, int layer, @Nullable Plane clip) {
 		float[] parent = REGIONS[regionDepth];
-		if (portal.getDistanceToNearestPointInPortal(new Vec3(camX, camY, camZ)) < NEAR_DISTANCE) {
-			// The eye is (almost) in the opening: IP draws it as a volume around the camera,
-			// covering the whole region it is seen in.
-			CANDIDATES.get(layer).put(portal, parent);
+		if (!IPCGlobal.earlyFrustumCullingPortal
+			|| portal.getDistanceToNearestPointInPortal(cameraPos) < NEAR_DISTANCE
+		) {
+			// An opening around the eye is drawn as a volume covering the whole parent region.
+			CANDIDATES.get(layer).put(portal, parent.clone());
 			return true;
 		}
 		boolean visible = isFlat(portal) ? flatRegion(portal, clip) : boxRegion(portal, clip);
@@ -95,18 +112,19 @@ public final class PortalScreenCulling {
 		float minY = Math.max(OUT[1] - marginY, parent[1]);
 		float maxX = Math.min(OUT[2] + marginX, parent[2]);
 		float maxY = Math.min(OUT[3] + marginY, parent[3]);
-		if ((maxX - minX) * 0.5f * screenW < 1.0f || (maxY - minY) * 0.5f * screenH < 1.0f) return false;
+		if ((maxX - minX) * 0.5f * screenWidth < 1.0f || (maxY - minY) * 0.5f * screenHeight < 1.0f) {
+			return false;
+		}
 		CANDIDATES.get(layer).put(portal, new float[]{minX, minY, maxX, maxY});
 		return true;
 	}
 
-	/** {@code PortalRendering.pushPortalLayer}: the pass of {@code portal} sees only its region. */
+	/** {@code PortalRendering.pushPortalLayer}: the pass of {@code portal} sees only its rectangle. */
 	public static void onPushLayer(Portal portal, int outerLayer) {
+		if (regionDepth >= MAX_DEPTH) return;
 		float[] region = outerLayer < CANDIDATES.size() ? CANDIDATES.get(outerLayer).get(portal) : null;
 		float[] parent = REGIONS[regionDepth];
-		if (regionDepth >= MAX_DEPTH) return;
-		float[] next = REGIONS[++regionDepth];
-		System.arraycopy(region != null ? region : parent, 0, next, 0, 4);
+		System.arraycopy(region != null ? region : parent, 0, REGIONS[++regionDepth], 0, 4);
 	}
 
 	public static void onPopLayer() {
@@ -115,18 +133,25 @@ public final class PortalScreenCulling {
 
 	/**
 	 * Samples a portal's opening must pass the depth and stencil tests with before its world is
-	 * rendered: a fixed share of the screen for a gap in an occluder, but never more than a
-	 * quarter of the portal's own screen region, so a small portal in plain view still renders.
+	 * rendered: a fixed share of the screen (a gap between blocks is not worth a world pass), but
+	 * never more than a quarter of the portal's own rectangle, so a small portal in plain view
+	 * still renders.
 	 */
 	public static long minVisibleSamples(Portal portal, int layer) {
-		double screen = (double) screenW * screenH;
-		double gap = Math.max(4.0, screen * GAP_FRACTION);
+		double threshold = Math.max(4.0, (double) screenWidth * screenHeight * GAP_FRACTION);
 		float[] region = layer < CANDIDATES.size() ? CANDIDATES.get(layer).get(portal) : null;
 		if (region != null) {
-			double area = (region[2] - region[0]) * 0.5 * screenW * (region[3] - region[1]) * 0.5 * screenH;
-			gap = Math.min(gap, area * 0.25);
+			double area = (region[2] - region[0]) * 0.5 * screenWidth * (region[3] - region[1]) * 0.5 * screenHeight;
+			threshold = Math.min(threshold, area * 0.25);
 		}
-		return Math.max(1L, (long) gap);
+		return Math.max(1L, (long) threshold);
+	}
+
+	private static void setFullScreen(float[] region) {
+		region[0] = -1;
+		region[1] = -1;
+		region[2] = 1;
+		region[3] = 1;
 	}
 
 	// ------------------------------------------------------------------ flat openings
@@ -142,13 +167,13 @@ public final class PortalScreenCulling {
 		Vec3 ah = portal.getAxisH();
 		double hw = Math.min(portal.getWidth(), 23333) * 0.5;
 		double hh = Math.min(portal.getHeight(), 23333) * 0.5;
-		double ox = o.x - camX, oy = o.y - camY, oz = o.z - camZ;
+		double ox = o.x - cameraPos.x, oy = o.y - cameraPos.y, oz = o.z - cameraPos.z;
 		double wx = aw.x * hw, wy = aw.y * hw, wz = aw.z * hw;
 		double hx = ah.x * hh, hy = ah.y * hh, hz = ah.z * hh;
-		PX[0] = ox - wx - hx; PY[0] = oy - wy - hy; PZ[0] = oz - wz - hz;
-		PX[1] = ox + wx - hx; PY[1] = oy + wy - hy; PZ[1] = oz + wz - hz;
-		PX[2] = ox + wx + hx; PY[2] = oy + wy + hy; PZ[2] = oz + wz + hz;
-		PX[3] = ox - wx + hx; PY[3] = oy - wy + hy; PZ[3] = oz - wz + hz;
+		setPoint(0, ox - wx - hx, oy - wy - hy, oz - wz - hz);
+		setPoint(1, ox + wx - hx, oy + wy - hy, oz + wz - hz);
+		setPoint(2, ox + wx + hx, oy + wy + hy, oz + wz + hz);
+		setPoint(3, ox - wx + hx, oy - wy + hy, oz - wz + hz);
 		int n = 4;
 
 		if (clip != null) {
@@ -157,22 +182,30 @@ public final class PortalScreenCulling {
 			if (len < 1e-9) return false;
 			double nx = cn.x / len, ny = cn.y / len, nz = cn.z / len;
 			Vec3 cp = clip.pos();
-			double d0 = -(nx * (cp.x - camX) + ny * (cp.y - camY) + nz * (cp.z - camZ));
-			boolean anyIn = false, anyOut = false, allOn = true;
-			for (int i = 0; i < 4; i++) {
+			double d0 = -(nx * (cp.x - cameraPos.x) + ny * (cp.y - cameraPos.y) + nz * (cp.z - cameraPos.z));
+			boolean anyIn = false;
+			boolean anyOut = false;
+			boolean allOn = true;
+			for (int i = 0; i < n; i++) {
 				double d = nx * PX[i] + ny * PY[i] + nz * PZ[i] + d0;
-				PD[i] = d;
+				DIST[i] = d;
 				if (Math.abs(d) > ON_PLANE_EPSILON) allOn = false;
 				if (d >= 0) anyIn = true;
 				else anyOut = true;
 			}
 			if (allOn || !anyIn) return false;
 			if (anyOut) {
-				n = clipPolygon(n, PD);
+				n = clipPolygon(n);
 				if (n < 3) return false;
 			}
 		}
 		return project(n);
+	}
+
+	private static void setPoint(int i, double x, double y, double z) {
+		PX[i] = x;
+		PY[i] = y;
+		PZ[i] = z;
 	}
 
 	// ------------------------------------------------------------------ other shapes
@@ -181,21 +214,24 @@ public final class PortalScreenCulling {
 		AABB box = portal.getThinBoundingBox();
 		if (clip != null) {
 			Vec3 cn = clip.normal();
+			Vec3 cp = clip.pos();
 			double x = cn.x >= 0 ? box.maxX : box.minX;
 			double y = cn.y >= 0 ? box.maxY : box.minY;
 			double z = cn.z >= 0 ? box.maxZ : box.minZ;
-			if (cn.x * (x - clip.pos().x) + cn.y * (y - clip.pos().y) + cn.z * (z - clip.pos().z) < -ON_PLANE_EPSILON) {
+			if (cn.x * (x - cp.x) + cn.y * (y - cp.y) + cn.z * (z - cp.z) < -ON_PLANE_EPSILON) {
 				return false;
 			}
 		}
 		for (int i = 0; i < 8; i++) {
-			PX[i] = ((i & 1) == 0 ? box.minX : box.maxX) - camX;
-			PY[i] = ((i & 2) == 0 ? box.minY : box.maxY) - camY;
-			PZ[i] = ((i & 4) == 0 ? box.minZ : box.maxZ) - camZ;
+			setPoint(i,
+				((i & 1) == 0 ? box.minX : box.maxX) - cameraPos.x,
+				((i & 2) == 0 ? box.minY : box.maxY) - cameraPos.y,
+				((i & 4) == 0 ? box.minZ : box.maxZ) - cameraPos.z
+			);
 		}
-		// the corners of a box are a point cloud, not a polygon: if any is behind the near
-		// plane the projected bound is not conservative, keep the parent region
-		toClip(8);
+		// Box corners are a point cloud, not a polygon: with any corner behind the near plane the
+		// projected bound is not conservative, so the parent rectangle is kept.
+		toClipSpace(8);
 		for (int i = 0; i < 8; i++) {
 			if (CZ[i] < -CW[i] || CW[i] <= 1e-6f) {
 				System.arraycopy(REGIONS[regionDepth], 0, OUT, 0, 4);
@@ -208,7 +244,7 @@ public final class PortalScreenCulling {
 	// ------------------------------------------------------------------ projection
 
 	private static boolean project(int n) {
-		toClip(n);
+		toClipSpace(n);
 		boolean anyBehind = false;
 		for (int i = 0; i < n; i++) {
 			if (CZ[i] < -CW[i]) {
@@ -217,16 +253,15 @@ public final class PortalScreenCulling {
 			}
 		}
 		if (anyBehind) {
-			// clip against the near plane (z + w >= 0) in clip space
-			for (int i = 0; i < n; i++) PD[i] = CZ[i] + CW[i];
-			n = clipClipSpace(n);
+			for (int i = 0; i < n; i++) DIST[i] = CZ[i] + CW[i];
+			n = clipNearPlane(n);
 			if (n < 3) return false;
 		}
 		return bounds(n);
 	}
 
-	private static void toClip(int n) {
-		Matrix4f m = VP;
+	private static void toClipSpace(int n) {
+		Matrix4f m = VIEW_PROJECTION;
 		for (int i = 0; i < n; i++) {
 			float x = (float) PX[i], y = (float) PY[i], z = (float) PZ[i];
 			CX[i] = m.m00() * x + m.m10() * y + m.m20() * z + m.m30();
@@ -236,10 +271,11 @@ public final class PortalScreenCulling {
 		}
 	}
 
-	/** NDC bounds of the points (all in front of the near plane); false when off screen. */
+	/** NDC bounds of the clip-space points into {@link #OUT}; false when nothing is on screen. */
 	private static boolean bounds(int n) {
 		int outLeft = 0, outRight = 0, outDown = 0, outUp = 0;
-		float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+		float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
+		float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
 		for (int i = 0; i < n; i++) {
 			float w = CW[i];
 			if (CX[i] < -w) outLeft++;
@@ -247,14 +283,14 @@ public final class PortalScreenCulling {
 			if (CY[i] < -w) outDown++;
 			if (CY[i] > w) outUp++;
 			if (w <= 1e-6f) continue;
-			float x = CX[i] / w, y = CY[i] / w;
-			if (x < minX) minX = x;
-			if (y < minY) minY = y;
-			if (x > maxX) maxX = x;
-			if (y > maxY) maxY = y;
+			float x = CX[i] / w;
+			float y = CY[i] / w;
+			minX = Math.min(minX, x);
+			minY = Math.min(minY, y);
+			maxX = Math.max(maxX, x);
+			maxY = Math.max(maxY, y);
 		}
-		if (outLeft == n || outRight == n || outDown == n || outUp == n) return false;
-		if (minX > maxX) return false;
+		if (outLeft == n || outRight == n || outDown == n || outUp == n || minX > maxX) return false;
 		OUT[0] = Math.max(-1, minX);
 		OUT[1] = Math.max(-1, minY);
 		OUT[2] = Math.min(1, maxX);
@@ -262,16 +298,19 @@ public final class PortalScreenCulling {
 		return OUT[0] < OUT[2] && OUT[1] < OUT[3];
 	}
 
-	// ------------------------------------------------------------------ clipping (rare paths)
+	// ------------------------------------------------------------------ polygon clipping
 
-	/** Keeps the part of the camera-relative polygon PX/PY/PZ where {@code dist >= 0}. */
-	private static int clipPolygon(int n, double[] dist) {
+	/** Keeps the part of the camera-relative polygon PX/PY/PZ where {@link #DIST} {@code >= 0}. */
+	private static int clipPolygon(int n) {
 		int m = 0;
 		for (int i = 0; i < n; i++) {
 			int j = (i + 1) % n;
-			double da = dist[i], db = dist[j];
+			double da = DIST[i], db = DIST[j];
 			if (da >= 0) {
-				QX[m] = PX[i]; QY[m] = PY[i]; QZ[m] = PZ[i]; m++;
+				QX[m] = PX[i];
+				QY[m] = PY[i];
+				QZ[m] = PZ[i];
+				m++;
 			}
 			if ((da >= 0) != (db >= 0)) {
 				double t = da / (da - db);
@@ -287,29 +326,32 @@ public final class PortalScreenCulling {
 		return m;
 	}
 
-	/** Keeps the part of the clip-space polygon CX..CW where {@code PD >= 0}. */
-	private static int clipClipSpace(int n) {
-		float[] x = new float[8], y = new float[8], z = new float[8], w = new float[8];
+	/** Keeps the part of the clip-space polygon CX..CW in front of the near plane ({@link #DIST}). */
+	private static int clipNearPlane(int n) {
 		int m = 0;
-		for (int i = 0; i < n && m < 7; i++) {
+		for (int i = 0; i < n; i++) {
 			int j = (i + 1) % n;
-			double da = PD[i], db = PD[j];
+			double da = DIST[i], db = DIST[j];
 			if (da >= 0) {
-				x[m] = CX[i]; y[m] = CY[i]; z[m] = CZ[i]; w[m] = CW[i]; m++;
+				KX[m] = CX[i];
+				KY[m] = CY[i];
+				KZ[m] = CZ[i];
+				KW[m] = CW[i];
+				m++;
 			}
 			if ((da >= 0) != (db >= 0)) {
 				float t = (float) (da / (da - db));
-				x[m] = CX[i] + (CX[j] - CX[i]) * t;
-				y[m] = CY[i] + (CY[j] - CY[i]) * t;
-				z[m] = CZ[i] + (CZ[j] - CZ[i]) * t;
-				w[m] = CW[i] + (CW[j] - CW[i]) * t;
+				KX[m] = CX[i] + (CX[j] - CX[i]) * t;
+				KY[m] = CY[i] + (CY[j] - CY[i]) * t;
+				KZ[m] = CZ[i] + (CZ[j] - CZ[i]) * t;
+				KW[m] = CW[i] + (CW[j] - CW[i]) * t;
 				m++;
 			}
 		}
-		System.arraycopy(x, 0, CX, 0, m);
-		System.arraycopy(y, 0, CY, 0, m);
-		System.arraycopy(z, 0, CZ, 0, m);
-		System.arraycopy(w, 0, CW, 0, m);
+		System.arraycopy(KX, 0, CX, 0, m);
+		System.arraycopy(KY, 0, CY, 0, m);
+		System.arraycopy(KZ, 0, CZ, 0, m);
+		System.arraycopy(KW, 0, CW, 0, m);
 		return m;
 	}
 }

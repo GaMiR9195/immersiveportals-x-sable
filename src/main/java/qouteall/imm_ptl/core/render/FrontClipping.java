@@ -2,7 +2,6 @@ package qouteall.imm_ptl.core.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import ipl.sable.render.clip.IplClipPlanes;
-import net.minecraft.client.Minecraft;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
@@ -25,8 +24,6 @@ import qouteall.q_misc_util.my_util.Plane;
  * both planes and can never pull geometry from behind the destination plane into the view.
  */
 public class FrontClipping {
-	private static final Minecraft client = Minecraft.getInstance();
-
 	public static final double ADJUSTMENT = 0.01;
 
 	/** Start of a level render: the pass default (portal plane inside a portal pass, else none). */
@@ -39,14 +36,6 @@ public class FrontClipping {
 	public static void disableClipping() {
 		restorePassDefault();
 		IplClipPlanes.setPlane(IplClipPlanes.OBJECT, null);
-	}
-
-	public static void updateInnerClipping(PoseStack matrixStack) {
-		disableClipping();
-	}
-
-	public static void updateInnerClipping(Matrix4f modelView) {
-		disableClipping();
 	}
 
 	public static boolean isClippingEnabled() {
@@ -112,7 +101,7 @@ public class FrontClipping {
 		@Nullable Plane outerClipping = portal.getPortalShape().getOuterClipping(portal.getThisSideState());
 		if (outerClipping == null) return null;
 		Vec3 planeNormal = outerClipping.normal();
-		Vec3 portalPos = outerClipping.pos().subtract(client.gameRenderer.getMainCamera().getPosition());
+		Vec3 portalPos = outerClipping.pos().subtract(CHelper.getCurrentCameraPos());
 		return new double[]{planeNormal.x, planeNormal.y, planeNormal.z, -planeNormal.dot(portalPos)};
 	}
 }

@@ -285,7 +285,7 @@ public class ExperimentalIrisPortalRenderer extends PortalRenderer {
         GL11.glStencilMask(0xFF);
         
         // update it before pushing
-        FrontClipping.updateInnerClipping(modelView);
+        FrontClipping.disableClipping();
         
         ViewAreaRenderer.renderPortalArea(
             portal, Vec3.ZERO,

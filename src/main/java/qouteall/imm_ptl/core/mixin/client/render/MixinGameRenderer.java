@@ -3,6 +3,7 @@ package qouteall.imm_ptl.core.mixin.client.render;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
+import ipl.sable.render.clip.IplClipPlanes;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -12,9 +13,6 @@ import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.common.NeoForge;
-import ipl.sable.render.clip.IplClipPlanes;
-import qouteall.imm_ptl.core.render.FrontClipping;
-import qouteall.imm_ptl.core.render.PortalPassView;
 import org.joml.Matrix4f;
 import org.joml.Quaternionfc;
 import org.slf4j.Logger;
@@ -34,9 +32,11 @@ import qouteall.imm_ptl.core.ducks.IEGameRenderer;
 import qouteall.imm_ptl.core.portal.animation.ClientPortalAnimationManagement;
 import qouteall.imm_ptl.core.portal.animation.StableClientTimer;
 import qouteall.imm_ptl.core.render.CrossPortalViewRendering;
+import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.imm_ptl.core.render.GuiPortalRendering;
 import qouteall.imm_ptl.core.render.MyGameRenderer;
 import qouteall.imm_ptl.core.render.MyRenderHelper;
+import qouteall.imm_ptl.core.render.PortalPassView;
 import qouteall.imm_ptl.core.render.TransformationManager;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
@@ -261,12 +261,7 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
         index = 0
     )
     private float modifyBobViewTranslateX(float f) {
-        if (portal_isRenderingHand) {
-            return f;
-        }
-        else {
-            return (float) (f * RenderStates.getViewBobbingOffsetMultiplier());
-        }
+        return ip_scaleBobOffset(f);
     }
     
     @ModifyArg(
@@ -275,12 +270,7 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
         index = 1
     )
     private float modifyBobViewTranslateY(float f) {
-        if (portal_isRenderingHand) {
-            return f;
-        }
-        else {
-            return (float) (f * RenderStates.getViewBobbingOffsetMultiplier());
-        }
+        return ip_scaleBobOffset(f);
     }
     
     @ModifyArg(
@@ -289,33 +279,16 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
         index = 2
     )
     private float modifyBobViewTranslateZ(float f) {
-        if (portal_isRenderingHand) {
-            return f;
-        }
-        else {
-            return (float) (f * RenderStates.getViewBobbingOffsetMultiplier());
-        }
+        return ip_scaleBobOffset(f);
     }
-
-
-//    @Redirect(
-//        method = "Lnet/minecraft/client/renderer/GameRenderer;bobView(Lcom/mojang/blaze3d/vertex/PoseStack;F)V",
-//        at = @At(
-//            value = "INVOKE",
-//            target = "Lcom/mojang/blaze3d/vertex/PoseStack;translate(FFF)V"
-//        )
-//    )
-//    private void redirectBobViewTranslate(PoseStack matrixStack, float x, float y, float z) {
-//        if (portal_isRenderingHand) {
-//            matrixStack.translate(x, y, z);
-//        }
-//        else {
-//            double multiplier = RenderStates.getViewBobbingOffsetMultiplier();
-//            matrixStack.translate(
-//                x * multiplier, y * multiplier, z * multiplier
-//            );
-//        }
-//    }
+    
+    /** The hand bobs as in vanilla; the view's bob offset fades near portals. */
+    private float ip_scaleBobOffset(float offset) {
+        if (portal_isRenderingHand) {
+            return offset;
+        }
+        return (float) (offset * RenderStates.getViewBobbingOffsetMultiplier());
+    }
     
     // make sure that the portal rendering basic projection matrix is right
     // the basic projection matrix does not contain view bobbing

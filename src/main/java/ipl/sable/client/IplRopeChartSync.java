@@ -23,9 +23,9 @@ import java.util.function.Consumer;
  * across a same-dimension flip, the way {@link IplParentDimSync} keeps the bodies themselves.
  *
  * <p>The server moves the points of a crossing group's ropes in the flip tick. A client strand
- * interpolates between snapshots on the shared Sable clock, so the delayed strand used to
- * interpolate from the old chart to the new one: the rope flew across the portal distance
- * while its bodies jumped in one tick. Here every rope snapshot is kept in the chart the client
+ * interpolates between snapshots on the shared Sable clock, so left alone the delayed strand
+ * would interpolate from the old chart to the new one and fly across the portal distance while
+ * its bodies jump in one tick. Every rope snapshot is therefore kept in the chart the client
  * currently SHOWS for the strand's holder body: points received while that body's flip is still
  * pending are mapped back on receipt, and when the flip is applied every strand held on the body
  * (current, previous and buffered positions) is rebased in the same tick as the body.
