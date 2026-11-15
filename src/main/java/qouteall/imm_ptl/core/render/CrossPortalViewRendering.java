@@ -90,7 +90,9 @@ public class CrossPortalViewRendering {
             .setDescription(null)
             .setRenderDistance(client.options.getEffectiveRenderDistance())
             .setDoRenderHand(false)
-            .setEnableViewBobbing(false)
+            // The bob offset is part of the projection: keeping it here keeps the cross-portal
+            // view continuous with the normal view (third person bobs the same on both sides).
+            .setEnableViewBobbing(true)
             .build();
         
         IPCGlobal.renderer.invokeWorldRendering(worldRenderInfo);

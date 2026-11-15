@@ -204,6 +204,49 @@ public class BlockManipulationServer {
             
             processUseItemOnIn(world, player, packet);
         }
+        
+        /**
+         * {@link qouteall.imm_ptl.core.mixin.client.interaction.MixinMultiPlayerGameMode#ip_redirectEntityPacket}:
+         * an attack or interaction with an entity seen through {@code portalId}.
+         */
+        @SuppressWarnings("JavadocReference")
+        public static void processInteractPacket(
+            ServerPlayer player,
+            ResourceKey<Level> dimension,
+            java.util.UUID portalId,
+            byte[] packetBytes
+        ) {
+            FriendlyByteBuf buf = IPMcHelper.bytesToBuf(packetBytes);
+            net.minecraft.network.protocol.game.ServerboundInteractPacket packet =
+                net.minecraft.network.protocol.game.ServerboundInteractPacket.STREAM_CODEC.decode(buf);
+            ServerLevel world = player.server.getLevel(dimension);
+            if (world == null) return;
+            Portal portal = findInteractionPortal(player, portalId);
+            if (portal == null || portal.getDestDim() != dimension || !portal.isInteractableBy(player)) {
+                LOGGER.warn("Reject cross-portal entity interaction of {}: no usable portal {}", player, portalId);
+                return;
+            }
+            if (!NeoForge.EVENT_BUS.post(new CrossPortalInteractionEvent(player)).canDo()) return;
+            // The player must actually be at the portal: its eyes within reach of the opening.
+            double reach = player.entityInteractionRange() + 2.0;
+            if (portal.getDistanceToNearestPointInPortal(player.getEyePosition()) > reach) {
+                LOGGER.warn("Reject cross-portal entity interaction of {}: too far from portal", player);
+                return;
+            }
+            CrossPortalPresence.actThrough(player, world, portal, () ->
+                withRedirect(new Context(world, null), () -> player.connection.handleInteract(packet))
+            );
+        }
+    }
+    
+    @Nullable
+    private static Portal findInteractionPortal(ServerPlayer player, java.util.UUID portalId) {
+        net.minecraft.world.entity.Entity entity = player.serverLevel().getEntity(portalId);
+        if (entity instanceof Portal portal) return portal;
+        for (Portal global : GlobalPortalStorage.getGlobalPortals(player.level())) {
+            if (global.getUUID().equals(portalId)) return global;
+        }
+        return null;
     }
     
     public static void init() {

@@ -112,7 +112,7 @@ public class RendererUsingFrameBuffer extends PortalRenderer {
         Matrix4f modelView
     ) {
         FrontClipping.updateInnerClipping(modelView);
-        return QueryManager.renderAndGetDoesAnySamplePass(() -> {
+        return QueryManager.renderAndDecideVisible(portal, () -> {
             ViewAreaRenderer.renderPortalArea(
                 portal, Vec3.ZERO,
                 modelView,

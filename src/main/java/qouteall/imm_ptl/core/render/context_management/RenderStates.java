@@ -161,6 +161,33 @@ public class RenderStates {
 //            }
 //        }
         
+        net.minecraft.client.Camera mainCamera = MyRenderHelper.client.gameRenderer.getMainCamera();
+        if (!MyRenderHelper.client.options.getCameraType().isFirstPerson()
+            && MyRenderHelper.client.level != null && mainCamera.isInitialized()
+        ) {
+            // Third person: bobbing moves the detached camera, not the player's eyes. It only has
+            // to fade in the thin layer where the bob offset could carry the camera across a
+            // portal plane before the cross-portal view decides which side it is on; elsewhere,
+            // including while the camera looks through a portal, bobbing stays as in vanilla.
+            // The camera of the last frame may already be moved to a portal's far side, so the
+            // real detached position is probed here, as the cross-portal view does.
+            net.minecraft.client.Camera probe = new net.minecraft.client.Camera();
+            ((qouteall.imm_ptl.core.ducks.IECamera) probe).ip_setCameraY(
+                ((qouteall.imm_ptl.core.ducks.IECamera) mainCamera).ip_getCameraY(),
+                ((qouteall.imm_ptl.core.ducks.IECamera) mainCamera).ip_getLastCameraY()
+            );
+            probe.setup(
+                MyRenderHelper.client.level, cameraEntity, true,
+                MyRenderHelper.client.options.getCameraType().isMirrored(), getPartialTick()
+            );
+            Vec3 cameraPos = probe.getPosition();
+            double minCameraDistance = CHelper.getClientNearbyPortals(16)
+                .map(portal -> portal.getDistanceToNearestPointInPortal(cameraPos))
+                .min(Double::compareTo).orElse(100.0);
+            setViewBobFactor(Mth.clamp((minCameraDistance - 0.08) / 0.3, 0.0, 1.0));
+            return;
+        }
+        
         Vec3 cameraPosVec = cameraEntity.getEyePosition(getPartialTick());
         double minPortalDistance = CHelper.getClientNearbyPortals(16)
             .map(portal -> portal.getDistanceToNearestPointInPortal(cameraPosVec))

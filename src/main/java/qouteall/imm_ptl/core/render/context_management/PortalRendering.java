@@ -29,12 +29,14 @@ public class PortalRendering {
     private static boolean isRenderingOddNumberOfMirrorsCache = false;
     
     public static void pushPortalLayer(Portal portal) {
+        qouteall.imm_ptl.core.render.PortalScreenCulling.onPushLayer(portal, portalLayers.size());
         portalLayers.push(portal);
         updateCache();
     }
     
     public static void popPortalLayer() {
         portalLayers.pop();
+        qouteall.imm_ptl.core.render.PortalScreenCulling.onPopLayer();
         updateCache();
     }
     

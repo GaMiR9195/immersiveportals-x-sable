@@ -10,9 +10,17 @@ import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import java.util.ArrayDeque;
 
 /**
- * The single source of truth for every geometric cut of the frame: slot {@link #PORTAL} is the
- * portal clip of IP (the front clip of a portal pass, or the clip of an entity crossing a
- * portal), the remaining slots are the aperture cuts of the Sable piece being drawn.
+ * The single source of truth for every geometric cut of the frame:
+ * <ul>
+ *   <li>{@link #PORTAL}: the front clip of the portal pass being drawn. It belongs to the WHOLE
+ *       pass and is never replaced by a draw's own cut, only nudged by the terrain z-fight
+ *       adjustment; outside portal passes it is empty.</li>
+ *   <li>{@link #OBJECT}: the cut of one object being drawn (an entity crossing a portal, the
+ *       outer clip of a crossing entity, the far-side image of an entity seen through another
+ *       portal). It is ANDed with the pass clip, so nothing an object does can make the pass
+ *       leak geometry from behind the destination plane.</li>
+ *   <li>the remaining slots: the aperture cuts of the Sable piece being drawn.</li>
+ * </ul>
  *
  * <p>Planes are given as camera-relative world equations {@code (n, d)}, kept where
  * {@code n·p + d >= 0}, and belong to the level pass they were set in: every
@@ -31,9 +39,10 @@ import java.util.ArrayDeque;
 public final class IplClipPlanes {
 
 	public static final String UNIFORM = "ipl_ClipPlanes";
-	public static final int SLOTS = 3;
+	public static final int SLOTS = 4;
 	public static final int PORTAL = 0;
-	public static final int FIRST_PIECE_CUT = 1;
+	public static final int OBJECT = 1;
+	public static final int FIRST_PIECE_CUT = 2;
 	public static final int PIECE_CUTS = SLOTS - FIRST_PIECE_CUT;
 
 	private static final double[] NEUTRAL = {0.0, 0.0, 0.0, 1.0};
@@ -129,6 +138,11 @@ public final class IplClipPlanes {
 	public static boolean anyActive() {
 		for (int i = 0; i < SLOTS; i++) if (isActive(i)) return true;
 		return false;
+	}
+
+	/** Changes with every change of planes, passes or suppression. */
+	public static long revision() {
+		return revision;
 	}
 
 	/** Clip-space equations of the current pass (neutral for inactive slots), shared buffer. */

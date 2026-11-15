@@ -17,4 +17,10 @@ public class GlStateManagerMixin {
 	private static void ipl$applyClipPlanes(int program, CallbackInfo ci) {
 		IplProgramBindHook.onBind(program);
 	}
+
+	/** Every vanilla-path draw (vertex buffers, buffer uploads): the drawing program holds the planes. */
+	@Inject(method = "_drawElements(IIIJ)V", at = @At("HEAD"))
+	private static void ipl$checkClipPlanes(int mode, int count, int type, long indices, CallbackInfo ci) {
+		IplProgramBindHook.beforeDraw();
+	}
 }

@@ -8,6 +8,7 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
 import ipl.sable.render.IplClipDiagnostics;
 import ipl.sable.render.IplPieceClip;
+import ipl.sable.render.IplProgramBindHook;
 import ipl.sable.render.IplPieceRender;
 import ipl.sable.render.IplSubLevelRenderVisibility;
 import it.unimi.dsi.fastutil.objects.ObjectList;
@@ -64,6 +65,9 @@ public abstract class ChunkedRenderDataMixin {
 			ci.cancel();
 			return;
 		}
+		// the bound program may have been made current with raw GL (see beforeDraw); its piece
+		// draws below include raw multi-draws that no draw hook sees
+		IplProgramBindHook.beforeDraw();
 		IplClipDiagnostics.onSubLevelDraw(sub);
 		IplPieceRender.Frame frame = IplPieceRender.frameFor(sub);
 		if (frame == null) {

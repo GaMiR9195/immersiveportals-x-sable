@@ -8,6 +8,7 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
+import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
 import net.minecraft.resources.ResourceKey;
@@ -24,6 +25,7 @@ import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.IPMcHelper;
+import qouteall.imm_ptl.core.block_manipulation.BlockManipulationClient;
 import qouteall.imm_ptl.core.block_manipulation.BlockManipulationServer;
 import qouteall.imm_ptl.core.ducks.IEClientPlayerInteractionManager;
 import qouteall.q_misc_util.api.McRemoteProcedureCall;
@@ -111,6 +113,57 @@ public abstract class MixinMultiPlayerGameMode implements IEClientPlayerInteract
     )
     private Packet redirectSendInStopDestroyBlock(Packet packet) {
         return ip_redirectPacket(packet);
+    }
+    
+    @ModifyArg(
+        method = "attack",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/multiplayer/ClientPacketListener;send(Lnet/minecraft/network/protocol/Packet;)V"
+        )
+    )
+    private Packet<?> ip_redirectAttack(Packet<?> packet) {
+        return ip_redirectEntityPacket(packet);
+    }
+    
+    @ModifyArg(
+        method = "interact",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/multiplayer/ClientPacketListener;send(Lnet/minecraft/network/protocol/Packet;)V"
+        )
+    )
+    private Packet<?> ip_redirectInteract(Packet<?> packet) {
+        return ip_redirectEntityPacket(packet);
+    }
+    
+    @ModifyArg(
+        method = "interactAt",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/multiplayer/ClientPacketListener;send(Lnet/minecraft/network/protocol/Packet;)V"
+        )
+    )
+    private Packet<?> ip_redirectInteractAt(Packet<?> packet) {
+        return ip_redirectEntityPacket(packet);
+    }
+    
+    /**
+     * An attack or interaction with an entity on the far side of a portal: sent with the portal
+     * it is done through; the server acts for the player on that side of the portal
+     * ({@link BlockManipulationServer.RemoteCallables#processInteractPacket}).
+     */
+    private static Packet<?> ip_redirectEntityPacket(Packet<?> packet) {
+        if (!(packet instanceof ServerboundInteractPacket interactPacket)) return packet;
+        if (!BlockManipulationClient.isPerformingRemoteEntityAction()) return packet;
+        FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
+        ServerboundInteractPacket.STREAM_CODEC.encode(buf, interactPacket);
+        return new ServerboundCustomPayloadPacket(McRemoteProcedureCall.createPacketToSendToServer(
+            "qouteall.imm_ptl.core.block_manipulation.BlockManipulationServer.RemoteCallables.processInteractPacket",
+            BlockManipulationClient.remotePointedDim,
+            BlockManipulationClient.remoteEntityPortalId,
+            IPMcHelper.bufToBytes(buf)
+        ));
     }
     
     private static Packet<?> ip_redirectPacket(Packet<?> packet) {

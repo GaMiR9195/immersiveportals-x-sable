@@ -213,8 +213,16 @@ public class PortalRenderInfo implements AutoCloseable {
         }
     }
     
+    /**
+     * Renders the opening's query and decides whether the portal's world is rendered: visible
+     * when at least {@link qouteall.imm_ptl.core.render.PortalScreenCulling#minVisibleSamples}
+     * samples passed, so gaps of a few pixels between blocks do not trigger a whole world pass.
+     */
     public static boolean renderAndDecideVisibility(Portal portal, Runnable queryRendering) {
         ProfilerFiller profiler = Minecraft.getInstance().getProfiler();
+        long minSamples = qouteall.imm_ptl.core.render.PortalScreenCulling.minVisibleSamples(
+            portal, qouteall.imm_ptl.core.render.context_management.PortalRendering.getPortalLayer()
+        );
         
         boolean decision;
         if (IPGlobal.offsetOcclusionQuery) {
@@ -227,18 +235,28 @@ public class PortalRenderInfo implements AutoCloseable {
             GlQueryObject lastFrameQuery = visibility.lastFrameQuery;
             GlQueryObject thisFrameQuery = visibility.acquireThisFrameQuery();
             
-            thisFrameQuery.performQueryAnySamplePassed(queryRendering);
+            thisFrameQuery.performQuerySampleNumPassed(queryRendering);
             
             boolean noPredict =
                 renderInfo.isFrequentlyMispredicted() ||
                     QueryManager.queryStallCounter <= 3;
             
             if (lastFrameQuery != null) {
-                boolean lastFrameVisible = lastFrameQuery.fetchQueryResult();
+                long lastFrameSamples = lastFrameQuery.fetchSampleCount();
+                boolean lastFrameVisible = lastFrameSamples >= minSamples;
                 
-                if (!lastFrameVisible && noPredict) {
+                if (!lastFrameVisible && thisFrameQuery.isResultAvailable()) {
+                    // already there: no wait
+                    decision = thisFrameQuery.fetchSampleCount() >= minSamples;
+                }
+                else if (!lastFrameVisible && lastFrameSamples > 0) {
+                    // seen through a gap last frame: stays culled until it opens up, without
+                    // stalling the pipeline every frame for it
+                    decision = false;
+                }
+                else if (!lastFrameVisible && noPredict) {
                     profiler.push("fetch_this_frame");
-                    decision = thisFrameQuery.fetchQueryResult();
+                    decision = thisFrameQuery.fetchSampleCount() >= minSamples;
                     profiler.pop();
                     QueryManager.queryStallCounter++;
                 }
@@ -249,13 +267,13 @@ public class PortalRenderInfo implements AutoCloseable {
             }
             else {
                 profiler.push("fetch_this_frame");
-                decision = thisFrameQuery.fetchQueryResult();
+                decision = thisFrameQuery.fetchSampleCount() >= minSamples;
                 profiler.pop();
                 QueryManager.queryStallCounter++;
             }
         }
         else {
-            decision = QueryManager.renderAndGetDoesAnySamplePass(queryRendering);
+            decision = QueryManager.renderAndDecideVisible(portal, queryRendering);
         }
         return decision;
     }

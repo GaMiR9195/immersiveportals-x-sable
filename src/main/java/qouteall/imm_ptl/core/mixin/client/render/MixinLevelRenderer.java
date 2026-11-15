@@ -150,6 +150,12 @@ public abstract class MixinLevelRenderer implements IEWorldRenderer {
     ) {
         IplClipPlanes.beginPass(projection, modelView);
         try {
+            if (ipl.sable.render.IplForeignPerspective.isRendering()) {
+                // another camera (a shadow map, a mod's camera): none of the view's cuts apply
+                IplClipPlanes.suppressed(() -> original.call(
+                    deltaTracker, renderBlockOutline, camera, gameRenderer, lightTexture, modelView, projection));
+                return;
+            }
             FrontClipping.beginLevelPass();
             original.call(deltaTracker, renderBlockOutline, camera, gameRenderer, lightTexture, modelView, projection);
         } finally {

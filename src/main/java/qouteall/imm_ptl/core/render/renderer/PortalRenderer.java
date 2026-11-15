@@ -29,6 +29,7 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 import qouteall.imm_ptl.core.render.MyGameRenderer;
 import qouteall.imm_ptl.core.render.MyRenderHelper;
+import qouteall.imm_ptl.core.render.PortalScreenCulling;
 import qouteall.imm_ptl.core.render.TransformationManager;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
@@ -90,6 +91,11 @@ public abstract class PortalRenderer {
     public abstract boolean replaceFrameBufferClearing();
     
     protected List<Portal> getPortalsToRender(Matrix4f modelView) {
+        if (ipl.sable.render.IplForeignPerspective.isRendering()) {
+            // a shadow map or another mod's camera: portal worlds are not rendered into it
+            return List.of();
+        }
+
         // This plane is constant for the complete inner-world pass. Test it
         // before any per-portal visibility work so hidden portals never reach
         // the stencil query or recursive renderer.
@@ -97,47 +103,49 @@ public abstract class PortalRenderer {
             ? PortalRendering.getActiveClippingPlane()
             : null;
 
-        Supplier<Frustum> frustumSupplier = Helper.cached(() -> {
-            Frustum frustum = new Frustum(
-                modelView,
-                RenderSystem.getProjectionMatrix()
-            );
-            
-            Vec3 cameraPos = client.gameRenderer.getMainCamera().getPosition();
-            frustum.prepare(cameraPos.x, cameraPos.y, cameraPos.z);
-            
-            return frustum;
-        });
-        
-        ObjectArrayList<Portal> renderables = new ObjectArrayList<>();
-        
         ClientLevel world = client.level;
         assert world != null;
-        List<Portal> globalPortals = GlobalPortalStorage.getGlobalPortals(world);
-        for (Portal globalPortal : globalPortals) {
-            if (!shouldSkipRenderingPortal(globalPortal, frustumSupplier, activeClip)) {
+        Vec3 cameraPos = CHelper.getCurrentCameraPos();
+        int layer = PortalRendering.getPortalLayer();
+        // one view-projection per pass; each portal costs four projected corners
+        PortalScreenCulling.begin(layer, modelView, RenderSystem.getProjectionMatrix(), cameraPos);
+        
+        ObjectArrayList<Portal> renderables = new ObjectArrayList<>();
+        for (Portal globalPortal : GlobalPortalStorage.getGlobalPortals(world)) {
+            if (!shouldSkipRenderingPortal(globalPortal, activeClip)
+                && PortalScreenCulling.accept(globalPortal, layer, activeClip)
+            ) {
                 renderables.add(globalPortal);
             }
         }
         
-        world.entitiesForRendering().forEach(e -> {
-            if (e instanceof Portal portal) {
-                if (!shouldSkipRenderingPortal(portal, frustumSupplier, activeClip)) {
-                    renderables.add(portal);
-                }
+        for (net.minecraft.world.entity.Entity e : world.entitiesForRendering()) {
+            if (e instanceof Portal portal
+                && !shouldSkipRenderingPortal(portal, activeClip)
+                && PortalScreenCulling.accept(portal, layer, activeClip)
+            ) {
+                renderables.add(portal);
             }
-        });
+        }
         
-        Vec3 cameraPos = CHelper.getCurrentCameraPos();
-        renderables.sort(Comparator.comparingDouble(
-            e -> e.getDistanceToNearestPointInPortal(cameraPos)
-        ));
+        int count = renderables.size();
+        if (count > 1) {
+            // nearest first; distances computed once, not per comparison
+            double[] distances = new double[count];
+            Integer[] order = new Integer[count];
+            for (int i = 0; i < count; i++) {
+                distances[i] = renderables.get(i).getDistanceToNearestPointInPortal(cameraPos);
+                order[i] = i;
+            }
+            java.util.Arrays.sort(order, (a, b) -> Double.compare(distances[a], distances[b]));
+            ObjectArrayList<Portal> sorted = new ObjectArrayList<>(count);
+            for (Integer i : order) sorted.add(renderables.get(i));
+            return sorted;
+        }
         return renderables;
     }
     
-    private static boolean shouldSkipRenderingPortal(
-        Portal portal, Supplier<Frustum> frustumSupplier, @Nullable Plane activeClip
-    ) {
+    private static boolean shouldSkipRenderingPortal(Portal portal, @Nullable Plane activeClip) {
         if (!portal.isPortalValid()) {
             return true;
         }
@@ -174,16 +182,7 @@ public abstract class PortalRenderer {
         if (distance > getRenderRange()) {
             return true;
         }
-        
-        if (IPCGlobal.earlyFrustumCullingPortal) {
-            // frustum culling does not work when portal is very close
-            if (distance > 0.1) {
-                Frustum frustum = frustumSupplier.get();
-                if (!frustum.isVisible(portal.getThinBoundingBox())) {
-                    return true;
-                }
-            }
-        }
+        // view culling: PortalScreenCulling (exact, replaces the frustum box test)
 
         if (PortalRendering.isInvalidRecursionRendering(portal)) {
             return true;

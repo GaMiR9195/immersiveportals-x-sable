@@ -12,7 +12,10 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
@@ -24,6 +27,8 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.PortalPlaceholderBlock;
 import qouteall.imm_ptl.core.portal.PortalUtils;
 
+import java.util.Optional;
+import java.util.UUID;
 import java.util.function.Supplier;
 
 public class BlockManipulationClient {
@@ -38,6 +43,21 @@ public class BlockManipulationClient {
      */
     @Nullable
     public static ResourceKey<Level> remoteViewDim;
+    
+    /**
+     * The portal an entity on its far side is targeted through ({@link #remoteHitResult} is then
+     * an {@link EntityHitResult} in the portal's destination). Attacks and interactions with it
+     * are sent to the server together with this portal, which acts for the player on that side.
+     */
+    @Nullable
+    public static UUID remoteEntityPortalId;
+    
+    /** True while a remote entity attack/interaction runs (its packets are redirected). */
+    private static boolean performingRemoteEntityAction = false;
+    
+    public static boolean isPerformingRemoteEntityAction() {
+        return performingRemoteEntityAction && remoteEntityPortalId != null && remotePointedDim != null;
+    }
     
     public static boolean isPointingToPortal() {
         return remotePointedDim != null;
@@ -69,6 +89,7 @@ public class BlockManipulationClient {
         remotePointedDim = null;
         remoteHitResult = null;
         remoteViewDim = null;
+        remoteEntityPortalId = null;
 
         if (!NeoForge.EVENT_BUS.post(new BlockManipulationServer.CrossPortalInteractionEvent(client.player)).canDo()) {
             return;
@@ -77,20 +98,31 @@ public class BlockManipulationClient {
         Vec3 cameraPos = client.gameRenderer.getMainCamera().getPosition();
         
         double reachDistance = client.player.blockInteractionRange();
+        double searchDistance = Math.max(reachDistance, client.player.entityInteractionRange());
 
-        PortalUtils.raytracePortalFromEntityView(client.player, partialTick, reachDistance, true, portal1 -> portal1.isInteractableBy(client.player)).ifPresent(pair -> {
+        PortalUtils.raytracePortalFromEntityView(client.player, partialTick, searchDistance, true, portal1 -> portal1.isInteractableBy(client.player)).ifPresent(pair -> {
             Portal portal = pair.getFirst();
             Vec3 hitPos = pair.getSecond().hitPos();
             double distanceToPortalPointing = hitPos.distanceTo(cameraPos);
+            // the portal is in front of whatever vanilla picked locally (block or entity)
             if (distanceToPortalPointing < getCurrentTargetDistance() + 0.2) {
                 client.hitResult = createMissedHitResult(cameraPos, hitPos);
                 
-                updateTargetedBlockThroughPortal(
+                if (distanceToPortalPointing < reachDistance) {
+                    updateTargetedBlockThroughPortal(
+                        cameraPos,
+                        client.player.getViewVector(partialTick),
+                        client.player.level().dimension(),
+                        distanceToPortalPointing,
+                        reachDistance,
+                        portal
+                    );
+                }
+                
+                updateTargetedEntityThroughPortal(
                     cameraPos,
                     client.player.getViewVector(partialTick),
-                    client.player.level().dimension(),
                     distanceToPortalPointing,
-                    reachDistance,
                     portal
                 );
             }
@@ -142,6 +174,63 @@ public class BlockManipulationClient {
         if (remoteViewDim == null) {
             client.hitResult = blockHit;
         }
+    }
+    
+    /**
+     * Entities on the far side of the portal the player looks through: the same pick as vanilla
+     * (pick radius, entity interaction range measured along the look ray in the player's own
+     * space, nearest hit wins, a block in front of the entity wins over it), run on the
+     * destination's entities along the transformed ray.
+     */
+    private static void updateTargetedEntityThroughPortal(
+        Vec3 cameraPos, Vec3 viewVector, double beginDistance, Portal portal
+    ) {
+        double entityRange = client.player.entityInteractionRange();
+        if (beginDistance >= entityRange) return;
+        ClientLevel world = ClientWorldLoader.getOptionalWorld(portal.getDestDim());
+        if (world == null) return;
+        
+        Vec3 from = portal.transformPoint(cameraPos.add(viewVector.scale(beginDistance)));
+        Vec3 to = portal.transformPoint(cameraPos.add(viewVector.scale(entityRange)));
+        double maxDistSq = from.distanceToSqr(to);
+        if (remotePointedDim != null && remoteHitResult != null
+            && remoteHitResult.getType() != HitResult.Type.MISS
+        ) {
+            maxDistSq = Math.min(maxDistSq, ipl.sable.SableBridge.frameAwareDistanceSqr(
+                world, from, remoteHitResult.getLocation()));
+        }
+        
+        Entity cameraEntity = client.getCameraEntity();
+        EntityHitResult best = null;
+        double bestDistSq = maxDistSq;
+        AABB area = new AABB(from, to).inflate(1.0);
+        for (Entity entity : world.getEntities(client.player, area, e ->
+            !e.isSpectator() && e.isPickable() && !(e instanceof Portal) && e != cameraEntity
+        )) {
+            AABB box = entity.getBoundingBox().inflate(entity.getPickRadius());
+            if (box.contains(from)) {
+                if (bestDistSq >= 0) {
+                    best = new EntityHitResult(entity, from);
+                    bestDistSq = 0;
+                }
+                continue;
+            }
+            Optional<Vec3> hit = box.clip(from, to);
+            if (hit.isEmpty()) continue;
+            double distSq = from.distanceToSqr(hit.get());
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq;
+                best = new EntityHitResult(entity, hit.get());
+            }
+        }
+        if (best == null) return;
+        
+        remoteHitResult = best;
+        remotePointedDim = portal.getDestDim();
+        remoteViewDim = null;
+        remoteEntityPortalId = portal.getUUID();
+        client.hitResult = createMissedHitResult(cameraPos, cameraPos.add(viewVector.scale(beginDistance)));
+        client.crosshairPickEntity = best.getEntity();
     }
     
     private static double getCurrentTargetDistance() {
@@ -296,18 +385,29 @@ public class BlockManipulationClient {
             effectiveHitResult = remoteHitResult;
         }
         
-        return ClientWorldLoader.withSwitchedWorld(
+        boolean entityAction = effectiveHitResult instanceof EntityHitResult && remoteEntityPortalId != null;
+        T result = ClientWorldLoader.withSwitchedWorld(
             remoteWorld, () -> {
                 HitResult originalHitResult = client.hitResult;
+                boolean originalFlag = performingRemoteEntityAction;
                 client.hitResult = effectiveHitResult;
+                performingRemoteEntityAction = entityAction;
                 try {
                     return func.get();
                 }
                 finally {
                     client.hitResult = originalHitResult;
+                    performingRemoteEntityAction = originalFlag;
                 }
             }
         );
+        if (entityAction && client.player != null && client.player.getVehicle() != null
+            && client.player.getVehicle().level() != client.player.level()
+        ) {
+            // never ride something in another world through a portal
+            client.player.stopRiding();
+        }
+        return result;
     }
 
     @Nullable

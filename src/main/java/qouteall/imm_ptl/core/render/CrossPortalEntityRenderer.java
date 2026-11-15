@@ -184,22 +184,22 @@ public class CrossPortalEntityRenderer {
     ) {
         if (PortalRendering.isRendering()) {
             Portal renderingPortal = PortalRendering.getRenderingPortal();
-            //correctly rendering it needs two culling planes
-            //use some rough check to work around
-            
-            if (renderingPortal instanceof Portal) {
-                if (!Portal.isFlippedPortal(((Portal) renderingPortal), collidingPortal)
-                    && !Portal.isReversePortal(((Portal) renderingPortal), collidingPortal)
-                ) {
-                    Vec3 cameraPos = client.gameRenderer.getMainCamera().getPosition();
-                    
-                    Plane innerClipping = collidingPortal.getInnerClipping();
-                    
-                    boolean isHidden = innerClipping != null &&
-                        !innerClipping.isPointOnPositiveSide(cameraPos);
-                    if (renderingPortal == collidingPortal || !isHidden) {
-                        renderEntity(entity, collidingPortal, matrixStack);
-                    }
+            // Two cuts: the pass's front clip (always on) and the colliding portal's
+            // destination plane as the object cut, so only the part that really went through
+            // the colliding portal shows, from any viewpoint.
+            if (!Portal.isFlippedPortal(renderingPortal, collidingPortal)
+                && !Portal.isReversePortal(renderingPortal, collidingPortal)
+            ) {
+                client.renderBuffers().bufferSource().endBatch();
+                FrontClipping.setupInnerClipping(
+                    collidingPortal.getInnerClipping(), matrixStack.last().pose(), 0
+                );
+                try {
+                    renderEntity(entity, collidingPortal, matrixStack);
+                    client.renderBuffers().bufferSource().endBatch();
+                }
+                finally {
+                    FrontClipping.disableClipping();
                 }
             }
         }

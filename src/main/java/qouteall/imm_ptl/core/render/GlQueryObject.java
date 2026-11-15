@@ -16,14 +16,12 @@ public class GlQueryObject {
         this.idQueryObject = handle;
     }
     
+    /**
+     * Pooled query objects are always used as sample counters: a query object's target is fixed
+     * by its first use, so mixing ANY_SAMPLES_PASSED and SAMPLES_PASSED on recycled ids fails.
+     */
     public void performQueryAnySamplePassed(Runnable renderingFunc) {
-        // mac does not support any samples passed query
-        if (Minecraft.ON_OSX) {
-            performQuerySampleNumPassed(renderingFunc);
-            return;
-        }
-        
-        performQuery(renderingFunc, GL33.GL_ANY_SAMPLES_PASSED);
+        performQuerySampleNumPassed(renderingFunc);
     }
     
     public void performQuerySampleNumPassed(Runnable renderingFunc) {
@@ -49,12 +47,23 @@ public class GlQueryObject {
     }
     
     public boolean fetchQueryResult() {
+        return fetchSampleCount() != 0;
+    }
+    
+    /** Whether the result can be read without waiting for the GPU. */
+    public boolean isResultAvailable() {
         Validate.isTrue(isValid());
         Validate.isTrue(hasResult);
         
-        int result = GL15.glGetQueryObjecti(idQueryObject, GL15.GL_QUERY_RESULT);
+        return GL15.glGetQueryObjecti(idQueryObject, GL15.GL_QUERY_RESULT_AVAILABLE) != 0;
+    }
+    
+    /** Samples that passed (waits for the result). */
+    public long fetchSampleCount() {
+        Validate.isTrue(isValid());
+        Validate.isTrue(hasResult);
         
-        return result != 0;
+        return Integer.toUnsignedLong(GL15.glGetQueryObjecti(idQueryObject, GL15.GL_QUERY_RESULT));
     }
     
     private void dispose() {

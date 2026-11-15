@@ -9,7 +9,12 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.LightTexture;
+import net.minecraft.client.renderer.culling.Frustum;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.common.NeoForge;
+import ipl.sable.render.clip.IplClipPlanes;
+import qouteall.imm_ptl.core.render.FrontClipping;
+import qouteall.imm_ptl.core.render.PortalPassView;
 import org.joml.Matrix4f;
 import org.joml.Quaternionfc;
 import org.slf4j.Logger;
@@ -72,6 +77,7 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
     private void onFarBeforeRendering(
         DeltaTracker deltaTracker, boolean renderWorldIn, CallbackInfo ci
     ) {
+        PortalPassView.onFrameStart();
         minecraft.getProfiler().push("ip_pre_total_render");
         IPGlobal.PRE_TOTAL_RENDER_TASK_LIST.processTasks();
         minecraft.getProfiler().pop();
@@ -158,11 +164,48 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
         gameRenderer.renderLevel(deltaTracker);
     }
     
+    @Inject(method = "renderLevel", at = @At("HEAD"))
+    private void ip_onRenderLevelBegin(DeltaTracker deltaTracker, CallbackInfo ci) {
+        PortalPassView.onGameRenderLevelBegin();
+    }
+    
     @Inject(method = "renderLevel", at = @At("TAIL"))
     private void onRenderCenterEnded(
         DeltaTracker deltaTracker, CallbackInfo ci
     ) {
+        PortalPassView.onGameRenderLevelEnd();
         IPCGlobal.renderer.onHandRenderingEnded();
+    }
+    
+    /**
+     * The after-level stage belongs to the world render it follows: mods draw there with the
+     * level's matrices (Veil fixed buffers, staff overlays, shadows...). It runs inside a clip
+     * pass of the same view, with the camera orientation of the level render, so nothing drawn
+     * there can leak past a portal's destination plane or be cut with the planes of an enclosing
+     * portal pass.
+     */
+    @WrapOperation(
+        method = "renderLevel",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/neoforged/neoforge/client/ClientHooks;dispatchRenderStage(Lnet/neoforged/neoforge/client/event/RenderLevelStageEvent$Stage;Lnet/minecraft/client/renderer/LevelRenderer;Lcom/mojang/blaze3d/vertex/PoseStack;Lorg/joml/Matrix4f;Lorg/joml/Matrix4f;ILnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/culling/Frustum;)V",
+            remap = false
+        )
+    )
+    private void ip_afterLevelStageInPass(
+        RenderLevelStageEvent.Stage stage, LevelRenderer levelRenderer, PoseStack poseStack,
+        Matrix4f modelView, Matrix4f projection, int renderTick, Camera camera, Frustum frustum,
+        Operation<Void> original
+    ) {
+        IplClipPlanes.beginPass(projection, modelView);
+        try {
+            FrontClipping.beginLevelPass();
+            original.call(stage, levelRenderer, poseStack, modelView, projection, renderTick, camera, frustum);
+        }
+        finally {
+            IplClipPlanes.endPass();
+            PortalPassView.close();
+        }
     }
     
     @WrapOperation(
@@ -175,6 +218,9 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
     private void wrapRenderLevel(
         LevelRenderer instance, DeltaTracker deltaTracker, boolean bl, Camera camera, GameRenderer gameRenderer, LightTexture lightTexture, Matrix4f modelView, Matrix4f projection, Operation<Void> original
     ) {
+        // Opens the view of this world render (camera orientation of the rendered world);
+        // closed after the after-level stage.
+        PortalPassView.open(camera, modelView);
         original.call(
             instance, deltaTracker, bl, camera, gameRenderer, lightTexture, modelView, projection
         );

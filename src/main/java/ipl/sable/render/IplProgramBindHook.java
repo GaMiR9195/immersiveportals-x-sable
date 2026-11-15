@@ -16,14 +16,15 @@ import qouteall.imm_ptl.core.IPGlobal;
  * <p>A program is clip-capable when it carries the injected {@value IplClipPlanes#UNIFORM}
  * uniform. Only then are the hardware clip distances enabled for it; any other program (compute,
  * screen-space, foreign pipelines) draws with them disabled, so it never reads clip distances it
- * does not write. Nothing is cached per program id: GL reuses ids of programs deleted behind our
- * back, and a location lookup per bind only happens while a cut is active.
+ * does not write.
+ *
+ * <p>Nothing is cached per program: a program can be re-linked under the same id in the middle of
+ * a frame (Veil recompiles programs on demand), which resets its uniforms and may move them, so
+ * the location is looked up and the planes uploaded on every bind. The clip-distance enables are
+ * written on every apply as well, never trusted to still be what was set last time.
  */
 public final class IplProgramBindHook {
 
-	private static final int ALL_SLOTS_MASK = (1 << IplClipPlanes.SLOTS) - 1;
-	/** Clip distances we left enabled; we are the only writer of these GL capabilities. */
-	private static int enabledMask;
 	private static final float[] FOREIGN_EQUATIONS = new float[IplClipPlanes.SLOTS * 4];
 
 	private IplProgramBindHook() {}
@@ -45,6 +46,37 @@ public final class IplProgramBindHook {
 		apply(program, FOREIGN_EQUATIONS);
 	}
 
+	/** Program and plane revision the last apply was made for (draw-time check). */
+	private static int verifiedProgram = -1;
+	private static long verifiedRevision = Long.MIN_VALUE;
+
+	/**
+	 * Right before a draw: the program that will draw must hold the current planes.
+	 *
+	 * <p>Bind-time application alone is not enough: programs also become current behind
+	 * {@code GlStateManager}'s back — Veil's non-DSA uniform upload binds a program with raw GL and
+	 * then restores {@code ShaderInstance.lastProgramId} with raw GL, after which vanilla's
+	 * {@code apply()} sees "already bound" and never binds again. Such a program draws with
+	 * whatever its clip uniform held (never uploaded: no cut at all) — sub-levels and other
+	 * vanilla-shader draws leaked out of portal passes exactly like that. The check costs one
+	 * {@code glGetInteger} per draw while a cut is active and nothing otherwise.
+	 */
+	public static void beforeDraw() {
+		if (!IPGlobal.enableClippingMechanism || !IplClipPlanes.anyActive()) return;
+		int program = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+		if (program == verifiedProgram && IplClipPlanes.revision() == verifiedRevision) return;
+		apply(program, null);
+	}
+
+	/**
+	 * End of {@code ShaderInstance.apply()}: uniform uploads of the shader (and of other mods
+	 * hooked into it) are done, the planes are written last. Unconditional while a cut is active.
+	 */
+	public static void afterShaderApply() {
+		if (!IPGlobal.enableClippingMechanism || !IplClipPlanes.anyActive()) return;
+		apply(GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM), null);
+	}
+
 	/** The planes changed while some program may be bound. */
 	public static void refreshCurrentProgram() {
 		if (!IPGlobal.enableClippingMechanism) return;
@@ -52,6 +84,8 @@ public final class IplProgramBindHook {
 	}
 
 	private static void apply(int program, float @Nullable [] equations) {
+		verifiedProgram = equations == null ? program : -1;
+		verifiedRevision = IplClipPlanes.revision();
 		if (program <= 0 || !IplClipPlanes.anyActive()) {
 			setEnabled(0);
 			return;
@@ -62,6 +96,7 @@ public final class IplProgramBindHook {
 			return;
 		}
 		GL20.glUniform4fv(location, equations != null ? equations : IplClipPlanes.clipSpaceEquations());
+		IplClipDiagnostics.afterUpload(program, location);
 		int mask = 0;
 		for (int slot = 0; slot < IplClipPlanes.SLOTS; slot++) {
 			if (IplClipPlanes.isActive(slot)) mask |= 1 << slot;
@@ -69,14 +104,15 @@ public final class IplProgramBindHook {
 		setEnabled(mask);
 	}
 
+	/** What was written last; only an all-off state that is already off is skipped. */
+	private static int enabledMask;
+
 	private static void setEnabled(int mask) {
-		int changed = (enabledMask ^ mask) & ALL_SLOTS_MASK;
+		if (mask == 0 && enabledMask == 0) return;
+		enabledMask = mask;
 		for (int slot = 0; slot < IplClipPlanes.SLOTS; slot++) {
-			int bit = 1 << slot;
-			if ((changed & bit) == 0) continue;
-			if ((mask & bit) != 0) GL11.glEnable(GL30.GL_CLIP_DISTANCE0 + slot);
+			if ((mask & (1 << slot)) != 0) GL11.glEnable(GL30.GL_CLIP_DISTANCE0 + slot);
 			else GL11.glDisable(GL30.GL_CLIP_DISTANCE0 + slot);
 		}
-		enabledMask = mask;
 	}
 }

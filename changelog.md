@@ -8,6 +8,78 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ### Changed
 
+- **Portal culling is exact, recursion-aware and ignores pixel gaps** (`PortalScreenCulling`).
+  Each candidate portal is reduced to the screen rectangle of its opening (four corners projected
+  with the pass's view-projection, computed once per pass, no allocations; clipping only when the
+  opening crosses the destination or near plane) and intersected with the rectangle of every
+  enclosing portal, so a nested portal (and every step of a portal loop) can only shrink and
+  recursion stops once nothing is left. Replaces the vanilla frustum box test of portals. Portals
+  off screen, behind the destination plane or lying on it (the far end of a loop facing the
+  viewer, which showed the wrong world in a flickering sliver) are never rendered. The occlusion
+  query counts samples: a portal's world is rendered only when at least
+  `-Dipl.portalMinVisibleFraction` (default 0.0025 %) of the screen, but never more than a quarter
+  of its own screen region, passes, so cracks between blocks no longer trigger whole world passes.
+  A portal seen through a gap last frame does not stall the GPU waiting for this frame's query; a
+  query result that is already available is used at once. Pooled query objects are used as sample
+  counters only.
+- **Flywheel and portals** (`FlywheelVisualizationManagerMixin`, `FlywheelEngineOriginMixin`).
+  - A portal pass whose camera was far from the player's (a same-level portal leading a few hundred
+    blocks away) moved Flywheel's render origin, and the next normal pass moved it back: every
+    visual of the level was recreated twice per frame (large FPS cost; parts missing or blinking
+    while rebuilt). Portal passes keep the origin unless their camera is over 4096 blocks away.
+  - Flywheel served a level only while it was `Minecraft.level`, which IP swaps for portal passes
+    and remote ticks, and section compiles read it from worker threads at random moments: block
+    entities went to Flywheel or to the vanilla list depending on timing — drawn twice (z-fighting,
+    flickering parts) or by nobody (missing parts), in the player's level and through portals.
+    Every client level is now served by its own manager, always.
+- **Veil zeroed the clip planes of every vanilla shader** (`ShaderInstanceClipMixin`). Veil
+  discovers every active uniform of a vanilla program and gives unknown ones a vanilla `Uniform`
+  filled with zeros, uploaded at the end of every `ShaderInstance.apply()` — after the bind hook
+  had written the planes. `dot(gl_Position, 0) = 0` keeps every vertex: sub-levels, entities, block
+  entities, particles and everything else drawn through `ShaderInstance` were never cut in portal
+  passes (the diagnostics read the uniform back as all zeros). Veil's uniforms for the planes are
+  disarmed (location -1) and the planes are written again at the end of every `apply()`.
+- **The program that draws always holds the clip planes** (`IplProgramBindHook.beforeDraw`). The
+  diagnostics showed the shader drawing sub-levels in portal passes with its clip uniform all zero
+  on the GPU (never uploaded: no cut), while the planes on the CPU were right. Programs also become
+  current behind `GlStateManager` (raw `glUseProgram`, e.g. Veil's non-DSA uniform upload restoring
+  `ShaderInstance.lastProgramId`), after which vanilla's `apply()` never binds them again, so a
+  bind hook alone never reaches them. Every `GlStateManager._drawElements` and every sub-level
+  draw now checks the current program against the plane revision it was last given (one
+  `glGetInteger` per draw while a cut is active, nothing otherwise) and uploads when needed.
+- **Clip state is re-asserted on every bind while a cut is active** (`IplProgramBindHook`): the
+  uniform is looked up and uploaded on each bind (programs can be re-linked under the same id
+  mid-frame, which resets them) and the clip-distance enables are written each time instead of
+  being trusted from the last write. `-Dipl.portalDiagnostics=true` logs, for every sub-level draw
+  that must be cut in a portal pass, the program, whether its vertex shader carries the clip
+  writer, the clip uniform read back from the GPU next to the expected value, and the enables.
+- **Nothing leaks out of a portal pass** (`PortalPassView`, `FrontClipping`).
+  - The after-level render stage (Veil fixed buffers, the physics staff overlay, mods drawing at
+    `AFTER_LEVEL`) runs inside the clip pass of the view it belongs to. It used to run after the
+    pass had closed: unclipped in a portal pass, or cut with the planes of the ENCLOSING portal
+    pass inside nested ones (objects from another portal's camera path showing in the opening).
+  - The pass clip can no longer be replaced: an object's own cut (entity crossing a portal, outer
+    clip, far-side image of an entity) goes to a separate clip slot and is applied together with
+    it. Entity images in portal passes are now cut by both planes and drawn from every viewpoint.
+  - Veil level-perspective renders (Sable's sky-light shadow map, mods' cameras) take no portal
+    cuts and render no portal worlds into their target.
+- **Billboards face the portal camera**: during a world render whose view is rotated by portals
+  (portal passes, third-person cross-portal view, GUI portals) the camera's orientation is the
+  effective one of the rendered world (mirrors folded in), so particles, name tags, beams, the
+  staff anchor and any mod billboard reading `Camera.rotation()` face the viewer; restored after
+  the after-level stage.
+- **Third-person view bobbing through portals**: the cross-portal view keeps view bobbing, and in
+  third person the bob only fades in the thin layer (< 0.4 blocks) where the detached camera could
+  be carried across a portal plane, measured from the real camera position instead of the
+  player's eyes.
+- **Hitting and interacting with entities through portals** (`CrossPortalPresence`). Entities on
+  the far side are picked like vanilla (pick radius, entity range along the look ray, a block in
+  front wins); attack and use packets are sent with the portal, and the server runs vanilla's own
+  handling with the player standing for that one action at its portal-transformed eyes in the
+  destination (reach, knockback direction, sweep, enchantments, events in the right frame), then
+  restores it exactly (section callback detached, velocity change carried back). Riding across a
+  portal is undone.
+
 - **Routed models are tethered to their holder** (`IplRouteSolver`, `IplRouteTopology`). The frame of
   every part is walked each frame from the block that holds the model along the model itself: a step
   between two touching primitives enters a frame only through the finite area of an opening (back
