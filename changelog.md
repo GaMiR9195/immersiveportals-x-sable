@@ -62,6 +62,11 @@ and used through portals, and the third-person camera behaves around portals.
   two frames in a row, while neither the view (under 0.5 blocks, 3 degrees per frame) nor the portal
   moved, is skipped without waiting for this frame's query. Teleports and camera jumps always wait,
   as before. Before, such a portal stalled the pipeline in every frame it stayed on screen.
+- **Clip planes cost nothing while unchanged.** Every program remembers its clip uniform location
+  and the equations it holds; the hundreds of plane changes per frame (passes, suppression around
+  screen-space draws, per-piece cuts) upload only what differs, without GL queries. The clip-space
+  transform is computed once per pass, and `-Dipl.portalDiagnostics` reads GL state back at most
+  once a second per program instead of after every upload.
 - **Sodium cave culling in the player's own view.** IP replaced Sodium's occlusion-culling decision
   with its portal-pass rule, which is "off" outside portals, so the main view drew every cave
   section. The main view now uses Sodium's own decision.

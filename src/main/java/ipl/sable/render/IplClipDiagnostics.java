@@ -3,6 +3,7 @@ package ipl.sable.render;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import ipl.sable.client.IplStraddleRenderState;
 import ipl.sable.render.clip.IplClipPlanes;
+import it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import net.minecraft.world.phys.AABB;
@@ -46,12 +47,17 @@ public final class IplClipDiagnostics {
     private static final FloatBuffer UNIFORM = BufferUtils.createFloatBuffer(IplClipPlanes.SLOTS * 4);
     /** Programs whose failed upload was already reported. */
     private static final IntOpenHashSet REPORTED = new IntOpenHashSet();
+    /** Last read-back per program: reading GL state stalls the driver, so once a second at most. */
+    private static final Int2LongOpenHashMap LAST_CHECK = new Int2LongOpenHashMap();
 
     private IplClipDiagnostics() {}
 
     /** Right after an upload: an upload that does not land is reported once per program. */
     public static void afterUpload(int program, int location) {
         if (!DIAGNOSTICS) return;
+        long now = System.nanoTime();
+        if (now - LAST_CHECK.getOrDefault(program, Long.MIN_VALUE / 2) < INTERVAL_NANOS) return;
+        LAST_CHECK.put(program, now);
         int error = GL11.glGetError();
         UNIFORM.clear();
         GL20.glGetUniformfv(program, location, UNIFORM);

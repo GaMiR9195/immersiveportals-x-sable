@@ -50,10 +50,13 @@ public final class IplClipPlanes {
 	/** One level render: camera-relative world → clip space, and the planes set inside it. */
 	private static final class Pass {
 		final Matrix4d viewProjection;
+		/** Maps camera-relative plane equations to clip space: {@code (M⁻¹)ᵀ}. */
+		final Matrix4d toClip;
 		final double[][] planes = new double[SLOTS][];
 
 		Pass(Matrix4d viewProjection) {
 			this.viewProjection = viewProjection;
+			this.toClip = new Matrix4d(viewProjection).invert().transpose();
 		}
 	}
 
@@ -149,7 +152,7 @@ public final class IplClipPlanes {
 	public static float[] clipSpaceEquations() {
 		if (clipSpaceRevision != revision) {
 			Pass pass = PASSES.peek();
-			fill(pass == null ? null : pass.viewProjection, CLIP_SPACE);
+			fill(pass == null ? null : pass.toClip, CLIP_SPACE);
 			clipSpaceRevision = revision;
 		}
 		return CLIP_SPACE;
@@ -160,13 +163,12 @@ public final class IplClipPlanes {
 	 * {@code viewProjection} instead of the level's matrices.
 	 */
 	public static void clipSpaceEquations(Matrix4fc viewProjection, float[] out) {
-		fill(new Matrix4d(viewProjection), out);
+		fill(new Matrix4d(viewProjection).invert().transpose(), out);
 	}
 
-	private static void fill(@Nullable Matrix4d viewProjection, float[] out) {
+	/** {@code toClip}: {@code (M⁻¹)ᵀ} of the view-projection M, since c = M·p gives e·p = (M⁻ᵀe)·c. */
+	private static void fill(@Nullable Matrix4d toClip, float[] out) {
 		Pass pass = PASSES.peek();
-		// c = M·p  =>  e·p = e·M⁻¹c = (M⁻ᵀe)·c
-		Matrix4d toClip = viewProjection == null ? null : new Matrix4d(viewProjection).invert().transpose();
 		Vector4d v = new Vector4d();
 		for (int i = 0; i < SLOTS; i++) {
 			double[] e = pass != null && toClip != null && hasPlane(i) ? pass.planes[i] : NEUTRAL;

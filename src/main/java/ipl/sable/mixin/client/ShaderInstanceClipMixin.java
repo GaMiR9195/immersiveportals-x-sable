@@ -36,8 +36,12 @@ public abstract class ShaderInstanceClipMixin {
     @Final
     public Map<String, Uniform> uniformMap;
 
+    @Shadow
+    public abstract int getId();
+
     @Inject(method = "updateLocations", at = @At("TAIL"), require = 1)
     private void ipl$disarmForeignClipUniforms(CallbackInfo ci) {
+        IplProgramBindHook.forgetProgram(getId());
         for (Map.Entry<String, Uniform> entry : this.uniformMap.entrySet()) {
             if (entry.getKey().startsWith(IplClipPlanes.UNIFORM)) {
                 entry.getValue().setLocation(-1);
@@ -47,6 +51,6 @@ public abstract class ShaderInstanceClipMixin {
 
     @Inject(method = "apply", at = @At("TAIL"), require = 1)
     private void ipl$reapplyClipPlanes(CallbackInfo ci) {
-        IplProgramBindHook.afterShaderApply();
+        IplProgramBindHook.afterShaderApply(getId());
     }
 }

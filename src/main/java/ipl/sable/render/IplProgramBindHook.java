@@ -1,12 +1,16 @@
 package ipl.sable.render;
 
+import ipl.sable.client.IplStraddleRenderCache;
 import ipl.sable.render.clip.IplClipPlanes;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4fc;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import qouteall.imm_ptl.core.IPGlobal;
+
+import java.util.Arrays;
 
 /**
  * Applies {@link IplClipPlanes} to the program that draws: on every program bind of every
@@ -19,14 +23,33 @@ import qouteall.imm_ptl.core.IPGlobal;
  * screen-space, foreign pipelines) draws with them disabled, so it never reads clip distances it
  * does not write.
  *
- * <p>Uniform locations are looked up on every application, never cached per program id: a
- * program can be re-linked under the same id in the middle of a frame (Veil recompiles programs
- * on demand), which resets its uniforms and may move them. Render thread only.
+ * <p>The planes change hundreds of times per frame (passes, suppression around screen-space
+ * draws, per-piece cuts), so each program remembers its uniform location and the equations it
+ * holds: an application costs a comparison and uploads only what differs, with no GL query.
+ * The memory is dropped every frame and whenever a vanilla program re-links, so a program that
+ * Veil re-links under the same id is picked up again by the next frame at the latest.
+ * Render thread only.
  */
 public final class IplProgramBindHook {
 
 	private static final float[] FOREIGN_EQUATIONS = new float[IplClipPlanes.SLOTS * 4];
 
+	/** What a program holds: its clip uniform location and the equations last uploaded to it. */
+	private static final class ProgramState {
+		final int location;
+		final float[] uploaded = new float[IplClipPlanes.SLOTS * 4];
+		boolean hasUpload;
+
+		ProgramState(int location) {
+			this.location = location;
+		}
+	}
+
+	private static final Int2ObjectOpenHashMap<ProgramState> PROGRAMS = new Int2ObjectOpenHashMap<>();
+	private static long programsFrame = Long.MIN_VALUE;
+
+	/** Program current as far as the hooks saw it; draws re-check it ({@link #beforeDraw}). */
+	private static int trackedProgram;
 	/** Program and plane revision the last application was made for (draw-time check). */
 	private static int verifiedProgram = -1;
 	private static long verifiedRevision = Long.MIN_VALUE;
@@ -38,6 +61,7 @@ public final class IplProgramBindHook {
 	/** After {@code program} became the current program. */
 	public static void onBind(int program) {
 		if (!IPGlobal.enableClippingMechanism) return;
+		trackedProgram = program;
 		apply(program, null);
 	}
 
@@ -48,6 +72,7 @@ public final class IplProgramBindHook {
 	 */
 	public static void onBind(int program, Matrix4fc viewProjection) {
 		if (!IPGlobal.enableClippingMechanism) return;
+		trackedProgram = program;
 		IplClipPlanes.clipSpaceEquations(viewProjection, FOREIGN_EQUATIONS);
 		apply(program, FOREIGN_EQUATIONS);
 	}
@@ -63,23 +88,31 @@ public final class IplProgramBindHook {
 	public static void beforeDraw() {
 		if (!IPGlobal.enableClippingMechanism || !IplClipPlanes.anyActive()) return;
 		int program = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+		trackedProgram = program;
 		if (program == verifiedProgram && IplClipPlanes.revision() == verifiedRevision) return;
 		apply(program, null);
 	}
 
 	/**
-	 * End of {@code ShaderInstance.apply()}: the uniform uploads of the shader (and of mods hooked
-	 * into it) are done, so the planes are written last. Unconditional while a cut is active.
+	 * End of {@code ShaderInstance.apply()} for {@code program}: the uniform uploads of the shader
+	 * (and of mods hooked into it) are done, so the planes are written last.
 	 */
-	public static void afterShaderApply() {
+	public static void afterShaderApply(int program) {
 		if (!IPGlobal.enableClippingMechanism || !IplClipPlanes.anyActive()) return;
-		apply(GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM), null);
+		trackedProgram = program;
+		apply(program, null);
 	}
 
-	/** The planes changed while some program may be bound. */
+	/** The planes changed while {@link #trackedProgram} may be bound. */
 	public static void refreshCurrentProgram() {
 		if (!IPGlobal.enableClippingMechanism) return;
-		apply(GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM), null);
+		apply(trackedProgram, null);
+	}
+
+	/** {@code program} was linked again: its uniforms were reset and may have moved. */
+	public static void forgetProgram(int program) {
+		PROGRAMS.remove(program);
+		if (verifiedProgram == program) verifiedProgram = -1;
 	}
 
 	private static void apply(int program, float @Nullable [] equations) {
@@ -89,18 +122,37 @@ public final class IplProgramBindHook {
 			setEnabled(0);
 			return;
 		}
-		int location = GL20.glGetUniformLocation(program, IplClipPlanes.UNIFORM);
-		if (location < 0) {
+		ProgramState state = state(program);
+		if (state.location < 0) {
 			setEnabled(0);
 			return;
 		}
-		GL20.glUniform4fv(location, equations != null ? equations : IplClipPlanes.clipSpaceEquations());
-		IplClipDiagnostics.afterUpload(program, location);
+		float[] values = equations != null ? equations : IplClipPlanes.clipSpaceEquations();
+		if (!state.hasUpload || !Arrays.equals(state.uploaded, values)) {
+			GL20.glUniform4fv(state.location, values);
+			System.arraycopy(values, 0, state.uploaded, 0, values.length);
+			state.hasUpload = true;
+			IplClipDiagnostics.afterUpload(program, state.location);
+		}
 		int mask = 0;
 		for (int slot = 0; slot < IplClipPlanes.SLOTS; slot++) {
 			if (IplClipPlanes.isActive(slot)) mask |= 1 << slot;
 		}
 		setEnabled(mask);
+	}
+
+	private static ProgramState state(int program) {
+		long frame = IplStraddleRenderCache.frameId();
+		if (frame != programsFrame) {
+			PROGRAMS.clear();
+			programsFrame = frame;
+		}
+		ProgramState state = PROGRAMS.get(program);
+		if (state == null) {
+			state = new ProgramState(GL20.glGetUniformLocation(program, IplClipPlanes.UNIFORM));
+			PROGRAMS.put(program, state);
+		}
+		return state;
 	}
 
 	private static void setEnabled(int mask) {
