@@ -1,12 +1,10 @@
 package qouteall.imm_ptl.core.render;
 
 import ipl.sable.render.IplForeignPerspective;
-import net.minecraft.client.Minecraft;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.jetbrains.annotations.Nullable;
-import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.IPCGlobal;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
@@ -14,13 +12,31 @@ import qouteall.imm_ptl.core.portal.Mirror;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.animation.UnilateralPortalState;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
+import qouteall.imm_ptl.core.render.renderer.PortalRenderer;
 import qouteall.q_misc_util.my_util.BoxPredicateF;
 import qouteall.q_misc_util.my_util.Plane;
 
-import java.util.Comparator;
+import java.util.ArrayList;
+import java.util.List;
 
+/**
+ * Culls boxes that cannot show up in the view being rendered, beyond the camera frustum:
+ * <ul>
+ *   <li>in a portal pass, what lies outside the opening it is seen through (the opening's frustum
+ *       and the screen region of the pass) and, when the section search starts at the opening,
+ *       what lies fully behind the destination plane;</li>
+ *   <li>in any view, what lies fully behind a nearby portal inside its opening: the portal's own
+ *       view is drawn over it ({@link PortalRenderer#getOccludingPortals}).</li>
+ * </ul>
+ * Coordinates are relative to the camera of the view, in the world that view renders.
+ */
 @OnlyIn(Dist.CLIENT)
 public class FrustumCuller {
+    private static final double OCCLUDER_RANGE = 16;
+    private static final int MAX_OCCLUDERS = 4;
+    /** Kept distance behind the destination plane; covers the terrain clip adjustment. */
+    private static final double BEHIND_PLANE_MARGIN = 0.5;
+    
     private @Nullable BoxPredicateF canDetermineInvisibleFunc;
     private double camX;
     private double camY;
@@ -88,47 +104,79 @@ public class FrustumCuller {
             return null;
         }
         
+        Vec3 cameraPos = new Vec3(cameraX, cameraY, cameraZ);
+        List<BoxPredicateF> culls = new ArrayList<>(MAX_OCCLUDERS + 3);
         if (PortalRendering.isRendering()) {
-            Portal renderingPortal = PortalRendering.getRenderingPortal();
-            
-            // do inner frustum culling, narrowed to the screen rectangle the pass draws into
-            
-            BoxPredicateF inner = renderingPortal.getPortalShape().getInnerFrustumCullingFunc(
-                renderingPortal, new Vec3(cameraX, cameraY, cameraZ)
-            );
-            BoxPredicateF region = getRegionCullingFunc(cameraX, cameraY, cameraZ);
-            if (inner == null || region == null) {
-                return inner != null ? inner : region;
-            }
-            return (minX, minY, minZ, maxX, maxY, maxZ) ->
-                inner.test(minX, minY, minZ, maxX, maxY, maxZ)
-                    || region.test(minX, minY, minZ, maxX, maxY, maxZ);
+            addPassCulling(culls, cameraPos);
         }
-        else {
-            if (!IPCGlobal.useSuperAdvancedFrustumCulling) {
-                return null;
-            }
-            
-            // don't do outer frustum culling when sodium is not present
-            // in vanilla, it rebuilds visibility section list lazily
-            // if the player moves but does not rotate camera, it won't update immediately
-            // that will cause artifacts with outer frustum culling
-            // the inner frustum culling is controlled by ImmPtl and is correct
-            if (!SodiumInterface.invoker.isSodiumPresent()) {
-                return null;
-            }
-            
-            // do outer frustum culling
-            
-            Portal portal = getCurrentNearestVisibleCullablePortal();
-            if (portal != null) {
-                return portal.getPortalShape().getOuterFrustumCullingFunc(
-                    portal, new Vec3(cameraX, cameraY, cameraZ)
-                );
-            }
+        addOuterCulling(culls, cameraPos);
+        return anyOf(culls);
+    }
+    
+    private static void addPassCulling(List<BoxPredicateF> culls, Vec3 cameraPos) {
+        Portal renderingPortal = PortalRendering.getRenderingPortal();
+        addIfPresent(culls, renderingPortal.getPortalShape().getInnerFrustumCullingFunc(renderingPortal, cameraPos));
+        addIfPresent(culls, getRegionCullingFunc(cameraPos.x, cameraPos.y, cameraPos.z));
+        // A search started from the camera crosses the space behind the plane to reach the opening.
+        if (PortalApertureSections.seedsCurrentPass()) {
+            addIfPresent(culls, getBehindPlaneCullingFunc(PortalRendering.getActiveClippingPlane(), cameraPos));
         }
-        
-        return null;
+    }
+    
+    /**
+     * Outer culling, also inside portal passes (portals seen through portals). Without Sodium the
+     * visible section list is rebuilt lazily: a camera moving without turning would keep sections
+     * culled for an old position.
+     */
+    private static void addOuterCulling(List<BoxPredicateF> culls, Vec3 cameraPos) {
+        if (!IPCGlobal.useSuperAdvancedFrustumCulling
+            || TransformationManager.isIsometricView
+            || !SodiumInterface.invoker.isSodiumPresent()
+            // the portals of this pass show their worlds only below the layer limit
+            || PortalRendering.getPortalLayer() >= PortalRendering.getMaxPortalLayer()
+        ) {
+            return;
+        }
+        for (Portal portal : PortalRenderer.getOccludingPortals(cameraPos, OCCLUDER_RANGE, MAX_OCCLUDERS)) {
+            addIfPresent(culls, portal.getPortalShape().getOuterFrustumCullingFunc(portal, cameraPos));
+        }
+    }
+    
+    private static @Nullable BoxPredicateF getBehindPlaneCullingFunc(@Nullable Plane plane, Vec3 cameraPos) {
+        if (plane == null) {
+            return null;
+        }
+        Vec3 normal = plane.normal().normalize();
+        float x = (float) normal.x;
+        float y = (float) normal.y;
+        float z = (float) normal.z;
+        float w = (float) (-normal.dot(plane.pos().subtract(cameraPos)) + BEHIND_PLANE_MARGIN);
+        return (minX, minY, minZ, maxX, maxY, maxZ) ->
+            isFullyBehindPlane(minX, minY, minZ, maxX, maxY, maxZ, x, y, z, w);
+    }
+    
+    private static void addIfPresent(List<BoxPredicateF> culls, @Nullable BoxPredicateF cull) {
+        if (cull != null) {
+            culls.add(cull);
+        }
+    }
+    
+    private static @Nullable BoxPredicateF anyOf(List<BoxPredicateF> culls) {
+        if (culls.isEmpty()) {
+            return null;
+        }
+        if (culls.size() == 1) {
+            return culls.get(0);
+        }
+        BoxPredicateF[] all = culls.toArray(new BoxPredicateF[0]);
+        return (minX, minY, minZ, maxX, maxY, maxZ) -> {
+            for (BoxPredicateF cull : all) {
+                if (cull.test(minX, minY, minZ, maxX, maxY, maxZ)) {
+                    return true;
+                }
+            }
+            return false;
+        };
     }
     
     /**
@@ -161,22 +209,6 @@ public class FrustumCuller {
             }
             return false;
         };
-    }
-    
-    @Nullable
-    private static Portal getCurrentNearestVisibleCullablePortal() {
-        if (TransformationManager.isIsometricView) {
-            return null;
-        }
-        
-        Vec3 cameraPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
-        return CHelper.getClientNearbyPortals(16).filter(
-            portal -> portal.isInFrontOfPortal(cameraPos)
-        ).filter(
-            Portal::canDoOuterFrustumCulling
-        ).min(
-            Comparator.comparingDouble(portal -> portal.getDistanceToNearestPointInPortal(cameraPos))
-        ).orElse(null);
     }
     
     // 2  1

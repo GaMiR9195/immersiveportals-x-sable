@@ -28,7 +28,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
 import qouteall.imm_ptl.core.IPGlobal;
-import qouteall.imm_ptl.core.IPMcHelper;
 import qouteall.imm_ptl.core.api.ImmPtlEntityExtension;
 import qouteall.imm_ptl.core.collision.PortalCollisionHandler;
 import qouteall.imm_ptl.core.ducks.IEEntity;
@@ -354,10 +353,6 @@ public abstract class MixinEntity implements IEEntity, ImmPtlEntityExtension {
         
         if (ip_portalCollisionHandler != null) {
             ip_portalCollisionHandler.update(this_);
-        }
-        
-        if (level.isClientSide) {
-            IPMcHelper.onClientEntityTick(this_);
         }
     }
     

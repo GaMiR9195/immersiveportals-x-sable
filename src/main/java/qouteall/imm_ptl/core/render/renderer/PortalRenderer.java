@@ -21,6 +21,7 @@ import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.IPCGlobal;
 import qouteall.imm_ptl.core.IPGlobal;
+import qouteall.imm_ptl.core.IPMcHelper;
 import qouteall.imm_ptl.core.compat.IPModInfoChecking;
 import qouteall.imm_ptl.core.compat.iris_compatibility.ExperimentalIrisPortalRenderer;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisCompatibilityPortalRenderer;
@@ -178,16 +179,53 @@ public abstract class PortalRenderer {
         return PortalRendering.isInvalidRecursionRendering(portal);
     }
 
+    /**
+     * Portals whose opening the current pass draws over, so that whatever lies fully behind one of
+     * them and inside its opening cannot show: the occluders of outer frustum culling. Nearest
+     * first, at most {@code limit}. Evaluated before the pass draws its portals, with the tests of
+     * {@link #isRenderable} that do not depend on the screen (an opening off screen hides only
+     * what is off screen as well).
+     */
+    public static List<Portal> getOccludingPortals(Vec3 cameraPos, double range, int limit) {
+        ClientLevel world = client.level;
+        if (world == null || limit <= 0) {
+            return List.of();
+        }
+        @Nullable Plane activeClip = PortalRendering.isRendering()
+            ? PortalRendering.getActiveClippingPlane()
+            : null;
+        List<Portal> portals = IPMcHelper.getNearbyPortalList(world, cameraPos, range, portal ->
+            portal.canDoOuterFrustumCulling()
+                && portal.getDistanceToNearestPointInPortal(cameraPos) <= range
+                && portal.isInFrontOfPortal(cameraPos)
+                // an opening reaching behind the pass's clip plane is drawn only in part
+                && (activeClip == null || isFullyInFrontOfClipPlane(portal, activeClip))
+                && !shouldSkipRenderingPortal(portal, activeClip)
+                && NeoForge.EVENT_BUS.post(new PortalRenderingPredicateEvent(portal)).canRender()
+        );
+        portals.sort(Comparator.comparingDouble(portal -> portal.getDistanceToNearestPointInPortal(cameraPos)));
+        return portals.size() > limit ? portals.subList(0, limit) : portals;
+    }
+    
     /** True when no point in this portal's thin aperture can survive the active inner clip. */
     private static boolean isFullyBehindClipPlane(Portal portal, Plane clip) {
         AABB aperture = portal.getThinBoundingBox();
-        double centerDistance = clip.getDistanceTo(aperture.getCenter());
-        double radius = (aperture.getXsize() * Math.abs(clip.normal().x)
-            + aperture.getYsize() * Math.abs(clip.normal().y)
-            + aperture.getZsize() * Math.abs(clip.normal().z)) * 0.5;
         // Preserve portals sharing the destination plane; floating-point error can
         // otherwise cull their aperture as wholly behind it.
-        return centerDistance + radius <= -0.01;
+        return clip.getDistanceTo(aperture.getCenter()) + apertureRadius(aperture, clip) <= -0.01;
+    }
+    
+    /** True when the whole thin aperture of this portal lies on the kept side of the clip. */
+    private static boolean isFullyInFrontOfClipPlane(Portal portal, Plane clip) {
+        AABB aperture = portal.getThinBoundingBox();
+        return clip.getDistanceTo(aperture.getCenter()) - apertureRadius(aperture, clip) >= 0.01;
+    }
+    
+    /** Half the extent of {@code aperture} along the clip's normal. */
+    private static double apertureRadius(AABB aperture, Plane clip) {
+        return (aperture.getXsize() * Math.abs(clip.normal().x)
+            + aperture.getYsize() * Math.abs(clip.normal().y)
+            + aperture.getZsize() * Math.abs(clip.normal().z)) * 0.5;
     }
 
     public static double getRenderRange() {

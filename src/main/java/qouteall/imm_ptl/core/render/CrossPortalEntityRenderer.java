@@ -17,64 +17,126 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import net.neoforged.neoforge.common.NeoForge;
 import org.apache.commons.lang3.Validate;
+import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.McHelper;
-import qouteall.imm_ptl.core.collision.PortalCollisionEntry;
-import qouteall.imm_ptl.core.collision.PortalCollisionHandler;
+import qouteall.imm_ptl.core.collision.CollisionHelper;
 import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
-import qouteall.imm_ptl.core.ducks.IEEntity;
 import qouteall.imm_ptl.core.ducks.IEWorldRenderer;
 import qouteall.imm_ptl.core.portal.Mirror;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.PortalManipulation;
+import qouteall.imm_ptl.core.portal.global_portals.GlobalPortalStorage;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 import qouteall.imm_ptl.core.render.renderer.PortalRenderer;
 import qouteall.q_misc_util.Helper;
 
-import java.util.WeakHashMap;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.List;
 
+/**
+ * Entities halfway through a portal: cut at the portal on this side and drawn again, transformed,
+ * on the far side.
+ *
+ * <p>Crossings are found every frame from the entities' interpolated positions, so the cut and the
+ * far-side image follow the entity from the first frame it touches an opening to the frame it
+ * leaves it, including the frames right after a teleport.
+ */
 @OnlyIn(Dist.CLIENT)
 public class CrossPortalEntityRenderer {
     private static final Minecraft client = Minecraft.getInstance();
     
-    //there is no weak hash set
-    private static final WeakHashMap<Entity, Object> collidedEntities = new WeakHashMap<>();
+    /** How far an entity may move between its tick position and its rendered position. */
+    private static final double ENTITY_SEARCH_MARGIN = 2.0;
+    
+    /** Teleportable portals of each client level, refreshed every tick. */
+    private static final IdentityHashMap<ClientLevel, List<Portal>> teleportablePortals = new IdentityHashMap<>();
+    
+    /** Portals each entity crosses at its rendered position in the current frame. */
+    private static final IdentityHashMap<Entity, List<Portal>> crossings = new IdentityHashMap<>();
     
     public static boolean isRenderingEntityNormally = false;
     
     public static boolean isRenderingEntityProjection = false;
     
     public static void init() {
-        NeoForge.EVENT_BUS.addListener(IPGlobal.PostClientTickEvent.class, postClientTickEvent -> CrossPortalEntityRenderer.onClientTick());
+        NeoForge.EVENT_BUS.addListener(IPGlobal.PostClientTickEvent.class, e -> CrossPortalEntityRenderer.refreshPortals());
 
         NeoForge.EVENT_BUS.addListener(ClientCleanupEvent.class, e -> CrossPortalEntityRenderer.cleanUp());
-        NeoForge.EVENT_BUS.addListener(DimensionEvents.CLIENT_DIMENSION_DYNAMIC_REMOVE_EVENT.class, postClientTickEvent -> CrossPortalEntityRenderer.cleanUp());
+        NeoForge.EVENT_BUS.addListener(DimensionEvents.CLIENT_DIMENSION_DYNAMIC_REMOVE_EVENT.class, e -> CrossPortalEntityRenderer.cleanUp());
     }
     
     private static void cleanUp() {
-        collidedEntities.clear();
+        teleportablePortals.clear();
+        crossings.clear();
     }
     
-    private static void onClientTick() {
-        collidedEntities.entrySet().removeIf(entry -> {
-            Entity entity = entry.getKey();
-            return entity.isRemoved() || !((IEEntity) entity).ip_isCollidingWithPortal();
+    private static void refreshPortals() {
+        teleportablePortals.clear();
+        if (!ClientWorldLoader.getIsInitialized()) {
+            return;
+        }
+        for (ClientLevel level : ClientWorldLoader.getClientWorlds()) {
+            List<Portal> portals = new ArrayList<>();
+            for (Portal globalPortal : GlobalPortalStorage.getGlobalPortals(level)) {
+                if (globalPortal.isTeleportable()) {
+                    portals.add(globalPortal);
+                }
+            }
+            for (Entity entity : level.entitiesForRendering()) {
+                if (entity instanceof Portal portal && portal.isTeleportable()) {
+                    portals.add(portal);
+                }
+            }
+            if (!portals.isEmpty()) {
+                teleportablePortals.put(level, portals);
+            }
+        }
+    }
+    
+    /** Start of a frame (and again after a teleport): the crossings at the rendered positions. */
+    public static void updateCrossings(float partialTick) {
+        crossings.clear();
+        if (!isCrossPortalRenderingEnabled()) {
+            return;
+        }
+        teleportablePortals.forEach((level, portals) -> {
+            for (Portal portal : portals) {
+                if (portal.isRemoved() || portal.level() != level) {
+                    continue;
+                }
+                AABB searchBox = portal.getBoundingBox().inflate(ENTITY_SEARCH_MARGIN);
+                for (Entity entity : level.getEntities((Entity) null, searchBox, e -> !(e instanceof Portal))) {
+                    if (isCrossing(entity, portal, partialTick)) {
+                        crossings.computeIfAbsent(entity, e -> new ArrayList<>(1)).add(portal);
+                    }
+                }
+            }
         });
     }
     
-    public static void onEntityTickClient(Entity entity) {
-        if (entity instanceof Portal) {
-            return;
-        }
-        
-        if (((IEEntity) entity).ip_isCollidingWithPortal()) {
-            collidedEntities.put(entity, null);
-        }
+    private static boolean isCrossing(Entity entity, Portal portal, float partialTick) {
+        Vec3 renderOffset = entity.getPosition(partialTick).subtract(entity.position());
+        AABB renderBox = entity.getBoundingBox().move(renderOffset);
+        return renderBox.intersects(portal.getBoundingBox())
+            && CollisionHelper.mayEntityCollideWithPortal(
+                entity, portal, entity.getEyePosition(partialTick), renderBox
+            );
+    }
+    
+    /**
+     * The portal whose plane cuts {@code entity} on this side. There is one object cut: an entity
+     * crossing two openings at once is cut at the first.
+     */
+    private static @Nullable Portal getCuttingPortal(Entity entity) {
+        List<Portal> portals = crossings.get(entity);
+        return portals == null ? null : portals.get(0);
     }
     
     public static void onBeginRenderingEntitiesAndBlockEntities(Matrix4f modelView) {
@@ -88,10 +150,11 @@ public class CrossPortalEntityRenderer {
         }
     }
     
+    /**
+     * The cuts are clip distances written by every world program, Iris shader packs included
+     * ({@code IplClipShaderInjector}); flushing the buffer source also draws Iris's batched entities.
+     */
     private static boolean isCrossPortalRenderingEnabled() {
-        if (IrisInterface.invoker.isIrisPresent()) {
-            return false;
-        }
         return IPGlobal.correctCrossPortalEntityRendering;
     }
     
@@ -111,21 +174,14 @@ public class CrossPortalEntityRenderer {
         if (!isCrossPortalRenderingEnabled()) {
             return;
         }
-        if (!PortalRendering.isRendering()) {
-            if (collidedEntities.containsKey(entity)) {
-                PortalCollisionHandler collisionHandler = ((IEEntity) entity).ip_getPortalCollisionHandler();
-                
-                if (collisionHandler != null) {
-                    for (PortalCollisionEntry e : collisionHandler.portalCollisions) {
-                        Portal collidingPortal = e.portal;
-                        
-                        //draw already built triangles
-                        client.renderBuffers().bufferSource().endBatch();
-                        
-                        FrontClipping.setupOuterClipping(matrixStack, collidingPortal);
-                    }
-                }
-            }
+        if (PortalRendering.isRendering()) {
+            return;
+        }
+        Portal cuttingPortal = getCuttingPortal(entity);
+        if (cuttingPortal != null) {
+            // the triangles built so far are drawn without the cut
+            client.renderBuffers().bufferSource().endBatch();
+            FrontClipping.setupOuterClipping(matrixStack, cuttingPortal);
         }
     }
     
@@ -133,12 +189,10 @@ public class CrossPortalEntityRenderer {
         if (!isCrossPortalRenderingEnabled()) {
             return;
         }
-        if (!PortalRendering.isRendering()) {
-            if (collidedEntities.containsKey(entity)) {
-                //draw it with culling in a separate draw call
-                client.renderBuffers().bufferSource().endBatch();
-                FrontClipping.disableClipping();
-            }
+        if (!PortalRendering.isRendering() && crossings.containsKey(entity)) {
+            // drawn with the cut in its own draw call
+            client.renderBuffers().bufferSource().endBatch();
+            FrontClipping.disableClipping();
         }
     }
     
@@ -151,21 +205,13 @@ public class CrossPortalEntityRenderer {
         
         ResourceKey<Level> clientDim = client.level.dimension();
         
-        for (Entity entity : collidedEntities.keySet()) {
-            PortalCollisionHandler collisionHandler = ((IEEntity) entity).ip_getPortalCollisionHandler();
-            
-            if (collisionHandler != null) {
-                for (PortalCollisionEntry e : collisionHandler.portalCollisions) {
-                    Portal collidingPortal = e.portal;
-                    if (!(collidingPortal instanceof Mirror)) {
-                        ResourceKey<Level> projectionDimension = collidingPortal.getDestDim();
-                        if (clientDim == projectionDimension) {
-                            renderProjectedEntity(entity, collidingPortal, matrixStack);
-                        }
-                    }
+        crossings.forEach((entity, portals) -> {
+            for (Portal portal : portals) {
+                if (!(portal instanceof Mirror) && portal.getDestDim() == clientDim) {
+                    renderProjectedEntity(entity, portal, matrixStack);
                 }
             }
-        }
+        });
     }
     
     public static boolean hasIntersection(
@@ -364,13 +410,12 @@ public class CrossPortalEntityRenderer {
         }
         if (PortalRendering.isRendering()) {
             Portal renderingPortal = PortalRendering.getRenderingPortal();
-            Portal collidingPortal = ((IEEntity) entity).ip_getCollidingPortal();
+            Portal collidingPortal = getCuttingPortal(entity);
             
             if (entity instanceof Player && !renderingPortal.getDoRenderPlayer()) {
                 return false;
             }
             
-            // client colliding portal update is not immediate
             if (collidingPortal != null && !(entity instanceof LocalPlayer)) {
                 if (renderingPortal instanceof Portal) {
                     if (!Portal.isReversePortal(collidingPortal, ((Portal) renderingPortal))) {

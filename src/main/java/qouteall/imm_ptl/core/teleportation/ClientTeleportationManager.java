@@ -10,6 +10,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
 import net.minecraft.network.protocol.game.ClientboundRespawnPacket;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -353,9 +354,11 @@ public class ClientTeleportationManager {
         McHelper.setEyePos(player, newThisTickEyePos, newLastTickEyePos);
         McHelper.updateBoundingBox(player);
 
+        float oldYRot = player.getYRot();
         Vec3 oldRealVelocity = McHelper.getWorldVelocity(player);
         TransformationManager.managePlayerRotationAndChangeGravity(portal);
         McHelper.setWorldVelocity(player, oldRealVelocity); // reset velocity change
+        TeleportationUtil.turnBodyAndHead(player, Mth.wrapDegrees(player.getYRot() - oldYRot));
         
         TeleportationUtil.PortalPointVelocity portalPointVelocity = teleportation.portalPointVelocity();
         TeleportationUtil.transformEntityVelocity(portal, player, portalPointVelocity, thisTickEyePos);
@@ -696,7 +699,8 @@ public class ClientTeleportationManager {
         public static void updateEntityPos(
             ResourceKey<Level> dim,
             int entityId,
-            Vec3 pos
+            Vec3 pos,
+            float yRot
         ) {
             ClientLevel world = ClientWorldLoader.getWorld(dim);
             
@@ -706,6 +710,9 @@ public class ClientTeleportationManager {
                 Helper.err("cannot find entity to update position");
                 return;
             }
+            
+            // the facing the portal turned it to, at once (rotation packets would turn it over ticks)
+            TeleportationUtil.turnYaw(entity, Mth.wrapDegrees(yRot - entity.getYRot()));
             
             // both of them are important for Minecart
             entity.setPos(pos);

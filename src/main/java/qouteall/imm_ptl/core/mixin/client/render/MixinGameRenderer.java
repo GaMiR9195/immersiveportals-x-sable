@@ -32,6 +32,7 @@ import qouteall.imm_ptl.core.ducks.IEGameRenderer;
 import qouteall.imm_ptl.core.portal.animation.ClientPortalAnimationManagement;
 import qouteall.imm_ptl.core.portal.animation.StableClientTimer;
 import qouteall.imm_ptl.core.render.CrossPortalViewRendering;
+import qouteall.imm_ptl.core.render.FrameCameraInputs;
 import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.imm_ptl.core.render.GuiPortalRendering;
 import qouteall.imm_ptl.core.render.MyGameRenderer;
@@ -78,6 +79,7 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
         DeltaTracker deltaTracker, boolean renderWorldIn, CallbackInfo ci
     ) {
         PortalPassView.onFrameStart();
+        FrameCameraInputs.onFrameStart();
         minecraft.getProfiler().push("ip_pre_total_render");
         IPGlobal.PRE_TOTAL_RENDER_TASK_LIST.processTasks();
         minecraft.getProfiler().pop();
@@ -167,14 +169,68 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
     @Inject(method = "renderLevel", at = @At("HEAD"))
     private void ip_onRenderLevelBegin(DeltaTracker deltaTracker, CallbackInfo ci) {
         PortalPassView.onGameRenderLevelBegin();
+        FrameCameraInputs.onRenderLevelBegin(PortalPassView.getGameRenderDepth());
     }
     
     @Inject(method = "renderLevel", at = @At("TAIL"))
     private void onRenderCenterEnded(
         DeltaTracker deltaTracker, CallbackInfo ci
     ) {
+        FrameCameraInputs.onRenderLevelEnd(PortalPassView.getGameRenderDepth());
         PortalPassView.onGameRenderLevelEnd();
         IPCGlobal.renderer.onHandRenderingEnded();
+    }
+    
+    // Camera mods' FOV and bobbing are evaluated by the player's view only, see FrameCameraInputs.
+    
+    @WrapOperation(
+        method = "renderLevel",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/GameRenderer;getFov(Lnet/minecraft/client/Camera;FZ)D"
+        )
+    )
+    private double ip_shareFov(
+        GameRenderer instance, Camera camera, float partialTick, boolean useFovSetting, Operation<Double> original
+    ) {
+        return FrameCameraInputs.fov(() -> original.call(instance, camera, partialTick, useFovSetting));
+    }
+    
+    @WrapOperation(
+        method = "renderLevel",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/GameRenderer;bobHurt(Lcom/mojang/blaze3d/vertex/PoseStack;F)V"
+        )
+    )
+    private void ip_shareHurtTilt(GameRenderer instance, PoseStack poseStack, float partialTick, Operation<Void> original) {
+        if (!FrameCameraInputs.replaysProjection()) {
+            original.call(instance, poseStack, partialTick);
+        }
+    }
+    
+    @WrapOperation(
+        method = "renderLevel",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/GameRenderer;bobView(Lcom/mojang/blaze3d/vertex/PoseStack;F)V"
+        )
+    )
+    private void ip_shareViewBobbing(GameRenderer instance, PoseStack poseStack, float partialTick, Operation<Void> original) {
+        if (!FrameCameraInputs.replaysProjection()) {
+            original.call(instance, poseStack, partialTick);
+        }
+    }
+    
+    @WrapOperation(
+        method = "renderLevel",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/GameRenderer;resetProjectionMatrix(Lorg/joml/Matrix4f;)V"
+        )
+    )
+    private void ip_shareProjection(GameRenderer instance, Matrix4f projection, Operation<Void> original) {
+        original.call(instance, FrameCameraInputs.projection(projection));
     }
     
     /**

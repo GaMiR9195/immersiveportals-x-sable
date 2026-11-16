@@ -1,9 +1,12 @@
 package qouteall.imm_ptl.core.render;
 
+import ipl.sable.render.IplForeignPerspective;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
 import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
 import java.util.Arrays;
 
@@ -22,6 +25,17 @@ public final class PortalApertureSections {
 	private static final double MARGIN = 0.5;
 
 	private PortalApertureSections() {}
+
+	/**
+	 * Whether the Sodium section search of the current portal pass starts at the opening. Then no
+	 * line of sight of the pass runs through sections fully behind the destination plane.
+	 */
+	public static boolean seedsCurrentPass() {
+		return PortalRendering.isRendering()
+			&& !IplForeignPerspective.isRendering()
+			&& SodiumInterface.invoker.isSodiumPresent()
+			&& isSupported(PortalRendering.getRenderingPortal());
+	}
 
 	public static boolean isSupported(Portal portal) {
 		if (!PortalScreenCulling.isFlat(portal)) return false;

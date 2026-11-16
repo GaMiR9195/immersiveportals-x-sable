@@ -6,7 +6,6 @@ import net.caffeinemc.mods.sodium.client.render.chunk.RenderSection;
 import net.caffeinemc.mods.sodium.client.render.chunk.lists.RenderSectionVisitor;
 import net.caffeinemc.mods.sodium.client.render.chunk.occlusion.GraphDirectionSet;
 import net.caffeinemc.mods.sodium.client.render.chunk.occlusion.OcclusionCuller;
-import net.caffeinemc.mods.sodium.client.render.chunk.occlusion.VisibilityEncoding;
 import net.caffeinemc.mods.sodium.client.render.viewport.Viewport;
 import net.caffeinemc.mods.sodium.client.util.collections.WriteQueue;
 import net.minecraft.core.SectionPos;
@@ -36,6 +35,11 @@ public abstract class MixinSodiumOcclusionCuller {
     
     @Shadow(remap = false)
     public static boolean isWithinFrustum(Viewport viewport, RenderSection section) {
+        throw new RuntimeException();
+    }
+    
+    @Shadow(remap = false)
+    private static int getOutwardDirections(SectionPos origin, RenderSection section) {
         throw new RuntimeException();
     }
     
@@ -76,7 +80,7 @@ public abstract class MixinSodiumOcclusionCuller {
         
         Portal portal = PortalRendering.getRenderingPortal();
         
-        ip_apertureSeeds = PortalApertureSections.collect(portal);
+        ip_apertureSeeds = PortalApertureSections.seedsCurrentPass() ? PortalApertureSections.collect(portal) : null;
         if (ip_apertureSeeds != null) {
             // smartCull already reflects PortalRendering.shouldEnableSodiumCaveCulling()
             return originalValue;
@@ -104,9 +108,9 @@ public abstract class MixinSodiumOcclusionCuller {
     
     /**
      * Seeds the search with the sections of the portal's opening instead of the camera's section.
-     * Each seed is entered like the camera's section (all paths out of it are open), and the
-     * outward-direction mask stays relative to the camera, which every line of sight of the pass
-     * leaves through the opening.
+     * Lines of sight enter a seed through the opening inside it, not through one of its faces, so
+     * the face-to-face visibility of the seed says nothing about where they can leave it: every face
+     * leading away from the camera stays open. The search beyond the seeds is Sodium's own.
      */
     @Inject(method = "init", at = @At("HEAD"), cancellable = true, remap = false)
     private void ip_seedFromAperture(
@@ -134,7 +138,7 @@ public abstract class MixinSodiumOcclusionCuller {
         }
         for (RenderSection section : entered) {
             int outgoing = useOcclusionCulling
-                ? VisibilityEncoding.getConnections(section.getVisibilityData())
+                ? getOutwardDirections(viewport.getChunkCoord(), section)
                 : GraphDirectionSet.ALL;
             visitNeighbors(queue, section, outgoing, frame);
         }

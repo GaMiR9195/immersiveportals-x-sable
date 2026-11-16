@@ -27,6 +27,7 @@ import qouteall.imm_ptl.core.miscellaneous.ClientPerformanceMonitor;
 import qouteall.imm_ptl.core.mixin.client.particle.IEParticle;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.animation.StableClientTimer;
+import qouteall.imm_ptl.core.render.CrossPortalEntityRenderer;
 import qouteall.imm_ptl.core.render.CrossPortalViewRendering;
 import qouteall.imm_ptl.core.render.ForceMainThreadRebuild;
 import qouteall.imm_ptl.core.render.MyRenderHelper;
@@ -128,6 +129,8 @@ public class RenderStates {
         originalPlayerBoundingBox = cameraEntity.getBoundingBox().expandTowards(
             -velocity.x, -velocity.y, -velocity.z
         );
+        
+        CrossPortalEntityRenderer.updateCrossings(partialTick);
     }
     
     //protect the player from mirror room lag attack

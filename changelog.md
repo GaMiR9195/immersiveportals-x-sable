@@ -42,6 +42,16 @@ and used through portals, and the third-person camera behaves around portals.
 - **Particles, name tags and beams face the portal camera.** In a view rotated by portals (portal
   passes, the cross-portal view, GUI portals) the camera's orientation is the one of the rendered
   world, so billboards face the viewer (`PortalPassView`).
+- **Entities crossing a portal are cut and mirrored from the first frame.** Crossings are found every
+  frame at the rendered positions (`CrossPortalEntityRenderer.updateCrossings`) instead of from the
+  tick collision state, which lagged up to three ticks behind and stayed stale for a tick after a
+  teleport. Works with Iris shader packs: the cut is the injected clip distance of every program.
+- **No backwards body for a tick after a rotating portal.** The player's body and head turn with the
+  view at once, previous-tick values included. Other entities keep facing the way they move (their
+  velocity was already turned), on the server and on every client at once.
+- **Camera mods and portals** (camera shake, roll, sway, FOV and bobbing changes, e.g. Punchy). The
+  player's view evaluates them once per frame and portal passes and camera probes reuse the result
+  (`FrameCameraInputs`), so the portal image keeps lining up with the view around it.
 - **Flywheel and portals.** A portal leading far away in the same level no longer makes Flywheel
   recreate every visual twice per frame (`FlywheelEngineOriginMixin`), and every client level is
   served by its own visualization manager, so block entities are no longer drawn twice or not at
@@ -78,6 +88,16 @@ and used through portals, and the third-person camera behaves around portals.
   and the edges of a pass's screen rectangle, carried through the portal, cull sections, entities
   and block entities that cannot reach its pixels (`PortalScreenCulling.getRegionPlanes`). Nested,
   oblique and partly covered portals render a fraction of their world.
+- **Cave culling from a portal's opening keeps every way out.** A line of sight enters an opening
+  section in its middle, not through a face, so the section's face-to-face visibility no longer
+  blocks it: a dead-end tunnel behind a portal used to hide what lay beyond. The search beyond is
+  Sodium's own, and sections fully behind the destination plane are culled in such passes.
+- **Outer culling behind several portals, also inside portal passes.** Whatever lies fully behind
+  a nearby portal (up to four) and inside its opening is culled, in the player's view and in every
+  pass for the portals it shows. A portal counts only if the renderer will draw its opening: its
+  own visibility tests, the mod event, and the pass's clip plane (`PortalRenderer.getOccludingPortals`).
+- **Sodium cloud meshes are cached per view** (`CloudGeometryCache`), the Sodium counterpart of
+  `CloudContext`: portal passes into the same dimension no longer rebuild the cloud mesh every frame.
 - **Sodium's entity culling stays on in portal frames.** It was off in every frame with a visible
   portal; now a pass uses it whenever it built the current section graph
   (`WorldRenderInfo.getCurrentPassId`).
@@ -86,8 +106,9 @@ and used through portals, and the third-person camera behaves around portals.
 
 - **EntityCulling** is supported and no longer reported as incompatible. Its culling, traced from
   the player's camera, is paused in portal passes (which use their own culling); entities drawn in
-  a portal pass count as seen, so its tick culling keeps them animated; its tracing thread reads
-  the player's level instead of the level IP is rendering at that moment.
+  a portal pass count as seen (in camera and not culled), so its tick culling no longer skips the
+  full tick of mobs visible only through a portal (heads twitching on a frozen body); its tracing
+  thread reads the player's level instead of the level IP is rendering at that moment.
 - **More Culling** works unchanged: its frustum and camera checks go through the pass's own frustum
   and camera, which now include the portal pass bounds above.
 

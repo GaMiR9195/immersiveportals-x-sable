@@ -546,6 +546,7 @@ public class ServerTeleportationManager {
         
         Vec3 velocity = entity.getDeltaMovement();
         Vec3 oldPos = entity.position();
+        float yawTurn = TeleportationUtil.getYawTurn(portal, entity.getYRot());
 
         List<Entity> passengerList = entity.getPassengers();
         
@@ -569,6 +570,8 @@ public class ServerTeleportationManager {
         
         McHelper.setEyePos(entity, newEyePos, newEyePos);
         McHelper.updateBoundingBox(entity);
+        // keeps facing the way it moves, as its velocity was turned
+        TeleportationUtil.turnYaw(entity, yawTurn);
         
         // living entities do position interpolation
         // it may interpolate into unloaded chunks and stuck
@@ -579,7 +582,8 @@ public class ServerTeleportationManager {
                 "qouteall.imm_ptl.core.teleportation.ClientTeleportationManager.RemoteCallables.updateEntityPos",
                 entity.level().dimension(),
                 entity.getId(),
-                entity.position()
+                entity.position(),
+                entity.getYRot()
             )
         );
         

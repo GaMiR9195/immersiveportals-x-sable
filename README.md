@@ -1,31 +1,16 @@
 # v0.6.2
 A bug-fixing release: portals look cleaner, cost less and behave better in third person.
-- **No more ghosts on portal surfaces**: ships, mobs, block entities and particles from behind a
-  portal's exit no longer show up "painted" on the portal, including in portal loops and with Veil.
-- **Fight and trade through portals**: mobs and other entities on the far side can be hit and used
-  like any other, with knockback, sweep attacks and reach working where the target really is.
-- **Third person feels right**: the camera stops at walls on the far side of a portal instead of
-  flying into them, picking through portals starts at your eyes, and view bobbing stays smooth.
-- **Particles and name tags face you** when you look at them through a rotated portal.
-- **Faster portals**: portals off screen or hidden behind blocks are skipped earlier, and a crack
-  between blocks no longer renders a whole world behind it. Flywheel no longer rebuilds every
-  visual when a portal leads far away.
-- **Tidier code**: dead code and outdated comments removed.
-
-# v0.6.1
-- **Visual router for block-entity models**: ropes, springs, chains, shafts — anything drawn by a
-  block-entity renderer, Flywheel visual or Veil shader — is recorded once per frame, cut exactly at
-  the portal opening and every part is drawn on its own side: what went in comes out of the exit,
-  what didn't stays. Works through several portals at once and nested portals.
-- **Parts follow their holder**: each part's side is found by walking the model from the block that
-  holds it, so nothing is left hanging at the entrance or beyond the exit when the holder pulls it
-  back, and a part that went around the frame never counts as passed.
-- **No flickering for models**: a model stays routed while what it really drew is near
-  the opening, not only while its renderer's (often stale) bounds are.
-- **Openings are a bit larger than their frame** (`-Dipl.sable.apertureGrace`, default 0.125 blocks):
-  bodies Rapier rests slightly inside the frame or that slide along the rim pass cleanly.
-- **Joints hold**: a body on springs, ropes or bearings is never thrown through a portal wholesale by
-  geometry; commands moved to `/ipxsable`.
+1) **No more veil and ghosts on portal surfaces**: ships, mobs, block entities and particles from behind a
+   portal's exit no longer show up "painted" on the portal, including in portal loops and with Veil.
+2) **Attacking and interacting through portals**: mobs and etc on the far side can be hit and used
+   like any other, with knockback, sweep attacks and reach working where the target really is.
+3) **Third person**: the camera stops at walls on the far side of a portal instead of flying into them, 
+   picking through portals starts at your eyes, and view bobbing stays smooth.
+5) **Particles and things that face you** when you look at them through a portal, they look normal, now.
+6) **Faster portals**: portals off screen or hidden behind blocks are skipped earlier, and a crack
+   between blocks no longer renders a whole world behind it. Flywheel no longer rebuilds every
+   visual when a portal leads far away.
+7) **The cleaning**: dead code and outdated comments are removed.
 
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.
 

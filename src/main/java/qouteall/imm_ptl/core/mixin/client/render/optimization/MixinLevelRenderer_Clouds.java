@@ -11,10 +11,12 @@ import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.IPGlobal;
+import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
 import qouteall.imm_ptl.core.miscellaneous.IPVanillaCopy;
 import qouteall.imm_ptl.core.render.context_management.CloudContext;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
@@ -53,11 +55,7 @@ public abstract class MixinLevelRenderer_Clouds {
     private void onBeginRenderClouds(
         PoseStack poseStack, Matrix4f projectionMatrix, Matrix4f frustrumMatrix, float partialTick, double camX, double camY, double camZ, CallbackInfo ci
     ) {
-        if (RenderStates.getRenderedPortalNum() == 0) {
-            return;
-        }
-        
-        if (IPGlobal.cloudOptimization) {
+        if (ip_isCacheActive()) {
             portal_onBeginCloudRendering(partialTick, camX, camY, camZ);
         }
     }
@@ -67,13 +65,17 @@ public abstract class MixinLevelRenderer_Clouds {
         at = @At("RETURN")
     )
     private void onEndRenderClouds(PoseStack poseStack, Matrix4f projectionMatrix, Matrix4f frustrumMatrix, float partialTick, double camX, double camY, double camZ, CallbackInfo ci) {
-        if (RenderStates.getRenderedPortalNum() == 0) {
-            return;
-        }
-        
-        if (IPGlobal.cloudOptimization) {
+        if (ip_isCacheActive()) {
             portal_onEndCloudRendering();
         }
+    }
+    
+    /** Sodium replaces the vanilla clouds; its meshes are cached by {@code CloudGeometryCache}. */
+    @Unique
+    private static boolean ip_isCacheActive() {
+        return IPGlobal.cloudOptimization
+            && RenderStates.getRenderedPortalNum() != 0
+            && !SodiumInterface.invoker.isSodiumPresent();
     }
     
     private void portal_yieldCloudContext(CloudContext context) {

@@ -1,7 +1,9 @@
 package qouteall.imm_ptl.core.teleportation;
 
 import com.mojang.logging.LogUtils;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -45,6 +47,52 @@ public class TeleportationUtil {
         Vec3 otherSideVelocity = currentOtherSidePos.subtract(lastOtherSidePos);
         
         return new PortalPointVelocity(thisSideVelocity, otherSideVelocity);
+    }
+    
+    /**
+     * The horizontal turn {@code portal} gives a body facing {@code yRot}: the yaw of that facing
+     * carried through the portal, minus {@code yRot}. Zero without portal rotation and for facings
+     * the portal turns vertical.
+     */
+    public static float getYawTurn(Portal portal, float yRot) {
+        if (portal.getRotation() == null) {
+            return 0;
+        }
+        Vec3 turned = portal.transformLocalVecNonScale(Vec3.directionFromRotation(0, yRot));
+        if (turned.x * turned.x + turned.z * turned.z < 1.0E-4) {
+            return 0;
+        }
+        float turnedYRot = (float) Math.toDegrees(Math.atan2(-turned.x, turned.z));
+        return Mth.wrapDegrees(turnedYRot - yRot);
+    }
+    
+    /**
+     * Turns body and head by {@code yawTurn}, previous-tick values included: rendering interpolates
+     * between the two, and an unturned previous value would show the old facing for a tick.
+     */
+    public static void turnBodyAndHead(Entity entity, float yawTurn) {
+        if (yawTurn == 0) {
+            return;
+        }
+        if (entity instanceof LivingEntity living) {
+            living.yBodyRot += yawTurn;
+            living.yBodyRotO += yawTurn;
+            living.yHeadRot += yawTurn;
+            living.yHeadRotO += yawTurn;
+        }
+        else {
+            entity.setYHeadRot(entity.getYHeadRot() + yawTurn);
+        }
+    }
+    
+    /** Turns the whole facing of {@code entity} by {@code yawTurn}, see {@link #turnBodyAndHead}. */
+    public static void turnYaw(Entity entity, float yawTurn) {
+        if (yawTurn == 0) {
+            return;
+        }
+        entity.setYRot(entity.getYRot() + yawTurn);
+        entity.yRotO += yawTurn;
+        turnBodyAndHead(entity, yawTurn);
     }
     
     public static void transformEntityVelocity(

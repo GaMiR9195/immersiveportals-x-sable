@@ -109,7 +109,8 @@ public class MixinFrustum implements IEFrustum {
     public boolean ip_canDetermineInvisibleWithCamCoord(
         float minX, float minY, float minZ, float maxX, float maxY, float maxZ
     ) {
-        return portal_frustumCuller.canDetermineInvisibleWithCameraCoord(
+        // a frustum prepared for a shadow map has no portal culler
+        return portal_frustumCuller != null && portal_frustumCuller.canDetermineInvisibleWithCameraCoord(
             minX, minY, minZ, maxX, maxY, maxZ
         );
     }

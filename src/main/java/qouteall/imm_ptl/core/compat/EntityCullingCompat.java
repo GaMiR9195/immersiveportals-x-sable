@@ -22,8 +22,11 @@ import java.lang.reflect.Field;
  *   <li>A portal pass looks from another camera, often in another dimension, where those results
  *   mean nothing: the culling is switched off for every foreign world pass. The pass's own
  *   frustum and section culling still apply.</li>
- *   <li>Entities drawn in such a pass count as seen, so EntityCulling's tick culling keeps
- *   animating them.</li>
+ *   <li>Entities drawn in such a pass count as seen: in camera and not culled, the same state
+ *   EntityCulling's tracer gives a visible entity (kept for its usual second). Its tracer looks
+ *   from the player's camera only, so an entity seen through a portal is hidden for it; its tick
+ *   culling would then skip the full tick (body turn, walk animation) while the head keeps
+ *   interpolating.</li>
  *   <li>The tracer reads the player's level, not the level IP renders at that moment
  *   ({@code MixinEntityCullingBlockProvider}, {@code MixinEntityCullingModBase}).</li>
  * </ul>
@@ -38,6 +41,7 @@ public final class EntityCullingCompat {
 	private static @Nullable Field skipBlockEntitiesField;
 	private static @Nullable Class<?> cullableClass;
 	private static @Nullable MethodHandle setOutOfCamera;
+	private static @Nullable MethodHandle setCulled;
 	private static boolean broken;
 
 	private static int depth;
@@ -77,13 +81,16 @@ public final class EntityCullingCompat {
 		}
 	}
 
+	/** An entity drawn in a portal pass was seen. */
 	public static void onEntityRendered(Entity entity) {
-		if (depth == 0 || setOutOfCamera == null || !cullableClass.isInstance(entity)) return;
+		if (depth == 0 || setOutOfCamera == null || setCulled == null || !cullableClass.isInstance(entity)) return;
 		try {
 			setOutOfCamera.invoke(entity, false);
+			setCulled.invoke(entity, false);
 		}
 		catch (Throwable e) {
 			setOutOfCamera = null;
+			setCulled = null;
 			LOGGER.warn("[Immersive Portals] EntityCulling tick culling compatibility disabled", e);
 		}
 	}
@@ -108,6 +115,9 @@ public final class EntityCullingCompat {
 				setOutOfCamera = MethodHandles.publicLookup().findVirtual(
 					cullableClass, "setOutOfCamera", MethodType.methodType(void.class, boolean.class)
 				);
+				setCulled = MethodHandles.publicLookup().findVirtual(
+					cullableClass, "setCulled", MethodType.methodType(void.class, boolean.class)
+				);
 				instanceField = base.getField("instance");
 			}
 			Object instance = instanceField.get(null);
@@ -122,6 +132,7 @@ public final class EntityCullingCompat {
 	private static void disable(Exception e) {
 		broken = true;
 		setOutOfCamera = null;
+		setCulled = null;
 		LOGGER.warn("[Immersive Portals] EntityCulling compatibility disabled", e);
 	}
 }

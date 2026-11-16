@@ -58,6 +58,11 @@ public final class PortalPassView {
 		gameRenderDepth++;
 	}
 
+	/** Nesting of {@code GameRenderer.renderLevel}: 0 outside, 1 for the view, more in passes. */
+	public static int getGameRenderDepth() {
+		return gameRenderDepth;
+	}
+
 	/** End of {@code GameRenderer.renderLevel}: closes a view whose after-level stage did not run. */
 	public static void onGameRenderLevelEnd() {
 		while (!FRAMES.isEmpty() && FRAMES.peek().depth >= gameRenderDepth) {
