@@ -65,6 +65,9 @@ public class CrossPortalEntityRenderer {
     
     public static boolean isRenderingEntityProjection = false;
     
+    /** Whether the entity being drawn has its own cut, set up in {@link #beforeRenderingEntity}. */
+    private static boolean isEntityCut = false;
+    
     public static void init() {
         NeoForge.EVENT_BUS.addListener(IPGlobal.PostClientTickEvent.class, e -> CrossPortalEntityRenderer.refreshPortals());
 
@@ -170,25 +173,40 @@ public class CrossPortalEntityRenderer {
         if (!isCrossPortalRenderingEnabled()) {
             return;
         }
-        if (PortalRendering.isRendering()) {
+        List<Portal> cuttingPortals = getCuttingPortals(entity);
+        if (cuttingPortals.isEmpty()) {
             return;
         }
-        List<Portal> cuttingPortals = getCuttingPortals(entity);
-        if (!cuttingPortals.isEmpty()) {
-            // the triangles built so far are drawn without the cut
-            client.renderBuffers().bufferSource().endBatch();
-            FrontClipping.setupOuterClipping(cuttingPortals);
+        if (PortalRendering.isRendering() && !isSeenFromFarSide(entity, cuttingPortals)) {
+            return;
         }
+        // the triangles built so far are drawn without the cut
+        client.renderBuffers().bufferSource().endBatch();
+        FrontClipping.setupCrossingClipping(cuttingPortals);
+        isEntityCut = true;
+    }
+    
+    /**
+     * A portal pass looking out of a portal the entity crosses, from that portal's far side: the
+     * entity is drawn whole there. Not the first-person camera entity, whose near part the view
+     * does not show.
+     */
+    private static boolean isSeenFromFarSide(Entity entity, List<Portal> cuttingPortals) {
+        if (entity == client.getCameraEntity() && !client.gameRenderer.getMainCamera().isDetached()) {
+            return false;
+        }
+        return cuttingPortals.stream().anyMatch(FrontClipping::looksOutOf);
     }
     
     public static void afterRenderingEntity(Entity entity) {
         if (!isCrossPortalRenderingEnabled()) {
             return;
         }
-        if (!PortalRendering.isRendering() && crossings.containsKey(entity)) {
+        if (isEntityCut) {
             // drawn with the cut in its own draw call
             client.renderBuffers().bufferSource().endBatch();
             FrontClipping.disableClipping();
+            isEntityCut = false;
         }
     }
     

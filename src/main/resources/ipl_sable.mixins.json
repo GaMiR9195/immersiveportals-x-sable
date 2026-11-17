@@ -68,6 +68,8 @@
     "client.FlywheelEngineOriginMixin",
     "client.FlywheelStorageVetoMixin",
     "client.FlywheelStorageAccessor",
+    "client.SableContraptionPosesMixin",
+    "client.ContraptionVisualLevelMixin",
     "client.RenderSectionAccessor",
     "client.GlStateManagerMixin",
     "client.ShaderInstanceClipMixin",

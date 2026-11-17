@@ -23,6 +23,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.vehicle.AbstractMinecart;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.material.PushReaction;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
@@ -959,6 +960,15 @@ public class Portal extends Entity implements
     @Override
     public void move(MoverType type, Vec3 movement) {
         //portal cannot be moved
+    }
+    
+    /**
+     * Portals are anchored: pistons and mods that respect push reactions
+     * (Create contraptions, belts, ejectors) leave them in place.
+     */
+    @Override
+    public @NotNull PushReaction getPistonPushReaction() {
+        return PushReaction.IGNORE;
     }
     
     /**

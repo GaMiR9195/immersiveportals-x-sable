@@ -5,6 +5,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
@@ -20,8 +21,9 @@ public final class IplStaffFocus {
     private IplStaffFocus() {}
 
     public static void capture(ItemStack stack, Vec3 worldPoint) {
-        // Portal projections have their own matrices, not the physical owner's frame.
-        if (PortalRendering.isRendering() || WorldRenderInfo.isRendering()) return;
+        // Portal projections and the shadow map have their own matrices, not the physical owner's frame.
+        if (PortalRendering.isRendering() || WorldRenderInfo.isRendering()
+            || IrisInterface.invoker.isRenderingShadowMap()) return;
         var client = Minecraft.getInstance();
         if (client.level == null) return;
         for (Player player : client.level.players()) {

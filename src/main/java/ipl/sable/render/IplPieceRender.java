@@ -33,6 +33,7 @@ import org.lwjgl.opengl.GL14C;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL15C;
 import org.lwjgl.system.MemoryUtil;
+import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.q_misc_util.my_util.Plane;
 
 import java.nio.IntBuffer;
@@ -295,8 +296,15 @@ public final class IplPieceRender {
         if (splitEdges == null) return;
         for (int k = 0; k < splitEdges.size(); k++) {
             IntArrayList[] lists = splits.get(k);
-            IplPieceClip.set(keepPlane(splitEdges.get(k), node, draw.pose));
-            multiDraw(access, lists[0].elements(), lists[1].elements(), lists[0].size());
+            Plane keep = keepPlane(splitEdges.get(k), node, draw.pose);
+            Runnable drawSplit = () -> multiDraw(access, lists[0].elements(), lists[1].elements(), lists[0].size());
+            if (FrontClipping.isPassOpening(keep)) {
+                // Seen from the aperture's far side: drawn whole, like a crossing entity.
+                FrontClipping.withoutPassClip(drawSplit);
+                continue;
+            }
+            IplPieceClip.set(keep);
+            drawSplit.run();
             IplPieceClip.clear();
         }
     }

@@ -107,6 +107,19 @@ and used through portals, and the third-person camera behaves around portals.
 - **Shaders: going through a portal keeps the shader pack's temporal state.** The view through the
   portal becomes the player's view and the old view the one back through the reverse portal:
   motion blur, TAA history and smoothed uniforms continue across the teleport.
+- **Create contraptions on sub-levels no longer vanish when a portal is on screen** (windmill and
+  other bearings, trains). Sable keeps their render poses in one map and pruned it against every
+  level whose Flywheel frame started, so a level seen through a portal dropped the player's level's
+  poses. The poses are now kept per level (`IplContraptionRenderPoses`).
+- **Portals can no longer be pushed** by pistons or by Create contraptions, belts and ejectors.
+- **No see-through slit where things cross a portal, from either side.** With shader packs the
+  portal area takes over the pixels right in front of its opening. A pass looking out of an opening
+  now draws whatever crosses it whole: entities seen from the far side of the portal they stand in
+  (`FrontClipping.setupCrossingClipping`) and sub-level blocks at an aperture
+  (`IplPieceRender`), like the far-side image of an entity already was.
+- **Shaders: the physics staff beam starts at the staff.** Sodium fires the terrain layer stages
+  inside Iris' shadow pass too; the beam's route for the frame was taken there, from the shadow
+  map's matrices, so its start sat blocks away and jumped with the shadow grid.
 
 ### Performance
 

@@ -19,6 +19,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 
@@ -66,6 +67,8 @@ public final class IplStaffPortalBeamRenderer {
     public static void render(PoseStack poseStack, Camera camera, ClientLevel renderLevel) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.options.hideGui || minecraft.level == null || renderLevel == null) return;
+        // Sodium fires layer stages inside Iris' shadow pass too; its matrices must not seed the frame's route.
+        if (IrisInterface.invoker.isRenderingShadowMap()) return;
 
         PhysicsStaffClientHandler handler =
             SimulatedClient.PHYSICS_STAFF_CLIENT_HANDLER;

@@ -143,7 +143,7 @@ public final class IplClipPlanes {
 		return pass != null && pass.planes[slot] != null && suppression == 0;
 	}
 
-	/** The camera-relative equation in {@code slot} of the current pass, or null (diagnostics). */
+	/** A copy of the camera-relative equation in {@code slot} of the current pass, or null. */
 	public static double @Nullable [] plane(int slot) {
 		Pass pass = PASSES.peek();
 		return pass == null || pass.planes[slot] == null ? null : pass.planes[slot].clone();

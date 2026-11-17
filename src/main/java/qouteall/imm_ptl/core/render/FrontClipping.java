@@ -27,6 +27,12 @@ import java.util.Objects;
  */
 public class FrontClipping {
 	public static final double ADJUSTMENT = 0.01;
+	/** Parallel planes this close are one plane. */
+	private static final double SAME_PLANE_COS = 0.999999;
+	private static final double SAME_PLANE_DISTANCE = 1e-5;
+	/** Sub-level apertures come from the body's pose, so they match their portal only approximately. */
+	private static final double SAME_OPENING_COS = 0.999;
+	private static final double SAME_OPENING_DISTANCE = 0.05;
 
 	/** Start of a level render: the pass default (portal plane inside a portal pass, else none). */
 	public static void beginLevelPass() {
@@ -55,7 +61,7 @@ public class FrontClipping {
 			return;
 		}
 		Plane pass = passPlane();
-		if (pass != null && isSamePlane(pass, clipping)) {
+		if (pass != null && isSamePlane(pass, clipping, SAME_PLANE_COS, SAME_PLANE_DISTANCE)) {
 			IplClipPlanes.setPlane(IplClipPlanes.PORTAL, innerEquation(pass, adjustment));
 			return;
 		}
@@ -72,8 +78,7 @@ public class FrontClipping {
 	public static void setupProjectionClipping(Portal portal, Matrix4f modelView) {
 		if (!IPCGlobal.useFrontClipping) return;
 		Plane clipping = portal.getInnerClipping();
-		Plane pass = passPlane();
-		if (clipping != null && pass != null && isSamePlane(pass, clipping)) {
+		if (isPassOpening(clipping)) {
 			IplClipPlanes.setPlane(IplClipPlanes.PORTAL, null);
 			IplClipPlanes.setObjectCuts();
 			return;
@@ -89,6 +94,48 @@ public class FrontClipping {
 		);
 	}
 
+	/**
+	 * Cuts an entity crossing {@code portals} at their outer sides. A pass that looks out of one of
+	 * them from its far side draws the entity whole, like its far-side image through the portal it
+	 * crosses ({@link #setupProjectionClipping}).
+	 */
+	public static void setupCrossingClipping(List<Portal> portals) {
+		if (!IPCGlobal.useFrontClipping) return;
+		List<Portal> cutting = portals.stream().filter(p -> !looksOutOf(p)).toList();
+		if (cutting.size() < portals.size()) {
+			IplClipPlanes.setPlane(IplClipPlanes.PORTAL, null);
+		}
+		setupOuterClipping(cutting);
+	}
+
+	/** Whether the pass looks out of {@code portal} from its far side: its front clip is the portal's own plane. */
+	public static boolean looksOutOf(Portal portal) {
+		return isPassOpening(portal.getPortalShape().getOuterClipping(portal.getThisSideState()));
+	}
+
+	/**
+	 * Whether {@code plane} is the opening the pass looks out of. Geometry crossing it is drawn
+	 * whole in the pass: with shader packs the portal area takes over the pixels right in front of
+	 * the opening (its stencil is pulled toward the camera against TAA jitter), and those pixels
+	 * must show that geometry rather than what lies behind it.
+	 */
+	public static boolean isPassOpening(@Nullable Plane plane) {
+		Plane pass = passPlane();
+		return plane != null && pass != null
+			&& isSamePlane(pass, plane, SAME_OPENING_COS, SAME_OPENING_DISTANCE);
+	}
+
+	/** Runs {@code draw} without the pass's front clip; the clip is restored afterwards. */
+	public static void withoutPassClip(Runnable draw) {
+		double[] saved = IplClipPlanes.plane(IplClipPlanes.PORTAL);
+		IplClipPlanes.setPlane(IplClipPlanes.PORTAL, null);
+		try {
+			draw.run();
+		} finally {
+			IplClipPlanes.setPlane(IplClipPlanes.PORTAL, saved);
+		}
+	}
+
 	/** The front clip plane of the pass being drawn, or null outside portal passes. */
 	@Nullable
 	public static Plane passPlane() {
@@ -101,14 +148,14 @@ public class FrontClipping {
 		IplClipPlanes.setPlane(IplClipPlanes.PORTAL, plane == null ? null : innerEquation(plane, 0));
 	}
 
-	private static boolean isSamePlane(Plane a, Plane b) {
+	private static boolean isSamePlane(Plane a, Plane b, double minCos, double maxDistance) {
 		Vec3 na = a.normal();
 		Vec3 nb = b.normal();
 		double la = na.length();
 		double lb = nb.length();
 		if (la < 1e-9 || lb < 1e-9) return false;
-		if (na.dot(nb) / (la * lb) < 0.999999) return false;
-		return Math.abs(na.dot(b.pos().subtract(a.pos())) / la) < 1e-5;
+		if (na.dot(nb) / (la * lb) < minCos) return false;
+		return Math.abs(na.dot(b.pos().subtract(a.pos())) / la) < maxDistance;
 	}
 
 	private static double[] innerEquation(Plane clipping, double correction) {
