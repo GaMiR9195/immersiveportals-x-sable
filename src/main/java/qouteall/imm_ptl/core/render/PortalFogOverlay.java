@@ -1,6 +1,7 @@
 package qouteall.imm_ptl.core.render;
 
 import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.shaders.FogShape;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.BufferUploader;
@@ -8,11 +9,17 @@ import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import ipl.sable.render.clip.IplClipPlanes;
+import net.minecraft.client.Camera;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.ShaderInstance;
+import net.minecraft.tags.BiomeTags;
+import net.minecraft.world.level.material.FogType;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 import qouteall.imm_ptl.core.CHelper;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.portal.Portal;
 
 /**
@@ -26,6 +33,9 @@ import qouteall.imm_ptl.core.portal.Portal;
 public final class PortalFogOverlay {
     /** Fog start beyond this means the view has no fog (see MyRenderHelper#transformFogDistance). */
     private static final float NO_FOG_START = 1.0e5f;
+    /** Vanilla's water fog end once the eyes have adapted (FogRenderer#setupFog). */
+    private static final float ADAPTED_WATER_FOG_END = 96;
+    private static final float CLOSER_WATER_FOG_FACTOR = 0.85f;
 
     public record Fog(float start, float end, float[] color, int shape) {
         public static final Fog NONE = new Fog(Float.MAX_VALUE, Float.MAX_VALUE, new float[4], 0);
@@ -35,6 +45,8 @@ public final class PortalFogOverlay {
         }
     }
 
+    private static Fog shaderPackViewFog = Fog.NONE;
+
     private PortalFogOverlay() {}
 
     /** The fog currently set up for the view being rendered. Reads only. */
@@ -43,6 +55,49 @@ public final class PortalFogOverlay {
             RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd(),
             RenderSystem.getShaderFogColor().clone(), RenderSystem.getShaderFogShape().getIndex()
         );
+    }
+
+    /**
+     * Called inside every level render once its fog is set up. With shader packs portals are
+     * composited after the level render, which resets the fog, so the view's fog is kept here.
+     */
+    public static void onLevelFogSetUp() {
+        if (IrisInterface.invoker.isShaders()) shaderPackViewFog = withAdaptedWaterFog(current());
+    }
+
+    /** The fog of the latest level render with a shader pack. */
+    public static Fog shaderPackViewFog() {
+        return shaderPackViewFog;
+    }
+
+    /**
+     * Shader packs keep their water fog steady, while vanilla thins it out over the time spent
+     * underwater (LocalPlayer#getWaterVision). Portals take the fully adapted water fog so they do
+     * not fade in and out against the water around them.
+     */
+    private static Fog withAdaptedWaterFog(Fog fog) {
+        Minecraft client = Minecraft.getInstance();
+        Camera camera = client.gameRenderer.getMainCamera();
+        if (camera.getFluidInCamera() != FogType.WATER || !(camera.getEntity() instanceof LocalPlayer player)) {
+            return fog;
+        }
+        float end = ADAPTED_WATER_FOG_END;
+        if (player.level().getBiome(player.blockPosition()).is(BiomeTags.HAS_CLOSER_WATER_FOG)) {
+            end *= CLOSER_WATER_FOG_FACTOR;
+        }
+        int shape = fog.shape();
+        float renderDistance = Math.max(client.gameRenderer.getRenderDistance(), 32);
+        if (end > renderDistance) {
+            end = renderDistance;
+            shape = FogShape.CYLINDER.getIndex();
+        }
+        // Adaptation only scales the color up to its brightest channel.
+        float[] color = fog.color().clone();
+        float brightest = Math.max(color[0], Math.max(color[1], color[2]));
+        if (brightest > 0) {
+            for (int i = 0; i < 3; i++) color[i] /= brightest;
+        }
+        return new Fog(fog.start(), end, color, shape);
     }
 
     /**

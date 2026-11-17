@@ -1,6 +1,5 @@
 package qouteall.imm_ptl.core.render;
 
-import com.mojang.blaze3d.vertex.PoseStack;
 import ipl.sable.render.clip.IplClipPlanes;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
@@ -11,6 +10,9 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.q_misc_util.my_util.Plane;
 
+import java.util.List;
+import java.util.Objects;
+
 /**
  * The portal clips of {@link IplClipPlanes}.
  *
@@ -19,38 +21,37 @@ import qouteall.q_misc_util.my_util.Plane;
  * every draw is cut at the rendering portal's destination plane, whichever renderer issues it
  * and whenever its buffers are flushed. A caller can only NUDGE that plane (terrain moves it
  * back by {@link #ADJUSTMENT} so world-wrapping portals do not z-fight); any other plane a
- * caller asks for goes to {@link IplClipPlanes#OBJECT} and is applied together with the pass
- * clip. So an entity crossing a second portal, or the far-side image of an entity, is cut by
- * both planes and can never pull geometry from behind the destination plane into the view.
+ * caller asks for is an object cut ({@link IplClipPlanes#OBJECT}) applied together with the pass
+ * clip. So an entity crossing other portals, or the far-side image of an entity, is cut by
+ * every plane and can never pull geometry from behind the destination plane into the view.
  */
 public class FrontClipping {
 	public static final double ADJUSTMENT = 0.01;
 
 	/** Start of a level render: the pass default (portal plane inside a portal pass, else none). */
 	public static void beginLevelPass() {
-		restorePassDefault();
-		IplClipPlanes.setPlane(IplClipPlanes.OBJECT, null);
+		disableClipping();
 	}
 
-	/** Ends a caller's cut: back to the pass default, object cut removed. */
+	/** Ends a caller's cut: back to the pass default, object cuts removed. */
 	public static void disableClipping() {
 		restorePassDefault();
-		IplClipPlanes.setPlane(IplClipPlanes.OBJECT, null);
+		IplClipPlanes.setObjectCuts();
 	}
 
 	public static boolean isClippingEnabled() {
-		return IplClipPlanes.isActive(IplClipPlanes.PORTAL) || IplClipPlanes.isActive(IplClipPlanes.OBJECT);
+		return IplClipPlanes.isActive(IplClipPlanes.PORTAL) || IplClipPlanes.isObjectCutActive();
 	}
 
 	/**
 	 * Cuts the following draws at {@code clipping} (normal towards the kept side). The pass's own
 	 * plane only changes the pass clip's adjustment; any other plane is an object cut, applied in
-	 * addition to the pass clip. {@code null} removes the object cut.
+	 * addition to the pass clip. {@code null} removes the object cuts.
 	 */
 	public static void setupInnerClipping(@Nullable Plane clipping, Matrix4f modelView, double adjustment) {
 		if (!IPCGlobal.useFrontClipping) return;
 		if (clipping == null) {
-			IplClipPlanes.setPlane(IplClipPlanes.OBJECT, null);
+			IplClipPlanes.setObjectCuts();
 			return;
 		}
 		Plane pass = passPlane();
@@ -58,12 +59,34 @@ public class FrontClipping {
 			IplClipPlanes.setPlane(IplClipPlanes.PORTAL, innerEquation(pass, adjustment));
 			return;
 		}
-		IplClipPlanes.setPlane(IplClipPlanes.OBJECT, innerEquation(clipping, adjustment));
+		IplClipPlanes.setObjectCuts(innerEquation(clipping, adjustment));
 	}
 
-	public static void setupOuterClipping(PoseStack matrixStack, Portal portal) {
+	/**
+	 * Clips the far-side image of an entity crossing {@code portal}. Through that same portal the
+	 * image is drawn whole: its part in front of the destination plane is the entity's own near
+	 * part, hidden wherever the view still shows that part in front of the portal, and it fills
+	 * the pixels next to the plane that the portal area takes over, so the cut has no seam. Through
+	 * any other portal the image is cut at the colliding portal's destination plane.
+	 */
+	public static void setupProjectionClipping(Portal portal, Matrix4f modelView) {
 		if (!IPCGlobal.useFrontClipping) return;
-		IplClipPlanes.setPlane(IplClipPlanes.OBJECT, outerEquation(portal));
+		Plane clipping = portal.getInnerClipping();
+		Plane pass = passPlane();
+		if (clipping != null && pass != null && isSamePlane(pass, clipping)) {
+			IplClipPlanes.setPlane(IplClipPlanes.PORTAL, null);
+			IplClipPlanes.setObjectCuts();
+			return;
+		}
+		setupInnerClipping(clipping, modelView, 0);
+	}
+
+	/** Cuts the following draws at the outer side of every opening in {@code portals}. */
+	public static void setupOuterClipping(List<Portal> portals) {
+		if (!IPCGlobal.useFrontClipping) return;
+		IplClipPlanes.setObjectCuts(
+			portals.stream().map(FrontClipping::outerEquation).filter(Objects::nonNull).toArray(double[][]::new)
+		);
 	}
 
 	/** The front clip plane of the pass being drawn, or null outside portal passes. */

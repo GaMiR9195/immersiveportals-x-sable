@@ -130,13 +130,9 @@ public class CrossPortalEntityRenderer {
             );
     }
     
-    /**
-     * The portal whose plane cuts {@code entity} on this side. There is one object cut: an entity
-     * crossing two openings at once is cut at the first.
-     */
-    private static @Nullable Portal getCuttingPortal(Entity entity) {
-        List<Portal> portals = crossings.get(entity);
-        return portals == null ? null : portals.get(0);
+    /** The portals whose planes cut {@code entity} on this side, empty if it crosses none. */
+    private static List<Portal> getCuttingPortals(Entity entity) {
+        return crossings.getOrDefault(entity, List.of());
     }
     
     public static void onBeginRenderingEntitiesAndBlockEntities(Matrix4f modelView) {
@@ -177,11 +173,11 @@ public class CrossPortalEntityRenderer {
         if (PortalRendering.isRendering()) {
             return;
         }
-        Portal cuttingPortal = getCuttingPortal(entity);
-        if (cuttingPortal != null) {
+        List<Portal> cuttingPortals = getCuttingPortals(entity);
+        if (!cuttingPortals.isEmpty()) {
             // the triangles built so far are drawn without the cut
             client.renderBuffers().bufferSource().endBatch();
-            FrontClipping.setupOuterClipping(matrixStack, cuttingPortal);
+            FrontClipping.setupOuterClipping(cuttingPortals);
         }
     }
     
@@ -240,9 +236,7 @@ public class CrossPortalEntityRenderer {
         FrontClipping.disableClipping();
         client.renderBuffers().bufferSource().endBatch();
         
-        // The pass's front clip stays on; the colliding portal's destination plane is the object
-        // cut, so only the part that really went through the colliding portal shows.
-        FrontClipping.setupInnerClipping(collidingPortal.getInnerClipping(), matrixStack.last().pose(), 0);
+        FrontClipping.setupProjectionClipping(collidingPortal, matrixStack.last().pose());
         try {
             renderEntity(entity, collidingPortal, matrixStack);
             client.renderBuffers().bufferSource().endBatch();
@@ -410,22 +404,17 @@ public class CrossPortalEntityRenderer {
         }
         if (PortalRendering.isRendering()) {
             Portal renderingPortal = PortalRendering.getRenderingPortal();
-            Portal collidingPortal = getCuttingPortal(entity);
-            
             if (entity instanceof Player && !renderingPortal.getDoRenderPlayer()) {
                 return false;
             }
             
-            if (collidingPortal != null && !(entity instanceof LocalPlayer)) {
-                if (renderingPortal instanceof Portal) {
-                    if (!Portal.isReversePortal(collidingPortal, ((Portal) renderingPortal))) {
-                        Vec3 cameraPos = PortalRenderer.client.gameRenderer.getMainCamera().getPosition();
-                        
-                        boolean isHidden = cameraPos.subtract(collidingPortal.getOriginPos())
-                            .dot(collidingPortal.getNormal()) < 0;
-                        if (isHidden) {
-                            return false;
-                        }
+            if (!(entity instanceof LocalPlayer)) {
+                Vec3 cameraPos = PortalRenderer.client.gameRenderer.getMainCamera().getPosition();
+                for (Portal collidingPortal : getCuttingPortals(entity)) {
+                    boolean isHidden = !Portal.isReversePortal(collidingPortal, renderingPortal)
+                        && cameraPos.subtract(collidingPortal.getOriginPos()).dot(collidingPortal.getNormal()) < 0;
+                    if (isHidden) {
+                        return false;
                     }
                 }
             }

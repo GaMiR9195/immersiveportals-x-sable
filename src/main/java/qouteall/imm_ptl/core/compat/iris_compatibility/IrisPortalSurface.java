@@ -26,6 +26,7 @@ import org.joml.Vector4f;
 import qouteall.imm_ptl.core.CHelper;
 import qouteall.imm_ptl.core.IPGlobal;
 import qouteall.imm_ptl.core.IPMcHelper;
+import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
 import qouteall.imm_ptl.core.McHelper;
 import qouteall.imm_ptl.core.portal.Portal;
 
@@ -124,6 +125,8 @@ public final class IrisPortalSurface {
 
         TextureAtlasSprite sprite = client.getBlockRenderer().getBlockModelShaper()
             .getParticleIcon((glass ? Blocks.NETHER_PORTAL : Blocks.BLACK_CONCRETE).defaultBlockState());
+        // Sodium animates only sprites drawn this frame; no portal block draws this one.
+        SodiumInterface.invoker.markSpriteActive(sprite);
         RenderType type = glass
             ? RenderType.entityTranslucent(InventoryMenu.BLOCK_ATLAS)
             : RenderType.entitySolid(InventoryMenu.BLOCK_ATLAS);

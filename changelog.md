@@ -91,9 +91,27 @@ and used through portals, and the third-person camera behaves around portals.
   recreate every visual twice per frame (`FlywheelEngineOriginMixin`), and every client level is
   served by its own visualization manager, so block entities are no longer drawn twice or not at
   all depending on timing.
+- **Entities standing in a portal have no hole at the cut.** Through the portal they cross, their
+  far-side image is drawn whole (`FrontClipping.setupProjectionClipping`): the pixels next to the
+  portal plane that the portal area takes over show the entity instead of what is behind it.
+- **Entities crossing two portals at once are cut by both** (object cuts now use two clip slots).
+- **Render distance with Sodium.** Changing it rebuilt only the current level; the levels seen
+  through portals kept the old distance and were rebuilt in the middle of a portal pass, so after
+  going through the portal the world stayed at the old distance. Portal passes no longer rebuild a
+  level's renderer, and the other levels follow the change before the next frame.
+- **Shaders: water fog over portals is steady.** Vanilla thins its underwater fog with the time
+  spent underwater, shader packs keep theirs constant. Portals take the adapted fog, so they no
+  longer turn deep blue on diving in, fade out afterwards and change with every dive.
+- **Shaders: `purple_glass` portal shadows are animated** with Sodium, which animates only the
+  textures drawn in the frame.
+- **Shaders: going through a portal keeps the shader pack's temporal state.** The view through the
+  portal becomes the player's view and the old view the one back through the reverse portal:
+  motion blur, TAA history and smoothed uniforms continue across the teleport.
 
 ### Performance
 
+- Shaders: the portal layer buffers are no longer cleared every frame (only the first layer's
+  stencil is), and the view of a draw is found without copying the portal path.
 - **Screen-space portal culling** (`PortalScreenCulling`). Each portal is reduced to the screen
   rectangle of its opening and intersected with the rectangle of the portal it is seen through, so
   nested portals and portal loops shrink and stop on their own. Replaces the frustum box test.

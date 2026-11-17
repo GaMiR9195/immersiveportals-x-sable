@@ -30,7 +30,6 @@ import qouteall.imm_ptl.core.render.renderer.PortalRenderer;
 
 import java.util.List;
 
-import static org.lwjgl.opengl.GL11.GL_COLOR_BUFFER_BIT;
 import static org.lwjgl.opengl.GL11.GL_DEPTH_BUFFER_BIT;
 import static org.lwjgl.opengl.GL11.GL_EQUAL;
 import static org.lwjgl.opengl.GL11.GL_INCR;
@@ -49,7 +48,7 @@ import static org.lwjgl.opengl.GL11.glStencilOp;
  *
  * <p>Every view is a complete Iris frame. After a view, its image is copied into the buffer of
  * its layer where the stencil marks it; portals found in it are drawn there in turn, each with
- * the view's fog laid over it ({@link IrisPortalFog}). Pixels that must stay in front of portal
+ * the view's fog laid over it ({@link PortalFogOverlay}). Pixels that must stay in front of portal
  * content are kept out of every layer ({@link IrisForegroundMask}). Each view keeps its
  * composite as the texture of the portal surfaces it draws next frame ({@link IrisPortalBackdrop}).
  */
@@ -91,7 +90,7 @@ public class IrisPortalRenderer extends PortalRenderer {
 
         if (deferredFbs.length != PortalRendering.getMaxPortalLayer() + 1) {
             for (SecondaryFrameBuffer fb : deferredFbs) {
-                fb.fb.destroyBuffers();
+                if (fb.fb != null) fb.fb.destroyBuffers();
             }
 
             deferredFbs = new SecondaryFrameBuffer[PortalRendering.getMaxPortalLayer() + 1];
@@ -101,24 +100,20 @@ public class IrisPortalRenderer extends PortalRenderer {
             layerViews = new LayerView[deferredFbs.length];
         }
 
-        CHelper.checkGlError();
-
-        for (SecondaryFrameBuffer deferredFb : deferredFbs) {
-            deferredFb.prepare();
-            IPPortingLibCompat.setIsStencilEnabled(deferredFb.fb, true);
-
-            deferredFb.fb.bindWrite(true);
-            GlStateManager._clearColor(1, 0, 1, 0);
-            GlStateManager._clearDepth(1);
+        if (portalRenderingNeeded) {
+            for (SecondaryFrameBuffer deferredFb : deferredFbs) {
+                deferredFb.prepare();
+                IPPortingLibCompat.setIsStencilEnabled(deferredFb.fb, true);
+            }
+            // A layer's color, depth and stencil are all rewritten before they are read, except the
+            // marks of kept pixels in layer 0.
+            RenderTarget base = deferredFbs[0].fb;
+            base.bindWrite(false);
             GlStateManager._clearStencil(0);
             GL11.glStencilMask(0xFF);
-            GL11.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-
-            deferredFb.fb.checkStatus();
-
+            GL11.glClear(GL_STENCIL_BUFFER_BIT);
+            base.unbindWrite();
             CHelper.checkGlError();
-
-            deferredFb.fb.unbindWrite();
         }
 
         IPPortingLibCompat.setIsStencilEnabled(client.getMainRenderTarget(), false);
@@ -168,7 +163,7 @@ public class IrisPortalRenderer extends PortalRenderer {
 
             LayerView view = new LayerView(
                 new Matrix4f(modelView), new Matrix4f(RenderSystem.getProjectionMatrix()),
-                NameTagFootprints.snapshot(), IrisPortalFog.capture(),
+                NameTagFootprints.snapshot(), PortalFogOverlay.shaderPackViewFog(),
                 IrisPortalBackdrop.of(IrisViewContexts.current())
             );
             layerViews[portalLayer] = view;
@@ -304,21 +299,25 @@ public class IrisPortalRenderer extends PortalRenderer {
 
         RenderTarget outer = deferredFbs[outerLayer].fb;
         outer.bindWrite(true);
-
-        glEnable(GL_STENCIL_TEST);
-        glStencilFunc(GL_EQUAL, innerLayer, 0xFF);
-        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-
+        limitToStencil(innerLayer);
         // Opaque: the content replaces the view's pixels instead of tinting them.
         MyRenderHelper.drawScreenFrameBuffer(deferredFbs[innerLayer].fb, false, false);
 
-        glDisable(GL_STENCIL_TEST);
-
         LayerView view = layerViews[outerLayer];
-        IrisPortalFog.apply(portal, view.fog(), view.modelView(), view.projection(), outer, innerLayer);
+        outer.bindWrite(false);
+        limitToStencil(innerLayer);
+        PortalFogOverlay.draw(portal, view.fog(), view.modelView(), view.projection(), false);
+        glDisable(GL_STENCIL_TEST);
         view.backdrop().store(portal, deferredFbs[innerLayer].fb);
 
         outer.unbindWrite();
+    }
+
+    /** Limits the following draws to the pixels whose stencil holds {@code value}. */
+    private static void limitToStencil(int value) {
+        glEnable(GL_STENCIL_TEST);
+        glStencilFunc(GL_EQUAL, value, 0xFF);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
     }
 
     private boolean tryRenderViewAreaInDeferredBufferAndIncreaseStencil(

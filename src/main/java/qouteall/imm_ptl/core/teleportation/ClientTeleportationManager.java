@@ -29,6 +29,7 @@ import qouteall.imm_ptl.core.api.PortalAPI;
 import qouteall.imm_ptl.core.collision.CollisionHelper;
 import qouteall.imm_ptl.core.collision.PortalCollisionHandler;
 import qouteall.imm_ptl.core.compat.GravityChangerInterface;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisViewContexts;
 import qouteall.imm_ptl.core.ducks.IEAbstractClientPlayer;
 import qouteall.imm_ptl.core.ducks.IEClientPlayNetworkHandler;
 import qouteall.imm_ptl.core.ducks.IEEntity;
@@ -368,6 +369,7 @@ public class ClientTeleportationManager {
         }
         
         ScaleUtilsClient.onClientPlayerTeleported(portal);
+        IrisViewContexts.onPlayerTeleported(portal);
 
         // IPL-Sable: zero-latency grab-chain prediction for the local player's own hop.
         ipl.sable.client.IplGrabChainClient.onLocalPlayerTeleported(portal);

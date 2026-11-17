@@ -1,13 +1,14 @@
 package qouteall.imm_ptl.core.compat.sodium_compatibility;
 
+import net.caffeinemc.mods.sodium.api.texture.SpriteUtil;
 import net.caffeinemc.mods.sodium.client.render.SodiumWorldRenderer;
 import net.caffeinemc.mods.sodium.client.render.chunk.RenderSectionManager;
 import net.caffeinemc.mods.sodium.client.render.chunk.map.ChunkStatus;
 import net.caffeinemc.mods.sodium.client.render.chunk.map.ChunkTrackerHolder;
-import net.caffeinemc.mods.sodium.client.render.texture.SpriteUtil;
 import net.caffeinemc.mods.sodium.client.world.LevelRendererExtension;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.compat.mixin.sodium.IESodiumWorldRenderer;
@@ -38,6 +39,11 @@ public class SodiumInterface {
         
         public void markSpriteActive(TextureAtlasSprite sprite) {
         
+        }
+        
+        /** Whether the level renderer was built for another render distance than the current one. */
+        public boolean isRenderDistanceOutdated(LevelRenderer levelRenderer) {
+            return false;
         }
         
         public void onClientChunkLoaded(ClientLevel world, int chunkX, int chunkZ) {
@@ -99,7 +105,14 @@ public class SodiumInterface {
         
         @Override
         public void markSpriteActive(TextureAtlasSprite sprite) {
-            SpriteUtil.markSpriteActive(sprite);
+            SpriteUtil.INSTANCE.markSpriteActive(sprite);
+        }
+        
+        @Override
+        public boolean isRenderDistanceOutdated(LevelRenderer levelRenderer) {
+            SodiumWorldRenderer swr = ((LevelRendererExtension) levelRenderer).sodium$getWorldRenderer();
+            return swr != null && ((IESodiumWorldRenderer) swr).ip_getRenderDistance()
+                != Minecraft.getInstance().options.getEffectiveRenderDistance();
         }
         
         @Override

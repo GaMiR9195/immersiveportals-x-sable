@@ -26,6 +26,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
 import qouteall.imm_ptl.core.ducks.IECamera;
 import qouteall.imm_ptl.core.ducks.IEClientPlayNetworkHandler;
 import qouteall.imm_ptl.core.ducks.IEClientWorld;
@@ -44,6 +45,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -88,6 +90,7 @@ public class ClientWorldLoader {
         }));
 
         NeoForge.EVENT_BUS.addListener(ClientExitEvent.class, (e) -> dimIdToDimTypeId = null);
+        NeoForge.EVENT_BUS.addListener(IPGlobal.PreGameRenderEvent.class, e -> reloadOutdatedWorldRenderers());
     }
     
     public static boolean getIsInitialized() {
@@ -489,7 +492,6 @@ public class ClientWorldLoader {
     
     private static boolean isReloadingOtherWorldRenderers = false;
     
-    @SuppressWarnings("Convert2MethodRef")
     public static void _onWorldRendererReloaded() {
         Validate.isTrue(CLIENT.isSameThread());
         if (CLIENT.level != null) {
@@ -506,11 +508,31 @@ public class ClientWorldLoader {
             return;
         }
         
+        reloadOtherWorldRenderers(r -> true);
+    }
+    
+    /**
+     * Sodium rebuilds only the current level's renderer when the render distance changes; the
+     * renderers of the other levels follow here, outside of any world pass.
+     */
+    private static void reloadOutdatedWorldRenderers() {
+        if (!isInitialized || CLIENT.level == null || CLIENT.player == null
+            || !SodiumInterface.invoker.isSodiumPresent()) {
+            return;
+        }
+        reloadOtherWorldRenderers(SodiumInterface.invoker::isRenderDistanceOutdated);
+    }
+    
+    @SuppressWarnings("Convert2MethodRef")
+    private static void reloadOtherWorldRenderers(Predicate<LevelRenderer> filter) {
+        List<ResourceKey<Level>> toReload = WORLD_RENDERER_MAP.entrySet().stream()
+            .filter(e -> e.getKey() != CLIENT.level.dimension() && filter.test(e.getValue()))
+            .map(Map.Entry::getKey).toList();
+        if (toReload.isEmpty()) {
+            return;
+        }
+        
         isReloadingOtherWorldRenderers = true;
-        
-        List<ResourceKey<Level>> toReload = WORLD_RENDERER_MAP.keySet().stream()
-            .filter(d -> d != CLIENT.level.dimension()).toList();
-        
         for (ResourceKey<Level> dim : toReload) {
             ClientLevel world = CLIENT_WORLD_MAP.get(dim);
             Validate.notNull(world, "missing client world %s", dim.location());

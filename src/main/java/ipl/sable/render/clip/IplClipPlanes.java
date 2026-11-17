@@ -15,10 +15,10 @@ import java.util.ArrayDeque;
  *   <li>{@link #PORTAL}: the front clip of the portal pass being drawn. It belongs to the WHOLE
  *       pass and is never replaced by a draw's own cut, only nudged by the terrain z-fight
  *       adjustment; outside portal passes it is empty.</li>
- *   <li>{@link #OBJECT}: the cut of one object being drawn (an entity crossing a portal, the
- *       outer clip of a crossing entity, the far-side image of an entity seen through another
- *       portal). It is ANDed with the pass clip, so nothing an object does can make the pass
- *       leak geometry from behind the destination plane.</li>
+ *   <li>{@link #OBJECT} and the following {@link #OBJECT_CUTS} slots: the cuts of one object
+ *       being drawn (the outer clip of each opening an entity crosses, the far-side image of an
+ *       entity seen through another portal). They are ANDed with the pass clip, so nothing an
+ *       object does can make the pass leak geometry from behind the destination plane.</li>
  *   <li>the remaining slots: the aperture cuts of the Sable piece being drawn.</li>
  * </ul>
  *
@@ -39,11 +39,12 @@ import java.util.ArrayDeque;
 public final class IplClipPlanes {
 
 	public static final String UNIFORM = "ipl_ClipPlanes";
-	public static final int SLOTS = 4;
 	public static final int PORTAL = 0;
 	public static final int OBJECT = 1;
-	public static final int FIRST_PIECE_CUT = 2;
-	public static final int PIECE_CUTS = SLOTS - FIRST_PIECE_CUT;
+	public static final int OBJECT_CUTS = 2;
+	public static final int FIRST_PIECE_CUT = OBJECT + OBJECT_CUTS;
+	public static final int PIECE_CUTS = 2;
+	public static final int SLOTS = FIRST_PIECE_CUT + PIECE_CUTS;
 
 	private static final double[] NEUTRAL = {0.0, 0.0, 0.0, 1.0};
 
@@ -93,6 +94,16 @@ public final class IplClipPlanes {
 		boolean wasActive = anyActive();
 		pass.planes[slot] = cameraRelativeEquation == null ? null : cameraRelativeEquation.clone();
 		changed(wasActive);
+	}
+
+	/** Sets the object cuts of the current pass; slots without an equation (or a null one) are cleared. */
+	public static void setObjectCuts(double @Nullable []... equations) {
+		for (int i = 0; i < OBJECT_CUTS; i++) setPlane(OBJECT + i, i < equations.length ? equations[i] : null);
+	}
+
+	public static boolean isObjectCutActive() {
+		for (int i = 0; i < OBJECT_CUTS; i++) if (isActive(OBJECT + i)) return true;
+		return false;
 	}
 
 	public static void clearPieceCuts() {

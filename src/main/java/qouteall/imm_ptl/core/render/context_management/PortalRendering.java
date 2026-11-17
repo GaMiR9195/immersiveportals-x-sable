@@ -93,6 +93,15 @@ public class PortalRendering {
         return List.copyOf(portalLayers);
     }
     
+    /** Whether {@code path} is the current portal path; compares without copying it. */
+    public static boolean isPortalPath(List<Portal> path) {
+        if (path.size() != portalLayers.size()) return false;
+        for (int i = 0; i < path.size(); i++) {
+            if (path.get(i) != portalLayers.get(i)) return false;
+        }
+        return true;
+    }
+    
     public static void onBeginPortalWorldRendering() {
         List<WeakReference<Portal>> currRenderInfo = portalLayers.stream().map(
             (Function<Portal, WeakReference<Portal>>) WeakReference::new

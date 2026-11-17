@@ -1,6 +1,8 @@
 package qouteall.imm_ptl.core.compat.iris_compatibility;
 
 import org.jetbrains.annotations.Nullable;
+import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.IPMcHelper;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 
@@ -115,7 +117,8 @@ public final class IrisViewContexts {
         }
     }
 
-    private static final Context MAIN = new Context();
+    /** The player's own view. */
+    private static Context main = new Context();
     private static final HashMap<String, Context> PORTAL_VIEWS = new HashMap<>();
     private static final ArrayDeque<Context> STACK = new ArrayDeque<>();
     private static int frame;
@@ -146,18 +149,48 @@ public final class IrisViewContexts {
      * (when its portals are composited).
      */
     public static Context current() {
-        if (!PortalRendering.isRendering()) return MAIN;
-        List<Portal> path = PortalRendering.getPortalPath();
-        if (path.equals(cachedPath) && cachedContext != null && !cachedContext.disposed) {
+        if (!PortalRendering.isRendering()) return main;
+        if (cachedPath != null && cachedContext != null && !cachedContext.disposed
+            && PortalRendering.isPortalPath(cachedPath)) {
             return cachedContext;
         }
+        cachedPath = PortalRendering.getPortalPath();
+        cachedContext = PORTAL_VIEWS.computeIfAbsent(keyOf(cachedPath), k -> new Context());
+        return cachedContext;
+    }
+
+    /**
+     * The player went through {@code portal}: the view through it becomes the player's view and
+     * the player's old view becomes the view back through the reverse portal. Previous camera,
+     * matrices, smoothing and history buffers carry on across the teleport instead of restarting.
+     */
+    public static void onPlayerTeleported(Portal portal) {
+        Context through = PORTAL_VIEWS.remove(keyOf(List.of(portal)));
+        if (through == null) return;
+        Context oldMain = main;
+        main = through;
+        Portal reverse = findReversePortal(portal);
+        Context replaced = reverse == null ? oldMain : PORTAL_VIEWS.put(keyOf(List.of(reverse)), oldMain);
+        if (replaced != null) replaced.dispose();
+        cachedPath = null;
+        cachedContext = null;
+        uniformEpoch++;
+    }
+
+    private static @Nullable Portal findReversePortal(Portal portal) {
+        var destWorld = ClientWorldLoader.getOptionalWorld(portal.getDestDim());
+        if (destWorld == null) return null;
+        return IPMcHelper.getNearbyPortals(destWorld, portal.getDestPos(), 1)
+            .filter(p -> Portal.isReversePortal(portal, p))
+            .findFirst().orElse(null);
+    }
+
+    private static String keyOf(List<Portal> path) {
         StringBuilder key = new StringBuilder();
         for (Portal portal : path) {
             key.append(portal.getUUID()).append('/');
         }
-        cachedPath = path;
-        cachedContext = PORTAL_VIEWS.computeIfAbsent(key.toString(), k -> new Context());
-        return cachedContext;
+        return key.toString();
     }
 
     public static void popView() {
@@ -167,11 +200,11 @@ public final class IrisViewContexts {
 
     public static Context active() {
         Context context = STACK.peek();
-        return context == null ? MAIN : context;
+        return context == null ? main : context;
     }
 
     public static boolean isMainViewActive() {
-        return active() == MAIN;
+        return active() == main;
     }
 
     public static int frame() {
@@ -188,7 +221,7 @@ public final class IrisViewContexts {
 
     /** The pipeline was rebuilt: every owner and GPU resource of the old one is gone. */
     public static void reset() {
-        MAIN.clear();
+        main.clear();
         PORTAL_VIEWS.values().forEach(Context::dispose);
         PORTAL_VIEWS.clear();
         uniformEpoch++;

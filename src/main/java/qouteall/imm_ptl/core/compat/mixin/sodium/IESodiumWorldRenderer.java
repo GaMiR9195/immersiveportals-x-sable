@@ -16,4 +16,7 @@ public interface IESodiumWorldRenderer {
     
     @Accessor("lastCameraPos")
     void ip_setLastCameraPos(Vector3d pos);
+    
+    @Accessor("renderDistance")
+    int ip_getRenderDistance();
 }
