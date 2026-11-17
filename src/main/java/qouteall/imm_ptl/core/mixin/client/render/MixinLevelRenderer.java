@@ -28,6 +28,7 @@ import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import ipl.sable.SableBridge;
 import ipl.sable.render.IplForeignPerspective;
 import ipl.sable.render.clip.IplClipPlanes;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisPortalFog;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.entity.Entity;
@@ -202,6 +203,7 @@ public abstract class MixinLevelRenderer implements IEWorldRenderer {
         
         MyGameRenderer.updateFogColor();
         MyGameRenderer.resetFogState();
+        IrisPortalFog.onTerrainFogSetUp();
         
         MyGameRenderer.resetDiffuseLighting();
         

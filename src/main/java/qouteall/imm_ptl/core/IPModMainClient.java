@@ -102,6 +102,7 @@ public class IPModMainClient {
 
         NeoForge.EVENT_BUS.addListener(RegisterClientCommandsEvent.class, event -> {
             ClientDebugCommand.register(event.getDispatcher());
+            ipl.sable.client.IplClientCommand.register(event.getDispatcher());
         });
         
 //        showIntelVideoCardWarning();

@@ -12,16 +12,29 @@ import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.PortalRenderInfo;
 import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.imm_ptl.core.render.MyRenderHelper;
+import qouteall.imm_ptl.core.render.PortalFogOverlay;
 import qouteall.imm_ptl.core.render.ViewAreaRenderer;
 import qouteall.imm_ptl.core.render.context_management.FogRendererContext;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.lwjgl.opengl.GL11.*;
 
 public class RendererUsingStencil extends PortalRenderer {
+    /** Fog of the view at each portal layer, taken before its portals are drawn. */
+    private final List<PortalFogOverlay.Fog> viewFogByLayer = new ArrayList<>();
+    
+    private void setViewFog(int layer, PortalFogOverlay.Fog fog) {
+        while (viewFogByLayer.size() <= layer) viewFogByLayer.add(PortalFogOverlay.Fog.NONE);
+        viewFogByLayer.set(layer, fog);
+    }
+    
+    private PortalFogOverlay.Fog viewFog(int layer) {
+        return layer < viewFogByLayer.size() ? viewFogByLayer.get(layer) : PortalFogOverlay.Fog.NONE;
+    }
     
     
     @Override
@@ -51,6 +64,8 @@ public class RendererUsingStencil extends PortalRenderer {
         RenderSystem.depthMask(true);
         
         client.getProfiler().popPush("render_portal_total");
+        // Portal content changes the fog state; this view's fog is kept for its portals.
+        setViewFog(PortalRendering.getPortalLayer(), PortalFogOverlay.current());
         renderPortals(modelView);
         if (PortalRendering.isRendering()) {
             setStencilStateForWorldRendering();
@@ -155,6 +170,11 @@ public class RendererUsingStencil extends PortalRenderer {
         
         if (!portal.isFuseView()) {
             restoreDepthOfPortalViewArea(portal, modelView, thisPortalStencilValue);
+            // The stencil still limits drawing to this portal's area.
+            PortalFogOverlay.draw(
+                portal, viewFog(outerPortalStencilValue),
+                modelView, RenderSystem.getProjectionMatrix(), true
+            );
         }
         
         clampStencilValue(outerPortalStencilValue);

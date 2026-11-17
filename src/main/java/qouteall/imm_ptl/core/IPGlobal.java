@@ -161,4 +161,15 @@ public class IPGlobal {
     public static NetherPortalMode netherPortalMode = NetherPortalMode.adaptive;
     
     public static EndPortalMode endPortalMode = EndPortalMode.normal;
+    
+    /** What the portal plane casts into shader packs' sun shadows. */
+    public static enum PortalShadow {
+        /** Tinted and translucent, as packs treat nether portal blocks. */
+        purple_glass,
+        /** Opaque, like a thin plate. */
+        black,
+        none
+    }
+    
+    public static PortalShadow portalShadow = PortalShadow.purple_glass;
 }

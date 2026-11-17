@@ -203,6 +203,7 @@
   "text.autoconfig.immersive_portals.option.enableClientPerformanceAdjustment.@Tooltip": "If enabled, it will render fewer portal content when game is laggy.",
   "text.autoconfig.immersive_portals.option.netherPortalMode": "Nether Portal Mode",
   "text.autoconfig.immersive_portals.option.endPortalMode": "End Portal Mode",
+  "text.autoconfig.immersive_portals.option.portalShadow": "Portal Shadow (Shaders)",
   "text.autoconfig.immersive_portals.option.lightVanillaNetherPortalWhenCrouching": "Light vanilla portal when crouching",
   "text.autoconfig.immersive_portals.option.enableServerPerformanceAdjustment": "Enable Server Performance Adjustment",
   "text.autoconfig.immersive_portals.option.enableServerPerformanceAdjustment.@Tooltip": "If enabled, will load fewer chunks via portal when server is laggy.",

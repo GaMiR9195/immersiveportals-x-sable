@@ -13,6 +13,7 @@ import qouteall.imm_ptl.core.ducks.IEMinecraftClient;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.imm_ptl.core.render.MyRenderHelper;
+import qouteall.imm_ptl.core.render.PortalFogOverlay;
 import qouteall.imm_ptl.core.render.QueryManager;
 import qouteall.imm_ptl.core.render.SecondaryFrameBuffer;
 import qouteall.imm_ptl.core.render.ViewAreaRenderer;
@@ -22,6 +23,7 @@ import java.util.List;
 
 public class RendererUsingFrameBuffer extends PortalRenderer {
     SecondaryFrameBuffer secondaryFrameBuffer = new SecondaryFrameBuffer();
+    private PortalFogOverlay.Fog viewFog = PortalFogOverlay.Fog.NONE;
     
     @Override
     public void onBeforeTranslucentRendering(Matrix4f modelView) {
@@ -93,6 +95,7 @@ public class RendererUsingFrameBuffer extends PortalRenderer {
         CHelper.enableDepthClamp();
         renderSecondBufferIntoMainBuffer(portal, modelView);
         CHelper.disableDepthClamp();
+        PortalFogOverlay.draw(portal, viewFog, modelView, RenderSystem.getProjectionMatrix(), true);
         
         MyRenderHelper.debugFramebufferDepth();
     }
@@ -133,6 +136,8 @@ public class RendererUsingFrameBuffer extends PortalRenderer {
     }
     
     protected void renderPortals(Matrix4f modelView) {
+        // Portal content changes the fog state; this view's fog is kept for its portals.
+        viewFog = PortalFogOverlay.current();
         List<Portal> portalsToRender = getPortalsToRender(modelView);
     
         for (Portal portal : portalsToRender) {

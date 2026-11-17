@@ -33,6 +33,7 @@ public class PortalEntityRenderer extends EntityRenderer<Portal> {
     ) {
         
         IPCGlobal.renderer.renderPortalInEntityRenderer(portal);
+        IPCGlobal.renderer.renderPortalSurface(portal, bufferSource);
         
         if (OverlayRendering.shouldRenderOverlay(portal)) {
             OverlayRendering.onRenderPortalEntity(portal, matrixStack, bufferSource);

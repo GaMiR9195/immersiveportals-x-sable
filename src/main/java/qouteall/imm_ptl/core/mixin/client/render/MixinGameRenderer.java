@@ -37,7 +37,9 @@ import qouteall.imm_ptl.core.render.FrontClipping;
 import qouteall.imm_ptl.core.render.GuiPortalRendering;
 import qouteall.imm_ptl.core.render.MyGameRenderer;
 import qouteall.imm_ptl.core.render.MyRenderHelper;
+import qouteall.imm_ptl.core.render.NameTagFootprints;
 import qouteall.imm_ptl.core.render.PortalPassView;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisViewContexts;
 import qouteall.imm_ptl.core.render.TransformationManager;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
@@ -80,6 +82,7 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
     ) {
         PortalPassView.onFrameStart();
         FrameCameraInputs.onFrameStart();
+        IrisViewContexts.onFrameStart();
         minecraft.getProfiler().push("ip_pre_total_render");
         IPGlobal.PRE_TOTAL_RENDER_TASK_LIST.processTasks();
         minecraft.getProfiler().pop();
@@ -277,9 +280,16 @@ public abstract class MixinGameRenderer implements IEGameRenderer {
         // Opens the view of this world render (camera orientation of the rendered world);
         // closed after the after-level stage.
         PortalPassView.open(camera, modelView);
-        original.call(
-            instance, deltaTracker, bl, camera, gameRenderer, lightTexture, modelView, projection
-        );
+        IrisViewContexts.pushCurrentView();
+        NameTagFootprints.onWorldRenderStart();
+        try {
+            original.call(
+                instance, deltaTracker, bl, camera, gameRenderer, lightTexture, modelView, projection
+            );
+        }
+        finally {
+            IrisViewContexts.popView();
+        }
         
         IPCGlobal.renderer.onBeforeHandRendering(modelView);
     }

@@ -94,6 +94,9 @@ public class IPConfig implements ConfigData {
         IPFeatureControl.enableVanillaBehaviorChangingByDefault() ?
             IPGlobal.EndPortalMode.normal : IPGlobal.EndPortalMode.vanilla;
     
+    @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.BUTTON)
+    public IPGlobal.PortalShadow portalShadow = IPGlobal.PortalShadow.purple_glass;
+
     public boolean enableMirrorCreation =
         IPFeatureControl.enableVanillaBehaviorChangingByDefault();
     
@@ -165,6 +168,11 @@ public class IPConfig implements ConfigData {
             endPortalMode = IPGlobal.EndPortalMode.normal;
         }
         
+        if (portalShadow == null) {
+            portalShadow = IPGlobal.PortalShadow.purple_glass;
+        }
+        IPGlobal.portalShadow = portalShadow;
+
         IPGlobal.renderMode = compatibilityRenderMode ? IPGlobal.RenderMode.compatibility : IPGlobal.RenderMode.normal;
         IPGlobal.enableWarning = enableWarning;
         IPGlobal.enableMirrorCreation = enableMirrorCreation;

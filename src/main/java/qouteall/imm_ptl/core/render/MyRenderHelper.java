@@ -105,6 +105,9 @@ public class MyRenderHelper {
                 throw new RuntimeException(e);
             }
         });
+        
+        registerShader("hand_depth_mask", DefaultVertexFormat.POSITION, s -> handDepthMaskShader = s);
+        registerShader("portal_fog", DefaultVertexFormat.POSITION, s -> portalFogShader = s);
     }
     
     // vanilla hardcodes the shader namespace to be "minecraft"
@@ -143,6 +146,23 @@ public class MyRenderHelper {
     public static DrawFbInAreaShader drawFbInAreaShader;
     public static ShaderInstance portalAreaShader;
     public static ShaderInstance blitScreenNoBlendShader;
+    public static ShaderInstance handDepthMaskShader;
+    public static ShaderInstance portalFogShader;
+    
+    private static void registerShader(
+        String name, VertexFormat format, Consumer<ShaderInstance> sink
+    ) {
+        loadShaderSignal.connect((resourceManager, resultConsumer) -> {
+            try {
+                ShaderInstance shader = new ShaderInstance(getResourceFactory(resourceManager), name, format);
+                resultConsumer.accept(shader);
+                sink.accept(shader);
+            }
+            catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
     
     public static void drawPortalAreaWithFramebuffer(
         Portal portal,

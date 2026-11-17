@@ -8,6 +8,7 @@ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.minecraft.client.GraphicsStatus;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
@@ -87,6 +88,9 @@ public abstract class PortalRenderer {
     
     // this will be called when rendering portal entities
     public abstract void renderPortalInEntityRenderer(Portal portal);
+    
+    /** Draws the portal as a surface of the world being rendered, if the renderer needs one. */
+    public void renderPortalSurface(Portal portal, MultiBufferSource bufferSource) {}
     
     // return true to skip framebuffer clear
     // this will also be called in outer world rendering

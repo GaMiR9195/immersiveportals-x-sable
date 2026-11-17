@@ -1,0 +1,10 @@
+{
+  "vertex": "blit_screen_noblend",
+  "fragment": "hand_depth_mask",
+  "samplers": [
+    { "name": "DepthSampler" },
+    { "name": "NoHandDepthSampler" }
+  ],
+  "uniforms": [
+  ]
+}

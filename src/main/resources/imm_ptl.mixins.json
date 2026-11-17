@@ -106,6 +106,7 @@
     "client.render.MixinBlockEntityRenderDispatcher",
     "client.render.MixinCamera",
     "client.render.MixinEntityRenderDispatcher",
+    "client.render.MixinEntityRenderer_NameTag",
     "client.render.MixinFrustum_FixDeadLoop",
     "client.render.MixinGameRenderer",
     "client.render.MixinGlStateManager",

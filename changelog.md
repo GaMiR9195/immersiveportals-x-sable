@@ -9,8 +9,43 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 Bug fixing and cleanup: nothing behind a portal leaks into its view any more, entities can be hit
 and used through portals, and the third-person camera behaves around portals.
 
+### Added
+
+- `/ipxsable portal_shadow purple_glass|black|false` (client setting, also in the config screen):
+  what portals cast into shader pack sun shadows. `purple_glass` is tinted and translucent like
+  packs treat nether portal blocks, `black` is opaque like a thin plate, `false` casts nothing.
+  Other `/ipxsable` subcommands are passed on to the server.
+
 ### Fixed
 
+- **Shader packs keep their temporal state per view** (`IrisViewContexts`). Portal views render
+  the Iris pipeline again inside the frame and used to overwrite what the player's view carries
+  into the next frame.
+  - `previousCameraPosition`, `gbufferPrevious*`, built-in smoothed uniforms and `smooth()`
+    custom uniforms are kept per view and advance once per frame: motion blur no longer smears the
+    whole screen with same-dimension portals, smoothing runs at the real frame rate.
+  - Per-frame uniforms are uploaded for every view, so same-dimension portal views no longer reuse
+    the player's matrices in their deferred and composite passes.
+  - History buffers (render targets a pack never clears, e.g. TAA history), custom images that are
+    not cleared, shader storage buffers and the smoothed center depth are swapped per view when
+    views share a pipeline (`IrisHistoryTargets`); views on their own pipeline copy nothing.
+- **Shaders: uniforms derived from the player follow the view.** Eye brightness, biome, sky color,
+  eye altitude and eye position are read where the player appears behind the portal, in that
+  world, just in front of the destination portal (`IrisViewSpace`): fog, sky and biome effects
+  behind a portal match that side.
+- **Portals are covered by the fog of the view they are seen from** (`PortalFogOverlay`), with and
+  without shaders: distance fog, underwater, lava, powder snow, blindness and darkness. The content
+  used to show through fog, most visibly underwater.
+- **Shaders: portal content is composited opaquely.** It used to be blended with its alpha, which
+  left a faint tint of the view behind it and a visible seam on entities standing in the portal.
+- **Shaders: the area behind a portal no longer bleeds into bloom, TAA and translucent things in
+  front of it.** Every view, nested ones included, draws its portals as opaque surfaces textured
+  with last frame's content of that portal alone (`IrisPortalSurface`); the fresh content
+  replaces them afterwards.
+- **Shaders: the first-person hand and name tags stay in front of portals** (`IrisForegroundMask`),
+  also when standing right against one: they are kept out of the portal stencil.
+- **Shaders: `purple_glass` portal shadows are tiled by blocks** from the portal's center instead of
+  stretching one texture over the whole portal.
 - **Nothing leaks out of a portal view.** Sub-levels, entities, block entities and particles behind
   a portal's exit could show up "painted" on the portal surface, especially in portal loops.
   - Veil filled the clip uniform of every vanilla shader with zeros after it had been set, which
