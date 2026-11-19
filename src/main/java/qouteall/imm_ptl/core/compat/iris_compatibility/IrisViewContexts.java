@@ -160,18 +160,44 @@ public final class IrisViewContexts {
     }
 
     /**
-     * The player went through {@code portal}: the view through it becomes the player's view and
-     * the player's old view becomes the view back through the reverse portal. Previous camera,
-     * matrices, smoothing and history buffers carry on across the teleport instead of restarting.
+     * The player went through {@code portal}, so every view is now seen from its far side. Views
+     * through it lose it from their path (the view through it becomes the player's view); the
+     * player's old views are reached back through the reverse portal. Previous camera, matrices,
+     * smoothing and history buffers carry on across the teleport, nested views included.
      */
     public static void onPlayerTeleported(Portal portal) {
-        Context through = PORTAL_VIEWS.remove(keyOf(List.of(portal)));
+        String throughKey = keyOf(List.of(portal));
+        Context through = PORTAL_VIEWS.get(throughKey);
         if (through == null) return;
-        Context oldMain = main;
-        main = through;
         Portal reverse = findReversePortal(portal);
-        Context replaced = reverse == null ? oldMain : PORTAL_VIEWS.put(keyOf(List.of(reverse)), oldMain);
-        if (replaced != null) replaced.dispose();
+        String reverseKey = reverse == null ? null : keyOf(List.of(reverse));
+
+        HashMap<String, Context> moved = new HashMap<>();
+        for (Map.Entry<String, Context> entry : PORTAL_VIEWS.entrySet()) {
+            String key = entry.getKey();
+            if (key.startsWith(throughKey) && entry.getValue() != through) {
+                moved.put(key.substring(throughKey.length()), entry.getValue());
+            }
+        }
+        for (Map.Entry<String, Context> entry : PORTAL_VIEWS.entrySet()) {
+            Context context = entry.getValue();
+            if (entry.getKey().startsWith(throughKey)) continue;
+            // a view reached both ways keeps the one seen from the new side
+            if (reverseKey == null || moved.putIfAbsent(reverseKey + entry.getKey(), context) != null) {
+                context.dispose();
+            }
+        }
+        if (reverseKey != null) {
+            Context replaced = moved.put(reverseKey, main);
+            if (replaced != null) replaced.dispose();
+        }
+        else {
+            main.dispose();
+        }
+
+        main = through;
+        PORTAL_VIEWS.clear();
+        PORTAL_VIEWS.putAll(moved);
         cachedPath = null;
         cachedContext = null;
         uniformEpoch++;

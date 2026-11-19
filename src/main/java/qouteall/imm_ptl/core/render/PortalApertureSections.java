@@ -2,6 +2,7 @@ package qouteall.imm_ptl.core.render;
 
 import ipl.sable.render.IplForeignPerspective;
 import net.minecraft.core.SectionPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.compat.sodium_compatibility.SodiumInterface;
@@ -42,7 +43,7 @@ public final class PortalApertureSections {
 		int[] min = new int[3];
 		int[] max = new int[3];
 		sectionBounds(destinationCorners(portal), min, max);
-		return volume(min, max) <= MAX_SEARCHED_SECTIONS;
+		return volume(min, max) <= MAX_SEARCHED_SECTIONS && isInsideWorld(portal, min, max);
 	}
 
 	/** Packed section positions ({@link SectionPos#asLong}) the opening touches, or null if unsupported. */
@@ -53,7 +54,7 @@ public final class PortalApertureSections {
 		int[] max = new int[3];
 		sectionBounds(corners, min, max);
 		long volume = volume(min, max);
-		if (volume > MAX_SEARCHED_SECTIONS) return null;
+		if (volume > MAX_SEARCHED_SECTIONS || !isInsideWorld(portal, min, max)) return null;
 
 		Vec3 origin = corners[0];
 		Vec3 normal = corners[1].subtract(origin).cross(corners[3].subtract(origin));
@@ -90,6 +91,15 @@ public final class PortalApertureSections {
 			portal.transformPoint(o.add(aw).add(ah)),
 			portal.transformPoint(o.subtract(aw).add(ah)),
 		};
+	}
+
+	/**
+	 * Sections exist only inside the build height: an opening reaching above or below it would
+	 * seed nothing there, so such portals keep the camera-based search.
+	 */
+	private static boolean isInsideWorld(Portal portal, int[] min, int[] max) {
+		Level level = portal.getDestinationWorld();
+		return level != null && min[1] >= level.getMinSection() && max[1] < level.getMaxSection();
 	}
 
 	private static long volume(int[] min, int[] max) {

@@ -56,8 +56,9 @@ public final class IrisHistoryTargets {
         IrisViewContexts.Context holder = HOLDERS.put(pipeline, active);
         if (holder == null || holder == active) return;
 
-        // Shader writes to buffers and images must land before they are copied.
-        GL42C.glMemoryBarrier(GL42C.GL_BUFFER_UPDATE_BARRIER_BIT | GL42C.GL_TEXTURE_UPDATE_BARRIER_BIT);
+        // Shader writes to buffers and images must land before they are copied; no narrower
+        // barrier bit covers glCopyImageSubData.
+        GL42C.glMemoryBarrier(GL42C.GL_ALL_BARRIER_BITS);
         if (!holder.isDisposed()) {
             holder.attachment(pipeline, History::new).saveFrom(pipeline);
         }

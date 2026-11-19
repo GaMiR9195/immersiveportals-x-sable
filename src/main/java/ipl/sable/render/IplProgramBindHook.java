@@ -5,9 +5,11 @@ import ipl.sable.render.clip.IplClipPlanes;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4fc;
+import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL41C;
 import qouteall.imm_ptl.core.IPGlobal;
 
 import java.util.Arrays;
@@ -55,6 +57,11 @@ public final class IplProgramBindHook {
 	private static long verifiedRevision = Long.MIN_VALUE;
 	/** Clip distances written last; only an all-off state that is already off is skipped. */
 	private static int enabledMask;
+	/**
+	 * Uploads name their program (GL 4.1), so the memory of a program stays true even when
+	 * another program was made current with raw GL. -1 until the context is asked.
+	 */
+	private static int programUniforms = -1;
 
 	private IplProgramBindHook() {}
 
@@ -106,6 +113,8 @@ public final class IplProgramBindHook {
 	/** The planes changed while {@link #trackedProgram} may be bound. */
 	public static void refreshCurrentProgram() {
 		if (!IPGlobal.enableClippingMechanism) return;
+		// Without program-targeted uploads only the real current program may receive them.
+		if (!usesProgramUniforms()) trackedProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
 		apply(trackedProgram, null);
 	}
 
@@ -129,16 +138,26 @@ public final class IplProgramBindHook {
 		}
 		float[] values = equations != null ? equations : IplClipPlanes.clipSpaceEquations();
 		if (!state.hasUpload || !Arrays.equals(state.uploaded, values)) {
-			GL20.glUniform4fv(state.location, values);
+			upload(program, state.location, values);
 			System.arraycopy(values, 0, state.uploaded, 0, values.length);
 			state.hasUpload = true;
-			IplClipDiagnostics.afterUpload(program, state.location);
+			IplClipDiagnostics.afterUpload(program, state.location, values);
 		}
 		int mask = 0;
 		for (int slot = 0; slot < IplClipPlanes.SLOTS; slot++) {
 			if (IplClipPlanes.isActive(slot)) mask |= 1 << slot;
 		}
 		setEnabled(mask);
+	}
+
+	private static void upload(int program, int location, float[] values) {
+		if (usesProgramUniforms()) GL41C.glProgramUniform4fv(program, location, values);
+		else GL20.glUniform4fv(location, values);
+	}
+
+	private static boolean usesProgramUniforms() {
+		if (programUniforms < 0) programUniforms = GL.getCapabilities().glProgramUniform4fv != 0 ? 1 : 0;
+		return programUniforms == 1;
 	}
 
 	private static ProgramState state(int program) {

@@ -110,7 +110,8 @@ and used through portals, and the third-person camera behaves around portals.
   textures drawn in the frame.
 - **Shaders: going through a portal keeps the shader pack's temporal state.** The view through the
   portal becomes the player's view and the old view the one back through the reverse portal:
-  motion blur, TAA history and smoothed uniforms continue across the teleport.
+  motion blur, TAA history and smoothed uniforms continue across the teleport, also in the
+  views of portals seen through it.
 - **Create contraptions on sub-levels no longer vanish when a portal is on screen** (windmill and
   other bearings, trains). Sable keeps their render poses in one map and pruned it against every
   level whose Flywheel frame started, so a level seen through a portal dropped the player's level's

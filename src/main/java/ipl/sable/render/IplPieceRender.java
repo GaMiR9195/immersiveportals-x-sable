@@ -55,7 +55,7 @@ import java.util.Map;
  *   <li>RANGES -- mixed labels: one multi-draw over the quads of this piece's blocks, from the
  *       same buffer ({@link IplSectionRanges});</li>
  *   <li>SPLIT -- blocks inside an aperture zone are drawn by both pieces of the edge, each cut by
- *       the aperture plane at the current draw pose ({@code gl_ClipDistance[1]}).</li>
+ *       the aperture plane at the current draw pose (a piece cut slot from {@code IplClipPlanes.FIRST_PIECE_CUT}).</li>
  * </ul>
  * Labels come from the server ({@link IplStraddleSessionStore}); the plane only decides inside
  * the zone, so material beside a frame is never cut and a ring pushed through a portal looks

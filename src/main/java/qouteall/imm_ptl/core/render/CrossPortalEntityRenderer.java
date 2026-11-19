@@ -114,14 +114,31 @@ public class CrossPortalEntityRenderer {
                 if (portal.isRemoved() || portal.level() != level) {
                     continue;
                 }
-                AABB searchBox = portal.getBoundingBox().inflate(ENTITY_SEARCH_MARGIN);
-                for (Entity entity : level.getEntities((Entity) null, searchBox, e -> !(e instanceof Portal))) {
+                for (Entity entity : entitiesNear(level, portal)) {
                     if (isCrossing(entity, portal, partialTick)) {
                         crossings.computeIfAbsent(entity, e -> new ArrayList<>(1)).add(portal);
                     }
                 }
             }
         });
+    }
+    
+    /**
+     * Entities near the opening. A global portal spans the world, and an area query walks every
+     * section column of its box, so the level's entities are filtered instead.
+     */
+    private static List<Entity> entitiesNear(ClientLevel level, Portal portal) {
+        AABB searchBox = portal.getBoundingBox().inflate(ENTITY_SEARCH_MARGIN);
+        if (!portal.getIsGlobal()) {
+            return level.getEntities((Entity) null, searchBox, e -> !(e instanceof Portal));
+        }
+        List<Entity> result = new ArrayList<>();
+        for (Entity entity : level.entitiesForRendering()) {
+            if (!(entity instanceof Portal) && entity.getBoundingBox().intersects(searchBox)) {
+                result.add(entity);
+            }
+        }
+        return result;
     }
     
     private static boolean isCrossing(Entity entity, Portal portal, float partialTick) {

@@ -112,8 +112,7 @@ public class BlockManipulationServer {
         else if (SableBridge.isProjectedBlockWithinReach(player, dimension, requestPos, distanceSquare)) {
             // Sable: the block belongs to a ship owned by `dimension` whose piece reaches the
             // player's level through a portal (projection) -- measured at its image here.
-            // Без этого взаимодействие с проекцией корабля из другого
-            // измерения зависело от наличия обратного портала рядом с игроком.
+            // No reverse portal near the player is needed for that.
             return true;
         }
         return IPMcHelper.getNearbyPortals(

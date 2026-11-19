@@ -53,7 +53,7 @@ public final class IplClipDiagnostics {
     private IplClipDiagnostics() {}
 
     /** Right after an upload: an upload that does not land is reported once per program. */
-    public static void afterUpload(int program, int location) {
+    public static void afterUpload(int program, int location, float[] expected) {
         if (!DIAGNOSTICS) return;
         long now = System.nanoTime();
         if (now - LAST_CHECK.getOrDefault(program, Long.MIN_VALUE / 2) < INTERVAL_NANOS) return;
@@ -61,7 +61,6 @@ public final class IplClipDiagnostics {
         int error = GL11.glGetError();
         UNIFORM.clear();
         GL20.glGetUniformfv(program, location, UNIFORM);
-        float[] expected = IplClipPlanes.clipSpaceEquations();
         boolean landed = UNIFORM.get(0) == expected[0] && UNIFORM.get(3) == expected[3];
         if ((error != 0 || !landed) && REPORTED.add(program)) {
             LOG.warn("[IPL-CLIP] upload to program {} at {} did not land: glError=0x{} read={} expected={}",
