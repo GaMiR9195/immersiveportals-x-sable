@@ -2,6 +2,7 @@ package ipl.sable.mixin.client;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.simibubi.create.foundation.item.render.CustomRenderedItemModel;
 import com.simibubi.create.foundation.item.render.PartialItemModelRenderer;
@@ -20,6 +21,7 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
 import org.joml.Vector3f;
@@ -28,6 +30,7 @@ import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import qouteall.imm_ptl.core.compat.iris_compatibility.IrisInterface;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 
@@ -85,6 +88,25 @@ public abstract class StaffItemRendererMixin {
     private static Camera ipl$rootCamera(GameRenderer renderer, Operation<Camera> original) {
         return WorldRenderInfo.isRendering() && RenderStates.originalCamera != null
             ? RenderStates.originalCamera : original.call(renderer);
+    }
+
+    // First-person tip in the frame Simulated expects: camera-relative and world-oriented. Vanilla's
+    // hand pose carries the inverse view rotation; Iris draws the hand with a bare pose (bobbing in
+    // the model-view) and a depth-squashed projection. Both resolve through the model-view.
+
+    @WrapOperation(method = "render", at = @At(value = "INVOKE",
+        target = "Lorg/joml/Matrix4f;transformPosition(Lorg/joml/Vector3f;)Lorg/joml/Vector3f;"), require = 1)
+    private Vector3f ipl$firstPersonTip(Matrix4f pose, Vector3f point, Operation<Vector3f> original) {
+        Vector3f eyeSpace = RenderSystem.getModelViewMatrix().transformPosition(original.call(pose, point));
+        return Minecraft.getInstance().gameRenderer.getMainCamera().rotation().transform(eyeSpace);
+    }
+
+    @WrapOperation(method = "render", at = @At(value = "INVOKE",
+        target = "Lcom/mojang/blaze3d/systems/RenderSystem;getProjectionMatrix()Lorg/joml/Matrix4f;"), require = 1)
+    private Matrix4f ipl$firstPersonProjection(Operation<Matrix4f> original) {
+        Matrix4f projection = original.call();
+        float depthScale = IrisInterface.invoker.getHandDepthScale();
+        return depthScale == 1 ? projection : new Matrix4f().scale(1, 1, 1 / depthScale).mul(projection);
     }
 
     /**

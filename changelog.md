@@ -91,9 +91,13 @@ and used through portals, and the third-person camera behaves around portals.
   recreate every visual twice per frame (`FlywheelEngineOriginMixin`), and every client level is
   served by its own visualization manager, so block entities are no longer drawn twice or not at
   all depending on timing.
-- **Entities standing in a portal have no hole at the cut.** Through the portal they cross, their
-  far-side image is drawn whole (`FrontClipping.setupProjectionClipping`): the pixels next to the
-  portal plane that the portal area takes over show the entity instead of what is behind it.
+- **Shaders: no see-through slit where something crosses a portal, from either side.** The portal
+  area takes over the pixels right in front of its opening (its stencil is pulled toward the camera
+  against TAA jitter). A pass looking out of an opening draws whatever crosses it whole, so those
+  pixels show the object instead of what lies behind it: an entity's far-side image through the
+  portal it stands in (`FrontClipping.setupProjectionClipping`), the entity itself seen from the
+  other side (`FrontClipping.setupCrossingClipping`) and sub-level blocks at an aperture
+  (`IplPieceRender`).
 - **Entities crossing two portals at once are cut by both** (object cuts now use two clip slots).
 - **Render distance with Sodium.** Changing it rebuilt only the current level; the levels seen
   through portals kept the old distance and were rebuilt in the middle of a portal pass, so after
@@ -112,14 +116,11 @@ and used through portals, and the third-person camera behaves around portals.
   level whose Flywheel frame started, so a level seen through a portal dropped the player's level's
   poses. The poses are now kept per level (`IplContraptionRenderPoses`).
 - **Portals can no longer be pushed** by pistons or by Create contraptions, belts and ejectors.
-- **No see-through slit where things cross a portal, from either side.** With shader packs the
-  portal area takes over the pixels right in front of its opening. A pass looking out of an opening
-  now draws whatever crosses it whole: entities seen from the far side of the portal they stand in
-  (`FrontClipping.setupCrossingClipping`) and sub-level blocks at an aperture
-  (`IplPieceRender`), like the far-side image of an entity already was.
-- **Shaders: the physics staff beam starts at the staff.** Sodium fires the terrain layer stages
+- **Shaders: the physics staff beam starts at the staff tip.** Sodium fires the terrain layer stages
   inside Iris' shadow pass too; the beam's route for the frame was taken there, from the shadow
-  map's matrices, so its start sat blocks away and jumped with the shadow grid.
+  map's matrices, so its start sat blocks away and jumped with the shadow grid. In first person the
+  tip is read in the frame Iris draws the hand in (bobbing in the model-view, a depth-squashed
+  projection), so the beam leaves the held staff instead of a point near the body.
 
 ### Performance
 

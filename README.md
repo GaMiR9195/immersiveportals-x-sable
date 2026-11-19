@@ -1,16 +1,29 @@
 # v0.6.2
-A bug-fixing release: portals look cleaner, cost less and behave better in third person.
+A bug-fixing release: portals look cleaner, cost less, get along with shader packs and Create, and
+behave better in third person.
 1) **No more veil and ghosts on portal surfaces**: ships, mobs, block entities and particles from behind a
    portal's exit no longer show up "painted" on the portal, including in portal loops and with Veil.
-2) **Attacking and interacting through portals**: mobs and etc on the far side can be hit and used
+2) **Shader packs (Iris)**: every view through a portal keeps its own TAA, motion blur and smoothing;
+   fog, sky and biome effects behind a portal match that side; no bloom bleed or tint around portals;
+   your hand and name tags stay in front of them. Portal shadows are your choice:
+   `/ipxsable portal_shadow purple_glass|black|false`.
+3) **Standing in a portal**: mobs and ships are cut and mirrored from the first frame, without a
+   see-through slit at the portal, from either side.
+4) **Attacking and interacting through portals**: mobs and etc on the far side can be hit and used
    like any other, with knockback, sweep attacks and reach working where the target really is.
-3) **Third person**: the camera stops at walls on the far side of a portal instead of flying into them, 
-   picking through portals starts at your eyes, and view bobbing stays smooth.
-5) **Particles and things that face you** when you look at them through a portal, they look normal, now.
-6) **Faster portals**: portals off screen or hidden behind blocks are skipped earlier, and a crack
-   between blocks no longer renders a whole world behind it. Flywheel no longer rebuilds every
-   visual when a portal leads far away.
-7) **The cleaning**: dead code and outdated comments are removed.
+5) **Third person**: the camera stops at walls on the far side of a portal instead of flying into them,
+   picking through portals starts at your eyes, and view bobbing stays smooth. Camera mods (shake,
+   roll, FOV) keep the portal image lined up with the view.
+6) **Particles and things that face you** when you look at them through a portal, they look normal, now.
+7) **Create & Flywheel**: contraptions on ships (windmills, bearings, trains) no longer vanish when a
+   portal is on screen, block entities are no longer drawn twice or missing, and contraptions or
+   pistons can't push portals anymore.
+8) **Physics staff with shaders**: the beam starts at the staff again.
+9) **Faster portals**: portals off screen or hidden behind blocks are skipped earlier, a crack
+   between blocks no longer renders a whole world behind it, caves are culled behind portals too.
+   Flywheel no longer rebuilds every visual when a portal leads far away. EntityCulling and More
+   Culling work.
+10) **The cleaning**: dead code and outdated comments are removed.
 
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.
 

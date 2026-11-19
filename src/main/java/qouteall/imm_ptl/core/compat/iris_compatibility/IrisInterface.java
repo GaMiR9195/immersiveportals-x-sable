@@ -1,6 +1,7 @@
 package qouteall.imm_ptl.core.compat.iris_compatibility;
 
 import net.irisshaders.iris.Iris;
+import net.irisshaders.iris.pathways.HandRenderer;
 import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.shadows.ShadowRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
@@ -33,6 +34,11 @@ public class IrisInterface {
         }
 
         public void reloadPipelines() {}
+
+        /** Z scale of the projection while the shader pipeline draws the first-person hand, else 1. */
+        public float getHandDepthScale() {
+            return 1;
+        }
 
         @Nullable
         public String getShaderpackName() {
@@ -83,6 +89,11 @@ public class IrisInterface {
         @Override
         public void reloadPipelines() {
             Iris.getPipelineManager().destroyPipeline();
+        }
+
+        @Override
+        public float getHandDepthScale() {
+            return HandRenderer.INSTANCE.isActive() ? HandRenderer.DEPTH : 1;
         }
 
         @Nullable
