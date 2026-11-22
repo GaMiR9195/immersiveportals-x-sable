@@ -1,5 +1,6 @@
 package ipl.sable.transit;
 
+import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.physics.PhysicsPipeline;
 import dev.ryanhcode.sable.api.physics.mass.MergedMassTracker;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
@@ -10,6 +11,7 @@ import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
 import dev.ryanhcode.sable.sublevel.plot.ServerLevelPlot;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import ipl.sable.atlas.IplFusedStep;
+import ipl.sable.compat.IplCreateContraptions;
 import ipl.sable.mixin.MergedMassTrackerAccessor;
 import ipl.sable.mixin.SubLevelAccessor;
 import ipl.sable.mixin.SubLevelContainerAccessor;
@@ -185,7 +187,7 @@ public final class IplShipFlip {
             if (ship.getUserDataTag() != null) moved.setUserDataTag(ship.getUserDataTag().copy());
             seedMassBaseline(ship, moved, slotDeltaX, slotDeltaZ);
             IplTransitOps.copyPlotBlocks(ship.getPlot(), moved.getPlot(), sourceLevel, destination);
-            relocatePlotEntities(ship, moved, sourceLevel, destination);
+            relocatePlotEntities(ship, moved, sourceLevel, destination, portal);
             if (mappedLin.lengthSqr() > 1e-12 || mappedAng.lengthSqr() > 1e-12) {
                 destContainer.physicsSystem().getPipeline().addLinearAndAngularVelocity(moved,
                     new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
@@ -246,29 +248,45 @@ public final class IplShipFlip {
         access.ipl$setLastMass(src.getMass());
     }
 
+    /**
+     * Entities in the plot (contraptions, seats, frames) move to the same plot-local place in the
+     * successor's plot, with everything riding them: a player on a seat goes along, mapped
+     * through the portal, and keeps the seat.
+     */
     private static void relocatePlotEntities(ServerSubLevel source, ServerSubLevel target,
-                                             ServerLevel from, ServerLevel to) {
+                                             ServerLevel from, ServerLevel to, Portal portal) {
         ServerLevelPlot srcPlot = source.getPlot();
         ServerLevelPlot dstPlot = target.getPlot();
         for (PlotChunkHolder holder : new ArrayList<>(srcPlot.getLoadedChunks())) {
             ChunkPos srcChunk = holder.getChunk().getPos();
             ChunkPos dstChunk = dstPlot.toGlobal(srcPlot.toLocal(srcChunk));
-            double dx = dstChunk.getMinBlockX() - srcChunk.getMinBlockX();
-            double dz = dstChunk.getMinBlockZ() - srcChunk.getMinBlockZ();
+            int dx = dstChunk.getMinBlockX() - srcChunk.getMinBlockX();
+            int dz = dstChunk.getMinBlockZ() - srcChunk.getMinBlockZ();
             AABB box = new AABB(srcChunk.getMinBlockX(), from.getMinBuildHeight(), srcChunk.getMinBlockZ(),
                 srcChunk.getMinBlockX() + 16.0, from.getMaxBuildHeight(), srcChunk.getMinBlockZ() + 16.0);
+            IplRideTransfer.Placement placement = new IplRideTransfer.Placement() {
+                @Override
+                public Vec3 position(Entity entity) {
+                    return inPlot(entity, source) ? entity.position().add(dx, 0.0, dz) : portal.transformPoint(entity.position());
+                }
+
+                @Override
+                public Vec3 motion(Entity entity) {
+                    return inPlot(entity, source) ? entity.getDeltaMovement() : portal.transformLocalVec(entity.getDeltaMovement());
+                }
+            };
             for (Entity entity : from.getEntitiesOfClass(Entity.class, box)) {
                 if (entity instanceof Portal || entity instanceof ServerPlayer || entity.isRemoved()
                     || entity.getVehicle() != null) continue;
-                try {
-                    Entity result = ServerTeleportationManager.teleportEntityGeneral(
-                        entity, entity.position().add(dx, 0.0, dz), to);
-                    if (result != null && !result.isRemoved()) result.setDeltaMovement(entity.getDeltaMovement());
-                } catch (RuntimeException e) {
-                    LOG.warn("[IPL-MOVE] failed to relocate plot entity {} of {}", entity, source.getUniqueId(), e);
-                }
+                IplRideTransfer.moveTree(entity, to, placement, (old, moved) -> {
+                    if ((dx != 0 || dz != 0) && inPlot(old, source)) IplCreateContraptions.shiftReferences(moved, dx, dz);
+                });
             }
         }
+    }
+
+    private static boolean inPlot(Entity entity, ServerSubLevel body) {
+        return Sable.HELPER.getContaining(entity) == body;
     }
 
     /**
@@ -283,23 +301,26 @@ public final class IplShipFlip {
         Vec3 planePoint = portal.getOriginPos();
         Vec3 sourceToDest = portal.getNormal().scale(-1.0);
         UUID carrier = ship.getUniqueId();
+        IplRideTransfer.Placement placement = new IplRideTransfer.Placement() {
+            @Override
+            public Vec3 position(Entity entity) {
+                return portal.transformPoint(entity.position());
+            }
+
+            @Override
+            public Vec3 motion(Entity entity) {
+                return portal.transformLocalVec(entity.getDeltaMovement());
+            }
+        };
         for (Entity entity : from.getEntitiesOfClass(Entity.class, query)) {
             UUID mover = movedRiders.get(entity.getUUID());
             if (entity instanceof Portal || entity.isRemoved() || (mover != null && !mover.equals(carrier))
-                || entity.getVehicle() != null) continue;
+                || entity.getVehicle() != null || inPlot(entity, ship)) continue;
             if (entity.getBoundingBox().getCenter().subtract(planePoint).dot(sourceToDest) < 0.0) continue;
-            Vec3 mappedPos = portal.transformPoint(entity.position());
-            Vec3 mappedDelta = portal.transformLocalVec(entity.getDeltaMovement());
-            try {
-                Entity result = ServerTeleportationManager.teleportEntityGeneral(entity, mappedPos, to);
-                if (result != null && !result.isRemoved()) {
-                    result.setDeltaMovement(mappedDelta);
-                    movedRiders.put(entity.getUUID(), carrier);
-                    movedRiders.put(result.getUUID(), carrier);
-                }
-            } catch (RuntimeException e) {
-                LOG.warn("[IPL-FLIP] failed to carry rider {} of {}", entity, ship.getUniqueId(), e);
-            }
+            IplRideTransfer.moveTree(entity, to, placement, (old, moved) -> {
+                movedRiders.put(old.getUUID(), carrier);
+                movedRiders.put(moved.getUUID(), carrier);
+            });
         }
     }
 

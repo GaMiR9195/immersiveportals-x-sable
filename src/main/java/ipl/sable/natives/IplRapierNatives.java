@@ -121,6 +121,15 @@ public final class IplRapierNatives {
     public static native boolean routeRopePoint(long sceneHandle, long ropeId, int index, long destScene,
         double tx, double ty, double tz, double qx, double qy, double qz, double qw);
 
+    /**
+     * ABI 9: a kinematic contraption mounted on a body gets an image with every image of the
+     * body; its native collider and images keep the contacts of the piece they are in, walked
+     * from the point it hangs on ({@link #setContraptionAnchor}).
+     */
+    public static final int CONTRAPTION_IMAGE_ABI = 9;
+    /** The plot point (centre of the holder block) kinematic contraption {@code contraptionId} hangs on. */
+    public static native void setContraptionAnchor(long sceneHandle, int contraptionId, double x, double y, double z);
+
     // ------------------------------------------------------------------
     // Atlas M2 (spec v3 §2.2-2.3): image colliders — Tier-1 exact coupling.
     // ------------------------------------------------------------------

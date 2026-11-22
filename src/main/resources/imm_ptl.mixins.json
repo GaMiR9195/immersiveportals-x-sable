@@ -105,6 +105,7 @@
     "client.render.IESectionRenderDispatcher",
     "client.render.MixinBlockEntityRenderDispatcher",
     "client.render.MixinCamera",
+    "client.render.MixinBlockGetter_CameraClip",
     "client.render.MixinEntityRenderDispatcher",
     "client.render.MixinEntityRenderer_NameTag",
     "client.render.MixinFrustum_FixDeadLoop",

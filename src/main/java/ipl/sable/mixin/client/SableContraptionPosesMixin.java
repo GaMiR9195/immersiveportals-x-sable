@@ -10,11 +10,18 @@ import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /** Sable's contraption render poses, per client level: see {@link IplContraptionRenderPoses}. */
 @Pseudo
 @Mixin(targets = "dev.ryanhcode.sable.neoforge.compatibility.flywheel.FlywheelCompatNeoForge", remap = false)
 public abstract class SableContraptionPosesMixin {
+
+	@Inject(method = "preVisualizationFrame", at = @At("HEAD"))
+	private static void ipl$ensurePoses(Level level, float partialTicks, CallbackInfo ci) {
+		IplContraptionRenderPoses.ensure(level);
+	}
 
 	@ModifyExpressionValue(
 		method = {"preVisualizationFrame", "createRenderInfo"},

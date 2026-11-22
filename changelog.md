@@ -4,6 +4,46 @@ All notable changes to this project are documented in this file (most of the tim
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project tries to adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+Create contraptions on ships go through portals like the ship itself, and every camera works with
+portals.
+
+### Added
+
+- **Create contraptions through portals.** A contraption on a ship that crosses a portal (windmills,
+  bearings, pistons, pulleys, gantries, carts) is drawn on both sides, cut exactly at the opening:
+  what went in is drawn beyond the exit and nowhere else, from either side and in portal loops.
+  Entities are routed like block-entity models (`IplPortalModels`, `IplModelHolders`,
+  `LevelRendererEntityRoutingMixin`): anything in a ship's plot (seats, item frames, armor stands)
+  follows the same rule, and so do Create contraptions outside ships. An entity whose holder is
+  already beyond the portal is drawn there whole, however far from the opening.
+  - Their Flywheel visuals are handed to Create's renderer near portals and while held beyond one,
+    like block entities (`IplFlywheelFallback`, entity storage veto); IP's own cut of entities
+    crossing a portal leaves them alone.
+- **Contraptions collide on the far side** (natives ABI 9). A contraption on a straddling ship gets an
+  image collider with every image of the ship, at its place on the ship. Each of its colliders keeps
+  only the contacts of the part that is on its side, walked from the block the contraption hangs on
+  (`setContraptionAnchor`, `IplContraptionAnchors`): the part beyond the source portal no longer
+  hits the wall around the portal, and the part that went through collides with the destination.
+
+### Fixed
+
+- **Create contraptions on ships vanishing.** A contraption whose ship arrived after it (a ship moved
+  into another dimension, a ship re-sent by the server), or whose ship was missing for one frame,
+  lost Sable's render pose for good and was drawn at plot coordinates, far away, until it was
+  reloaded. Poses are recreated as soon as the ship is there (`IplContraptionRenderPoses.ensure`).
+- **Riders stay with the ship across dimensions.** Players and mobs on seats, passengers of
+  contraptions, mobs in a boat on deck: the whole vehicle tree moves with the ship and is rebuilt
+  on the other side, contraption seats included (`IplRideTransfer`). IP's dimension change recreated
+  a vehicle without its passengers, which were left behind.
+- A ship moved into another plot slot takes its contraptions' anchors along.
+- **Third-person camera mods and portals** (`PortalCameraClip`). The cross-portal view placed the
+  camera on its own fixed 4-block ray behind the eyes, ignoring where the camera really was: shoulder
+  cameras did not cross around the middle of the portal, and zooming in or out when switching the
+  view stayed frozen at the portal. Now the block collision of any camera (vanilla's or a mod's)
+  passes portal openings, and the view is rendered from wherever the camera itself ends up.
+
 ## [0.6.2]
 
 Bug fixing and cleanup: nothing behind a portal leaks into its view any more, entities can be hit

@@ -101,6 +101,12 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
         }
 
         info.chunk_map = Some(HashMap::new()); // Use a dedicated chunk map as it doesn't have a plot java-side
+        if !should_be_static {
+            info.mount = Some(mount_id as LevelColliderID);
+            if let Some(body) = sable_data.level_colliders.get_mut(&(mount_id as LevelColliderID)) {
+                body.mounted.push(id as LevelColliderID);
+            }
+        }
         sable_data
             .level_colliders
             .insert(id as LevelColliderID, info);
@@ -167,6 +173,12 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
 
         collider.set_position_wrt_parent(isometry);
         // }
+        // IPL: images of the contraption keep its place on the body.
+        for image in &info.image_colliders {
+            if let Some(image) = sim_data.collider_set.get_mut(*image) {
+                image.set_position_wrt_parent(isometry);
+            }
+        }
 
         info.center_of_mass = Some(DVec3::new(
             center_of_mass_arr[0],
@@ -241,6 +253,18 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
 
         let info = sable_data.level_colliders.remove(&(id as LevelColliderID));
         let info = info.unwrap();
+
+        if let Some(body) = info.mount.and_then(|m| sable_data.level_colliders.get_mut(&m)) {
+            body.mounted.retain(|c| *c != id as LevelColliderID);
+        }
+        for image in &info.image_colliders {
+            sim_data.collider_set.remove(
+                *image,
+                &mut sim_data.island_manager,
+                &mut sim_data.rigid_body_set,
+                true,
+            );
+        }
 
         sim_data.collider_set.remove(
             info.collider,

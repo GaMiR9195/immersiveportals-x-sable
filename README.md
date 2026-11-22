@@ -1,30 +1,16 @@
-# v0.6.2
-A bug-fixing release: portals look cleaner, cost less, get along with shader packs and Create, and
-behave better in third person.
-1) **No more veil and ghosts on portal surfaces**: ships, mobs, block entities and particles from behind a
-   portal's exit no longer show up "painted" on the portal, including in portal loops and with Veil.
-2) **Shader packs (Iris)**: every view through a portal keeps its own TAA, motion blur and smoothing;
-   fog, sky and biome effects behind a portal match that side; no bloom bleed or tint around portals;
-   your hand and name tags stay in front of them. Portal shadows are your choice:
-   `/ipxsable portal_shadow purple_glass|black|false`.
-3) **Standing in a portal**: mobs and ships are cut and mirrored from the first frame, without a
-   see-through slit at the portal, from either side.
-4) **Attacking and interacting through portals**: mobs and etc on the far side can be hit and used
-   like any other, with knockback, sweep attacks and reach working where the target really is.
-5) **Third person**: the camera stops at walls on the far side of a portal instead of flying into them,
-   picking through portals starts at your eyes, and view bobbing stays smooth. Camera mods (shake,
-   roll, FOV) keep the portal image lined up with the view.
-6) **Particles and things that face you** when you look at them through a portal, they look normal, now.
-7) **Create & Flywheel**: contraptions on ships (windmills, bearings, trains) no longer vanish when a
-   portal is on screen, block entities are no longer drawn twice or missing, and contraptions or
-   pistons can't push portals anymore.
-8) **Physics staff with shaders**: the beam starts at the staff again.
-9) **Faster portals**: portals off screen or hidden behind blocks are skipped earlier, a crack
-   between blocks no longer renders a whole world behind it, caves are culled behind portals too.
-   Flywheel no longer rebuilds every visual when a portal leads far away. EntityCulling and More
-   Culling work.
-10) **The cleaning**: dead code and outdated comments are removed.
+# v0.7.0 (WIP)
+Create contraptions now travel through portals together with the ship, and any camera works with portals.
+1) **Create contraptions go through portals**: windmills, bearings, pistons and other contraptions on a
+   ship are visible on both sides of a portal while the ship passes, cut neatly at the portal, and the
+   part that went through collides on the other side (it no longer bumps into the wall around the
+   portal). Seats, item frames and the like on a ship behave the same way.
+2) **Contraptions no longer disappear** after the ship changes dimension or reloads.
+3) **Passengers stay with the ship**: players and mobs on seats, on contraption seats or in a boat on
+   deck go to the other dimension together with the ship and keep their seats.
+4) **Third person with camera mods**: shoulder cameras, zoom animations when switching the view and
+   custom camera distances now pass through portals smoothly, exactly where the camera really is.
 
+Contraption collisions on the far side need the IPSable natives of this version.
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.
 
 # Immersive Portals × Sable Compatibility Fork
@@ -88,6 +74,8 @@ the other `docs/` specs describe the removed 0.5.x model.
 - DH, Voxy, Iris, Entity Culling support (right now, not forever)
 - Standing on projections sucks, sublevel tp could trigger player tp.
 - Shading is broken, sometimes "in ground" shading is applied
+- Mobs and players are not pushed by the part of a Create contraption that is beyond a portal, and a
+  contraption seen through a portal cannot be right-clicked from that side yet.
 - Bugs...
 
 # Build

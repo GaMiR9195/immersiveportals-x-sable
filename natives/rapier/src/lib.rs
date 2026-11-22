@@ -68,6 +68,14 @@ pub struct ActiveLevelColliderInfo {
     /// IPSable piece clipping (ABI 3): voxel labels, aperture edges and the piece of each
     /// image collider; `None` while the body straddles nothing.
     pub pieces: Option<Box<crate::ipl_ext::IplPieces>>,
+    /// Kinematic contraption: the body it is mounted on.
+    pub mount: Option<LevelColliderID>,
+    /// Body: the kinematic contraptions mounted on it (their images follow the body's).
+    pub mounted: Vec<LevelColliderID>,
+    /// Kinematic contraption: the body image each of its image colliders mirrors.
+    pub image_links: HashMap<ColliderHandle, ColliderHandle>,
+    /// Kinematic contraption: the plot point it hangs on; its pieces are walked from there.
+    pub anchor: Option<DVec3>,
 }
 
 impl ChunkAccess for ActiveLevelColliderInfo {
@@ -102,6 +110,10 @@ impl ActiveLevelColliderInfo {
             octree: None,
             image_colliders: Vec::new(),
             pieces: None,
+            mount: None,
+            mounted: Vec::new(),
+            image_links: HashMap::new(),
+            anchor: None,
         }
     }
 
@@ -688,8 +700,12 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
             chart_chunks,
             collider_map,
         );
+        let mounted = info.mount.is_some();
         let mut sim_data = scene.sim_data.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         update_collider_aabb(&mut sim_data, info);
+        if mounted {
+            ipl_ext::sync_contraption_images(&mut sim_data, &mut sable_data, id as LevelColliderID);
+        }
     })
 }
 

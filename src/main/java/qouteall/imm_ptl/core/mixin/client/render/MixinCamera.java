@@ -1,5 +1,6 @@
 package qouteall.imm_ptl.core.mixin.client.render;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.client.Camera;
@@ -20,6 +21,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import qouteall.imm_ptl.core.ducks.IECamera;
 import qouteall.imm_ptl.core.render.CrossPortalEntityRenderer;
 import qouteall.imm_ptl.core.render.FrameCameraInputs;
+import qouteall.imm_ptl.core.render.PortalCameraClip;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.WorldRenderInfo;
 
@@ -52,6 +54,17 @@ public abstract class MixinCamera implements IECamera {
     ) {
         Camera this_ = (Camera) (Object) this;
         WorldRenderInfo.adjustCameraPos(this_);
+    }
+    
+    /** Every camera, vanilla's or a mod's, collides with blocks through portals: {@link PortalCameraClip}. */
+    @WrapMethod(method = "Lnet/minecraft/client/Camera;setup(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/world/entity/Entity;ZZF)V")
+    private void ip_portalAwareSetup(
+        BlockGetter area, Entity focusedEntity, boolean thirdPerson,
+        boolean inverseView, float partialTick, Operation<Void> original
+    ) {
+        PortalCameraClip.setup(
+            area, focusedEntity, () -> original.call(area, focusedEntity, thirdPerson, inverseView, partialTick)
+        );
     }
     
     /** Camera mods' angles are evaluated by the player's view only, see {@link FrameCameraInputs}. */

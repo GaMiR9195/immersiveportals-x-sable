@@ -1,15 +1,22 @@
 package ipl.sable.render;
 
+import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.neoforge.compatibility.flywheel.FlywheelCompatNeoForge;
 import dev.ryanhcode.sable.neoforge.compatibility.flywheel.FlywheelCompatNeoForge.SubLevelFlwRenderState;
+import dev.ryanhcode.sable.sublevel.SubLevel;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 
 /**
@@ -23,6 +30,12 @@ import java.util.WeakHashMap;
  *
  * <p>Sable reads a pose without naming the level; contraption visuals name it for the duration
  * of their transform update ({@link #withVisualLevel}), which may run on Flywheel's workers.
+ *
+ * <p>Sable creates a pose only when a contraption joins its level while its body is known, and
+ * drops it whenever the body is missing for a frame: a contraption that arrives before its body
+ * (a body moved into another dimension, a body re-sent by the server) was drawn at plot
+ * coordinates, far away, until it rejoined. Every visualized contraption is remembered and its
+ * pose is recreated as soon as its body is there ({@link #ensure}).
  * Loaded only with Sable's Flywheel compatibility present.
  */
 public final class IplContraptionRenderPoses {
@@ -30,6 +43,8 @@ public final class IplContraptionRenderPoses {
 	private static final Map<Level, Long2ObjectMap<SubLevelFlwRenderState>> BY_LEVEL =
 		Collections.synchronizedMap(new WeakHashMap<>());
 	private static final ThreadLocal<Level> VISUAL_LEVEL = new ThreadLocal<>();
+	/** Contraptions with a visual; Flywheel may update visuals on its workers. */
+	private static final Set<Entity> VISUALIZED = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
 	private IplContraptionRenderPoses() {}
 
@@ -39,6 +54,25 @@ public final class IplContraptionRenderPoses {
 		if (key == null) key = Minecraft.getInstance().level;
 		if (key == null) return Long2ObjectMaps.synchronize(new Long2ObjectOpenHashMap<>());
 		return BY_LEVEL.computeIfAbsent(key, k -> Long2ObjectMaps.synchronize(new Long2ObjectOpenHashMap<>()));
+	}
+
+	/** A contraption visual updates its transform: its pose is kept from now on. */
+	public static void remember(Entity contraption) {
+		VISUALIZED.add(contraption);
+	}
+
+	/** Start of {@code level}'s visualization frame (render thread): every remembered contraption on a known body has a pose. */
+	public static void ensure(Level level) {
+		List<Entity> contraptions;
+		synchronized (VISUALIZED) {
+			VISUALIZED.removeIf(Entity::isRemoved);
+			contraptions = new ArrayList<>(VISUALIZED);
+		}
+		for (Entity contraption : contraptions) {
+			if (contraption.level() != level) continue;
+			SubLevel body = Sable.HELPER.getContaining(contraption);
+			if (body != null) FlywheelCompatNeoForge.createRenderInfo(level, body);
+		}
 	}
 
 	/** Runs a contraption visual's transform update with its level as the one poses are read from. */
