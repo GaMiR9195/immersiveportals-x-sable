@@ -1,16 +1,9 @@
 # v0.7.0 (WIP)
-Create contraptions now travel through portals together with the ship, and any camera works with portals.
-1) **Create contraptions go through portals**: windmills, bearings, pistons and other contraptions on a
-   ship are visible on both sides of a portal while the ship passes, cut neatly at the portal, and the
-   part that went through collides on the other side (it no longer bumps into the wall around the
-   portal). Seats, item frames and the like on a ship behave the same way.
-2) **Contraptions no longer disappear** after the ship changes dimension or reloads.
-3) **Passengers stay with the ship**: players and mobs on seats, on contraption seats or in a boat on
-   deck go to the other dimension together with the ship and keep their seats.
-4) **Third person with camera mods**: shoulder cameras, zoom animations when switching the view and
+Cameras and portals get along, and contraptions on ships stay visible.
+1) **Third person with camera mods**: shoulder cameras, zoom animations when switching the view and
    custom camera distances now pass through portals smoothly, exactly where the camera really is.
-
-Contraption collisions on the far side need the IPSable natives of this version.
+2) **Create contraptions on ships no longer disappear** when their ship is re-sent or arrives late,
+   with or without a portal on screen.
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.
 
 # Immersive Portals × Sable Compatibility Fork
@@ -74,8 +67,6 @@ the other `docs/` specs describe the removed 0.5.x model.
 - DH, Voxy, Iris, Entity Culling support (right now, not forever)
 - Standing on projections sucks, sublevel tp could trigger player tp.
 - Shading is broken, sometimes "in ground" shading is applied
-- Mobs and players are not pushed by the part of a Create contraption that is beyond a portal, and a
-  contraption seen through a portal cannot be right-clicked from that side yet.
 - Bugs...
 
 # Build

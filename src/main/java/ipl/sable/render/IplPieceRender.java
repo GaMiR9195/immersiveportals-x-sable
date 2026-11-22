@@ -441,11 +441,7 @@ public final class IplPieceRender {
 
     /** The piece the block of {@code be} belongs to. */
     public static int blockEntityPiece(Frame frame, BlockEntity be) {
-        return blockPiece(frame, be.getBlockPos());
-    }
-
-    /** The piece the block at {@code pos} (plot coordinates) belongs to. */
-    public static int blockPiece(Frame frame, BlockPos pos) {
+        BlockPos pos = be.getBlockPos();
         return frame.label(pos.getX(), pos.getY(), pos.getZ());
     }
 

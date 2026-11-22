@@ -51,8 +51,7 @@
     "ServerGamePacketListenerMixin",
     "MovePlayerPacketMixin",
     "ServerPlayerMixin",
-    "ServerEntityMixin",
-    "ControlledContraptionEntityMixin"
+    "ServerEntityMixin"
   ],
   "client": [
     "client.VeilPacketContextMixin",
@@ -77,7 +76,6 @@
     "client.VeilPostProcessingMixin",
     "client.BlockEntityRenderDispatcherRoutingMixin",
     "client.LevelRendererProjectionMixin",
-    "client.LevelRendererEntityRoutingMixin",
     "client.SodiumWorldRendererMixin",
     "client.ClientSubLevelMixin",
     "client.ClientSubLevelAccessor",

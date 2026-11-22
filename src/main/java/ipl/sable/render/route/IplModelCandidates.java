@@ -1,20 +1,16 @@
 package ipl.sable.render.route;
 
-import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
-import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
-import ipl.sable.render.IplPieceRender;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.AABB;
-import org.joml.Matrix4d;
 import org.joml.Vector3d;
 import qouteall.imm_ptl.core.ClientWorldLoader;
 import qouteall.imm_ptl.core.chunk_loading.ImmPtlClientChunkMap;
@@ -28,14 +24,13 @@ import java.util.WeakHashMap;
 import java.util.function.Predicate;
 
 /**
- * Holders whose models may have to be routed, per level. A model is noticed when a draw of it is
- * claimed, when Flywheel gives it up, and by a scan around every opening: the scan finds models
- * that no pass of this frame draws (their holder is out of view and only the model is seen through
- * a portal, or their level is only seen through one) and Flywheel visuals, which never reach a
- * renderer. Bodies move, so their block entities and the routable entities
- * ({@link IplModelHolders#isRoutable}) are scanned every frame (a fast body must not wait for a
- * scan); the static world every {@link #SCAN_INTERVAL_TICKS} ticks. Render thread only; weak
- * references.
+ * Block entities whose models may have to be routed, per level. A model is noticed when a draw
+ * of it is claimed, when Flywheel gives it up, and by a scan around every opening: the scan finds
+ * models that no pass of this frame draws (their block is out of view and only the model is seen
+ * through a portal, or their level is only seen through one) and Flywheel visuals, which never
+ * reach a block-entity renderer. Bodies move, so their block entities are scanned every frame (a
+ * fast body must not wait for a scan); the static world every {@link #SCAN_INTERVAL_TICKS} ticks.
+ * Render thread only; weak references.
  */
 final class IplModelCandidates {
 
@@ -50,42 +45,40 @@ final class IplModelCandidates {
 	 */
 	private static final double BODY_SCAN_REACH = 32.0;
 
-	private static final Map<Level, Set<Object>> BY_LEVEL = new WeakHashMap<>();
+	private static final Map<Level, Set<BlockEntity>> BY_LEVEL = new WeakHashMap<>();
 	private static final Map<Level, Long> SCANNED = new WeakHashMap<>();
 
 	private IplModelCandidates() {}
 
-	static void add(Object holder) {
-		Level level = IplModelHolders.level(holder);
-		if (level != null) BY_LEVEL.computeIfAbsent(level, l -> Collections.newSetFromMap(new WeakHashMap<>())).add(holder);
+	static void add(BlockEntity be) {
+		Level level = be.getLevel();
+		if (level != null) BY_LEVEL.computeIfAbsent(level, l -> Collections.newSetFromMap(new WeakHashMap<>())).add(be);
 	}
 
-	static void forget(Object holder) {
-		Level level = IplModelHolders.level(holder);
-		Set<Object> set = level == null ? null : BY_LEVEL.get(level);
-		if (set != null) set.remove(holder);
+	static void forget(BlockEntity be) {
+		Set<BlockEntity> set = be.getLevel() == null ? null : BY_LEVEL.get(be.getLevel());
+		if (set != null) set.remove(be);
 	}
 
 	/** Candidates of {@code level} (live view). */
-	static Set<Object> of(Level level) {
-		Set<Object> set = BY_LEVEL.get(level);
+	static Set<BlockEntity> of(Level level) {
+		Set<BlockEntity> set = BY_LEVEL.get(level);
 		return set == null ? Set.of() : set;
 	}
 
 	/** Candidates of every level (copy). */
-	static List<Object> all() {
-		List<Object> out = new ArrayList<>();
-		for (Set<Object> set : BY_LEVEL.values()) out.addAll(set);
+	static List<BlockEntity> all() {
+		List<BlockEntity> out = new ArrayList<>();
+		for (Set<BlockEntity> set : BY_LEVEL.values()) out.addAll(set);
 		return out;
 	}
 
-	/** Scans the bodies and entities of every level, and the world of levels whose interval has passed; adds what {@code routed} accepts. */
-	static void refresh(Predicate<Object> routed) {
+	/** Scans the bodies of every level, and the world of levels whose interval has passed; adds what {@code routed} accepts. */
+	static void refresh(Predicate<BlockEntity> routed) {
 		for (ClientLevel level : ClientWorldLoader.getClientWorlds()) {
 			List<IplRouteRect> zones = zones(level);
 			if (zones.isEmpty()) continue;
 			scanBodies(level, zones, routed);
-			scanEntities(level, zones, routed);
 			long time = level.getGameTime();
 			Long last = SCANNED.get(level);
 			if (last != null && time >= last && time - last < SCAN_INTERVAL_TICKS) continue;
@@ -104,7 +97,7 @@ final class IplModelCandidates {
 	}
 
 	/** Block entities of the level's loaded chunks near an opening (global portals span every chunk). */
-	private static void scanWorld(ClientLevel level, List<IplRouteRect> zones, Predicate<Object> routed) {
+	private static void scanWorld(ClientLevel level, List<IplRouteRect> zones, Predicate<BlockEntity> routed) {
 		if (!(level.getChunkSource() instanceof ImmPtlClientChunkMap chunks)) return;
 		int minY = level.getMinBuildHeight(), maxY = level.getMaxBuildHeight();
 		List<LevelChunk> near = chunks.readChunkMap(map -> {
@@ -119,7 +112,7 @@ final class IplModelCandidates {
 	}
 
 	/** Block entities of bodies near an opening. */
-	private static void scanBodies(ClientLevel level, List<IplRouteRect> zones, Predicate<Object> routed) {
+	private static void scanBodies(ClientLevel level, List<IplRouteRect> zones, Predicate<BlockEntity> routed) {
 		if (!(SubLevelContainer.getContainer(level) instanceof ClientSubLevelContainer container)) return;
 		Vector3d at = new Vector3d();
 		for (ClientSubLevel body : container.getAllSubLevels()) {
@@ -138,22 +131,7 @@ final class IplModelCandidates {
 		}
 	}
 
-	/**
-	 * Routable entities near an opening, and every routable entity of a straddling body: one
-	 * whose holder is beyond a portal is drawn there however far from the opening it is.
-	 */
-	private static void scanEntities(ClientLevel level, List<IplRouteRect> zones, Predicate<Object> routed) {
-		for (Entity entity : level.entitiesForRendering()) {
-			if (!IplModelHolders.isRoutable(entity)) continue;
-			ClientSubLevel owner = Sable.HELPER.getContaining(entity) instanceof ClientSubLevel sub ? sub : null;
-			AABB box = entity.getBoundingBoxForCulling();
-			if (owner != null) box = IplPortalModel.transform(box, owner.logicalPose().bakeIntoMatrix(new Matrix4d()));
-			boolean candidate = nearAny(zones, box, BODY_SCAN_REACH) || owner != null && IplPieceRender.frameFor(owner) != null;
-			if (candidate && routed.test(entity)) add(entity);
-		}
-	}
-
-	private static void offer(LevelChunk chunk, List<IplRouteRect> zones, Predicate<Object> routed) {
+	private static void offer(LevelChunk chunk, List<IplRouteRect> zones, Predicate<BlockEntity> routed) {
 		for (BlockEntity be : chunk.getBlockEntities().values()) {
 			if (zones != null && !nearAny(zones, new AABB(be.getBlockPos()), SCAN_REACH)) continue;
 			if (routed.test(be)) add(be);

@@ -5,11 +5,8 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.ryanhcode.sable.api.physics.PhysicsPipelineBody;
 import dev.ryanhcode.sable.api.physics.constraint.PhysicsConstraintConfiguration;
 import dev.ryanhcode.sable.api.physics.constraint.PhysicsConstraintHandle;
-import com.llamalad7.mixinextras.sugar.Local;
-import dev.ryanhcode.sable.api.sublevel.KinematicContraption;
 import dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline;
 import ipl.sable.atlas.IplFusedStep;
-import ipl.sable.transit.IplContraptionAnchors;
 import ipl.sable.transit.IplLinks;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
@@ -18,8 +15,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Rapier pipeline: constraint links for transit groups, the armed step of the fused world and the
- * anchors of kinematic contraptions.
+ * Rapier pipeline: constraint links for transit groups and the armed step of the fused world.
  */
 @Pseudo
 @Mixin(value = RapierPhysicsPipeline.class, remap = false)
@@ -47,29 +43,5 @@ public abstract class RapierPipelineMixin {
         if (IplFusedStep.mayStepWorld()) {
             original.call(sceneHandle, timeStep);
         }
-    }
-
-    /** Where a new contraption hangs on its body, for the piece clipping of its images. */
-    @WrapOperation(
-        method = "add(Ldev/ryanhcode/sable/api/sublevel/KinematicContraption;)V",
-        at = @At(value = "INVOKE", target = "Ldev/ryanhcode/sable/physics/impl/rapier/Rapier3D;createKinematicContraption(JII[D)V"),
-        require = 1
-    )
-    private void ipl$anchorContraption(long sceneHandle, int mountId, int id, double[] pose, Operation<Void> original,
-                                       @Local(argsOnly = true) KinematicContraption contraption) {
-        original.call(sceneHandle, mountId, id, pose);
-        IplContraptionAnchors.push(sceneHandle, id, contraption);
-    }
-
-    /** A contraption whose holder moves on its body (a cart on rails) is re-anchored with its pose. */
-    @WrapOperation(
-        method = "updateContraptionPose",
-        at = @At(value = "INVOKE", target = "Ldev/ryanhcode/sable/physics/impl/rapier/Rapier3D;setKinematicContraptionTransform(JI[D[D[D)V"),
-        require = 1
-    )
-    private void ipl$reanchorContraption(long sceneHandle, int id, double[] centerOfMass, double[] pose, double[] velocities,
-                                         Operation<Void> original, @Local(argsOnly = true) KinematicContraption contraption) {
-        original.call(sceneHandle, id, centerOfMass, pose, velocities);
-        IplContraptionAnchors.push(sceneHandle, id, contraption);
     }
 }

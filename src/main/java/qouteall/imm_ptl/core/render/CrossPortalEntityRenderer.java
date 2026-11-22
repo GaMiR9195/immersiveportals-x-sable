@@ -3,7 +3,6 @@ package qouteall.imm_ptl.core.render;
 import com.mojang.blaze3d.vertex.PoseStack;
 import de.nick1st.imm_ptl.events.ClientCleanupEvent;
 import de.nick1st.imm_ptl.events.DimensionEvents;
-import ipl.sable.render.route.IplPortalModels;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
@@ -143,10 +142,6 @@ public class CrossPortalEntityRenderer {
     }
     
     private static boolean isCrossing(Entity entity, Portal portal, float partialTick) {
-        // Contraptions and entities carried by bodies are cut and placed by their model routing.
-        if (IplPortalModels.drawsEntity(entity)) {
-            return false;
-        }
         Vec3 renderOffset = entity.getPosition(partialTick).subtract(entity.position());
         AABB renderBox = entity.getBoundingBox().move(renderOffset);
         return renderBox.intersects(portal.getBoundingBox())

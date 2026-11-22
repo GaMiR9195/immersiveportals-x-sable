@@ -4,7 +4,6 @@ import dev.engine_room.flywheel.api.visualization.VisualManager;
 import dev.engine_room.flywheel.impl.visualization.VisualManagerImpl;
 import dev.engine_room.flywheel.impl.visualization.VisualizationManagerImpl;
 import dev.engine_room.flywheel.impl.visualization.storage.BlockEntityStorage;
-import dev.engine_room.flywheel.impl.visualization.storage.Storage;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.sublevel.ClientSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
@@ -18,7 +17,6 @@ import ipl.sable.render.route.IplPortalModelDiagnostics;
 import ipl.sable.render.route.IplPortalModels;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import org.jetbrains.annotations.Nullable;
@@ -31,11 +29,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Function;
-import java.util.function.Predicate;
 
 /**
- * Flywheel visuals (Create cogs, shafts, contraptions, any instanced visual) near portals.
+ * Flywheel visuals (Create cogs, shafts, any instanced block-entity visual) near portals.
  *
  * <p>Flywheel instances a visual in one environment at its real pose and only in the pass of
  * its own level: it can neither split a model at an opening nor draw it beyond a portal. So a
@@ -46,15 +42,13 @@ import java.util.function.Predicate;
  *   <li>it belongs to a straddling body's piece other than the native one — the piece pass of
  *       its body draws it at the piece's mapped pose ({@link IplSubLevelBlockEntityPass}).</li>
  * </ul>
- * and an entity routed by {@link IplPortalModels} (a contraption) while it is near an opening or
- * held beyond a portal of its straddling body.
  *
  * <p>How Flywheel keeps visuals decides how this works:
  * <ul>
  *   <li>Flywheel re-adds block entities on its own (every section compile through
- *       {@code VisualizationHelper.tryAddBlockEntity}, block updates, Sable's one-block bodies),
- *       and entities when they join a level. A handed object is therefore <em>vetoed</em>:
- *       Flywheel's storage refuses it until it is given back ({@code FlywheelStorageVetoMixin}).</li>
+ *       {@code VisualizationHelper.tryAddBlockEntity}, block updates, Sable's one-block bodies).
+ *       A handed block entity is therefore <em>vetoed</em>: Flywheel's storage refuses it until it
+ *       is given back ({@code FlywheelStorageVetoMixin}).</li>
  *   <li>Queued removals and additions apply in Flywheel's next frame plan, which may run on worker
  *       threads while the world draws. Flywheel's state is read only here, at its flush (the plan
  *       is synced), and the renderer's turn follows the queue: vetoed at a flush → the renderer
@@ -75,7 +69,7 @@ public final class IplFlywheelFallback {
 
     /** A body this close to an opening may have models that reach it (long models reach out of the body). */
     private static final double BODY_REACH = 16.0;
-    /** How long a handed object must stay unwanted before it goes back to Flywheel. */
+    /** How long a handed block entity must stay unwanted before it goes back to Flywheel. */
     private static final long RELEASE_NANOS = 750_000_000L;
 
     /** Environments collapsed in the current pass. Render thread only. */
@@ -86,20 +80,18 @@ public final class IplFlywheelFallback {
      * {@code Minecraft.level}) and nothing of the source draws its visuals.
      */
     private static final Map<ClientSubLevel, SubLevelEmbedding> EMBEDDINGS = new WeakHashMap<>();
+    /** Block entities Flywheel must not visualize now. Read from any thread (Flywheel queues anywhere). */
+    private static final Set<BlockEntity> VETOED = ConcurrentHashMap.newKeySet();
+    /** Given back and not yet found in Flywheel's record: their renderers keep drawing them. */
+    private static final Set<BlockEntity> RETURNING = Collections.newSetFromMap(new WeakHashMap<>());
     /** Handed block entities per body of the current level (for its body passes). */
     private static final Map<ClientSubLevel, List<BlockEntity>> BY_BODY = new WeakHashMap<>();
-
-    private static final Handover<BlockEntity> BLOCK_ENTITIES = new Handover<>(BlockEntity::getLevel, BlockEntity::isRemoved);
-    private static final Handover<Entity> ENTITIES = new Handover<>(Entity::level, Entity::isRemoved);
+    /** When each handed block entity was last wanted by its renderer (render thread only). */
+    private static final Map<BlockEntity, Long> LAST_WANTED = new WeakHashMap<>();
 
     /** Whether Flywheel must refuse {@code be} now ({@code FlywheelStorageVetoMixin}). */
     public static boolean isVetoed(BlockEntity be) {
-        return BLOCK_ENTITIES.vetoed.contains(be);
-    }
-
-    /** Whether Flywheel must refuse {@code entity} now ({@code FlywheelStorageVetoMixin}). */
-    public static boolean isVetoed(Entity entity) {
-        return ENTITIES.vetoed.contains(entity);
+        return VETOED.contains(be);
     }
 
     /** HEAD {@code EnvironmentStorage.flush()}: the current level's Flywheel draws a frame (its plan is synced). */
@@ -109,21 +101,13 @@ public final class IplFlywheelFallback {
         VisualizationManagerImpl manager = VisualizationManagerImpl.get(level);
         if (manager == null) return;
         VisualManager<BlockEntity> visuals = manager.blockEntities();
-        BlockEntityStorage storage = (BlockEntityStorage) storage(visuals);
+        BlockEntityStorage storage = storage(visuals);
         Set<BlockEntity> wanted = Collections.newSetFromMap(new IdentityHashMap<>());
         collectBodies(level, storage, wanted);
         for (BlockEntity be : IplPortalModels.candidates(level)) {
             if (Sable.HELPER.getContainingClient(be) == null && IplPortalModels.isNearOpening(be)) wanted.add(be);
         }
-        BLOCK_ENTITIES.reconcile(level, visuals, record(storage), wanted);
-        indexBodies(level);
-
-        VisualManager<Entity> entityVisuals = manager.entities();
-        Set<Entity> wantedEntities = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (Entity entity : IplPortalModels.entityCandidates(level)) {
-            if (IplPortalModels.isNearOpening(entity) || IplPortalModels.isHeldBeyondPortal(entity)) wantedEntities.add(entity);
-        }
-        ENTITIES.reconcile(level, entityVisuals, record(storage(entityVisuals)), wantedEntities);
+        reconcile(level, visuals, record(storage), wanted);
     }
 
     /** Block entities of the level's bodies that their renderers must draw. */
@@ -153,9 +137,39 @@ public final class IplFlywheelFallback {
         return IplPortalModels.isNearOpening(be) || frame != null && !IplPieceRender.isNativeBlockEntity(frame, be);
     }
 
+    /**
+     * Vetoes what is wanted (removing its visual), gives back the rest of this level's vetoed
+     * block entities, and keeps re-queuing given-back ones until Flywheel's record has them.
+     */
+    private static void reconcile(ClientLevel level, VisualManager<BlockEntity> visuals, Map<Object, ?> record,
+                                  Set<BlockEntity> wanted) {
+        long now = System.nanoTime();
+        for (BlockEntity be : wanted) {
+            LAST_WANTED.put(be, now);
+            RETURNING.remove(be);
+            if (!VETOED.add(be)) continue;
+            if (record.containsKey(be)) visuals.queueRemove(be);
+            IplPortalModelDiagnostics.handOver(be, true);
+        }
+        for (BlockEntity be : new ArrayList<>(VETOED)) {
+            if (be.getLevel() != level || wanted.contains(be)) continue;
+            Long last = LAST_WANTED.get(be);
+            if (!be.isRemoved() && last != null && now - last < RELEASE_NANOS) continue;
+            VETOED.remove(be);
+            LAST_WANTED.remove(be);
+            if (be.isRemoved()) continue;
+            RETURNING.add(be);
+            IplPortalModels.notice(be);
+            IplPortalModelDiagnostics.handOver(be, false);
+        }
+        RETURNING.removeIf(be -> be.isRemoved() || be.getLevel() == level && record.containsKey(be));
+        for (BlockEntity be : RETURNING) if (be.getLevel() == level) visuals.queueAdd(be);
+        indexBodies(level);
+    }
+
     private static void indexBodies(ClientLevel level) {
         BY_BODY.clear();
-        for (Set<BlockEntity> set : List.of(BLOCK_ENTITIES.vetoed, BLOCK_ENTITIES.returning)) {
+        for (Set<BlockEntity> set : List.of(VETOED, RETURNING)) {
             for (BlockEntity be : set) {
                 if (be.getLevel() != level) continue;
                 ClientSubLevel sub = Sable.HELPER.getContainingClient(be);
@@ -165,11 +179,11 @@ public final class IplFlywheelFallback {
     }
 
     @SuppressWarnings("unchecked")
-    private static <T> Storage<T> storage(VisualManager<T> visuals) {
-        return ((VisualManagerImpl<T, ? extends Storage<T>>) visuals).getStorage();
+    private static BlockEntityStorage storage(VisualManager<BlockEntity> visuals) {
+        return ((VisualManagerImpl<BlockEntity, BlockEntityStorage>) visuals).getStorage();
     }
 
-    private static Map<Object, ?> record(Storage<?> storage) {
+    private static Map<Object, ?> record(BlockEntityStorage storage) {
         return ((FlywheelStorageAccessor) (Object) storage).ipl$visuals();
     }
 
@@ -179,12 +193,7 @@ public final class IplFlywheelFallback {
 
     /** Whether the renderer of {@code be} draws it this frame instead of Flywheel. */
     public static boolean isHanded(BlockEntity be) {
-        return BLOCK_ENTITIES.isHanded(be);
-    }
-
-    /** Whether the renderer of {@code entity} draws it this frame instead of Flywheel. */
-    public static boolean isHanded(Entity entity) {
-        return ENTITIES.isHanded(entity);
+        return VETOED.contains(be) || RETURNING.contains(be);
     }
 
     /** A handed world block entity: the routing draws it. Bodies' are drawn by their body passes. */
@@ -211,56 +220,5 @@ public final class IplFlywheelFallback {
         Level level = be.getLevel();
         return level != null && Minecraft.getInstance().player != null
             && level == Minecraft.getInstance().player.level() && !isHanded(be);
-    }
-
-    /** What Flywheel must not visualize now, and what it is given back, for one kind of object. */
-    private static final class Handover<T> {
-        /** Read from any thread (Flywheel queues anywhere). */
-        final Set<T> vetoed = ConcurrentHashMap.newKeySet();
-        /** Given back and not yet found in Flywheel's record: their renderers keep drawing them. */
-        final Set<T> returning = Collections.newSetFromMap(new WeakHashMap<>());
-        /** When each handed object was last wanted by its renderer (render thread only). */
-        private final Map<T, Long> lastWanted = new WeakHashMap<>();
-        private final Function<T, Level> levelOf;
-        private final Predicate<T> removed;
-
-        Handover(Function<T, Level> levelOf, Predicate<T> removed) {
-            this.levelOf = levelOf;
-            this.removed = removed;
-        }
-
-        boolean isHanded(T object) {
-            return vetoed.contains(object) || returning.contains(object);
-        }
-
-        /**
-         * Vetoes what is wanted (removing its visual), gives back the rest of this level's vetoed
-         * objects, and keeps re-queuing given-back ones until Flywheel's record has them.
-         */
-        void reconcile(ClientLevel level, VisualManager<T> visuals, Map<Object, ?> record, Set<T> wanted) {
-            long now = System.nanoTime();
-            for (T object : wanted) {
-                if (removed.test(object)) continue;
-                lastWanted.put(object, now);
-                returning.remove(object);
-                if (!vetoed.add(object)) continue;
-                if (record.containsKey(object)) visuals.queueRemove(object);
-                IplPortalModelDiagnostics.handOver(object, true);
-            }
-            for (T object : new ArrayList<>(vetoed)) {
-                if (levelOf.apply(object) != level || wanted.contains(object)) continue;
-                Long last = lastWanted.get(object);
-                boolean gone = removed.test(object);
-                if (!gone && last != null && now - last < RELEASE_NANOS) continue;
-                vetoed.remove(object);
-                lastWanted.remove(object);
-                if (gone) continue;
-                returning.add(object);
-                IplPortalModels.notice(object);
-                IplPortalModelDiagnostics.handOver(object, false);
-            }
-            returning.removeIf(object -> removed.test(object) || levelOf.apply(object) == level && record.containsKey(object));
-            for (T object : returning) if (levelOf.apply(object) == level) visuals.queueAdd(object);
-        }
     }
 }
