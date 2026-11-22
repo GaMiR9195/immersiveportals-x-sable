@@ -2,20 +2,25 @@ package ipl.sable.mixin;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Local;
 import dev.ryanhcode.sable.api.physics.PhysicsPipelineBody;
 import dev.ryanhcode.sable.api.physics.constraint.PhysicsConstraintConfiguration;
 import dev.ryanhcode.sable.api.physics.constraint.PhysicsConstraintHandle;
+import dev.ryanhcode.sable.api.sublevel.KinematicContraption;
 import dev.ryanhcode.sable.physics.impl.rapier.RapierPhysicsPipeline;
 import ipl.sable.atlas.IplFusedStep;
+import ipl.sable.transit.IplContraptionMaterial;
 import ipl.sable.transit.IplLinks;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Rapier pipeline: constraint links for transit groups and the armed step of the fused world.
+ * Rapier pipeline: constraint links for transit groups, the armed step of the fused world and the
+ * native ids of kinematic contraptions.
  */
 @Pseudo
 @Mixin(value = RapierPhysicsPipeline.class, remap = false)
@@ -27,6 +32,22 @@ public abstract class RapierPipelineMixin {
                                     PhysicsConstraintConfiguration<?> configuration,
                                     CallbackInfoReturnable<PhysicsConstraintHandle> cir) {
         IplLinks.onConstraint(bodyA, bodyB, configuration, cir.getReturnValue());
+    }
+
+    /** The native id of a kinematic contraption: its contacts are walked from the body block it hangs on. */
+    @WrapOperation(
+        method = "add(Ldev/ryanhcode/sable/api/sublevel/KinematicContraption;)V",
+        at = @At(value = "INVOKE", target = "Ldev/ryanhcode/sable/physics/impl/rapier/Rapier3D;createKinematicContraption(JII[D)V")
+    )
+    private void ipl$trackContraption(long sceneHandle, int mountId, int id, double[] pose, Operation<Void> original,
+                                      @Local(argsOnly = true) KinematicContraption contraption) {
+        original.call(sceneHandle, mountId, id, pose);
+        if (mountId >= 0) IplContraptionMaterial.onNativeAdded(contraption, sceneHandle, id);
+    }
+
+    @Inject(method = "remove(Ldev/ryanhcode/sable/api/sublevel/KinematicContraption;)V", at = @At("HEAD"))
+    private void ipl$forgetContraption(KinematicContraption contraption, CallbackInfo ci) {
+        IplContraptionMaterial.onNativeRemoved(contraption);
     }
 
     /**

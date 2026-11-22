@@ -77,6 +77,18 @@ public final class IplClientProjections {
         return null;
     }
 
+    /** {@link #clientLevel} typed for common code (no client class in the caller's signature). */
+    @Nullable
+    public static Level levelOf(@Nullable ResourceKey<Level> dimension) {
+        return clientLevel(dimension);
+    }
+
+    /** The level the player is in, typed for common code. */
+    @Nullable
+    public static Level playerLevel() {
+        return Minecraft.getInstance().level;
+    }
+
     /** The live client sub-level {@code id} in {@code dimension}, or null. */
     @Nullable
     public static ClientSubLevel findClientSub(UUID id, @Nullable ResourceKey<Level> dimension) {

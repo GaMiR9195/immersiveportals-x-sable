@@ -152,4 +152,17 @@ public final class IplRapierNatives {
     /** Remove an image collider created by {@link #createImageCollider}. */
     public static native void removeImageCollider(
         long sceneHandle, int bodyId, long imageHandle);
+
+    /**
+     * ABI 9: a kinematic contraption mounted on a body gets an image with every image of the
+     * body; its contacts are split by the body's pieces along the segment from its anchor.
+     */
+    public static final int CONTRAPTION_ABI = 9;
+
+    public static boolean contraptionsSupported() {
+        return abiLevel() >= CONTRAPTION_ABI;
+    }
+
+    /** Plot point (centre of the body block) kinematic contraption {@code id} hangs on. */
+    public static native void setContraptionAnchor(long sceneHandle, int id, double x, double y, double z);
 }

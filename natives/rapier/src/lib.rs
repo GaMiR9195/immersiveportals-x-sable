@@ -68,6 +68,14 @@ pub struct ActiveLevelColliderInfo {
     /// IPSable piece clipping (ABI 3): voxel labels, aperture edges and the piece of each
     /// image collider; `None` while the body straddles nothing.
     pub pieces: Option<Box<crate::ipl_ext::IplPieces>>,
+    /// Kinematic contraption mounted on a body: that body.
+    pub mount: Option<LevelColliderID>,
+    /// Body: the kinematic contraptions mounted on it.
+    pub mounted: Vec<LevelColliderID>,
+    /// Kinematic contraption: the body image each of its image colliders mirrors.
+    pub image_links: HashMap<ColliderHandle, ColliderHandle>,
+    /// Kinematic contraption: plot point of the body block it hangs on (`setContraptionAnchor`).
+    pub anchor: Option<DVec3>,
 }
 
 impl ChunkAccess for ActiveLevelColliderInfo {
@@ -102,6 +110,10 @@ impl ActiveLevelColliderInfo {
             octree: None,
             image_colliders: Vec::new(),
             pieces: None,
+            mount: None,
+            mounted: Vec::new(),
+            image_links: HashMap::new(),
+            anchor: None,
         }
     }
 

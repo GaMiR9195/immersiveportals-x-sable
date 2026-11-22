@@ -29,7 +29,10 @@ use crate::scene::{LevelColliderID, PhysicsScene};
 /// 7 = internal joint warm-start reset after a group changes its native frame.
 /// 8 = rope point routing (`ropeIds`, `ropePointPositions`, `routeRopePoint`) and
 ///     piece-aware voxel pair culling in the dispatcher.
-pub const IPL_NATIVE_ABI_LEVEL: jint = 8;
+/// 9 = images of kinematic contraptions: a contraption mounted on a body gets an image with
+///     every image of the body, clipped by the body's pieces walked from its anchor
+///     (`setContraptionAnchor`).
+pub const IPL_NATIVE_ABI_LEVEL: jint = 9;
 
 /// Doubles per edge in `setPieceEdges`:
 /// `[parent child  ox oy oz  nx ny nz  wx wy wz halfW  hx hy hz halfH  zone slack
@@ -135,6 +138,55 @@ impl IplPieces {
                 && d.dot(e.plot_axis_w).abs() <= e.plot_half_w.max(e.half_w) + BAND
                 && d.dot(e.plot_axis_h).abs() <= e.plot_half_h.max(e.half_h) + BAND
         })
+    }
+
+    /// Piece of a point of rigid geometry hanging on the body at `anchor` (plot coordinates,
+    /// piece `anchor_piece`): the segment from the anchor to `plot` enters an edge's child where
+    /// it passes the aperture front to back and returns to the parent where it passes back.
+    pub fn classify_tethered(
+        &self,
+        anchor: DVec3,
+        anchor_piece: u8,
+        plot: DVec3,
+        in_parent: impl Fn(u8, DVec3) -> Option<DVec3>,
+    ) -> u8 {
+        let mut piece = anchor_piece;
+        let mut after = -1.0;
+        for _ in 0..self.edges.len() {
+            let mut next: Option<(f64, u8)> = None;
+            for e in &self.edges {
+                if piece != e.parent && piece != e.child {
+                    continue;
+                }
+                let (Some(a), Some(b)) = (in_parent(e.parent, anchor), in_parent(e.parent, plot)) else {
+                    continue;
+                };
+                let s0 = (a - e.origin).dot(e.normal);
+                let s1 = (b - e.origin).dot(e.normal);
+                let forward = piece == e.parent && s0 >= 0.0 && s1 < 0.0;
+                let backward = piece == e.child && s0 < 0.0 && s1 >= 0.0;
+                if !forward && !backward {
+                    continue;
+                }
+                let t = s0 / (s0 - s1);
+                if t <= after {
+                    continue;
+                }
+                let hit = a + (b - a) * t - e.origin;
+                if hit.dot(e.axis_w).abs() > e.half_w || hit.dot(e.axis_h).abs() > e.half_h {
+                    continue;
+                }
+                if next.is_none_or(|(best, _)| t < best) {
+                    next = Some((t, if forward { e.child } else { e.parent }));
+                }
+            }
+            let Some((t, target)) = next else {
+                break;
+            };
+            after = t;
+            piece = target;
+        }
+        piece
     }
 
     /// Classifies the body's OWN surface witness, not the midpoint between colliders.
@@ -325,6 +377,11 @@ fn invalidate_piece_contacts(scene: &PhysicsScene, body_id: LevelColliderID) {
         let mut handles = Vec::with_capacity(1 + info.image_colliders.len());
         handles.push(info.collider);
         handles.extend_from_slice(&info.image_colliders);
+        // Contraptions on the body are classified by its pieces too.
+        for mounted in info.mounted.iter().filter_map(|id| data.level_colliders.get(id)) {
+            handles.push(mounted.collider);
+            handles.extend_from_slice(&mounted.image_colliders);
+        }
         (
             handles,
             data.rigid_bodies
@@ -624,6 +681,10 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_createImageCollid
     // this image never enters broad phase at identity and leaves a one-step real/image twin.
 
     info.image_colliders.push(handle);
+    let mounted = info.mounted.clone();
+    for contraption in mounted {
+        sync_contraption_images(sim_data, &mut sable_data, contraption);
+    }
 
     let (idx, generation) = handle.into_raw_parts();
     ((idx as jlong) << 32) | (generation as jlong)
@@ -654,6 +715,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollid
 
     let handle = ipl_unpack_handle(packed_handle);
 
+    let mut mounted = Vec::new();
     if let Some(info) = sable_data
         .level_colliders
         .get_mut(&(body_id as LevelColliderID))
@@ -662,6 +724,10 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_removeImageCollid
         if let Some(pieces) = info.pieces.as_mut() {
             pieces.image_nodes.remove(&handle);
         }
+        mounted = info.mounted.clone();
+    }
+    for contraption in mounted {
+        sync_contraption_images(sim_data, &mut sable_data, contraption);
     }
 
     sim_data.collider_set.remove(
@@ -694,21 +760,139 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImagePrefix<'l
         return;
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
-    let mut sim_data = scene
-        .sim_data
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let handle = ipl_unpack_handle(packed_handle);
-    let Some(collider) = sim_data.collider_set.get_mut(handle) else {
-        return; // image already retired — a moving-portal refresh racing session end
+    // Images of contraptions mounted on the body follow its image.
+    let linked: Vec<ColliderHandle> = {
+        let sable_data = scene
+            .sable_data
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sable_data
+            .level_colliders
+            .values()
+            .flat_map(|info| info.image_links.iter().filter(|(_, b)| **b == handle).map(|(h, _)| *h))
+            .collect()
     };
-    collider.set_portal_prefix(Some(rapier3d::math::Pose {
+    let prefix = rapier3d::math::Pose {
         translation: Vec3::new(dx as Real, dy as Real, dz as Real),
         rotation: rapier3d::math::Rotation::from_xyzw(
             qx as Real, qy as Real, qz as Real, qw as Real,
         )
         .normalize(),
-    }));
+    };
+    let mut sim_data = scene
+        .sim_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for target in std::iter::once(handle).chain(linked) {
+        // An image already retired (a moving-portal refresh racing session end) is skipped.
+        if let Some(collider) = sim_data.collider_set.get_mut(target) {
+            collider.set_portal_prefix(Some(prefix));
+        }
+    }
+}
+
+/// The plot point (centre of the body block) kinematic contraption `id` hangs on; its contacts
+/// are classified by the body's pieces along the segment from there.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setContraptionAnchor<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    scene_handle: jlong,
+    id: jint,
+    x: jdouble,
+    y: jdouble,
+    z: jdouble,
+) {
+    if scene_handle == 0 {
+        return;
+    }
+    let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    let mut sable_data = scene
+        .sable_data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(info) = sable_data.level_colliders.get_mut(&(id as LevelColliderID)) {
+        info.anchor = (x.is_finite() && y.is_finite() && z.is_finite()).then(|| DVec3::new(x, y, z));
+    }
+}
+
+/// Makes the images of contraption `id` mirror the images of its body: one per body image, in
+/// the same chart and with the same portal prefix, at the contraption's place on the body.
+pub fn sync_contraption_images(
+    sim: &mut crate::scene::SimulationSceneData,
+    sable: &mut crate::scene::SableSceneData,
+    id: LevelColliderID,
+) {
+    use crate::collider::LevelCollider;
+    use rapier3d::prelude::*;
+
+    let Some(body_id) = sable.level_colliders.get(&id).and_then(|i| i.mount) else {
+        return;
+    };
+    let body_images: Vec<ColliderHandle> = sable
+        .level_colliders
+        .get(&body_id)
+        .map(|b| b.image_colliders.clone())
+        .unwrap_or_default();
+    let Some(info) = sable.level_colliders.get_mut(&id) else {
+        return;
+    };
+    let stale: Vec<ColliderHandle> = info
+        .image_links
+        .iter()
+        .filter(|(_, b)| !body_images.contains(b))
+        .map(|(h, _)| *h)
+        .collect();
+    for h in stale {
+        info.image_links.remove(&h);
+        info.image_colliders.retain(|x| *x != h);
+        sim.collider_set
+            .remove(h, &mut sim.island_manager, &mut sim.rigid_body_set, true);
+    }
+
+    let Some(native) = sim.collider_set.get(info.collider) else {
+        return;
+    };
+    let (Some(shape), Some(parent), Some(rel)) = (
+        native.shape().as_shape::<LevelCollider>().copied(),
+        native.parent(),
+        native.position_wrt_parent().copied(),
+    ) else {
+        return;
+    };
+    let friction = native.friction();
+    for body_image in body_images {
+        if info.image_links.values().any(|b| *b == body_image) {
+            continue;
+        }
+        let Some(mirror) = sim.collider_set.get(body_image) else {
+            continue;
+        };
+        let Some(chart) = mirror.shape().as_shape::<LevelCollider>().map(|s| s.chart) else {
+            continue;
+        };
+        let prefix = mirror.portal_prefix().copied();
+        let groups = mirror.collision_groups();
+        let collider = ColliderBuilder::new(SharedShape::new(LevelCollider { chart, piece: 0, ..shape }))
+            .friction(friction)
+            .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+            .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS)
+            .density(0.0)
+            .collision_groups(groups)
+            .position(rel)
+            .build();
+        let handle = sim
+            .collider_set
+            .insert_with_parent(collider, parent, &mut sim.rigid_body_set);
+        let parent_pose = *sim.rigid_body_set[parent].position();
+        if let Some(image) = sim.collider_set.get_mut(handle) {
+            image.set_portal_prefix(prefix);
+            image.refresh_portal_prefixed_pose(&parent_pose);
+        }
+        info.image_colliders.push(handle);
+        info.image_links.insert(handle, body_image);
+    }
 }
 
 #[cfg(test)]

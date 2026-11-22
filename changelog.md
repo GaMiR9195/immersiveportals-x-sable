@@ -6,10 +6,50 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [0.7.0]
 
-Every camera works with portals, and contraptions on ships no longer vanish.
+Create contraptions on ships go through portals with their ship, every camera works with portals,
+and contraptions on ships no longer vanish.
+
+### Added
+
+- **Create contraptions through portals** (natives ABI 9). A contraption on a ship (bearing, windmill,
+  piston, pulley, gantry, cart) lives on the ship's projections, like its blocks, until the whole ship
+  flips. A contraption has no labels of its own: its pieces are walked from the ship block it hangs on
+  (its controller), and a block is beyond a portal when that segment passed the opening
+  (`IplContraptionShape`). Physics, entity collisions and rendering share this rule.
+  - Physics: every image of the ship carries an image of the contraption at its place on the ship
+    (created, moved and removed by the natives with the ship's images). Each collider keeps only the
+    contacts of its piece (`hooks.rs`, `setContraptionAnchor`): what went through collides beyond the
+    exit, the rest stays on the entrance side, nothing is switched on and off by a timer.
+  - Sessions: a contraption that reaches an opening opens the session even if no block of the ship
+    did, and keeps it while it is in that piece or can swing into it (a turning bearing sweeps a
+    sphere). Contraptions never hold back the flip: the ship flips when its own blocks are through,
+    and whatever the contraption still has behind the exit is walked through the exit's reverse
+    opening, so even a windmill larger than the portal passes (`IplContraptionMaterial`).
+    Destination terrain is loaded for physics under the whole reach of the contraption.
+  - Entities: Create's contraption collision runs once per piece, at the piece's pose, against the
+    entities of the piece's level and the blocks of that piece only, a block lying across the
+    opening counting for both sides (`IplContraptionCollision`). The
+    player collides with the part that came through a portal, also when the ship's level is another
+    dimension, and is not pushed by the part that is gone.
+  - Rendering: each piece of the ship draws its part of the contraption at its pose, cut by the
+    plane of the opening from the moment a block touches it, like the ship's own blocks
+    (`IplContraptionShape.split`, `IplContraptionRender`). Projections are drawn by Create's renderer
+    in any dimension; the native part is handed over from Flywheel while it approaches an opening,
+    so the cut never waits for the hand-over.
+  - Moving to another dimension: contraptions keep their controller when the ship gets another plot
+    slot and are driven by it at once, mobs riding them move with them, and the contraptions of a
+    ship still hidden behind its ghost are drawn right away.
 
 ### Fixed
 
+- **Ship contraptions lost at the end of a crossing.** Sable's box queries return the entities of
+  ship plots too, so a flip took a ship's contraptions and seats for riders of its hull and threw
+  them to a mapped plot position: the contraption vanished and its bearing stood still,
+  half-turned. Entities living in a plot now stay with their body (`IplShipFlip`). A ship moving
+  to another dimension also no longer drags the world entities around it along.
+- **Flywheel animations freezing around contraptions.** A contraption whose structure never reached
+  the client got a Flywheel visual that failed every frame and stopped the other visuals of the
+  frame (bearings, shafts); such contraptions are no longer visualized.
 - **Create contraptions on ships vanishing.** A contraption whose ship arrived after it (a ship moved
   into another dimension, a ship re-sent by the server), or whose ship was missing for one frame,
   lost Sable's render pose for good and was drawn at plot coordinates, far away, until it was

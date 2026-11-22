@@ -51,7 +51,11 @@
     "ServerGamePacketListenerMixin",
     "MovePlayerPacketMixin",
     "ServerPlayerMixin",
-    "ServerEntityMixin"
+    "ServerEntityMixin",
+    "SubLevelPoseMixin",
+    "ControlledContraptionEntityAccessor",
+    "ContraptionColliderPiecesMixin",
+    "ContraptionColliderInvoker"
   ],
   "client": [
     "client.VeilPacketContextMixin",
@@ -112,7 +116,9 @@
     "client.LocalPlayerMixin",
     "client.SectionRenderDispatcherAccessor",
     "client.SubLevelRendererMixin",
-    "client.FinalizeSubLevelPacketMixin"
+    "client.FinalizeSubLevelPacketMixin",
+    "client.LevelRendererContraptionMixin",
+    "client.ContraptionHandlerRemoteMixin"
   ],
   "injectors": {
     "defaultRequire": 0

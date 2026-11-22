@@ -186,6 +186,10 @@ impl SablePhysicsHooks {
             let Some(info) = sable_data.level_colliders.get(&(id as LevelColliderID)) else {
                 continue;
             };
+            if let Some(body_id) = info.mount {
+                Self::ipl_clip_mounted(context, handle, inward, normal, &sable_data, info, body_id);
+                continue;
+            }
             let (Some(pieces), Some(com)) = (info.pieces.as_deref(), info.center_of_mass) else {
                 continue;
             };
@@ -263,6 +267,78 @@ impl SablePhysicsHooks {
                         "[ipl-natives] piece clip ACTIVE: first neutralize, {clipped} contact(s) for body {id}"
                     );
                 });
+            }
+        }
+    }
+
+    /// Contacts of a kinematic contraption mounted on a straddling body: its native collider and
+    /// each image keep only the contacts whose point lies in their piece, walked from the anchor
+    /// through the body's edges (`IplPieces::classify_tethered`).
+    fn ipl_clip_mounted(
+        context: &mut ContactModificationContext,
+        handle: rapier3d::geometry::ColliderHandle,
+        inward: f64,
+        normal: DVec3,
+        sable_data: &SableSceneData,
+        info: &crate::ActiveLevelColliderInfo,
+        body_id: LevelColliderID,
+    ) {
+        let Some(body) = sable_data.level_colliders.get(&body_id) else {
+            return;
+        };
+        let (Some(pieces), Some(com)) = (body.pieces.as_deref(), body.center_of_mass) else {
+            return;
+        };
+        let own = if handle == info.collider {
+            0u8
+        } else {
+            match info.image_links.get(&handle).and_then(|b| pieces.image_nodes.get(b)) {
+                Some(node) => *node,
+                None => return,
+            }
+        };
+        let Some(anchor) = info.anchor else {
+            // Not anchored yet: the whole contraption counts as native.
+            if own != 0 {
+                context.solver_contacts.iter_mut().for_each(neutralize_contact);
+            }
+            return;
+        };
+        let colliders = context.colliders;
+        let pose_of = |node: u8| -> Option<Pose> {
+            let h = if node == 0 {
+                body.collider
+            } else {
+                *pieces.image_nodes.iter().find(|(_, n)| **n == node)?.0
+            };
+            colliders.get(h).map(|c| *c.position())
+        };
+        let in_parent = |node: u8, point: DVec3| -> Option<DVec3> {
+            pose_of(node).map(|p| p.transform_point((point - com).as_vec3()).as_dvec3())
+        };
+        let (Some(frame), Some(pose)) = (pose_of(own), colliders.get(handle).map(|c| *c.position())) else {
+            return;
+        };
+        let anchor_piece = pieces.classify(anchor, &in_parent);
+        let first = handle == context.collider1;
+        let manifold = &*context.manifold;
+        for c in context.solver_contacts.iter_mut() {
+            if crate::ipl_ext::ipl_contact_neutralized(c) {
+                continue;
+            }
+            let Some(witness) = manifold.points.get(c.contact_id[0] as usize) else {
+                continue;
+            };
+            let (local_point, subshape) = if first {
+                (witness.local_p1, manifold.subshape_pos1)
+            } else {
+                (witness.local_p2, manifold.subshape_pos2)
+            };
+            let surface = subshape.map_or(local_point, |p| p * local_point);
+            let world = pose.transform_point(surface) + normal.as_vec3() * (inward as f32 * 0.001);
+            let plot = frame.inverse_transform_point(world).as_dvec3() + com;
+            if pieces.classify_tethered(anchor, anchor_piece, plot, &in_parent) != own {
+                neutralize_contact(c);
             }
         }
     }

@@ -1,5 +1,6 @@
 package ipl.sable.transit;
 
+import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.physics.PhysicsPipeline;
 import dev.ryanhcode.sable.api.physics.mass.MergedMassTracker;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
@@ -246,6 +247,13 @@ public final class IplShipFlip {
         access.ipl$setLastMass(src.getMass());
     }
 
+    /**
+     * Entities in the plot (contraptions, seats, frames) move to the same plot-local place in the
+     * successor's plot, with the non-player entities riding them. A controlled contraption keeps
+     * its controller (the bearing keeps turning it) even when the successor got another slot.
+     * Sable's box queries also return world entities around the body and entities of other plots:
+     * only entities of this plot move.
+     */
     private static void relocatePlotEntities(ServerSubLevel source, ServerSubLevel target,
                                              ServerLevel from, ServerLevel to) {
         ServerLevelPlot srcPlot = source.getPlot();
@@ -253,29 +261,46 @@ public final class IplShipFlip {
         for (PlotChunkHolder holder : new ArrayList<>(srcPlot.getLoadedChunks())) {
             ChunkPos srcChunk = holder.getChunk().getPos();
             ChunkPos dstChunk = dstPlot.toGlobal(srcPlot.toLocal(srcChunk));
-            double dx = dstChunk.getMinBlockX() - srcChunk.getMinBlockX();
-            double dz = dstChunk.getMinBlockZ() - srcChunk.getMinBlockZ();
+            int dx = dstChunk.getMinBlockX() - srcChunk.getMinBlockX();
+            int dz = dstChunk.getMinBlockZ() - srcChunk.getMinBlockZ();
             AABB box = new AABB(srcChunk.getMinBlockX(), from.getMinBuildHeight(), srcChunk.getMinBlockZ(),
                 srcChunk.getMinBlockX() + 16.0, from.getMaxBuildHeight(), srcChunk.getMinBlockZ() + 16.0);
             for (Entity entity : from.getEntitiesOfClass(Entity.class, box)) {
                 if (entity instanceof Portal || entity instanceof ServerPlayer || entity.isRemoved()
-                    || entity.getVehicle() != null) continue;
-                try {
-                    Entity result = ServerTeleportationManager.teleportEntityGeneral(
-                        entity, entity.position().add(dx, 0.0, dz), to);
-                    if (result != null && !result.isRemoved()) result.setDeltaMovement(entity.getDeltaMovement());
-                } catch (RuntimeException e) {
-                    LOG.warn("[IPL-MOVE] failed to relocate plot entity {} of {}", entity, source.getUniqueId(), e);
-                }
+                    || entity.getVehicle() != null || Sable.HELPER.getContaining(entity) != source) continue;
+                relocate(entity, dx, dz, to, source);
             }
         }
+    }
+
+    /** Moves {@code entity} and the non-player entities riding it; returns its successor, or null. */
+    @Nullable
+    private static Entity relocate(Entity entity, int dx, int dz, ServerLevel to, ServerSubLevel source) {
+        List<Entity> riders = new ArrayList<>();
+        for (Entity rider : entity.getPassengers()) if (!(rider instanceof ServerPlayer)) riders.add(rider);
+        Entity moved;
+        try {
+            moved = ServerTeleportationManager.teleportEntityGeneral(entity, entity.position().add(dx, 0.0, dz), to);
+        } catch (RuntimeException e) {
+            LOG.warn("[IPL-MOVE] failed to relocate plot entity {} of {}", entity, source.getUniqueId(), e);
+            return null;
+        }
+        if (moved == null || moved.isRemoved()) return null;
+        moved.setDeltaMovement(entity.getDeltaMovement());
+        IplContraptions.followPlot(moved, dx, dz);
+        for (Entity rider : riders) {
+            Entity movedRider = relocate(rider, dx, dz, to, source);
+            if (movedRider != null) movedRider.startRiding(moved, true);
+        }
+        return moved;
     }
 
     /**
      * Entities riding the hull that are already beyond the portal plane follow the body.
      * {@code movedRiders} maps rider -> ship that carried it this tick: a ship may pass several
      * portals in one tick (a row of portals) and its riders go along, but another ship must not
-     * drag them.
+     * drag them. Entities living in a plot (contraptions, seats) belong to their body, not to the
+     * hull: Sable's box query returns them too, at plot coordinates.
      */
     private static void teleportRiders(ServerSubLevel ship, ServerLevel from, ServerLevel to, Portal portal,
                                        Map<UUID, UUID> movedRiders) {
@@ -286,7 +311,7 @@ public final class IplShipFlip {
         for (Entity entity : from.getEntitiesOfClass(Entity.class, query)) {
             UUID mover = movedRiders.get(entity.getUUID());
             if (entity instanceof Portal || entity.isRemoved() || (mover != null && !mover.equals(carrier))
-                || entity.getVehicle() != null) continue;
+                || entity.getVehicle() != null || Sable.HELPER.getContaining(entity) != null) continue;
             if (entity.getBoundingBox().getCenter().subtract(planePoint).dot(sourceToDest) < 0.0) continue;
             Vec3 mappedPos = portal.transformPoint(entity.position());
             Vec3 mappedDelta = portal.transformLocalVec(entity.getDeltaMovement());

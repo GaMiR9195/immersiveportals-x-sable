@@ -11,6 +11,7 @@ import org.jetbrains.annotations.Nullable;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -65,6 +66,8 @@ final class IplSessionLifecycle {
         final Bounds envelope;
         /** Material actually owned in each real chart, for paths that already hold material. */
         final Map<ServerLevel, Bounds> owned = new HashMap<>();
+        /** Pieces the body's contraptions are in or may swing into (lazy). */
+        @Nullable BitSet contraptionPieces;
 
         private Settlement(ServerSubLevel ship, Body body, List<IplTransitPath> paths) {
             this.ship = ship;
@@ -168,9 +171,28 @@ final class IplSessionLifecycle {
             return IplTransitSettlement.intersects(owned.get(portal.level()), IplPieceMap.Aperture.of(portal));
         }
 
-        /** A path stays open while it cuts material, or while the body is split and spans it. */
+        /**
+         * A path stays open while it cuts material, while the body is split and spans it, or while
+         * a contraption on the body is in its piece or may swing into it.
+         */
         boolean holds(IplTransitPath path, boolean split) {
-            return occupied(path) || split && intersects(path);
+            return occupied(path) || split && intersects(path) || contraptionHolds(path);
+        }
+
+        boolean contraptionHolds(IplTransitPath path) {
+            int node = node(path);
+            if (node <= 0) return false;
+            if (contraptionPieces == null) {
+                List<IplPieceMap.Edge> edges = new ArrayList<>(paths.size());
+                for (IplTransitPath p : paths) {
+                    int child = node(p);
+                    if (child <= 0) continue;
+                    IplPieceMap.Aperture a = aperture(p);
+                    edges.add(new IplPieceMap.Edge(body.parent[child], child, a, a));
+                }
+                contraptionPieces = IplContraptionMaterial.held(ship, body.map, edges.toArray(new IplPieceMap.Edge[0]));
+            }
+            return contraptionPieces.get(node);
         }
 
         boolean captureOwned() {

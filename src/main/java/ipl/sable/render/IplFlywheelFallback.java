@@ -15,8 +15,10 @@ import ipl.sable.mixin.client.FlywheelStorageAccessor;
 import ipl.sable.render.route.IplOpenings;
 import ipl.sable.render.route.IplPortalModelDiagnostics;
 import ipl.sable.render.route.IplPortalModels;
+import ipl.sable.transit.IplContraptions;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import org.jetbrains.annotations.Nullable;
@@ -61,7 +63,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *       mixin never clears {@code posLookup} on removal ({@code FlywheelStorageAccessor}).</li>
  * </ul>
  * Everything else keeps instancing. The environment of a hidden transit successor is collapsed
- * as a whole ({@code FlywheelEmbeddedEnvironmentMixin}). Loaded only with Flywheel present.
+ * as a whole ({@code FlywheelEmbeddedEnvironmentMixin}). Contraption entities of straddling bodies
+ * are handed over the same way ({@link IplContraptionRender}). Loaded only with Flywheel present.
  */
 public final class IplFlywheelFallback {
 
@@ -88,10 +91,24 @@ public final class IplFlywheelFallback {
     private static final Map<ClientSubLevel, List<BlockEntity>> BY_BODY = new WeakHashMap<>();
     /** When each handed block entity was last wanted by its renderer (render thread only). */
     private static final Map<BlockEntity, Long> LAST_WANTED = new WeakHashMap<>();
+    /** Contraption entities handed to Create's renderer, with the same life cycle as block entities. */
+    private static final Set<Entity> VETOED_ENTITIES = ConcurrentHashMap.newKeySet();
+    private static final Set<Entity> RETURNING_ENTITIES = Collections.newSetFromMap(new WeakHashMap<>());
+    private static final Map<Entity, Long> ENTITY_LAST_WANTED = new WeakHashMap<>();
 
     /** Whether Flywheel must refuse {@code be} now ({@code FlywheelStorageVetoMixin}). */
     public static boolean isVetoed(BlockEntity be) {
         return VETOED.contains(be);
+    }
+
+    /** Whether Flywheel must refuse the visual of contraption {@code entity} now. */
+    public static boolean isVetoed(Entity entity) {
+        return VETOED_ENTITIES.contains(entity);
+    }
+
+    /** Whether Create's renderer draws contraption {@code entity} this frame instead of Flywheel. */
+    public static boolean isHanded(Entity entity) {
+        return VETOED_ENTITIES.contains(entity) || RETURNING_ENTITIES.contains(entity);
     }
 
     /** HEAD {@code EnvironmentStorage.flush()}: the current level's Flywheel draws a frame (its plan is synced). */
@@ -108,6 +125,35 @@ public final class IplFlywheelFallback {
             if (Sable.HELPER.getContainingClient(be) == null && IplPortalModels.isNearOpening(be)) wanted.add(be);
         }
         reconcile(level, visuals, record(storage), wanted);
+        reconcileEntities(level, manager.entities(), IplContraptionRender.wantedByRenderer(level));
+    }
+
+    /** {@link #reconcile} for contraption entities. */
+    @SuppressWarnings("unchecked")
+    private static void reconcileEntities(ClientLevel level, VisualManager<Entity> visuals, Set<Entity> wanted) {
+        Map<Object, ?> record = ((FlywheelStorageAccessor) (Object)
+            ((VisualManagerImpl<Entity, ?>) visuals).getStorage()).ipl$visuals();
+        long now = System.nanoTime();
+        for (Entity entity : wanted) {
+            ENTITY_LAST_WANTED.put(entity, now);
+            RETURNING_ENTITIES.remove(entity);
+            if (VETOED_ENTITIES.add(entity) && record.containsKey(entity)) visuals.queueRemove(entity);
+        }
+        for (Entity entity : new ArrayList<>(VETOED_ENTITIES)) {
+            if (entity.isRemoved()) {
+                VETOED_ENTITIES.remove(entity);
+                continue;
+            }
+            if (entity.level() != level || wanted.contains(entity)) continue;
+            Long last = ENTITY_LAST_WANTED.get(entity);
+            if (last != null && now - last < RELEASE_NANOS) continue;
+            VETOED_ENTITIES.remove(entity);
+            ENTITY_LAST_WANTED.remove(entity);
+            RETURNING_ENTITIES.add(entity);
+        }
+        RETURNING_ENTITIES.removeIf(entity -> entity.isRemoved() || IplContraptions.isHollow(entity)
+            || entity.level() == level && record.containsKey(entity));
+        for (Entity entity : RETURNING_ENTITIES) if (entity.level() == level) visuals.queueAdd(entity);
     }
 
     /** Block entities of the level's bodies that their renderers must draw. */

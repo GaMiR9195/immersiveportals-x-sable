@@ -14,6 +14,7 @@ import ipl.sable.client.IplProjectionRenderSequence;
 import ipl.sable.client.IplStraddleRenderCache;
 import ipl.sable.client.IplStraddleRenderState;
 import ipl.sable.render.IplBlockEntityRenderScope;
+import ipl.sable.render.IplContraptionRender;
 import ipl.sable.render.IplSubLevelBlockEntityPass;
 import ipl.sable.render.route.IplPortalModels;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
@@ -298,6 +299,8 @@ public abstract class LevelRendererProjectionMixin {
                 IplStraddleRenderState.clear();
             }
         }
+        IplContraptionRender.drawProjections(projections, (LevelRenderer) (Object) this, camera, partialTick,
+            this.renderBuffers.bufferSource());
     }
 
     /** ONE drain of Sable's shared single-block queue over all projections. */

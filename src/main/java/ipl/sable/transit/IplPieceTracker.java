@@ -311,6 +311,7 @@ public final class IplPieceTracker {
 
     private static void sample(Body body, ServerSubLevel ship, int tick) {
         body.pendingFlip = null;
+        IplContraptionMaterial.pushAnchors(ship);
         rebindObservation(body, ship);
         IplAtlasStraddleSession.refreshShip(ship);
         reconcile(body, ship);
@@ -526,8 +527,12 @@ public final class IplPieceTracker {
             int child = body.childOf(plan.parent, plan.portal.getUUID());
             Sweep current = sweep(body, ship.getPlot(), plan.now, plan.now,
                 plan.watch.zone, plan.parent, child);
-            // Geometric pre-arming, not a velocity forecast: the voxel already touches the aperture.
-            if (child < 0 && current.bridging) child = openSession(body, ship, plan.parent, plan.portal);
+            // Geometric pre-arming, not a velocity forecast: the voxel already touches the aperture,
+            // or a contraption on the body reaches it.
+            if (child < 0 && (current.bridging
+                || IplContraptionMaterial.reaches(ship, body.map, plan.parent, plan.now))) {
+                child = openSession(body, ship, plan.parent, plan.portal);
+            }
             plan.watch.cut = current.cut;
         }
     }
@@ -1007,15 +1012,16 @@ public final class IplPieceTracker {
     /** World bounds of two observed piece poses, with a conservative rotational query margin. */
     private static AABB queryBox(ServerSubLevel ship, Pose3dc before, Pose3dc now) {
         BoundingBox3ic bounds = ship.getPlot().getBoundingBox();
+        // Contraptions on the body reach out of its blocks (windmill sails, piston poles).
+        double[] box = {bounds.minX(), bounds.minY(), bounds.minZ(), bounds.maxX() + 1.0, bounds.maxY() + 1.0, bounds.maxZ() + 1.0};
+        IplContraptionMaterial.extendBounds(ship, box);
         // Union of actual endpoints plus a conservative rotational arc bound. In contrast
         // to an expanded current AABB this also works for a rotated portal image and >32 b/t.
         double minX = Double.POSITIVE_INFINITY, minY = minX, minZ = minX;
         double maxX = Double.NEGATIVE_INFINITY, maxY = maxX, maxZ = maxX;
         double rotationalReach = 0.0;
         for (int i = 0; i < 8; i++) {
-            var point = new org.joml.Vector3d((i & 1) == 0 ? bounds.minX() : bounds.maxX() + 1.0,
-                (i & 2) == 0 ? bounds.minY() : bounds.maxY() + 1.0,
-                (i & 4) == 0 ? bounds.minZ() : bounds.maxZ() + 1.0);
+            var point = new org.joml.Vector3d(box[(i & 1) == 0 ? 0 : 3], box[(i & 2) == 0 ? 1 : 4], box[(i & 4) == 0 ? 2 : 5]);
             var a = before.transformPosition(new org.joml.Vector3d(point)).sub(before.position());
             var b = now.transformPosition(point).sub(now.position());
             rotationalReach = Math.max(rotationalReach, a.distance(b));
@@ -1023,9 +1029,7 @@ public final class IplPieceTracker {
         for (Pose3dc pose : new Pose3dc[]{before, now}) {
             for (int i = 0; i < 8; i++) {
                 var p = pose.transformPosition(new org.joml.Vector3d(
-                    (i & 1) == 0 ? bounds.minX() : bounds.maxX() + 1.0,
-                    (i & 2) == 0 ? bounds.minY() : bounds.maxY() + 1.0,
-                    (i & 4) == 0 ? bounds.minZ() : bounds.maxZ() + 1.0));
+                    box[(i & 1) == 0 ? 0 : 3], box[(i & 2) == 0 ? 1 : 4], box[(i & 4) == 0 ? 2 : 5]));
                 minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); minZ = Math.min(minZ, p.z);
                 maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y); maxZ = Math.max(maxZ, p.z);
             }

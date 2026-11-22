@@ -101,9 +101,18 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_cre
         }
 
         info.chunk_map = Some(HashMap::new()); // Use a dedicated chunk map as it doesn't have a plot java-side
+        if !should_be_static {
+            let mount = mount_id as LevelColliderID;
+            info.mount = Some(mount);
+            if let Some(body) = sable_data.level_colliders.get_mut(&mount) {
+                body.mounted.push(id as LevelColliderID);
+            }
+        }
         sable_data
             .level_colliders
             .insert(id as LevelColliderID, info);
+        // IPL: a contraption mounted on a straddling body gets an image with every body image.
+        crate::ipl_ext::sync_contraption_images(sim_data, &mut sable_data, id as LevelColliderID);
     })
 }
 
@@ -167,6 +176,12 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_set
 
         collider.set_position_wrt_parent(isometry);
         // }
+        // IPL: images keep the contraption's place on the body.
+        for image in &info.image_colliders {
+            if let Some(image) = sim_data.collider_set.get_mut(*image) {
+                image.set_position_wrt_parent(isometry);
+            }
+        }
 
         info.center_of_mass = Some(DVec3::new(
             center_of_mass_arr[0],
@@ -241,6 +256,18 @@ pub extern "system" fn Java_dev_ryanhcode_sable_physics_impl_rapier_Rapier3D_rem
 
         let info = sable_data.level_colliders.remove(&(id as LevelColliderID));
         let info = info.unwrap();
+
+        if let Some(body) = info.mount.and_then(|m| sable_data.level_colliders.get_mut(&m)) {
+            body.mounted.retain(|c| *c != id as LevelColliderID);
+        }
+        for image in &info.image_colliders {
+            sim_data.collider_set.remove(
+                *image,
+                &mut sim_data.island_manager,
+                &mut sim_data.rigid_body_set,
+                true,
+            );
+        }
 
         sim_data.collider_set.remove(
             info.collider,

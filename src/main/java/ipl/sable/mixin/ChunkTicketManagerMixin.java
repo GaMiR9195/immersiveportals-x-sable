@@ -7,6 +7,7 @@ import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
 import dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicket;
 import dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicketManager;
 import ipl.sable.transit.IplAtlasStraddleSession;
+import ipl.sable.transit.IplContraptionMaterial;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
@@ -49,7 +50,8 @@ public abstract class ChunkTicketManagerMixin {
         if (IplAtlasStraddleSession.isIdle()) return;
         final long gameTime = level.getGameTime();
         IplAtlasStraddleSession.forEachSessionInto(level, (sub, mapping) -> {
-            BoundingBox3d mapped = mapping.mapAabb(sub.boundingBox());
+            // Contraptions on the body (windmill sails) reach out of its blocks.
+            BoundingBox3d mapped = mapping.mapAabb(IplContraptionMaterial.worldBounds(sub));
             // Sable pads its own tickets by 1 block plus a velocity prediction; a fixed
             // 2-block pad covers one fast tick of motion of the image as well.
             mapped.expand(2.0, mapped);

@@ -251,8 +251,12 @@ public final class IplPieceMap {
 
     /** Exact observed-sweep rule shared with the native contact classifier. */
     public int classify(Edge[] edges, double x, double y, double z) {
+        return classify(edges, label((int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z)), x, y, z);
+    }
+
+    /** {@link #classify(Edge[], double, double, double)} of a point whose voxel carries {@code label}. */
+    public static int classify(Edge[] edges, int label, double x, double y, double z) {
         int vx = (int) Math.floor(x), vy = (int) Math.floor(y), vz = (int) Math.floor(z);
-        int label = label(vx, vy, vz);
         int piece = voxelLabel(edges, vx, vy, vz, label);
         double cx = vx + 0.5, cy = vy + 0.5, cz = vz + 0.5;
         for (Edge edge : edges) {
