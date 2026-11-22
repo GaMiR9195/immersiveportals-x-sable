@@ -14,12 +14,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.WeakHashMap;
+import java.util.function.IntPredicate;
 
 /**
  * Server side of contraptions on straddling bodies ({@link IplContraptionShape}): they open and
- * hold the sessions they reach and give the natives the point their contacts are walked from.
- * They never hold back their body's flip: the body flips when its blocks are through, and what
- * the contraption still has behind the exit is walked through the exit's reverse opening.
+ * hold the sessions they reach, flip as part of their body (it waits until they are through too)
+ * and give the natives the point their contacts are walked from.
  */
 public final class IplContraptionMaterial {
 
@@ -101,6 +101,22 @@ public final class IplContraptionMaterial {
         BitSet out = new BitSet();
         for (IplContraptionShape shape : shapes(ship)) out.or(shape.reached(edges, tetherPiece(map, edges, shape)));
         return out;
+    }
+
+    /**
+     * A contraption flips with its body: not while one of its blocks is outside the flipping
+     * subtree or lies across an opening out of it. Its blocks, not its swept volume: a turning
+     * windmill does not wait until its whole circle has cleared the opening.
+     */
+    static boolean holdsFlip(ServerSubLevel ship, IplPieceMap map, IntPredicate inFlippingSubtree) {
+        IplPieceMap.Edge[] edges = map.edges();
+        for (IplContraptionShape shape : shapes(ship)) {
+            BitSet nodes = shape.split(edges, tetherPiece(map, edges, shape)).nodes();
+            for (int node = nodes.nextSetBit(0); node >= 0; node = nodes.nextSetBit(node + 1)) {
+                if (!inFlippingSubtree.test(node)) return true;
+            }
+        }
+        return false;
     }
 
     // ------------------------------------------------------------------ natives

@@ -61,10 +61,9 @@ public final class IplContraptionRender {
 
     /** Touched only with Flywheel present. */
     private static final class FlywheelVisuals {
-        /** Flywheel serves only the player's level, and not what it handed over. */
+        /** Every client level is visualized (see {@code FlywheelVisualizationManagerMixin}). */
         static boolean draw(Entity entity) {
-            return BackendManager.isBackendOn() && entity.level() == Minecraft.getInstance().level
-                && !IplFlywheelFallback.isHanded(entity);
+            return BackendManager.isBackendOn() && !IplFlywheelFallback.isHanded(entity);
         }
     }
 

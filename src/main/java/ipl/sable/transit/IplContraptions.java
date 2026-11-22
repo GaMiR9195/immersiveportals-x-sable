@@ -32,8 +32,8 @@ public final class IplContraptions {
         if (CREATE) IplCreateContraptions.collideEntities(contraption);
     }
 
-    /** See {@link IplCreateContraptions#followPlot}. */
-    public static void followPlot(Entity entity, int dx, int dz) {
-        if (CREATE) IplCreateContraptions.followPlot(entity, dx, dz);
+    /** See {@link IplCreateContraptions#followPlot}; whether a controller drives it now. */
+    public static boolean followPlot(Entity entity, int dx, int dz) {
+        return CREATE && IplCreateContraptions.followPlot(entity, dx, dz);
     }
 }

@@ -20,11 +20,11 @@ and contraptions on ships no longer vanish.
     (created, moved and removed by the natives with the ship's images). Each collider keeps only the
     contacts of its piece (`hooks.rs`, `setContraptionAnchor`): what went through collides beyond the
     exit, the rest stays on the entrance side, nothing is switched on and off by a timer.
-  - Sessions: a contraption that reaches an opening opens the session even if no block of the ship
-    did, and keeps it while it is in that piece or can swing into it (a turning bearing sweeps a
-    sphere). Contraptions never hold back the flip: the ship flips when its own blocks are through,
-    and whatever the contraption still has behind the exit is walked through the exit's reverse
-    opening, so even a windmill larger than the portal passes (`IplContraptionMaterial`).
+  - Sessions: a contraption that comes at an opening from its front opens the session even if no
+    block of the ship did, and keeps it while it is in that piece or can swing into it (a turning
+    bearing sweeps a sphere). A contraption flips as part of its ship: the ship waits until the
+    contraption's blocks are through as well, not its whole swept circle (`IplContraptionMaterial`).
+    A part swinging back behind the exit later is walked through the exit's reverse opening.
     Destination terrain is loaded for physics under the whole reach of the contraption.
   - Entities: Create's contraption collision runs once per piece, at the piece's pose, against the
     entities of the piece's level and the blocks of that piece only, a block lying across the
@@ -42,10 +42,14 @@ and contraptions on ships no longer vanish.
 
 ### Fixed
 
+- **Windmills and other kinetic sources stopping after a ship moved to another dimension.** The
+  neighbour pass of the copy resets every Create kinetic block; followers recovered from their
+  source, but a source (windmill, water wheel, motor) never applied its speed again: the windmill
+  stood still, its bearing half-turned, until it was disassembled (`IplCreateKinetics`).
 - **Ship contraptions lost at the end of a crossing.** Sable's box queries return the entities of
   ship plots too, so a flip took a ship's contraptions and seats for riders of its hull and threw
-  them to a mapped plot position: the contraption vanished and its bearing stood still,
-  half-turned. Entities living in a plot now stay with their body (`IplShipFlip`). A ship moving
+  them to a mapped plot position, and the contraption vanished. Entities living in a plot now stay
+  with their body (`IplShipFlip`). A ship moving
   to another dimension also no longer drags the world entities around it along.
 - **Flywheel animations freezing around contraptions.** A contraption whose structure never reached
   the client got a Flywheel visual that failed every frame and stopped the other visuals of the

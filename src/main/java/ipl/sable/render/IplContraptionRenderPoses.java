@@ -1,6 +1,7 @@
 package ipl.sable.render;
 
 import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.neoforge.compatibility.flywheel.FlywheelCompatNeoForge;
 import dev.ryanhcode.sable.neoforge.compatibility.flywheel.FlywheelCompatNeoForge.SubLevelFlwRenderState;
 import dev.ryanhcode.sable.sublevel.SubLevel;
@@ -9,6 +10,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
 
@@ -73,6 +75,16 @@ public final class IplContraptionRenderPoses {
 			SubLevel body = Sable.HELPER.getContaining(contraption);
 			if (body != null) FlywheelCompatNeoForge.createRenderInfo(level, body);
 		}
+	}
+
+	/** Whether the body under {@code contraption} has a render pose in its level. */
+	public static boolean hasPose(Entity contraption) {
+		SubLevel body = Sable.HELPER.getContaining(contraption);
+		SubLevelContainer container = SubLevelContainer.getContainer(contraption.level());
+		if (body == null || container == null) return false;
+		ChunkPos plot = body.getPlot().plotPos;
+		long key = ChunkPos.asLong(plot.x - container.getOrigin().x, plot.z - container.getOrigin().y);
+		return of(contraption.level()).containsKey(key);
 	}
 
 	/** Runs a contraption visual's transform update with its level as the one poses are read from. */

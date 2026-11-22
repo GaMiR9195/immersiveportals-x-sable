@@ -287,7 +287,11 @@ public final class IplShipFlip {
         }
         if (moved == null || moved.isRemoved()) return null;
         moved.setDeltaMovement(entity.getDeltaMovement());
-        IplContraptions.followPlot(moved, dx, dz);
+        boolean driven = IplContraptions.followPlot(moved, dx, dz);
+        if (IplContraptions.isContraption(moved)) {
+            LOG.info("[IPL-MOVE] contraption #{} of {} -> {} at {}, controller {}", moved.getId(),
+                source.getUniqueId(), to.dimension().location(), moved.blockPosition(), driven ? "attached" : "missing");
+        }
         for (Entity rider : riders) {
             Entity movedRider = relocate(rider, dx, dz, to, source);
             if (movedRider != null) movedRider.startRiding(moved, true);

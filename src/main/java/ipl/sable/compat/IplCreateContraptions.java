@@ -75,19 +75,18 @@ public final class IplCreateContraptions {
      * A controlled contraption moved with its plot by {@code (dx, 0, dz)}: it keeps its controller,
      * which drives it again at once (a bearing keeps turning it, nothing waits for the next tick).
      */
-    public static void followPlot(Entity entity, int dx, int dz) {
-        if (!(entity instanceof ControlledContraptionEntity contraption)) return;
+    public static boolean followPlot(Entity entity, int dx, int dz) {
+        if (!(entity instanceof ControlledContraptionEntity contraption)) return false;
         ControlledContraptionEntityAccessor access = (ControlledContraptionEntityAccessor) entity;
         BlockPos controller = access.ipl$controllerPos();
-        if (controller == null) return;
+        if (controller == null) return false;
         if (dx != 0 || dz != 0) {
             controller = controller.offset(dx, 0, dz);
             access.ipl$setControllerPos(controller);
         }
-        if (contraption.level().getBlockEntity(controller) instanceof IControlContraption control
-            && !control.isAttachedTo(contraption)) {
-            control.attach(contraption);
-        }
+        if (!(contraption.level().getBlockEntity(controller) instanceof IControlContraption control)) return false;
+        if (!control.isAttachedTo(contraption)) control.attach(contraption);
+        return true;
     }
 
     private static BlockPos[] blocksOf(Contraption contraption) {

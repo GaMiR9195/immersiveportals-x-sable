@@ -2,12 +2,13 @@
 Contraptions travel through portals with their ship, and cameras and portals get along.
 1) **Create contraptions through portals**: windmills, bearings, pistons and other contraptions on a ship
    are shown on both sides of a portal, cut cleanly at the opening, and collide with the world, ships
-   and players on the side they are really on. The ship finishes its trip as soon as its own blocks are
-   through, even with a windmill bigger than the portal; contraptions stay on it and keep turning.
+   and players on the side they are really on. A contraption travels as part of its ship: the trip ends
+   once both are through, and the contraption keeps turning on the other side.
 2) **Third person with camera mods**: shoulder cameras, zoom animations when switching the view and
    custom camera distances now pass through portals smoothly, exactly where the camera really is.
-3) **Create contraptions on ships no longer disappear** at the end of a crossing (the bearing no longer
-   freezes half-turned), when their ship is re-sent or arrives late, with or without a portal on screen.
+3) **Create contraptions on ships no longer disappear** at the end of a crossing, when their ship is
+   re-sent or arrives late, with or without a portal on screen. Windmills and other generators keep
+   running after their ship moves to another dimension.
 
 Contraption collisions through portals need the IPSable natives of this version.
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.

@@ -17,8 +17,9 @@ import java.util.List;
  * pieces follow the rope rule from the tether: the segment from the tether to a point enters an
  * edge's child piece where it passes the aperture front to back and returns to the parent where
  * it passes back (natives: {@code IplPieces::classify_tethered}). So the contraption lives on the
- * body's projections, cut where it really passes an opening. The body flips when its blocks are
- * through; a part still behind the exit is then walked through the exit's reverse opening.
+ * body's projections, cut where it really passes an opening, and flips with its body once it is
+ * through too. A part swinging back behind the exit later is walked through the exit's reverse
+ * opening.
  */
 public final class IplContraptionShape {
     /** Half diagonal of a block: a block whose centre is this close to a plane may cross it. */
@@ -71,7 +72,7 @@ public final class IplContraptionShape {
             across[i] = -1;
             nodes.set(piece);
             for (IplPieceMap.Edge e : edges) {
-                if (e.parent != piece && e.child != piece || !liesAcross(e.aperture, i)) continue;
+                if (e.parent != piece && e.child != piece || !liesAcross(e.aperture, i, piece == e.parent)) continue;
                 across[i] = piece == e.parent ? e.child : e.parent;
                 nodes.set(across[i]);
                 if (!cut.contains(e)) cut.add(e);
@@ -125,11 +126,12 @@ public final class IplContraptionShape {
     /**
      * Whether the part of the contraption in piece {@code node} reaches {@code aperture} (plot frame
      * of {@code node}): a block passed it on its way from where its segment entered {@code node},
-     * or the contraption touches it.
+     * or the contraption comes at it from its front. The back face of a two-sided portal is another
+     * aperture on the same plane; approached from behind, it is never reached.
      */
     public boolean reaches(IplPieceMap.Edge[] edges, int tetherPiece, int node, IplPieceMap.Aperture aperture) {
         if (!reached(edges, tetherPiece).get(node)) return false;
-        if (touches(aperture)) return true;
+        if (approaches(aperture)) return true;
         double[] entry = new double[3];
         for (int i = 0; i < blocks.length; i++) {
             if (walk(edges, tetherPiece, tx, ty, tz, x(i), y(i), z(i), entry) != node) continue;
@@ -150,9 +152,25 @@ public final class IplContraptionShape {
         return false;
     }
 
-    /** Whether block {@code i} may cross the aperture's plane within its rectangle. */
+    /** {@link #touches} from the aperture's front only: the contraption may pass it front to back. */
+    private boolean approaches(IplPieceMap.Aperture a) {
+        if (sweep != null) return a.side(sweep[0], sweep[1], sweep[2]) >= 0.0 && touches(a);
+        for (int i = 0; i < blocks.length; i++) if (liesAcross(a, i, true)) return true;
+        return false;
+    }
+
+    /** Whether block {@code i} may cross the aperture's plane within its rectangle (either way). */
     private boolean liesAcross(IplPieceMap.Aperture a, int i) {
         return Math.abs(a.side(x(i), y(i), z(i))) <= BLOCK_RADIUS && a.laterallyInside(x(i), y(i), z(i), BLOCK_RADIUS);
+    }
+
+    /**
+     * Whether block {@code i} lies across the aperture with its centre on the {@code front} side
+     * (it is entering) or on the back (it is leaving).
+     */
+    private boolean liesAcross(IplPieceMap.Aperture a, int i, boolean front) {
+        double side = a.side(x(i), y(i), z(i));
+        return (front ? side >= 0.0 : side < 0.0) && liesAcross(a, i);
     }
 
     /** {@code [minX, minY, minZ, maxX, maxY, maxZ]} of everything the contraption covers or sweeps. */

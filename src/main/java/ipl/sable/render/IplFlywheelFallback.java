@@ -154,6 +154,7 @@ public final class IplFlywheelFallback {
         RETURNING_ENTITIES.removeIf(entity -> entity.isRemoved() || IplContraptions.isHollow(entity)
             || entity.level() == level && record.containsKey(entity));
         for (Entity entity : RETURNING_ENTITIES) if (entity.level() == level) visuals.queueAdd(entity);
+        IplContraptionDiagnostics.report(level, record::containsKey);
     }
 
     /** Block entities of the level's bodies that their renderers must draw. */

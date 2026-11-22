@@ -895,6 +895,8 @@ public final class IplPieceTracker {
         if (best < 0 || materialRoots != 1) return null;
         Watch watch = body.edgeWatch(best);
         if (watch != null && watch.cutAt(tick)) return null;
+        int root = best;
+        if (IplContraptionMaterial.holdsFlip(ship, body.map, node -> body.inSubtree(node, root))) return null;
         Portal portal = IplAtlasStraddleSession.sessionPortal(body.keys[best]);
         return portal == null ? null : new FlipChoice(body.keys[best], portal, best);
     }

@@ -7,6 +7,7 @@ import dev.ryanhcode.sable.platform.SableAssemblyPlatform;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
 import dev.ryanhcode.sable.sublevel.plot.ServerLevelPlot;
+import ipl.sable.compat.IplCreateKinetics;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
@@ -362,6 +363,14 @@ public final class IplTransitOps {
             } catch (RuntimeException e) {
                 LOG.warn("[IPL-TRANSIT] failed to (re)register block-entity tickers for dest "
                     + "chunk {} -- copied machinery may not tick", ch.getPos(), e);
+            }
+        }
+
+        // Kinetic sources restart once their networks are rebuilt (see IplCreateKinetics).
+        if (IplContraptions.CREATE) {
+            for (Placed p : placed) {
+                BlockEntity be = p.chunk().getBlockEntity(p.pos());
+                if (be != null) IplCreateKinetics.restartSource(be);
             }
         }
 
