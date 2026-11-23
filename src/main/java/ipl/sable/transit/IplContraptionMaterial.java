@@ -71,10 +71,12 @@ public final class IplContraptionMaterial {
         });
     }
 
-    /** Grows plot bounds {@code [minX, minY, minZ, maxX, maxY, maxZ]} by what the contraptions cover or sweep. */
+    /**
+     * Grows plot bounds {@code [minX, minY, minZ, maxX, maxY, maxZ]} by what the contraptions cover
+     * or sweep. Runs for every body each tick (portal lookup), so it never walks contraption blocks.
+     */
     static void extendBounds(ServerSubLevel ship, double[] box) {
-        for (IplContraptionShape shape : shapes(ship)) {
-            double[] b = shape.bounds();
+        for (double[] b : reaches(ship)) {
             for (int i = 0; i < 3; i++) {
                 box[i] = Math.min(box[i], b[i]);
                 box[i + 3] = Math.max(box[i + 3], b[i + 3]);
@@ -85,9 +87,22 @@ public final class IplContraptionMaterial {
     /** World bounds of the body grown by everything its contraptions cover or sweep. */
     public static BoundingBox3d worldBounds(ServerSubLevel ship) {
         BoundingBox3d out = new BoundingBox3d(ship.boundingBox());
-        for (IplContraptionShape shape : shapes(ship)) {
-            double[] b = shape.bounds();
+        for (double[] b : reaches(ship)) {
             out.expandTo(new BoundingBox3d(b[0], b[1], b[2], b[3], b[4], b[5]).transform(ship.logicalPose()));
+        }
+        return out;
+    }
+
+    /** Plot boxes holding each contraption of the body ({@code IplCreateContraptions.reach}). */
+    private static List<double[]> reaches(ServerSubLevel ship) {
+        if (!IplContraptions.CREATE) return List.of();
+        Collection<KinematicContraption> contraptions = ship.getPlot().getContraptions();
+        if (contraptions.isEmpty()) return List.of();
+        List<double[]> out = new ArrayList<>(contraptions.size());
+        for (KinematicContraption contraption : contraptions) {
+            if (!(contraption instanceof Entity entity) || entity.isRemoved()) continue;
+            double[] reach = IplContraptions.reach(entity);
+            if (reach != null) out.add(reach);
         }
         return out;
     }

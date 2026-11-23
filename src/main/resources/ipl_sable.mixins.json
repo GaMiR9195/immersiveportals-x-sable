@@ -55,7 +55,8 @@
     "SubLevelPoseMixin",
     "ControlledContraptionEntityAccessor",
     "ContraptionColliderPiecesMixin",
-    "ContraptionColliderInvoker"
+    "ContraptionColliderInvoker",
+    "ControlledContraptionLoadMixin"
   ],
   "client": [
     "client.VeilPacketContextMixin",
@@ -118,7 +119,10 @@
     "client.SubLevelRendererMixin",
     "client.FinalizeSubLevelPacketMixin",
     "client.LevelRendererContraptionMixin",
-    "client.ContraptionHandlerRemoteMixin"
+    "client.ContraptionHandlerRemoteMixin",
+    "client.CreateBearingSyncMixin",
+    "client.CreateClockworkSyncMixin",
+    "client.CreateActuatorSyncMixin"
   ],
   "injectors": {
     "defaultRequire": 0

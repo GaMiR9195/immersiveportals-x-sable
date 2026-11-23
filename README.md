@@ -7,12 +7,12 @@ portals get along.
    or another dimension: the trip ends once both are through, and the contraption keeps turning on the
    other side.
 2) **Particles through portals**: smoke, sparks, splashes and modded particles fly through portals and
-   come out on the other side, also into another dimension.
+   come out on the other side, also into another dimension, smoothly and without being cut in half.
 3) **Third person with camera mods**: shoulder cameras, zoom animations when switching the view and
    custom camera distances now pass through portals smoothly, exactly where the camera really is.
 4) **Create contraptions on ships no longer disappear** at the end of a crossing, when their ship is
    re-sent or arrives late, with or without a portal on screen. Windmills and other generators keep
-   running after their ship moves to another dimension.
+   running after their ship moves to another dimension, without snapping back to their start angle.
 
 Contraption collisions through portals need the IPSable natives of this version.
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.

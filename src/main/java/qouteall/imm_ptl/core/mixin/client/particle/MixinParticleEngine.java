@@ -10,6 +10,7 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.particle.Particle;
 import net.minecraft.client.particle.ParticleEngine;
 import net.minecraft.client.renderer.LightTexture;
+import net.minecraft.world.phys.AABB;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -53,7 +54,21 @@ public class MixinParticleEngine implements IEParticleManager {
     private boolean redirectBuildGeometry(
         Particle instance, VertexConsumer vertexConsumer, Camera camera, float v
     ) {
+        ParticleTeleportation.renderAtOpening(instance, vertexConsumer, camera, v);
         return RenderStates.shouldRenderParticle(instance);
+    }
+    
+    // a particle at an opening is also drawn beyond it, away from where its own box is
+    @WrapOperation(
+        method = "render(Lnet/minecraft/client/renderer/LightTexture;Lnet/minecraft/client/Camera;FLnet/minecraft/client/renderer/culling/Frustum;Ljava/util/function/Predicate;)V",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/particle/Particle;getRenderBoundingBox(F)Lnet/minecraft/world/phys/AABB;"
+        ),
+        require = 0
+    )
+    private AABB ip_keepAtOpening(Particle particle, float partialTick, Operation<AABB> original) {
+        return ParticleTeleportation.isAtOpening(particle) ? AABB.INFINITE : original.call(particle, partialTick);
     }
     
     // a lava ember particle can generate a smoke particle during ticking

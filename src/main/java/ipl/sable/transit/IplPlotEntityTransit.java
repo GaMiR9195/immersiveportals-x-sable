@@ -58,19 +58,26 @@ final class IplPlotEntityTransit {
     private static Entity move(Entity entity, int dx, int dz, ServerLevel to, ServerSubLevel source) {
         List<Entity> riders = new ArrayList<>();
         for (Entity rider : entity.getPassengers()) if (!(rider instanceof ServerPlayer)) riders.add(rider);
+        boolean shifted = IplContraptions.shiftController(entity, dx, dz);
         Entity moved;
         try {
             moved = ServerTeleportationManager.teleportEntityGeneral(entity, entity.position().add(dx, 0.0, dz), to);
         } catch (RuntimeException e) {
+            if (shifted) IplContraptions.shiftController(entity, -dx, -dz);
             LOG.warn("[IPL-MOVE] failed to relocate plot entity {} of {}", entity, source.getUniqueId(), e);
             return null;
         }
-        if (moved == null || moved.isRemoved()) return null;
+        if (moved == null) {
+            if (shifted) IplContraptions.shiftController(entity, -dx, -dz);
+            return null;
+        }
+        if (moved.isRemoved()) return null;
         moved.setDeltaMovement(entity.getDeltaMovement());
-        boolean driven = IplContraptions.followPlot(moved, dx, dz);
+        boolean driven = IplContraptions.attachController(moved);
         if (IplContraptions.isContraption(moved)) {
-            LOG.info("[IPL-MOVE] contraption #{} of {} -> {} at {}, controller {}", moved.getId(),
-                source.getUniqueId(), to.dimension().location(), moved.blockPosition(), driven ? "attached" : "missing");
+            LOG.info("[IPL-MOVE] contraption #{} of {} -> {} at {} (plot shift {}, {}), controller {}", moved.getId(),
+                source.getUniqueId(), to.dimension().location(), moved.blockPosition(), dx, dz,
+                driven ? "attached" : "missing");
         }
         for (Entity rider : riders) {
             Entity movedRider = move(rider, dx, dz, to, source);

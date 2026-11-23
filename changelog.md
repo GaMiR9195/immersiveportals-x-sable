@@ -40,17 +40,29 @@ every camera works with portals, and contraptions on ships no longer vanish.
     in any dimension; the native part is handed over from Flywheel while it approaches an opening,
     so the cut never waits for the hand-over.
   - Moving to another dimension: plot entities move with the ship (`IplPlotEntityTransit`);
-    contraptions keep their controller when the ship gets another plot slot and are driven by it at
-    once, mobs riding them move with them, and the contraptions of a ship still hidden behind its
-    ghost are drawn right away.
+    contraptions keep their controller when the ship gets another plot slot (it is moved before the
+    contraption is sent, so clients hang it on the same block as the server) and are driven by it at
+    once, a moved contraption starts at rest at its angle, mobs riding them move with them, and the
+    contraptions of a ship still hidden behind its ghost are drawn right away.
+  - Performance: the per-tick portal lookup of every ship bounds its contraptions by a cached
+    radius around their anchor instead of walking their blocks (`IplCreateContraptions.reach`).
 - **Particles through portals** (`ParticleTeleportation`). Any particle, vanilla or modded, that
   moves by `Particle.move` or by its velocity and crosses a teleportable portal from its front goes
   on beyond the exit, with its velocity turned by the portal, into the other dimension for
   cross-dimension portals. A wall behind a portal no longer stops it. Particles that follow a path
   of their own (portal swirls, enchanting glyphs) are left alone. Only portals within 64 blocks of
   the camera are checked, nothing at all when there are none.
+  - A particle at an opening is also drawn on its other side (`renderAtOpening`): the part of its
+    quad that passed shows beyond the portal, the rest stays in front, each cut by the portal, so a
+    particle crosses without vanishing for a tick or losing half of its quad.
 
 ### Fixed
+
+- **Bearings, pistons and pulleys snapping back on a new client block entity** (a ship moved to
+  another dimension, a chunk sent again). Create eases each update in from the client's angle,
+  which is 0 for a new block entity: the contraption jumped to its assembly angle and caught up
+  over the next ticks. The first update is now taken as is (`CreateBearingSyncMixin`, clockwork
+  and linear actuators too; windmill, propeller and borehead bearings included).
 
 - **Entities with extra spawn data in another dimension.** NeoForge applies that data (the
   structure of a Create contraption, data of many modded entities) to the entity of the player's

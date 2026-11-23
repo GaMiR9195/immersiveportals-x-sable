@@ -27,13 +27,24 @@ public final class IplContraptions {
         return CREATE ? IplCreateContraptions.shape(entity, partialTick) : null;
     }
 
+    /** See {@link IplCreateContraptions#reach}. */
+    @Nullable
+    public static double[] reach(Entity entity) {
+        return CREATE ? IplCreateContraptions.reach(entity) : null;
+    }
+
     /** Runs Create's entity collision of {@code contraption} (per piece, see {@link IplContraptionCollision}). */
     public static void collideEntities(Entity contraption) {
         if (CREATE) IplCreateContraptions.collideEntities(contraption);
     }
 
-    /** See {@link IplCreateContraptions#followPlot}; whether a controller drives it now. */
-    public static boolean followPlot(Entity entity, int dx, int dz) {
-        return CREATE && IplCreateContraptions.followPlot(entity, dx, dz);
+    /** See {@link IplCreateContraptions#shiftController}; whether a controller was moved. */
+    public static boolean shiftController(Entity entity, int dx, int dz) {
+        return CREATE && IplCreateContraptions.shiftController(entity, dx, dz);
+    }
+
+    /** See {@link IplCreateContraptions#attachController}; whether a controller drives it now. */
+    public static boolean attachController(Entity entity) {
+        return CREATE && IplCreateContraptions.attachController(entity);
     }
 }

@@ -24,6 +24,15 @@ public interface IEParticle {
     @Accessor("zo")
     double ip_getZo();
 
+    @Accessor("x")
+    void ip_setX(double value);
+
+    @Accessor("y")
+    void ip_setY(double value);
+
+    @Accessor("z")
+    void ip_setZ(double value);
+
     @Accessor("xo")
     void ip_setXo(double value);
 
