@@ -7,8 +7,6 @@ import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
-import dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder;
-import dev.ryanhcode.sable.sublevel.plot.ServerLevelPlot;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import ipl.sable.atlas.IplFusedStep;
 import ipl.sable.mixin.MergedMassTrackerAccessor;
@@ -186,7 +184,7 @@ public final class IplShipFlip {
             if (ship.getUserDataTag() != null) moved.setUserDataTag(ship.getUserDataTag().copy());
             seedMassBaseline(ship, moved, slotDeltaX, slotDeltaZ);
             IplTransitOps.copyPlotBlocks(ship.getPlot(), moved.getPlot(), sourceLevel, destination);
-            relocatePlotEntities(ship, moved, sourceLevel, destination);
+            IplPlotEntityTransit.moveAll(ship, moved, sourceLevel, destination);
             if (mappedLin.lengthSqr() > 1e-12 || mappedAng.lengthSqr() > 1e-12) {
                 destContainer.physicsSystem().getPipeline().addLinearAndAngularVelocity(moved,
                     new Vector3d(mappedLin.x, mappedLin.y, mappedLin.z),
@@ -247,57 +245,6 @@ public final class IplShipFlip {
         access.ipl$setLastMass(src.getMass());
     }
 
-    /**
-     * Entities in the plot (contraptions, seats, frames) move to the same plot-local place in the
-     * successor's plot, with the non-player entities riding them. A controlled contraption keeps
-     * its controller (the bearing keeps turning it) even when the successor got another slot.
-     * Sable's box queries also return world entities around the body and entities of other plots:
-     * only entities of this plot move.
-     */
-    private static void relocatePlotEntities(ServerSubLevel source, ServerSubLevel target,
-                                             ServerLevel from, ServerLevel to) {
-        ServerLevelPlot srcPlot = source.getPlot();
-        ServerLevelPlot dstPlot = target.getPlot();
-        for (PlotChunkHolder holder : new ArrayList<>(srcPlot.getLoadedChunks())) {
-            ChunkPos srcChunk = holder.getChunk().getPos();
-            ChunkPos dstChunk = dstPlot.toGlobal(srcPlot.toLocal(srcChunk));
-            int dx = dstChunk.getMinBlockX() - srcChunk.getMinBlockX();
-            int dz = dstChunk.getMinBlockZ() - srcChunk.getMinBlockZ();
-            AABB box = new AABB(srcChunk.getMinBlockX(), from.getMinBuildHeight(), srcChunk.getMinBlockZ(),
-                srcChunk.getMinBlockX() + 16.0, from.getMaxBuildHeight(), srcChunk.getMinBlockZ() + 16.0);
-            for (Entity entity : from.getEntitiesOfClass(Entity.class, box)) {
-                if (entity instanceof Portal || entity instanceof ServerPlayer || entity.isRemoved()
-                    || entity.getVehicle() != null || Sable.HELPER.getContaining(entity) != source) continue;
-                relocate(entity, dx, dz, to, source);
-            }
-        }
-    }
-
-    /** Moves {@code entity} and the non-player entities riding it; returns its successor, or null. */
-    @Nullable
-    private static Entity relocate(Entity entity, int dx, int dz, ServerLevel to, ServerSubLevel source) {
-        List<Entity> riders = new ArrayList<>();
-        for (Entity rider : entity.getPassengers()) if (!(rider instanceof ServerPlayer)) riders.add(rider);
-        Entity moved;
-        try {
-            moved = ServerTeleportationManager.teleportEntityGeneral(entity, entity.position().add(dx, 0.0, dz), to);
-        } catch (RuntimeException e) {
-            LOG.warn("[IPL-MOVE] failed to relocate plot entity {} of {}", entity, source.getUniqueId(), e);
-            return null;
-        }
-        if (moved == null || moved.isRemoved()) return null;
-        moved.setDeltaMovement(entity.getDeltaMovement());
-        boolean driven = IplContraptions.followPlot(moved, dx, dz);
-        if (IplContraptions.isContraption(moved)) {
-            LOG.info("[IPL-MOVE] contraption #{} of {} -> {} at {}, controller {}", moved.getId(),
-                source.getUniqueId(), to.dimension().location(), moved.blockPosition(), driven ? "attached" : "missing");
-        }
-        for (Entity rider : riders) {
-            Entity movedRider = relocate(rider, dx, dz, to, source);
-            if (movedRider != null) movedRider.startRiding(moved, true);
-        }
-        return moved;
-    }
 
     /**
      * Entities riding the hull that are already beyond the portal plane follow the body.

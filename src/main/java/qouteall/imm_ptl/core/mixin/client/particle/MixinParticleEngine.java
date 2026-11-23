@@ -1,6 +1,8 @@
 package qouteall.imm_ptl.core.mixin.client.particle;
 
 import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -16,6 +18,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import qouteall.imm_ptl.core.ducks.IEParticleManager;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.imm_ptl.core.render.context_management.RenderStates;
+import qouteall.imm_ptl.core.teleportation.ParticleTeleportation;
 
 @SuppressWarnings("resource")
 @Mixin(ParticleEngine.class)
@@ -60,6 +63,20 @@ public class MixinParticleEngine implements IEParticleManager {
         if (((IEParticle) particle).portal_getWorld() != Minecraft.getInstance().level) {
             ci.cancel();
         }
+    }
+    
+    @Inject(method = "tick", at = @At("HEAD"))
+    private void onBeginTick(CallbackInfo ci) {
+        ParticleTeleportation.beginTick(level);
+    }
+    
+    // particles go through portals
+    @WrapOperation(
+        method = "tickParticle",
+        at = @At(value = "INVOKE", target = "Lnet/minecraft/client/particle/Particle;tick()V")
+    )
+    private void wrapTickParticle(Particle particle, Operation<Void> original) {
+        ParticleTeleportation.tick(particle, () -> original.call(particle));
     }
     
     @Override

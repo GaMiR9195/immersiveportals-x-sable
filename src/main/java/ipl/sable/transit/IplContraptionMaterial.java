@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -17,9 +18,10 @@ import java.util.WeakHashMap;
 import java.util.function.IntPredicate;
 
 /**
- * Server side of contraptions on straddling bodies ({@link IplContraptionShape}): they open and
- * hold the sessions they reach, flip as part of their body (it waits until they are through too)
- * and give the natives the point their contacts are walked from.
+ * Server side of contraptions on straddling bodies ({@link IplContraptionShape}): their blocks open
+ * the sessions they enter and hold the sessions they are in or swing into, they flip as part of
+ * their body (it waits until they are through too) and give the natives the point their contacts
+ * are walked from.
  */
 public final class IplContraptionMaterial {
 
@@ -38,6 +40,8 @@ public final class IplContraptionMaterial {
     private static final Map<KinematicContraption, NativeEntry> NATIVE = new WeakHashMap<>();
     /** Shapes of one server tick; contraptions move once per tick. */
     private static final Map<UUID, List<IplContraptionShape>> SHAPES = new HashMap<>();
+    /** Block centres of the previous tick's shapes, per contraption. */
+    private static final Map<Entity, double[]> PREVIOUS = new IdentityHashMap<>();
     private static int shapesTick = Integer.MIN_VALUE;
 
     private IplContraptionMaterial() {}
@@ -48,6 +52,11 @@ public final class IplContraptionMaterial {
         if (contraptions.isEmpty()) return List.of();
         int tick = ship.getLevel().getServer().getTickCount();
         if (tick != shapesTick) {
+            PREVIOUS.clear();
+            if (tick == shapesTick + 1) {
+                for (List<IplContraptionShape> list : SHAPES.values())
+                    for (IplContraptionShape shape : list) PREVIOUS.put(shape.entity, shape.centres);
+            }
             SHAPES.clear();
             shapesTick = tick;
         }
@@ -87,19 +96,25 @@ public final class IplContraptionMaterial {
         return map.classify(edges, shape.tx, shape.ty, shape.tz);
     }
 
-    /** A contraption in piece {@code node} reaches {@code aperture} (plot frame of that piece): the session must open. */
-    static boolean reaches(ServerSubLevel ship, IplPieceMap map, int node, IplPieceMap.Aperture aperture) {
+    /**
+     * A contraption in piece {@code node} enters {@code now} (plot frame of that piece,
+     * {@code before} a tick earlier): the session must open. See {@link IplContraptionShape#enters}.
+     */
+    static boolean enters(ServerSubLevel ship, IplPieceMap map, int node, IplPieceMap.Aperture before,
+                          IplPieceMap.Aperture now) {
         IplPieceMap.Edge[] edges = map.edges();
         for (IplContraptionShape shape : shapes(ship)) {
-            if (shape.reaches(edges, tetherPiece(map, edges, shape), node, aperture)) return true;
+            if (shape.enters(edges, tetherPiece(map, edges, shape), node, before, now, PREVIOUS.get(shape.entity))) {
+                return true;
+            }
         }
         return false;
     }
 
-    /** Pieces some contraption of the body is in or may swing into over {@code edges}. */
+    /** Pieces some contraption of the body holds open over {@code edges} ({@link IplContraptionShape#held}). */
     static BitSet held(ServerSubLevel ship, IplPieceMap map, IplPieceMap.Edge[] edges) {
         BitSet out = new BitSet();
-        for (IplContraptionShape shape : shapes(ship)) out.or(shape.reached(edges, tetherPiece(map, edges, shape)));
+        for (IplContraptionShape shape : shapes(ship)) out.or(shape.held(edges, tetherPiece(map, edges, shape)));
         return out;
     }
 

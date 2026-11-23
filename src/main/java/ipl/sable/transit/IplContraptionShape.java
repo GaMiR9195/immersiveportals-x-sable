@@ -103,41 +103,53 @@ public final class IplContraptionShape {
     }
 
     /**
-     * Pieces the contraption is in or may swing into: its blocks' pieces, then both sides of every
-     * edge its swept volume touches, transitively. A session it holds stays open.
+     * Pieces the contraption holds open: the pieces its blocks are in, and across one edge out of
+     * them, the other side when its swept volume touches that edge's aperture (a turning part comes
+     * back). Never transitive: holding a session cannot reach pieces the contraption is not near.
      */
-    public BitSet reached(IplPieceMap.Edge[] edges, int tetherPiece) {
-        BitSet out = new BitSet();
-        out.set(tetherPiece);
-        for (int i = 0; i < blocks.length; i++) out.set(pieceOf(edges, tetherPiece, i));
-        boolean grew = true;
-        while (grew) {
-            grew = false;
-            for (IplPieceMap.Edge e : edges) {
-                boolean parent = out.get(e.parent), child = out.get(e.child);
-                if (parent == child || !touches(e.aperture)) continue;
-                out.set(parent ? e.child : e.parent);
-                grew = true;
-            }
+    public BitSet held(IplPieceMap.Edge[] edges, int tetherPiece) {
+        BitSet in = split(edges, tetherPiece).nodes();
+        in.set(tetherPiece);
+        BitSet out = (BitSet) in.clone();
+        if (sweep == null) return out;
+        for (IplPieceMap.Edge e : edges) {
+            boolean parent = in.get(e.parent), child = in.get(e.child);
+            if (parent != child && touches(e.aperture)) out.set(parent ? e.child : e.parent);
         }
         return out;
     }
 
     /**
-     * Whether the part of the contraption in piece {@code node} reaches {@code aperture} (plot frame
-     * of {@code node}): a block passed it on its way from where its segment entered {@code node},
-     * or the contraption comes at it from its front. The back face of a two-sided portal is another
-     * aperture on the same plane; approached from behind, it is never reached.
+     * Whether the contraption enters {@code now} (an aperture in the plot frame of piece
+     * {@code node}, {@code before} the same one a tick earlier) from that piece: a block of
+     * {@code node} lies across it with its centre in front, or passed it front to back since
+     * {@code previous} (block centres one tick earlier, same order; null when unknown) while staying
+     * in {@code node}. Only blocks really at the opening count, like body voxels: the swept volume
+     * never opens a session, and an aperture that coincides with the plane a block already passed
+     * into {@code node} (the far face of the exit) is never entered.
      */
-    public boolean reaches(IplPieceMap.Edge[] edges, int tetherPiece, int node, IplPieceMap.Aperture aperture) {
-        if (!reached(edges, tetherPiece).get(node)) return false;
-        if (approaches(aperture)) return true;
-        double[] entry = new double[3];
+    public boolean enters(IplPieceMap.Edge[] edges, int tetherPiece, int node, IplPieceMap.Aperture before,
+                          IplPieceMap.Aperture now, double @Nullable [] previous) {
+        boolean moved = previous != null && previous.length == centres.length;
         for (int i = 0; i < blocks.length; i++) {
-            if (walk(edges, tetherPiece, tx, ty, tz, x(i), y(i), z(i), entry) != node) continue;
-            if (passes(aperture, entry[0], entry[1], entry[2], x(i), y(i), z(i)) >= 0.0) return true;
+            boolean across = liesAcross(now, i, true);
+            if (!across && !(moved && crossed(before, now, previous, i))) continue;
+            if (pieceOf(edges, tetherPiece, i) != node) continue;
+            if (!across && walk(edges, tetherPiece, tx, ty, tz,
+                previous[i * 3], previous[i * 3 + 1], previous[i * 3 + 2], null) != node) continue;
+            return true;
         }
         return false;
+    }
+
+    /** Whether block {@code i} went from the front of {@code before} to the back of {@code now} over the opening. */
+    private boolean crossed(IplPieceMap.Aperture before, IplPieceMap.Aperture now, double[] previous, int i) {
+        double px = previous[i * 3], py = previous[i * 3 + 1], pz = previous[i * 3 + 2];
+        double s0 = before.side(px, py, pz), s1 = now.side(x(i), y(i), z(i));
+        if (s0 < 0.0 || s1 >= 0.0) return false;
+        double t = s0 / (s0 - s1);
+        double hx = px + (x(i) - px) * t, hy = py + (y(i) - py) * t, hz = pz + (z(i) - pz) * t;
+        return now.laterallyInside(hx, hy, hz, BLOCK_RADIUS) || before.laterallyInside(hx, hy, hz, BLOCK_RADIUS);
     }
 
     /** Whether the contraption lies across {@code aperture}'s plane over its rectangle, or may swing there. */
@@ -149,13 +161,6 @@ public final class IplContraptionShape {
                 && Math.abs(a.v(sweep[0], sweep[1], sweep[2])) <= a.halfH() + r;
         }
         for (int i = 0; i < blocks.length; i++) if (liesAcross(a, i)) return true;
-        return false;
-    }
-
-    /** {@link #touches} from the aperture's front only: the contraption may pass it front to back. */
-    private boolean approaches(IplPieceMap.Aperture a) {
-        if (sweep != null) return a.side(sweep[0], sweep[1], sweep[2]) >= 0.0 && touches(a);
-        for (int i = 0; i < blocks.length; i++) if (liesAcross(a, i, true)) return true;
         return false;
     }
 

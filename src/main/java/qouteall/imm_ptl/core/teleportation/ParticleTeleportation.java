@@ -1,0 +1,139 @@
+package qouteall.imm_ptl.core.teleportation;
+
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.particle.Particle;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
+import qouteall.imm_ptl.core.ClientWorldLoader;
+import qouteall.imm_ptl.core.IPMcHelper;
+import qouteall.imm_ptl.core.mixin.client.particle.IEParticle;
+import qouteall.imm_ptl.core.portal.Portal;
+
+import java.util.List;
+
+/**
+ * Particles go through teleportable portals: a particle whose motion in a tick crosses a portal
+ * from its front continues beyond the destination with its velocity turned by the portal, in the
+ * destination level for a portal into another dimension. Any particle moving by
+ * {@link Particle#move} or by its velocity is carried (vanilla and modded); particles that place
+ * themselves along a path of their own (portal swirls, enchanting glyphs) are left alone, since
+ * their next tick would put them back. Nothing is checked while no portal is near the camera.
+ * Client thread only.
+ */
+public final class ParticleTeleportation {
+    /** Portals farther than this from the camera are ignored; particles there are barely visible. */
+    private static final double RANGE = 64.0;
+
+    private static List<Portal> portals = List.of();
+    @Nullable
+    private static ClientLevel portalsLevel;
+    @Nullable
+    private static Particle ticking;
+    private static boolean moved;
+
+    private ParticleTeleportation() {}
+
+    /** Start of a particle tick of {@code level}: collects the portals its particles may cross. */
+    public static void beginTick(@Nullable ClientLevel level) {
+        portalsLevel = level;
+        if (level == null) {
+            portals = List.of();
+            return;
+        }
+        Vec3 center = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
+        portals = IPMcHelper.getNearbyPortalList(level, center, RANGE, Portal::isTeleportable);
+    }
+
+    /** Runs {@code tick} of {@code particle}, then carries it through the portal its motion crossed. */
+    public static void tick(Particle particle, Runnable tick) {
+        IEParticle access = (IEParticle) particle;
+        if (portals.isEmpty() || access.portal_getWorld() != portalsLevel) {
+            tick.run();
+            return;
+        }
+        Vec3 from = particle.getPos();
+        Vec3 velocity = velocity(access);
+        ticking = particle;
+        moved = false;
+        try {
+            tick.run();
+        }
+        finally {
+            ticking = null;
+        }
+        if (!particle.isAlive()) return;
+        Vec3 to = particle.getPos();
+        if (!moved && !followsVelocity(to.subtract(from), velocity, velocity(access))) return;
+        Portal portal = crossedPortal(from, to);
+        if (portal != null) carry(particle, access, portal);
+    }
+
+    /** {@code Particle.move} of the particle being ticked. */
+    public static void onMove(Particle particle) {
+        if (particle == ticking) moved = true;
+    }
+
+    /** Whether {@code motion} from the particle's position crosses a portal (block collision is skipped then). */
+    public static boolean passesPortal(Particle particle, Vec3 motion) {
+        if (portals.isEmpty() || particle != ticking) return false;
+        Vec3 from = particle.getPos();
+        return crossedPortal(from, from.add(motion)) != null;
+    }
+
+    private static Vec3 velocity(IEParticle access) {
+        return new Vec3(access.ip_getXd(), access.ip_getYd(), access.ip_getZd());
+    }
+
+    /** A particle that set its own position moved along its velocity (before or after the tick changed it). */
+    private static boolean followsVelocity(Vec3 displacement, Vec3 before, Vec3 after) {
+        double tolerance = 1.0e-4 + 1.0e-2 * displacement.lengthSqr();
+        return displacement.distanceToSqr(before) <= tolerance || displacement.distanceToSqr(after) <= tolerance;
+    }
+
+    /** The first portal the segment passes from its front, or null. */
+    @Nullable
+    private static Portal crossedPortal(Vec3 from, Vec3 to) {
+        if (from.equals(to)) return null;
+        AABB segment = new AABB(from, to).inflate(1.0e-3);
+        Portal best = null;
+        double bestDistance = Double.POSITIVE_INFINITY;
+        for (Portal portal : portals) {
+            if (portal.isRemoved() || !portal.getBoundingBox().intersects(segment)) continue;
+            Vec3 hit = portal.rayTrace(from, to);
+            if (hit == null) continue;
+            double distance = hit.distanceToSqr(from);
+            if (distance < bestDistance) {
+                best = portal;
+                bestDistance = distance;
+            }
+        }
+        return best;
+    }
+
+    /** Maps position, previous position and velocity through {@code portal}, keeping the box centre. */
+    private static void carry(Particle particle, IEParticle access, Portal portal) {
+        ClientLevel from = access.portal_getWorld();
+        ClientLevel to = portal.getDestDim() == from.dimension() ? from : ClientWorldLoader.getOptionalWorld(portal.getDestDim());
+        if (to == null) {
+            particle.remove();
+            return;
+        }
+        double halfHeight = particle.getBoundingBox().getYsize() / 2.0;
+        Vec3 pos = mapBottom(portal, particle.getPos(), halfHeight);
+        Vec3 old = mapBottom(portal, new Vec3(access.ip_getXo(), access.ip_getYo(), access.ip_getZo()), halfHeight);
+        Vec3 velocity = portal.transformLocalVec(velocity(access));
+        particle.setPos(pos.x, pos.y, pos.z);
+        access.ip_setXo(old.x);
+        access.ip_setYo(old.y);
+        access.ip_setZo(old.z);
+        particle.setParticleSpeed(velocity.x, velocity.y, velocity.z);
+        if (to != from) access.ip_setWorld(to);
+    }
+
+    /** A particle's position is the bottom centre of its box; the box centre is what goes through. */
+    private static Vec3 mapBottom(Portal portal, Vec3 bottom, double halfHeight) {
+        return portal.transformPoint(bottom.add(0.0, halfHeight, 0.0)).subtract(0.0, halfHeight, 0.0);
+    }
+}

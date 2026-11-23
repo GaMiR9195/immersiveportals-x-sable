@@ -528,9 +528,9 @@ public final class IplPieceTracker {
             Sweep current = sweep(body, ship.getPlot(), plan.now, plan.now,
                 plan.watch.zone, plan.parent, child);
             // Geometric pre-arming, not a velocity forecast: the voxel already touches the aperture,
-            // or a contraption on the body reaches it.
+            // or a block of a contraption on the body enters it.
             if (child < 0 && (current.bridging
-                || IplContraptionMaterial.reaches(ship, body.map, plan.parent, plan.now))) {
+                || IplContraptionMaterial.enters(ship, body.map, plan.parent, plan.before, plan.now))) {
                 child = openSession(body, ship, plan.parent, plan.portal);
             }
             plan.watch.cut = current.cut;

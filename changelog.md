@@ -6,8 +6,8 @@ and this project tries to adhere to [Semantic Versioning](https://semver.org/spe
 
 ## [0.7.0]
 
-Create contraptions on ships go through portals with their ship, every camera works with portals,
-and contraptions on ships no longer vanish.
+Create contraptions on ships go through portals with their ship, particles fly through portals,
+every camera works with portals, and contraptions on ships no longer vanish.
 
 ### Added
 
@@ -20,12 +20,15 @@ and contraptions on ships no longer vanish.
     (created, moved and removed by the natives with the ship's images). Each collider keeps only the
     contacts of its piece (`hooks.rs`, `setContraptionAnchor`): what went through collides beyond the
     exit, the rest stays on the entrance side, nothing is switched on and off by a timer.
-  - Sessions: a contraption that comes at an opening from its front opens the session even if no
-    block of the ship did, and keeps it while it is in that piece or can swing into it (a turning
-    bearing sweeps a sphere). A contraption flips as part of its ship: the ship waits until the
-    contraption's blocks are through as well, not its whole swept circle (`IplContraptionMaterial`).
-    A part swinging back behind the exit later is walked through the exit's reverse opening.
-    Destination terrain is loaded for physics under the whole reach of the contraption.
+  - Sessions: a contraption block that enters an opening (lies across it from the front, or passed
+    it since the last tick) opens the session even if no block of the ship did, like a ship voxel;
+    the swept volume never opens one. A session stays open while a contraption block is in its
+    piece, or while a turning contraption next to it can swing into it (one edge, never further),
+    so a same-dimension portal pair cannot stack sessions. A contraption flips as part of its ship:
+    the ship waits until the contraption's blocks are through as well, not its whole swept circle
+    (`IplContraptionMaterial`). A part swinging back behind the exit later is walked through the
+    exit's reverse opening. Destination terrain is loaded for physics under the whole reach of the
+    contraption.
   - Entities: Create's contraption collision runs once per piece, at the piece's pose, against the
     entities of the piece's level and the blocks of that piece only, a block lying across the
     opening counting for both sides (`IplContraptionCollision`). The
@@ -36,11 +39,25 @@ and contraptions on ships no longer vanish.
     (`IplContraptionShape.split`, `IplContraptionRender`). Projections are drawn by Create's renderer
     in any dimension; the native part is handed over from Flywheel while it approaches an opening,
     so the cut never waits for the hand-over.
-  - Moving to another dimension: contraptions keep their controller when the ship gets another plot
-    slot and are driven by it at once, mobs riding them move with them, and the contraptions of a
-    ship still hidden behind its ghost are drawn right away.
+  - Moving to another dimension: plot entities move with the ship (`IplPlotEntityTransit`);
+    contraptions keep their controller when the ship gets another plot slot and are driven by it at
+    once, mobs riding them move with them, and the contraptions of a ship still hidden behind its
+    ghost are drawn right away.
+- **Particles through portals** (`ParticleTeleportation`). Any particle, vanilla or modded, that
+  moves by `Particle.move` or by its velocity and crosses a teleportable portal from its front goes
+  on beyond the exit, with its velocity turned by the portal, into the other dimension for
+  cross-dimension portals. A wall behind a portal no longer stops it. Particles that follow a path
+  of their own (portal swirls, enchanting glyphs) are left alone. Only portals within 64 blocks of
+  the camera are checked, nothing at all when there are none.
 
 ### Fixed
+
+- **Entities with extra spawn data in another dimension.** NeoForge applies that data (the
+  structure of a Create contraption, data of many modded entities) to the entity of the player's
+  level, but a packet from another dimension is handled with that dimension as the client level:
+  the data went to an entity with the same id here, or nowhere. A contraption arriving in another
+  dimension came without its structure and was discarded by Create on the client
+  (`MixinClientPayloadHandler`, synced attachments too).
 
 - **Windmills and other kinetic sources stopping after a ship moved to another dimension.** The
   neighbour pass of the copy resets every Create kinetic block; followers recovered from their

@@ -1,12 +1,16 @@
 # v0.7.0 (WIP)
-Contraptions travel through portals with their ship, and cameras and portals get along.
+Contraptions travel through portals with their ship, particles fly through portals, and cameras and
+portals get along.
 1) **Create contraptions through portals**: windmills, bearings, pistons and other contraptions on a ship
    are shown on both sides of a portal, cut cleanly at the opening, and collide with the world, ships
-   and players on the side they are really on. A contraption travels as part of its ship: the trip ends
-   once both are through, and the contraption keeps turning on the other side.
-2) **Third person with camera mods**: shoulder cameras, zoom animations when switching the view and
+   and players on the side they are really on. A contraption travels as part of its ship, into the same
+   or another dimension: the trip ends once both are through, and the contraption keeps turning on the
+   other side.
+2) **Particles through portals**: smoke, sparks, splashes and modded particles fly through portals and
+   come out on the other side, also into another dimension.
+3) **Third person with camera mods**: shoulder cameras, zoom animations when switching the view and
    custom camera distances now pass through portals smoothly, exactly where the camera really is.
-3) **Create contraptions on ships no longer disappear** at the end of a crossing, when their ship is
+4) **Create contraptions on ships no longer disappear** at the end of a crossing, when their ship is
    re-sent or arrives late, with or without a portal on screen. Windmills and other generators keep
    running after their ship moves to another dimension.
 
