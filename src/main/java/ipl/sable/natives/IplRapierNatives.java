@@ -154,15 +154,18 @@ public final class IplRapierNatives {
         long sceneHandle, int bodyId, long imageHandle);
 
     /**
-     * ABI 9: a kinematic contraption mounted on a body gets an image with every image of the
-     * body; its contacts are split by the body's pieces along the segment from its anchor.
+     * ABI 10: a kinematic contraption mounted on a body gets an image with every image of the
+     * body; its contacts are split by the labels of its blocks ({@link #setContraptionLabels}).
      */
-    public static final int CONTRAPTION_ABI = 9;
+    public static final int CONTRAPTION_ABI = 10;
 
     public static boolean contraptionsSupported() {
         return abiLevel() >= CONTRAPTION_ABI;
     }
 
-    /** Plot point (centre of the body block) kinematic contraption {@code id} hangs on. */
-    public static native void setContraptionAnchor(long sceneHandle, int id, double x, double y, double z);
+    /**
+     * Pieces of the blocks of kinematic contraption {@code id} that are not native: {@code blocks}
+     * holds their contraption-local positions as {@code x, y, z} triples, {@code labels} their pieces.
+     */
+    public static native void setContraptionLabels(long sceneHandle, int id, int[] blocks, byte[] labels);
 }

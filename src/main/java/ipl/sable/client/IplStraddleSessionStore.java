@@ -321,7 +321,7 @@ public final class IplStraddleSessionStore {
         IplPieceMap pieces = PIECES.get(shipId);
         if (sessions == null || pieces == null) return;
         IplPieceMap copy = new IplPieceMap();
-        copy.decode(pieces.encode(null));
+        copy.decode(pieces.encodeFull());
         GHOST_VIEWS.put(shipId, new GhostView(sessions, copy));
     }
 

@@ -36,9 +36,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -127,6 +129,10 @@ public final class IplPieceTracker {
         @Nullable FlipChoice pendingFlip;
         /** Latest observed crossing time per voxel in this physics sample. */
         final Long2DoubleOpenHashMap movedAt = new Long2DoubleOpenHashMap();
+        /** The same for contraption blocks. */
+        final Map<ContraptionBlock, Double> contraptionMovedAt = new HashMap<>();
+        /** Contraptions whose labels changed since the last label payload. */
+        final Set<UUID> unsyncedContraptions = new HashSet<>();
         long sample;
         long motion;
         final Map<Integer, IplStraddlePoseMap.StraddleMapping> sampledMappings = new HashMap<>();
@@ -198,7 +204,7 @@ public final class IplPieceTracker {
     @Nullable
     public static CompoundTag fullLabels(UUID ship) {
         Body body = BODIES.get(ship);
-        return body == null ? null : body.map.encode(null);
+        return body == null ? null : body.map.encodeFull();
     }
 
     /** The flip computed after sampling and, when clear, group-wide settlement. */
@@ -311,10 +317,10 @@ public final class IplPieceTracker {
 
     private static void sample(Body body, ServerSubLevel ship, int tick) {
         body.pendingFlip = null;
-        IplContraptionMaterial.pushAnchors(ship);
         rebindObservation(body, ship);
         IplAtlasStraddleSession.refreshShip(ship);
         reconcile(body, ship);
+        IplContraptionMaterial.seed(ship, body.map);
         Pose3d now = new Pose3d(ship.logicalPose());
         Pose3dc previous = body.sampledPose == null ? ship.lastPose() : body.sampledPose;
         double angle = 2.0*Math.acos(Math.min(1.0, Math.abs(previous.orientation().dot(now.orientation()))));
@@ -346,6 +352,7 @@ public final class IplPieceTracker {
             sweepAll(body, ship, tick, observed, fraction, (double)(i-1)/slices);
             body.sampledPose = observed;
         }
+        IplContraptionMaterial.sampled(ship);
         body.sampledMappings.clear();
         for (int node : body.liveNodes()) {
             if (node == IplPieceMap.NATIVE) continue;
@@ -423,10 +430,13 @@ public final class IplPieceTracker {
         // Visit newly opened nodes too; otherwise the first movement of the child
         // is lost and a nearby second aperture can be skipped permanently.
         body.movedAt.clear();
+        body.contraptionMovedAt.clear();
         body.sample++;
         long revision;
+        long contraptionRevision;
         do {
             revision = body.map.revision();
+            contraptionRevision = body.map.contraptionRevision();
             List<Integer> nodes = new ArrayList<>(body.liveNodes());
             for (int at = 0; at < nodes.size(); at++) {
                 int node = nodes.get(at);
@@ -467,14 +477,18 @@ public final class IplPieceTracker {
             }
             // A return from a nested frame can enable a later crossing in an already visited
             // parent. Revisit the observed sample until stable; crossing times strictly increase.
-        } while (body.map.revision() != revision);
+        } while (body.map.revision() != revision || body.map.contraptionRevision() != contraptionRevision);
         // Unused watches can retire; non-empty sessions keep their material independently.
         body.watches.values().removeIf(w -> w.seenTick != tick);
     }
 
+    /** One aperture seen from one piece during the part {@code [from, to]} of the tick. */
     private record AperturePlan(int parent, Portal portal, Watch watch,
-                                IplPieceMap.Aperture before, IplPieceMap.Aperture now, Sweep sweep) {}
-    private record Crossing(double time, long voxel, AperturePlan plan, boolean forward) {}
+                                IplPieceMap.Aperture before, IplPieceMap.Aperture now, Sweep sweep,
+                                double from, double to) {}
+    /** A voxel ({@code contraption == null}) or contraption block passing an aperture. */
+    private record Crossing(double time, long voxel, @Nullable UUID contraption, AperturePlan plan, boolean forward) {}
+    private record ContraptionBlock(UUID contraption, long block) {}
 
     private static AperturePlan planAperture(Body body, ServerSubLevel ship, int node, Portal portal,
                                            Pose3dc pose, Pose3dc previous, int tick, double fraction, double previousFraction) {
@@ -499,19 +513,28 @@ public final class IplPieceTracker {
         watch.plot = now;
         watch.zone = now.voxelReach() + 0.05;
         watch.seenTick = tick;
-        return new AperturePlan(node, portal, watch, before, now, sweep);
+        return new AperturePlan(node, portal, watch, before, now, sweep, previousFraction, fraction);
     }
 
     /** Apply sibling events by crossing fraction, independent of portal UUID/session order. */
     private static void applyCrossings(Body body, ServerSubLevel ship, List<AperturePlan> plans) {
         List<Crossing> events = new ArrayList<>();
         for (AperturePlan plan : plans) {
-            for (long voxel : plan.sweep.forward) events.add(new Crossing(crossingTime(plan, voxel), voxel, plan, true));
-            for (long voxel : plan.sweep.backward) events.add(new Crossing(crossingTime(plan, voxel), voxel, plan, false));
+            for (long voxel : plan.sweep.forward) events.add(new Crossing(crossingTime(plan, voxel), voxel, null, plan, true));
+            for (long voxel : plan.sweep.backward) events.add(new Crossing(crossingTime(plan, voxel), voxel, null, plan, false));
+            int child = body.childOf(plan.parent, plan.portal.getUUID());
+            for (IplContraptionMaterial.Crossing c : IplContraptionMaterial.crossings(ship, body.map, plan.parent, child,
+                plan.before, plan.now, plan.from, plan.to, BRIDGE_SLACK)) {
+                events.add(new Crossing(c.time(), c.block(), c.contraption(), plan, c.forward()));
+            }
         }
         events.sort(Comparator.comparingDouble(Crossing::time)
             .thenComparing(e -> e.plan.portal.getUUID().toString()));
         for (Crossing event : events) {
+            if (event.contraption != null) {
+                applyContraptionCrossing(body, ship, event);
+                continue;
+            }
             if (event.time <= body.movedAt.getOrDefault(event.voxel, -1.0) + 1.0e-9) continue;
             AperturePlan plan = event.plan;
             int child = body.childOf(plan.parent, plan.portal.getUUID());
@@ -527,14 +550,28 @@ public final class IplPieceTracker {
             int child = body.childOf(plan.parent, plan.portal.getUUID());
             Sweep current = sweep(body, ship.getPlot(), plan.now, plan.now,
                 plan.watch.zone, plan.parent, child);
-            // Geometric pre-arming, not a velocity forecast: the voxel already touches the aperture,
-            // or a block of a contraption on the body enters it.
+            // Geometric pre-arming, not a velocity forecast: a voxel or a contraption block of the
+            // piece already touches the aperture.
             if (child < 0 && (current.bridging
-                || IplContraptionMaterial.enters(ship, body.map, plan.parent, plan.before, plan.now))) {
+                || IplContraptionMaterial.entering(ship, body.map, plan.parent, plan.now))) {
                 child = openSession(body, ship, plan.parent, plan.portal);
             }
             plan.watch.cut = current.cut;
         }
+    }
+
+    /** A contraption block passing an aperture moves to the other piece of the edge, like a voxel. */
+    private static void applyContraptionCrossing(Body body, ServerSubLevel ship, Crossing event) {
+        ContraptionBlock key = new ContraptionBlock(event.contraption, event.voxel);
+        if (event.time <= body.contraptionMovedAt.getOrDefault(key, -1.0) + 1.0e-9) return;
+        AperturePlan plan = event.plan;
+        int child = body.childOf(plan.parent, plan.portal.getUUID());
+        int from = event.forward ? plan.parent : child;
+        if (from < 0 || body.map.contraptionLabel(event.contraption, event.voxel) != from) return;
+        if (event.forward && child < 0) child = openSession(body, ship, plan.parent, plan.portal);
+        if (child < 0) return;
+        body.map.setContraptionLabel(event.contraption, event.voxel, event.forward ? child : plan.parent);
+        body.contraptionMovedAt.put(key, event.time);
     }
 
     private static double crossingTime(AperturePlan plan, long voxel) {
@@ -690,6 +727,7 @@ public final class IplPieceTracker {
             body.unsynced.add(key);
             body.unpushed.add(key);
         }
+        body.unsyncedContraptions.addAll(body.map.drainDirtyContraptions());
         if (body.recount.isEmpty()) return;
         LevelPlot plot = ship.getPlot();
         for (long key : body.recount) recount(body, plot, key);
@@ -806,6 +844,7 @@ public final class IplPieceTracker {
                 p.wx(), p.wy(), p.wz(), p.halfW(), p.hx(), p.hy(), p.hz(), p.halfH()});
         }
         body.map.setEdges(edges.toArray(new IplPieceMap.Edge[0]));
+        IplContraptionMaterial.pushNatives(ship, body.map);
         long scene = IplScenes.sceneHandle(ship.getLevel());
         int bodyId = Rapier3D.getID(ship);
         if (scene == 0 || bodyId < 0 || !IplRapierNatives.piecesSupported()) return;
@@ -862,10 +901,13 @@ public final class IplPieceTracker {
 
     private static void pushLabels(Body body, ServerSubLevel ship) {
         IplPieceMap.Edge[] edges = body.map.edges();
-        if (!body.fullSync && body.unsynced.isEmpty() && sameEdges(edges, body.syncedEdges)) return;
-        CompoundTag payload = body.map.encode(body.fullSync ? null : body.unsynced.toLongArray());
+        if (!body.fullSync && body.unsynced.isEmpty() && body.unsyncedContraptions.isEmpty()
+            && sameEdges(edges, body.syncedEdges)) return;
+        CompoundTag payload = body.map.encode(body.fullSync ? null : body.unsynced.toLongArray(),
+            body.unsyncedContraptions);
         body.fullSync = false;
         body.unsynced.clear();
+        body.unsyncedContraptions.clear();
         body.syncedEdges = edges;
         IplStraddleSessionSync.sendLabels(ship.getLevel().getServer(), body.id, payload);
     }
@@ -896,7 +938,9 @@ public final class IplPieceTracker {
         Watch watch = body.edgeWatch(best);
         if (watch != null && watch.cutAt(tick)) return null;
         int root = best;
-        if (IplContraptionMaterial.holdsFlip(ship, body.map, node -> body.inSubtree(node, root))) return null;
+        IplPieceMap.Edge entrance = body.map.edge(IplPieceMap.NATIVE, root);
+        if (entrance != null && IplContraptionMaterial.holdsFlip(ship, body.map, node -> body.inSubtree(node, root),
+            entrance.aperture)) return null;
         Portal portal = IplAtlasStraddleSession.sessionPortal(body.keys[best]);
         return portal == null ? null : new FlipChoice(body.keys[best], portal, best);
     }
@@ -944,6 +988,7 @@ public final class IplPieceTracker {
         body.counts.clear();
         Arrays.fill(body.totals, 0);
         body.movedAt.clear();
+        body.contraptionMovedAt.clear();
         body.owner = live;
         body.sampledPose = new Pose3d(live.logicalPose());
         body.sampledMappings.clear();

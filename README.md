@@ -3,18 +3,20 @@ Contraptions travel through portals with their ship, particles fly through porta
 portals get along.
 1) **Create contraptions through portals**: windmills, bearings, pistons and other contraptions on a ship
    are shown on both sides of a portal, cut cleanly at the opening, and collide with the world, ships
-   and players on the side they are really on. A contraption travels as part of its ship, into the same
-   or another dimension: the trip ends once both are through, and the contraption keeps turning on the
-   other side.
+   and players on the side they are really on. Every block of a contraption remembers which side it is
+   on, like the ship's blocks, so pulling it back or leaving another dimension never makes a part
+   vanish or turn into a ghost. A contraption travels as part of its ship, into the same or another
+   dimension: the trip ends once both are through, and it keeps turning on the other side.
 2) **Particles through portals**: smoke, sparks, splashes and modded particles fly through portals and
-   come out on the other side, also into another dimension, smoothly and without being cut in half.
+   come out on the other side, also into another dimension. A particle in the middle of a portal is
+   shown on both sides, cut exactly at the portal, from any angle.
 3) **Third person with camera mods**: shoulder cameras, zoom animations when switching the view and
    custom camera distances now pass through portals smoothly, exactly where the camera really is.
 4) **Create contraptions on ships no longer disappear** at the end of a crossing, when their ship is
    re-sent or arrives late, with or without a portal on screen. Windmills and other generators keep
    running after their ship moves to another dimension, without snapping back to their start angle.
 
-Contraption collisions through portals need the IPSable natives of this version.
+Contraptions through portals need the IPSable natives of this version (ABI 10).
 The full list of changes is in `changelog.md`; the deep dive is `README060NEW.md`.
 
 # Immersive Portals × Sable Compatibility Fork

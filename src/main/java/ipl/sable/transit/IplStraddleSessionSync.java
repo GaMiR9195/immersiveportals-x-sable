@@ -241,6 +241,7 @@ public final class IplStraddleSessionSync {
             if (from == 0 && labels.getBoolean("full")) packet.putBoolean("full", true);
             packet.put("s", slice);
             if (labels.contains("e")) packet.put("e", labels.get("e").copy());
+            if (from == 0 && labels.contains("c")) packet.put("c", labels.get("c").copy());
             packets.add(packet);
         }
         return packets;

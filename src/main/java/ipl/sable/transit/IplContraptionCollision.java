@@ -49,8 +49,7 @@ public final class IplContraptionCollision {
             if (only == null || only == own) original.run();
             return;
         }
-        IplPieceMap.Edge[] edges = tree.edges();
-        IplContraptionShape.Split split = shape.split(edges, tree.pieceOfPlot(shape.tx, shape.ty, shape.tz));
+        IplContraptionShape.Split split = shape.split(tree.edges(), tree.pieces().contraptionLabels(contraption.getUUID()));
         Object2IntOpenHashMap<BlockPos> index = new Object2IntOpenHashMap<>(shape.blocks.length);
         index.defaultReturnValue(-1);
         for (int i = 0; i < shape.blocks.length; i++) index.put(shape.blocks[i], i);

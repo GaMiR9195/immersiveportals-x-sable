@@ -272,8 +272,8 @@ impl SablePhysicsHooks {
     }
 
     /// Contacts of a kinematic contraption mounted on a straddling body: its native collider and
-    /// each image keep only the contacts whose point lies in their piece, walked from the anchor
-    /// through the body's edges (`IplPieces::classify_tethered`).
+    /// each image keep only the contacts whose point lies in their piece, by the label of the
+    /// contraption block the point is on (`IplPieces::classify_mounted`).
     fn ipl_clip_mounted(
         context: &mut ContactModificationContext,
         handle: rapier3d::geometry::ColliderHandle,
@@ -286,7 +286,9 @@ impl SablePhysicsHooks {
         let Some(body) = sable_data.level_colliders.get(&body_id) else {
             return;
         };
-        let (Some(pieces), Some(com)) = (body.pieces.as_deref(), body.center_of_mass) else {
+        let (Some(pieces), Some(com), Some(own_com)) =
+            (body.pieces.as_deref(), body.center_of_mass, info.center_of_mass)
+        else {
             return;
         };
         let own = if handle == info.collider {
@@ -297,13 +299,13 @@ impl SablePhysicsHooks {
                 None => return,
             }
         };
-        let Some(anchor) = info.anchor else {
-            // Not anchored yet: the whole contraption counts as native.
+        if info.contraption_labels.is_empty() && pieces.edges.is_empty() {
+            // Everything native: only the native collider keeps contacts.
             if own != 0 {
                 context.solver_contacts.iter_mut().for_each(neutralize_contact);
             }
             return;
-        };
+        }
         let colliders = context.colliders;
         let pose_of = |node: u8| -> Option<Pose> {
             let h = if node == 0 {
@@ -319,7 +321,6 @@ impl SablePhysicsHooks {
         let (Some(frame), Some(pose)) = (pose_of(own), colliders.get(handle).map(|c| *c.position())) else {
             return;
         };
-        let anchor_piece = pieces.classify(anchor, &in_parent);
         let first = handle == context.collider1;
         let manifold = &*context.manifold;
         for c in context.solver_contacts.iter_mut() {
@@ -336,8 +337,17 @@ impl SablePhysicsHooks {
             };
             let surface = subshape.map_or(local_point, |p| p * local_point);
             let world = pose.transform_point(surface) + normal.as_vec3() * (inward as f32 * 0.001);
+            let local = pose.inverse_transform_point(world).as_dvec3() + own_com;
+            let block = local.floor().as_ivec3();
+            let label = info
+                .contraption_labels
+                .get(&(block.x, block.y, block.z))
+                .copied()
+                .unwrap_or(0);
+            let centre_world = pose.transform_point((block.as_dvec3() + DVec3::splat(0.5) - own_com).as_vec3());
+            let centre = frame.inverse_transform_point(centre_world).as_dvec3() + com;
             let plot = frame.inverse_transform_point(world).as_dvec3() + com;
-            if pieces.classify_tethered(anchor, anchor_piece, plot, &in_parent) != own {
+            if pieces.classify_mounted(label, centre, plot, &in_parent) != own {
                 neutralize_contact(c);
             }
         }

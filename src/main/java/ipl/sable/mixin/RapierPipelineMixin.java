@@ -34,7 +34,7 @@ public abstract class RapierPipelineMixin {
         IplLinks.onConstraint(bodyA, bodyB, configuration, cir.getReturnValue());
     }
 
-    /** The native id of a kinematic contraption: its contacts are walked from the body block it hangs on. */
+    /** The native id of a kinematic contraption: its contacts are clipped by the labels of its blocks. */
     @WrapOperation(
         method = "add(Ldev/ryanhcode/sable/api/sublevel/KinematicContraption;)V",
         at = @At(value = "INVOKE", target = "Ldev/ryanhcode/sable/physics/impl/rapier/Rapier3D;createKinematicContraption(JII[D)V")

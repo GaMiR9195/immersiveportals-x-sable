@@ -11,34 +11,40 @@ every camera works with portals, and contraptions on ships no longer vanish.
 
 ### Added
 
-- **Create contraptions through portals** (natives ABI 9). A contraption on a ship (bearing, windmill,
+- **Create contraptions through portals** (natives ABI 10). A contraption on a ship (bearing, windmill,
   piston, pulley, gantry, cart) lives on the ship's projections, like its blocks, until the whole ship
-  flips. A contraption has no labels of its own: its pieces are walked from the ship block it hangs on
-  (its controller), and a block is beyond a portal when that segment passed the opening
-  (`IplContraptionShape`). Physics, entity collisions and rendering share this rule.
+  flips.
+  - Pieces: contraption blocks carry piece labels like the ship's voxels, in the ship's label map
+    (`IplPieceMap.contraptionLabels`, by contraption UUID and local block position). A block changes
+    piece only when its centre passes the portal rectangle; its crossings are swept together with the
+    voxels' ones at every physics sample, in time order (`IplPieceTracker`,
+    `IplContraptionMaterial.crossings`). A new
+    contraption starts in the piece of the block it hangs on. The labels end and flip with the ship's,
+    reach clients with the voxel labels and the natives through `setContraptionLabels`. Physics,
+    sessions, entity collisions and rendering all read them; no piece is guessed from a line to the
+    block the contraption hangs on.
   - Physics: every image of the ship carries an image of the contraption at its place on the ship
     (created, moved and removed by the natives with the ship's images). Each collider keeps only the
-    contacts of its piece (`hooks.rs`, `setContraptionAnchor`): what went through collides beyond the
-    exit, the rest stays on the entrance side, nothing is switched on and off by a timer.
-  - Sessions: a contraption block that enters an opening (lies across it from the front, or passed
-    it since the last tick) opens the session even if no block of the ship did, like a ship voxel;
-    the swept volume never opens one. A session stays open while a contraption block is in its
-    piece, or while a turning contraption next to it can swing into it (one edge, never further),
-    so a same-dimension portal pair cannot stack sessions. A contraption flips as part of its ship:
-    the ship waits until the contraption's blocks are through as well, not its whole swept circle
-    (`IplContraptionMaterial`). A part swinging back behind the exit later is walked through the
-    exit's reverse opening. Destination terrain is loaded for physics under the whole reach of the
-    contraption.
+    contacts of the blocks in its piece, a block lying across the opening split by its plane
+    (`hooks.rs`, `IplPieces::classify_mounted`).
+  - Sessions: a contraption block that touches an opening from the front or passes it opens the
+    session like a ship voxel; the swept volume never opens one. A session stays open while a
+    contraption block is in its piece, or while a turning contraption next to it can swing into it
+    (one edge, never further), so a same-dimension portal pair cannot stack sessions. A contraption
+    ends its crossing in its ship's flip: the flip waits only for its blocks that have not passed the
+    portal plane yet, so none is left inside the terrain behind the exit; a block that went past the
+    plane beside the frame keeps nobody waiting. Destination terrain is loaded for physics under the
+    whole reach of the contraption.
   - Entities: Create's contraption collision runs once per piece, at the piece's pose, against the
     entities of the piece's level and the blocks of that piece only, a block lying across the
-    opening counting for both sides (`IplContraptionCollision`). The
-    player collides with the part that came through a portal, also when the ship's level is another
-    dimension, and is not pushed by the part that is gone.
-  - Rendering: each piece of the ship draws its part of the contraption at its pose, cut by the
-    plane of the opening from the moment a block touches it, like the ship's own blocks
+    opening counting for both sides (`IplContraptionCollision`). The player collides with the part
+    that came through a portal, also when the ship's level is another dimension, and is not pushed by
+    the part that is gone.
+  - Rendering: each piece of the ship draws its part of the contraption at its pose, cut by the plane
+    of the opening from the moment a block touches it, like the ship's own blocks
     (`IplContraptionShape.split`, `IplContraptionRender`). Projections are drawn by Create's renderer
-    in any dimension; the native part is handed over from Flywheel while it approaches an opening,
-    so the cut never waits for the hand-over.
+    in any dimension; the native part is handed over from Flywheel while it approaches an opening, so
+    the cut never waits for the hand-over.
   - Moving to another dimension: plot entities move with the ship (`IplPlotEntityTransit`);
     contraptions keep their controller when the ship gets another plot slot (it is moved before the
     contraption is sent, so clients hang it on the same block as the server) and are driven by it at
@@ -52,9 +58,12 @@ every camera works with portals, and contraptions on ships no longer vanish.
   cross-dimension portals. A wall behind a portal no longer stops it. Particles that follow a path
   of their own (portal swirls, enchanting glyphs) are left alone. Only portals within 64 blocks of
   the camera are checked, nothing at all when there are none.
-  - A particle at an opening is also drawn on its other side (`renderAtOpening`): the part of its
-    quad that passed shows beyond the portal, the rest stays in front, each cut by the portal, so a
-    particle crosses without vanishing for a tick or losing half of its quad.
+  - A particle reaching across an opening is drawn on both sides of it: its own level shows the part
+    on its side of the plane, the level beyond shows the part that passed, each quad cut exactly at
+    the plane (`ClippedQuadConsumer`). It crosses without popping or losing half of its quad, the
+    same in every view, and stays whole while it leaves the exit (also of a one-way portal).
+  - In a portal view, a quad particle is cut at the view's exit plane instead of being hidden
+    until its centre is half a block past it, so the part already out of an exit is always drawn.
 
 ### Fixed
 
@@ -92,6 +101,13 @@ every camera works with portals, and contraptions on ships no longer vanish.
   cameras did not cross around the middle of the portal, and zooming in or out when switching the
   view stayed frozen at the portal. Now the block collision of any camera (vanilla's or a mod's)
   passes portal openings, and the view is rendered from wherever the camera itself ends up.
+- **Particles missing in portal views.** A portal view drew no particles at all once four portals
+  had been rendered in the frame, and dropped every particle less than half a block past the view's
+  exit: what came out of a portal stayed invisible right at the exit.
+- **Particles frozen in another dimension.** A level other than the player's ticked its particles
+  only while a portal into it was within 10 blocks of the player: particles there (spawned there or
+  gone through a farther portal) stood still and never died. They now always move and age
+  (`ClientWorldLoader`).
 
 ## [0.6.2]
 

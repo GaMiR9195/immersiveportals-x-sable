@@ -39,7 +39,8 @@ import java.util.Set;
 /**
  * Create contraptions on straddling bodies, drawn like the body's own blocks: each piece of the
  * body draws the part of the contraption in that piece, at the piece's pose and cut by the
- * apertures the contraption lies across ({@link IplContraptionShape#split}). The native piece is
+ * apertures its blocks lie across ({@link IplContraptionShape#split}, by the labels of its blocks
+ * synced with the body's). The native piece is
  * drawn by the entity pass of the body's level, the others by the projection passes
  * ({@link #drawProjections}) with Create's renderer.
  *
@@ -125,11 +126,7 @@ public final class IplContraptionRender {
         if (SPLITS.containsKey(entity)) return SPLITS.get(entity);
         IplContraptionShape shape = shape(entity);
         IplContraptionShape.Split split = null;
-        if (shape != null) {
-            int tether = IplPieceMap.classify(frame.edges, frame.view.label((int) Math.floor(shape.tx),
-                (int) Math.floor(shape.ty), (int) Math.floor(shape.tz)), shape.tx, shape.ty, shape.tz);
-            split = shape.split(frame.edges, tether);
-        }
+        if (shape != null) split = shape.split(frame.edges, frame.view.pieces().contraptionLabels(entity.getUUID()));
         SPLITS.put(entity, split);
         return split;
     }

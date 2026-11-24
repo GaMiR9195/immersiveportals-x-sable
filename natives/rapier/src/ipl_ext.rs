@@ -13,7 +13,7 @@
 //! piece its point belongs to.
 
 use jni::JNIEnv;
-use jni::objects::{JByteArray, JClass, JDoubleArray};
+use jni::objects::{JByteArray, JClass, JDoubleArray, JIntArray};
 use jni::sys::{jdouble, jint, jlong};
 use marten::Real;
 use rapier3d::glamx::DVec3;
@@ -30,9 +30,14 @@ use crate::scene::{LevelColliderID, PhysicsScene};
 /// 8 = rope point routing (`ropeIds`, `ropePointPositions`, `routeRopePoint`) and
 ///     piece-aware voxel pair culling in the dispatcher.
 /// 9 = images of kinematic contraptions: a contraption mounted on a body gets an image with
-///     every image of the body, clipped by the body's pieces walked from its anchor
-///     (`setContraptionAnchor`).
-pub const IPL_NATIVE_ABI_LEVEL: jint = 9;
+///     every image of the body.
+/// 10 = contacts of those images are clipped by per-block contraption labels
+///     (`setContraptionLabels`, [`IplPieces::classify_mounted`]).
+pub const IPL_NATIVE_ABI_LEVEL: jint = 10;
+
+/// Half diagonal of a block: a contraption block whose centre is this close to an aperture plane
+/// lies across it.
+pub const MOUNTED_BLOCK_RADIUS: f64 = 0.866_025_403_784_438_6;
 
 /// Doubles per edge in `setPieceEdges`:
 /// `[parent child  ox oy oz  nx ny nz  wx wy wz halfW  hx hy hz halfH  zone slack
@@ -140,53 +145,35 @@ impl IplPieces {
         })
     }
 
-    /// Piece of a point of rigid geometry hanging on the body at `anchor` (plot coordinates,
-    /// piece `anchor_piece`): the segment from the anchor to `plot` enters an edge's child where
-    /// it passes the aperture front to back and returns to the parent where it passes back.
-    pub fn classify_tethered(
+    /// Piece of a contact point (`plot`) on a block of a kinematic contraption mounted on the
+    /// body: the block's label, except for a block lying across the aperture of an edge of that
+    /// piece (its centre `centre` within [`MOUNTED_BLOCK_RADIUS`] of the plane, inside the
+    /// rectangle), whose points belong to the side of the plane they are on. Same rule as
+    /// `IplContraptionShape.split` on the Java side.
+    pub fn classify_mounted(
         &self,
-        anchor: DVec3,
-        anchor_piece: u8,
+        label: u8,
+        centre: DVec3,
         plot: DVec3,
         in_parent: impl Fn(u8, DVec3) -> Option<DVec3>,
     ) -> u8 {
-        let mut piece = anchor_piece;
-        let mut after = -1.0;
-        for _ in 0..self.edges.len() {
-            let mut next: Option<(f64, u8)> = None;
-            for e in &self.edges {
-                if piece != e.parent && piece != e.child {
-                    continue;
-                }
-                let (Some(a), Some(b)) = (in_parent(e.parent, anchor), in_parent(e.parent, plot)) else {
-                    continue;
-                };
-                let s0 = (a - e.origin).dot(e.normal);
-                let s1 = (b - e.origin).dot(e.normal);
-                let forward = piece == e.parent && s0 >= 0.0 && s1 < 0.0;
-                let backward = piece == e.child && s0 < 0.0 && s1 >= 0.0;
-                if !forward && !backward {
-                    continue;
-                }
-                let t = s0 / (s0 - s1);
-                if t <= after {
-                    continue;
-                }
-                let hit = a + (b - a) * t - e.origin;
-                if hit.dot(e.axis_w).abs() > e.half_w || hit.dot(e.axis_h).abs() > e.half_h {
-                    continue;
-                }
-                if next.is_none_or(|(best, _)| t < best) {
-                    next = Some((t, if forward { e.child } else { e.parent }));
-                }
+        for e in &self.edges {
+            if label != e.parent && label != e.child {
+                continue;
             }
-            let Some((t, target)) = next else {
-                break;
+            let (Some(c), Some(p)) = (in_parent(e.parent, centre), in_parent(e.parent, plot)) else {
+                continue;
             };
-            after = t;
-            piece = target;
+            let d = c - e.origin;
+            if d.dot(e.normal).abs() > MOUNTED_BLOCK_RADIUS
+                || d.dot(e.axis_w).abs() > e.half_w + MOUNTED_BLOCK_RADIUS
+                || d.dot(e.axis_h).abs() > e.half_h + MOUNTED_BLOCK_RADIUS
+            {
+                continue;
+            }
+            return if (p - e.origin).dot(e.normal) >= 0.0 { e.parent } else { e.child };
         }
-        piece
+        label
     }
 
     /// Classifies the body's OWN surface witness, not the midpoint between colliders.
@@ -792,20 +779,33 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setImagePrefix<'l
     }
 }
 
-/// The plot point (centre of the body block) kinematic contraption `id` hangs on; its contacts
-/// are classified by the body's pieces along the segment from there.
+/// Labels of the blocks of kinematic contraption `id` that are not in the native piece:
+/// `blocks` holds contraption-local block positions as `x, y, z` triples, `labels` their pieces.
+/// Empty arrays make the whole contraption native.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setContraptionAnchor<'local>(
-    _env: JNIEnv<'local>,
+pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setContraptionLabels<'local>(
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     scene_handle: jlong,
     id: jint,
-    x: jdouble,
-    y: jdouble,
-    z: jdouble,
+    blocks: JIntArray<'local>,
+    labels: JByteArray<'local>,
 ) {
-    if scene_handle == 0 {
+    if scene_handle == 0 || blocks.is_null() || labels.is_null() {
         return;
+    }
+    let Ok(pieces) = env.convert_byte_array(&labels) else {
+        return;
+    };
+    let mut positions = vec![0 as jint; pieces.len() * 3];
+    if env.get_int_array_region(&blocks, 0, &mut positions).is_err() {
+        return;
+    }
+    let mut map = HashMap::with_capacity(pieces.len());
+    for (i, piece) in pieces.iter().enumerate() {
+        if *piece != 0 {
+            map.insert((positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]), *piece);
+        }
     }
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
     let mut sable_data = scene
@@ -813,7 +813,7 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setContraptionAnc
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(info) = sable_data.level_colliders.get_mut(&(id as LevelColliderID)) {
-        info.anchor = (x.is_finite() && y.is_finite() && z.is_finite()).then(|| DVec3::new(x, y, z));
+        info.contraption_labels = map;
     }
 }
 

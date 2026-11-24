@@ -74,8 +74,9 @@ pub struct ActiveLevelColliderInfo {
     pub mounted: Vec<LevelColliderID>,
     /// Kinematic contraption: the body image each of its image colliders mirrors.
     pub image_links: HashMap<ColliderHandle, ColliderHandle>,
-    /// Kinematic contraption: plot point of the body block it hangs on (`setContraptionAnchor`).
-    pub anchor: Option<DVec3>,
+    /// Kinematic contraption: piece of each of its blocks that is not native, by contraption-local
+    /// block position (`setContraptionLabels`).
+    pub contraption_labels: HashMap<(i32, i32, i32), u8>,
 }
 
 impl ChunkAccess for ActiveLevelColliderInfo {
@@ -113,7 +114,7 @@ impl ActiveLevelColliderInfo {
             mount: None,
             mounted: Vec::new(),
             image_links: HashMap::new(),
-            anchor: None,
+            contraption_labels: HashMap::new(),
         }
     }
 

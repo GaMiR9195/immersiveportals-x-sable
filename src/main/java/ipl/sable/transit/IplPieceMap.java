@@ -1,6 +1,9 @@
 package ipl.sable.transit;
 
 import dev.ryanhcode.sable.companion.math.Pose3dc;
+import it.unimi.dsi.fastutil.longs.Long2ByteMap;
+import it.unimi.dsi.fastutil.longs.Long2ByteMaps;
+import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -15,6 +18,12 @@ import org.joml.Vector3d;
 import qouteall.imm_ptl.core.portal.Portal;
 
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.function.IntUnaryOperator;
 
 /**
@@ -34,6 +43,10 @@ import java.util.function.IntUnaryOperator;
  *
  * <p>The same map and the same {@link #classify rule} drive the natives' contact clipping,
  * raycasts, entity frames and rendering, on the server and on the client.
+ *
+ * <p>Blocks of the contraptions mounted on the body carry labels too, by contraption UUID and
+ * contraption-local block position ({@link #contraptionLabels}). Like voxel labels they are
+ * history: a block changes piece only when its centre passes an aperture rectangle.
  */
 public final class IplPieceMap {
 
@@ -51,6 +64,10 @@ public final class IplPieceMap {
     private static final long[] ONLY_NATIVE = {1L, 0L, 0L, 0L};
     private final Long2ObjectOpenHashMap<long[]> presentCache = new Long2ObjectOpenHashMap<>();
     private long presentRevision = -1;
+    /** Non-native labels of contraption blocks; a present (even empty) entry is a known contraption. */
+    private final Map<UUID, Long2ByteOpenHashMap> contraptions = new HashMap<>();
+    private final Set<UUID> dirtyContraptions = new HashSet<>();
+    private long contraptionRevision;
 
     /** Index of a plot voxel inside its section: {@code x | y << 4 | z << 8} (vanilla compile order). */
     public static int index(int x, int y, int z) {
@@ -76,8 +93,11 @@ public final class IplPieceMap {
         return sections.keySet();
     }
 
+    /** Whether everything is native: no labelled section and no contraption block out of the native piece. */
     public boolean isEmpty() {
-        return sections.isEmpty();
+        if (!sections.isEmpty()) return false;
+        for (Long2ByteOpenHashMap labels : contraptions.values()) if (!labels.isEmpty()) return false;
+        return true;
     }
 
     /** Whether any stored voxel centre carries {@code piece}; geometrically split material is separate. */
@@ -135,6 +155,7 @@ public final class IplPieceMap {
                 counts[NATIVE] -= SECTION_VOLUME;
             }
         }
+        relabelContraptions(f);
     }
 
     /** Moves every label by whole sections (the plot of a body moved to another slot). */
@@ -164,6 +185,10 @@ public final class IplPieceMap {
     public void clear() {
         dirty.addAll(sections.keySet());
         sections.clear();
+        for (Map.Entry<UUID, Long2ByteOpenHashMap> entry : contraptions.entrySet()) {
+            if (!entry.getValue().isEmpty()) contraptionChanged(entry.getKey());
+        }
+        contraptions.clear();
         Arrays.fill(counts, 0);
         setEdges(NO_EDGES);
         revision++;
@@ -220,6 +245,76 @@ public final class IplPieceMap {
         long[] out = dirty.toLongArray();
         dirty.clear();
         return out;
+    }
+
+    // ------------------------------------------------------------------ contraption blocks
+
+    public boolean knowsContraption(UUID id) {
+        return contraptions.containsKey(id);
+    }
+
+    /** Starts labelling the blocks of contraption {@code id}, every block in piece {@code piece}. */
+    public void addContraption(UUID id, long[] blocks, int piece) {
+        Long2ByteOpenHashMap labels = new Long2ByteOpenHashMap();
+        contraptions.put(id, labels);
+        if (piece == NATIVE) return;
+        for (long block : blocks) labels.put(block, (byte) piece);
+        contraptionChanged(id);
+    }
+
+    /** Non-native labels of contraption {@code id} by local block position (read-only); null when all native. */
+    @Nullable
+    public Long2ByteMap contraptionLabels(UUID id) {
+        Long2ByteOpenHashMap labels = contraptions.get(id);
+        return labels == null || labels.isEmpty() ? null : Long2ByteMaps.unmodifiable(labels);
+    }
+
+    public int contraptionLabel(UUID id, long block) {
+        Long2ByteOpenHashMap labels = contraptions.get(id);
+        return labels == null ? NATIVE : labels.get(block) & 0xFF;
+    }
+
+    public void setContraptionLabel(UUID id, long block, int piece) {
+        Long2ByteOpenHashMap labels = contraptions.get(id);
+        if (labels == null || (labels.get(block) & 0xFF) == piece) return;
+        if (piece == NATIVE) labels.remove(block);
+        else labels.put(block, (byte) piece);
+        contraptionChanged(id);
+    }
+
+    /** Bumped by every contraption label change. */
+    public long contraptionRevision() {
+        return contraptionRevision;
+    }
+
+    /** Contraptions whose labels changed since the last call (network deltas), then forgets them. */
+    public Set<UUID> drainDirtyContraptions() {
+        if (dirtyContraptions.isEmpty()) return Set.of();
+        Set<UUID> out = new HashSet<>(dirtyContraptions);
+        dirtyContraptions.clear();
+        return out;
+    }
+
+    private void contraptionChanged(UUID id) {
+        dirtyContraptions.add(id);
+        contraptionRevision++;
+    }
+
+    private void relabelContraptions(IntUnaryOperator f) {
+        for (Map.Entry<UUID, Long2ByteOpenHashMap> entry : contraptions.entrySet()) {
+            boolean changed = false;
+            var it = entry.getValue().long2ByteEntrySet().fastIterator();
+            while (it.hasNext()) {
+                Long2ByteMap.Entry e = it.next();
+                int old = e.getByteValue() & 0xFF;
+                int now = f.applyAsInt(old);
+                if (now == old) continue;
+                changed = true;
+                if (now == NATIVE) it.remove();
+                else e.setValue((byte) now);
+            }
+            if (changed) contraptionChanged(entry.getKey());
+        }
     }
 
     public void setEdges(Edge[] edges) {
@@ -438,8 +533,17 @@ public final class IplPieceMap {
 
     // ------------------------------------------------------------------ network codec
 
-    /** Full or partial (dirty keys only) label payload: {@code {s:[{k:long, l:byte[4096] | absent}]}}. */
-    public CompoundTag encode(@Nullable long[] keys) {
+    /** Full label payload, see {@link #encode(long[], Collection)}. */
+    public CompoundTag encodeFull() {
+        return encode(null, Set.of());
+    }
+
+    /**
+     * Full ({@code keys == null}) or partial label payload:
+     * {@code {s:[{k:long, l:byte[4096] | absent}], c:[{u:uuid, p:long[], l:byte[]}]}}. A partial
+     * payload carries the sections {@code keys} and the whole labels of {@code contraptionIds}.
+     */
+    public CompoundTag encode(@Nullable long[] keys, Collection<UUID> contraptionIds) {
         CompoundTag root = new CompoundTag();
         ListTag list = new ListTag();
         if (keys == null) {
@@ -464,7 +568,29 @@ public final class IplPieceMap {
             geometry.add(t);
         }
         root.put("e", geometry);
+        ListTag blocks = new ListTag();
+        for (UUID id : keys == null ? contraptions.keySet() : contraptionIds) blocks.add(contraptionTag(id));
+        if (!blocks.isEmpty()) root.put("c", blocks);
         return root;
+    }
+
+    private CompoundTag contraptionTag(UUID id) {
+        Long2ByteOpenHashMap labels = contraptions.get(id);
+        int n = labels == null ? 0 : labels.size();
+        long[] positions = new long[n];
+        byte[] pieces = new byte[n];
+        if (labels != null) {
+            int i = 0;
+            for (Long2ByteMap.Entry e : labels.long2ByteEntrySet()) {
+                positions[i] = e.getLongKey();
+                pieces[i++] = e.getByteValue();
+            }
+        }
+        CompoundTag t = new CompoundTag();
+        t.putUUID("u", id);
+        t.putLongArray("p", positions);
+        t.putByteArray("l", pieces);
+        return t;
     }
 
     private static CompoundTag sectionTag(long key, @Nullable byte[] labels) {
@@ -492,6 +618,19 @@ public final class IplPieceMap {
         if (root.getBoolean("full")) {
             sections.clear();
             Arrays.fill(counts, 0);
+            contraptions.clear();
+        }
+        ListTag blocks = root.getList("c", Tag.TAG_COMPOUND);
+        for (int i = 0; i < blocks.size(); i++) {
+            CompoundTag t = blocks.getCompound(i);
+            long[] positions = t.getLongArray("p");
+            byte[] pieces = t.getByteArray("l");
+            Long2ByteOpenHashMap labels = new Long2ByteOpenHashMap(positions.length);
+            for (int k = 0; k < Math.min(positions.length, pieces.length); k++) {
+                if (pieces[k] != NATIVE) labels.put(positions[k], pieces[k]);
+            }
+            contraptions.put(t.getUUID("u"), labels);
+            contraptionRevision++;
         }
         ListTag list = root.getList("s", Tag.TAG_COMPOUND);
         for (int i = 0; i < list.size(); i++) {

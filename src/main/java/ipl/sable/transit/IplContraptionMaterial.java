@@ -4,13 +4,15 @@ import dev.ryanhcode.sable.api.sublevel.KinematicContraption;
 import dev.ryanhcode.sable.companion.math.BoundingBox3d;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import ipl.sable.natives.IplRapierNatives;
+import it.unimi.dsi.fastutil.longs.Long2ByteMap;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -18,18 +20,21 @@ import java.util.WeakHashMap;
 import java.util.function.IntPredicate;
 
 /**
- * Server side of contraptions on straddling bodies ({@link IplContraptionShape}): their blocks open
- * the sessions they enter and hold the sessions they are in or swing into, they flip as part of
- * their body (it waits until they are through too) and give the natives the point their contacts
- * are walked from.
+ * Server side of contraptions on straddling bodies ({@link IplContraptionShape}). Their blocks are
+ * material of the body like its voxels: they carry piece labels in the body's map, change piece
+ * when their centre passes an aperture rectangle (the crossings are applied with the voxels'
+ * ones, in time order), open the sessions they enter, hold the sessions they are in or swing
+ * into, and the body flips only once they are through too. The natives clip contraption contacts
+ * by the same labels.
  */
 public final class IplContraptionMaterial {
 
-    /** Native id of a kinematic contraption and the anchor last pushed for it. */
+    /** Native id of a kinematic contraption and the label state last handed to it. */
     private static final class NativeEntry {
         final long scene;
         final int id;
-        double x = Double.NaN, y = Double.NaN, z = Double.NaN;
+        @Nullable IplPieceMap map;
+        long revision = -1;
 
         NativeEntry(long scene, int id) {
             this.scene = scene;
@@ -37,11 +42,18 @@ public final class IplContraptionMaterial {
         }
     }
 
+    /** A contraption block passing an aperture: front to back when {@code forward}, at {@code time} of the sweep. */
+    record Crossing(UUID contraption, long block, double time, boolean forward) {}
+
     private static final Map<KinematicContraption, NativeEntry> NATIVE = new WeakHashMap<>();
     /** Shapes of one server tick; contraptions move once per tick. */
     private static final Map<UUID, List<IplContraptionShape>> SHAPES = new HashMap<>();
-    /** Block centres of the previous tick's shapes, per contraption. */
-    private static final Map<Entity, double[]> PREVIOUS = new IdentityHashMap<>();
+    /**
+     * Block centres at the end of the last sample, per contraption. The body is sampled at every
+     * solver boundary: each sample sweeps the blocks from there, like the voxels from the last
+     * sampled aperture, so no crossing between two samples is missed.
+     */
+    private static final Map<Entity, double[]> SAMPLED = new WeakHashMap<>();
     private static int shapesTick = Integer.MIN_VALUE;
 
     private IplContraptionMaterial() {}
@@ -52,11 +64,6 @@ public final class IplContraptionMaterial {
         if (contraptions.isEmpty()) return List.of();
         int tick = ship.getLevel().getServer().getTickCount();
         if (tick != shapesTick) {
-            PREVIOUS.clear();
-            if (tick == shapesTick + 1) {
-                for (List<IplContraptionShape> list : SHAPES.values())
-                    for (IplContraptionShape shape : list) PREVIOUS.put(shape.entity, shape.centres);
-            }
             SHAPES.clear();
             shapesTick = tick;
         }
@@ -107,21 +114,64 @@ public final class IplContraptionMaterial {
         return out;
     }
 
-    private static int tetherPiece(IplPieceMap map, IplPieceMap.Edge[] edges, IplContraptionShape shape) {
-        return map.classify(edges, shape.tx, shape.ty, shape.tz);
+    // ------------------------------------------------------------------ labels
+
+    /**
+     * Starts labelling contraptions the map does not know yet: every block takes the piece of the
+     * body block the contraption hangs on (a contraption assembled or loaded while its body
+     * straddles). Known contraptions keep their labels, also across flips and moves to another
+     * dimension (the entity keeps its UUID).
+     */
+    static void seed(ServerSubLevel ship, IplPieceMap map) {
+        IplPieceMap.Edge[] edges = map.edges();
+        for (IplContraptionShape shape : shapes(ship)) {
+            UUID id = shape.entity.getUUID();
+            if (map.knowsContraption(id)) continue;
+            map.addContraption(id, shape.packedBlocks(), map.classify(edges, shape.tx, shape.ty, shape.tz));
+        }
     }
 
     /**
-     * A contraption in piece {@code node} enters {@code now} (plot frame of that piece,
-     * {@code before} a tick earlier): the session must open. See {@link IplContraptionShape#enters}.
+     * Contraption blocks that passed the aperture of edge {@code parent -> child} ({@code child < 0}
+     * before the session opens) during the part {@code [from, to]} of this sample, while the aperture
+     * moved from {@code before} to {@code now} (plot frame of {@code parent}). A block of the parent
+     * passes front to back, one of the child back to front ({@code backwardMargin} around the
+     * rectangle, like the voxels' bridge slack).
      */
-    static boolean enters(ServerSubLevel ship, IplPieceMap map, int node, IplPieceMap.Aperture before,
-                          IplPieceMap.Aperture now) {
-        IplPieceMap.Edge[] edges = map.edges();
+    static List<Crossing> crossings(ServerSubLevel ship, IplPieceMap map, int parent, int child,
+                                    IplPieceMap.Aperture before, IplPieceMap.Aperture now,
+                                    double from, double to, double backwardMargin) {
+        List<Crossing> out = null;
         for (IplContraptionShape shape : shapes(ship)) {
-            if (shape.enters(edges, tetherPiece(map, edges, shape), node, before, now, PREVIOUS.get(shape.entity))) {
-                return true;
+            double[] previous = SAMPLED.get(shape.entity);
+            if (previous == null || previous.length != shape.centres.length) continue;
+            UUID id = shape.entity.getUUID();
+            Long2ByteMap labels = map.contraptionLabels(id);
+            for (int i = 0; i < shape.blocks.length; i++) {
+                int label = shape.label(labels, i);
+                boolean forward = label == parent;
+                if (!forward && (child < 0 || label != child)) continue;
+                double t = shape.crossing(before, now, previous, from, to, i, forward, forward ? 0.0 : backwardMargin);
+                if (Double.isNaN(t)) continue;
+                if (out == null) out = new ArrayList<>(4);
+                out.add(new Crossing(id, shape.blocks[i].asLong(), t, forward));
             }
+        }
+        return out == null ? List.of() : out;
+    }
+
+    /** End of a sample of the body: the next one sweeps its contraptions from where they are now. */
+    static void sampled(ServerSubLevel ship) {
+        for (IplContraptionShape shape : shapes(ship)) SAMPLED.put(shape.entity, shape.centres);
+    }
+
+    /**
+     * A block of piece {@code node} lies across {@code now} (plot frame of that piece) with its
+     * centre in front: the session must open, like for a body voxel touching the aperture.
+     */
+    static boolean entering(ServerSubLevel ship, IplPieceMap map, int node, IplPieceMap.Aperture now) {
+        for (IplContraptionShape shape : shapes(ship)) {
+            if (shape.entering(now, map.contraptionLabels(shape.entity.getUUID()), node)) return true;
         }
         return false;
     }
@@ -129,21 +179,25 @@ public final class IplContraptionMaterial {
     /** Pieces some contraption of the body holds open over {@code edges} ({@link IplContraptionShape#held}). */
     static BitSet held(ServerSubLevel ship, IplPieceMap map, IplPieceMap.Edge[] edges) {
         BitSet out = new BitSet();
-        for (IplContraptionShape shape : shapes(ship)) out.or(shape.held(edges, tetherPiece(map, edges, shape)));
+        for (IplContraptionShape shape : shapes(ship)) {
+            out.or(shape.held(edges, map.contraptionLabels(shape.entity.getUUID())));
+        }
         return out;
     }
 
     /**
-     * A contraption flips with its body: not while one of its blocks is outside the flipping
-     * subtree or lies across an opening out of it. Its blocks, not its swept volume: a turning
-     * windmill does not wait until its whole circle has cleared the opening.
+     * A contraption ends its crossing with its body, in the same flip. The flip only waits for its
+     * blocks outside the flipping subtree that have not passed the plane of {@code entrance} yet
+     * (still in front of it or lying across it), so no block ends up inside the terrain behind the
+     * exit. A block that went past the plane beside the frame keeps no ship waiting; it flips too.
      */
-    static boolean holdsFlip(ServerSubLevel ship, IplPieceMap map, IntPredicate inFlippingSubtree) {
-        IplPieceMap.Edge[] edges = map.edges();
+    static boolean holdsFlip(ServerSubLevel ship, IplPieceMap map, IntPredicate inFlippingSubtree,
+                             IplPieceMap.Aperture entrance) {
         for (IplContraptionShape shape : shapes(ship)) {
-            BitSet nodes = shape.split(edges, tetherPiece(map, edges, shape)).nodes();
-            for (int node = nodes.nextSetBit(0); node >= 0; node = nodes.nextSetBit(node + 1)) {
-                if (!inFlippingSubtree.test(node)) return true;
+            Long2ByteMap labels = map.contraptionLabels(shape.entity.getUUID());
+            for (int i = 0; i < shape.blocks.length; i++) {
+                if (inFlippingSubtree.test(shape.label(labels, i))) continue;
+                if (entrance.side(shape.x(i), shape.y(i), shape.z(i)) >= -IplContraptionShape.BLOCK_RADIUS) return true;
             }
         }
         return false;
@@ -151,33 +205,40 @@ public final class IplContraptionMaterial {
 
     // ------------------------------------------------------------------ natives
 
-    /** A kinematic contraption entered the scene as native collider {@code id}. */
+    /** A kinematic contraption entered the scene as native collider {@code id}; it gets labels with the body's next push. */
     public static void onNativeAdded(KinematicContraption contraption, long scene, int id) {
         NATIVE.put(contraption, new NativeEntry(scene, id));
-        if (contraption instanceof Entity entity) {
-            IplContraptionShape shape = IplContraptions.shape(entity, 1.0f);
-            if (shape != null) pushAnchor(contraption, shape);
-        }
     }
 
     public static void onNativeRemoved(KinematicContraption contraption) {
         NATIVE.remove(contraption);
     }
 
-    /** Before the body is sampled: the natives walk contraption contacts from the current tethers. */
-    static void pushAnchors(ServerSubLevel ship) {
-        for (IplContraptionShape shape : shapes(ship)) {
-            if (shape.entity instanceof KinematicContraption contraption) pushAnchor(contraption, shape);
+    /** Hands the natives the labels of the body's contraptions, when they changed since the last push. */
+    static void pushNatives(ServerSubLevel ship, IplPieceMap map) {
+        if (!IplContraptions.CREATE || !IplRapierNatives.contraptionsSupported()) return;
+        long revision = map.contraptionRevision();
+        for (KinematicContraption contraption : ship.getPlot().getContraptions()) {
+            NativeEntry entry = NATIVE.get(contraption);
+            if (entry == null || !(contraption instanceof Entity entity)
+                || entry.map == map && entry.revision == revision) continue;
+            entry.map = map;
+            entry.revision = revision;
+            Long2ByteMap labels = map.contraptionLabels(entity.getUUID());
+            int n = labels == null ? 0 : labels.size();
+            int[] blocks = new int[n * 3];
+            byte[] pieces = new byte[n];
+            if (labels != null) {
+                int i = 0;
+                for (Long2ByteMap.Entry e : labels.long2ByteEntrySet()) {
+                    long block = e.getLongKey();
+                    blocks[i * 3] = BlockPos.getX(block);
+                    blocks[i * 3 + 1] = BlockPos.getY(block);
+                    blocks[i * 3 + 2] = BlockPos.getZ(block);
+                    pieces[i++] = e.getByteValue();
+                }
+            }
+            IplRapierNatives.setContraptionLabels(entry.scene, entry.id, blocks, pieces);
         }
-    }
-
-    private static void pushAnchor(KinematicContraption contraption, IplContraptionShape shape) {
-        NativeEntry entry = NATIVE.get(contraption);
-        if (entry == null || !IplRapierNatives.contraptionsSupported()) return;
-        if (entry.x == shape.tx && entry.y == shape.ty && entry.z == shape.tz) return;
-        entry.x = shape.tx;
-        entry.y = shape.ty;
-        entry.z = shape.tz;
-        IplRapierNatives.setContraptionAnchor(entry.scene, entry.id, shape.tx, shape.ty, shape.tz);
     }
 }

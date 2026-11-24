@@ -171,31 +171,34 @@ public class ClientWorldLoader {
     private static void tickRemoteWorldRandomTicksClient(
         ClientLevel newWorld, List<Portal> nearbyPortals
     ) {
-        nearbyPortals.stream().filter(
-            portal -> portal.getDestDim() == newWorld.dimension()
-        ).findFirst().ifPresent(portal -> {
-            assert CLIENT.player != null;
-            Vec3 playerPos = CLIENT.player.position();
-            Vec3 center = portal.transformPoint(playerPos);
-            
-            Camera camera = CLIENT.gameRenderer.getMainCamera();
-            Vec3 oldCameraPos = camera.getPosition();
-            
-            ((IECamera) camera).portal_setPos(center);
-            
-            if (newWorld.getGameTime() % 2 == 0) {
-                // it costs some CPU time
-                newWorld.animateTick(
-                    (int) center.x, (int) center.y, (int) center.z
-                );
-            }
-            
+        Portal portal = nearbyPortals.stream().filter(
+            p -> p.getDestDim() == newWorld.dimension()
+        ).findFirst().orElse(null);
+        if (portal == null) {
+            // particles that went through a farther portal still move and age
             CLIENT.particleEngine.tick();
-            
-            ((IECamera) camera).portal_setPos(oldCameraPos);
-        });
+            return;
+        }
         
+        assert CLIENT.player != null;
+        Vec3 playerPos = CLIENT.player.position();
+        Vec3 center = portal.transformPoint(playerPos);
         
+        Camera camera = CLIENT.gameRenderer.getMainCamera();
+        Vec3 oldCameraPos = camera.getPosition();
+        
+        ((IECamera) camera).portal_setPos(center);
+        
+        if (newWorld.getGameTime() % 2 == 0) {
+            // it costs some CPU time
+            newWorld.animateTick(
+                (int) center.x, (int) center.y, (int) center.z
+            );
+        }
+        
+        CLIENT.particleEngine.tick();
+        
+        ((IECamera) camera).portal_setPos(oldCameraPos);
     }
     
     public static void cleanUp() {
