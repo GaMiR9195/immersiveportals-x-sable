@@ -232,7 +232,10 @@ public final class IplPieceTracker {
             BODIES.put(body.id, body);
         }
         sample(body, ship, tick);
-        if (!body.hasSessions() && !body.map.isEmpty()) body.map.clear();
+        if (!body.hasSessions() && !body.map.isEmpty()) {
+            if (IplContraptionMaterial.DIAGNOSTICS) LOG.info("[IPL-LABELS] {} labels cleared: no session", body.id);
+            body.map.clear();
+        }
         settleCounts(body, ship);
         body.pendingFlip = flipChoice(body, ship, tick);
         return body.pendingFlip;
@@ -352,7 +355,7 @@ public final class IplPieceTracker {
             sweepAll(body, ship, tick, observed, fraction, (double)(i-1)/slices);
             body.sampledPose = observed;
         }
-        IplContraptionMaterial.sampled(ship);
+        IplContraptionMaterial.sampled(ship, body.map);
         body.sampledMappings.clear();
         for (int node : body.liveNodes()) {
             if (node == IplPieceMap.NATIVE) continue;
@@ -393,6 +396,7 @@ public final class IplPieceTracker {
         }
         if (target != null) {
             int[] f = target;
+            traceRelabel(body, "session vanished", f);
             body.map.relabel(label -> f[label]);
             for (int n = 1; n <= IplPieceMap.MAX_PIECE; n++) {
                 if (f[n] != n) {
@@ -563,15 +567,40 @@ public final class IplPieceTracker {
     /** A contraption block passing an aperture moves to the other piece of the edge, like a voxel. */
     private static void applyContraptionCrossing(Body body, ServerSubLevel ship, Crossing event) {
         ContraptionBlock key = new ContraptionBlock(event.contraption, event.voxel);
-        if (event.time <= body.contraptionMovedAt.getOrDefault(key, -1.0) + 1.0e-9) return;
+        if (event.time <= body.contraptionMovedAt.getOrDefault(key, -1.0) + 1.0e-9) {
+            traceCrossing(event, "skipped: already moved later in this sample");
+            return;
+        }
         AperturePlan plan = event.plan;
         int child = body.childOf(plan.parent, plan.portal.getUUID());
         int from = event.forward ? plan.parent : child;
-        if (from < 0 || body.map.contraptionLabel(event.contraption, event.voxel) != from) return;
+        int label = body.map.contraptionLabel(event.contraption, event.voxel);
+        if (from < 0 || label != from) {
+            traceCrossing(event, "skipped: label " + label + ", expected " + from);
+            return;
+        }
         if (event.forward && child < 0) child = openSession(body, ship, plan.parent, plan.portal);
-        if (child < 0) return;
+        if (child < 0) {
+            traceCrossing(event, "skipped: no session");
+            return;
+        }
         body.map.setContraptionLabel(event.contraption, event.voxel, event.forward ? child : plan.parent);
         body.contraptionMovedAt.put(key, event.time);
+        traceCrossing(event, "applied, label " + (event.forward ? child : plan.parent));
+    }
+
+    private static void traceRelabel(Body body, String reason, int[] f) {
+        if (!IplContraptionMaterial.DIAGNOSTICS) return;
+        StringBuilder moves = new StringBuilder();
+        for (int n = 0; n < f.length; n++) if (f[n] != n) moves.append(' ').append(n).append("->").append(f[n]);
+        LOG.info("[IPL-LABELS] {} relabelled, {}:{}", body.id, reason, moves);
+    }
+
+    private static void traceCrossing(Crossing event, String outcome) {
+        if (!IplContraptionMaterial.DIAGNOSTICS) return;
+        LOG.info("[IPL-LABELS] crossing {} {} {} {}->{} at {}: {}", event.contraption, BlockPos.of(event.voxel).toShortString(),
+            event.forward ? "forward" : "backward", event.plan.parent, event.plan.portal.getUUID().toString().substring(0, 8),
+            String.format("%.3f", event.time), outcome);
     }
 
     private static double crossingTime(AperturePlan plan, long voxel) {
@@ -810,6 +839,7 @@ public final class IplPieceTracker {
         StraddleKey key = body.keys[node];
         int[] f = new int[IplPieceMap.MAX_PIECE + 1];
         for (int n = 0; n < f.length; n++) f[n] = n != IplPieceMap.NATIVE && body.inSubtree(n, node) ? up : n;
+        traceRelabel(body, "session " + node + " ended (" + reason + ")", f);
         body.map.relabel(label -> f[label]);
         for (int n = 1; n < f.length; n++) {
             if (f[n] != n && body.keys[n] != null) {
@@ -979,6 +1009,7 @@ public final class IplPieceTracker {
             byPath.put(path, f[p.node()]);
         }
         f[node] = IplPieceMap.NATIVE;
+        traceRelabel(body, "flip to piece " + node, f);
         body.map.relabel(label -> f[label]);
         ChunkPos newMin = live.getPlot().getChunkMin();
         body.map.translate(newMin.x - oldMin.x, newMin.z - oldMin.z);

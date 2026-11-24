@@ -149,7 +149,7 @@ every camera works with portals, and contraptions on ships no longer vanish.
 ### Performance
 
 - The per-frame contraption diagnostics (a walk over every entity of each rendered level) are off
-  unless `-Dipl.contraptionDiagnostics=true` is set; they also log whether a contraption was culled.
+  unless `-Dipl.contraptionDiagnostics=true` is set; they also trace every contraption label decision.
 
 ## [0.6.2]
 

@@ -32,8 +32,10 @@ import java.util.function.IntPredicate;
 public final class IplContraptionMaterial {
 
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-contraptions");
-    /** Logs what the natives receive (`-Dipl.contraptionDiagnostics=true`). */
-    private static final boolean DIAGNOSTICS = Boolean.getBoolean("ipl.contraptionDiagnostics");
+    /** Traces labels and what the natives receive (`-Dipl.contraptionDiagnostics=true`). */
+    static final boolean DIAGNOSTICS = Boolean.getBoolean("ipl.contraptionDiagnostics");
+    /** Blocks seen on the wrong side of an aperture for their label (trace), by contraption, block and label. */
+    private static final java.util.Set<String> MISPLACED = new java.util.HashSet<>();
     private static final java.util.Set<Entity> UNMOUNTED = java.util.Collections.newSetFromMap(new WeakHashMap<>());
 
     /** Native id of a kinematic contraption and the label state last handed to it. */
@@ -134,7 +136,11 @@ public final class IplContraptionMaterial {
         for (IplContraptionShape shape : shapes(ship)) {
             UUID id = shape.entity.getUUID();
             if (map.knowsContraption(id)) continue;
-            map.addContraption(id, shape.packedBlocks(), map.classify(edges, shape.tx, shape.ty, shape.tz));
+            int piece = map.classify(edges, shape.tx, shape.ty, shape.tz);
+            map.addContraption(id, shape.packedBlocks(), piece);
+            if (DIAGNOSTICS) {
+                LOG.info("[IPL-LABELS] seed {}: {} blocks into piece {}, {} edges", id, shape.blocks.length, piece, edges.length);
+            }
         }
     }
 
@@ -151,7 +157,13 @@ public final class IplContraptionMaterial {
         List<Crossing> out = null;
         for (IplContraptionShape shape : shapes(ship)) {
             double[] previous = SAMPLED.get(shape.entity);
-            if (previous == null || previous.length != shape.centres.length) continue;
+            if (previous == null || previous.length != shape.centres.length) {
+                if (DIAGNOSTICS) {
+                    LOG.info("[IPL-LABELS] {} not swept through {}->{}: {}", shape.entity.getUUID(), parent, child,
+                        previous == null ? "no previous centres" : "block count changed");
+                }
+                continue;
+            }
             UUID id = shape.entity.getUUID();
             Long2ByteMap labels = map.contraptionLabels(id);
             for (int i = 0; i < shape.blocks.length; i++) {
@@ -168,8 +180,38 @@ public final class IplContraptionMaterial {
     }
 
     /** End of a sample of the body: the next one sweeps its contraptions from where they are now. */
-    static void sampled(ServerSubLevel ship) {
-        for (IplContraptionShape shape : shapes(ship)) SAMPLED.put(shape.entity, shape.centres);
+    static void sampled(ServerSubLevel ship, IplPieceMap map) {
+        for (IplContraptionShape shape : shapes(ship)) {
+            SAMPLED.put(shape.entity, shape.centres);
+            if (DIAGNOSTICS) traceMisplaced(shape, map);
+        }
+    }
+
+    /**
+     * Trace: blocks whose centre lies more than a block radius on the other side of an aperture of
+     * their piece, inside its rectangle, logged when they become and stop being so.
+     */
+    private static void traceMisplaced(IplContraptionShape shape, IplPieceMap map) {
+        UUID id = shape.entity.getUUID();
+        Long2ByteMap labels = map.contraptionLabels(id);
+        for (int i = 0; i < shape.blocks.length; i++) {
+            int label = shape.label(labels, i);
+            String key = id + " " + shape.blocks[i].toShortString() + " label " + label;
+            String found = null;
+            for (IplPieceMap.Edge e : map.edges()) {
+                if (e.parent != label && e.child != label) continue;
+                IplPieceMap.Aperture a = e.aperture;
+                double side = a.side(shape.x(i), shape.y(i), shape.z(i));
+                double u = a.u(shape.x(i), shape.y(i), shape.z(i)), v = a.v(shape.x(i), shape.y(i), shape.z(i));
+                boolean wrong = label == e.parent ? side < -IplContraptionShape.BLOCK_RADIUS : side > IplContraptionShape.BLOCK_RADIUS;
+                if (!wrong || Math.abs(u) > a.halfW() || Math.abs(v) > a.halfH()) continue;
+                found = String.format("edge %d->%d side %.3f u %.2f/%.2f v %.2f/%.2f", e.parent, e.child, side,
+                    u, a.halfW(), v, a.halfH());
+                break;
+            }
+            if (found != null && MISPLACED.add(key)) LOG.info("[IPL-LABELS] misplaced {}: {}", key, found);
+            else if (found == null && MISPLACED.remove(key)) LOG.info("[IPL-LABELS] placed again {}", key);
+        }
     }
 
     /**
