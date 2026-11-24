@@ -5,6 +5,7 @@ import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
 import net.minecraft.core.BlockPos;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayDeque;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
@@ -117,8 +118,8 @@ public final class IplStraddleCollisionClip {
         private final double offsetX;
         private final double offsetY;
         private final double offsetZ;
-        @Nullable
-        private BoundingBox3dc next;
+        /** Kept parts of the input box last read; an oblique cut may leave several. */
+        private final ArrayDeque<BoundingBox3dc> pending = new ArrayDeque<>(4);
 
         ClippedIterator(Iterator<BoundingBox3dc> in, IplStraddlePoseMap.LocalHalfSpace plane,
                         int blockX, int blockY, int blockZ) {
@@ -131,18 +132,16 @@ public final class IplStraddleCollisionClip {
 
         @Override
         public boolean hasNext() {
-            while (next == null && in.hasNext()) {
-                next = clipOne(in.next());
+            while (pending.isEmpty() && in.hasNext()) {
+                clipOne(in.next());
             }
-            return next != null;
+            return !pending.isEmpty();
         }
 
         @Override
         public BoundingBox3dc next() {
             if (!hasNext()) throw new NoSuchElementException();
-            BoundingBox3dc result = next;
-            next = null;
-            return result;
+            return pending.poll();
         }
 
         /**
@@ -150,29 +149,14 @@ public final class IplStraddleCollisionClip {
          * into plot-local space for the cut and pushed back afterwards -- the caller adds the
          * block position again itself.
          */
-        @Nullable
-        private BoundingBox3dc clipOne(BoundingBox3dc box) {
-            double minX = box.minX() + offsetX;
-            double minY = box.minY() + offsetY;
-            double minZ = box.minZ() + offsetZ;
-            double maxX = box.maxX() + offsetX;
-            double maxY = box.maxY() + offsetY;
-            double maxZ = box.maxZ() + offsetZ;
-            BoundingBox3d cut = IplStraddlePoseMap.clipLocalBoxKeeping(minX, minY, minZ, maxX, maxY, maxZ, plane);
-            if (cut == null) return null;
-            if (cut.minX == minX && cut.minY == minY && cut.minZ == minZ
-                && cut.maxX == maxX && cut.maxY == maxY && cut.maxZ == maxZ) {
-                return box;
-            }
-            // A degenerate sliver is worse than nothing: SAT on a zero-thickness box yields a
-            // zero MTV that still counts as colliding, pinning the entity against a surface
-            // that has no material left.
-            if (cut.maxX - cut.minX <= 1.0e-6 || cut.maxY - cut.minY <= 1.0e-6 || cut.maxZ - cut.minZ <= 1.0e-6) {
-                return null;
-            }
-            return new BoundingBox3d(
-                cut.minX - offsetX, cut.minY - offsetY, cut.minZ - offsetZ,
-                cut.maxX - offsetX, cut.maxY - offsetY, cut.maxZ - offsetZ);
+        private void clipOne(BoundingBox3dc box) {
+            double minX = box.minX() + offsetX, minY = box.minY() + offsetY, minZ = box.minZ() + offsetZ;
+            double maxX = box.maxX() + offsetX, maxY = box.maxY() + offsetY, maxZ = box.maxZ() + offsetZ;
+            IplBoxCut.cut(minX, minY, minZ, maxX, maxY, maxZ, plane, (x0, y0, z0, x1, y1, z1) -> {
+                boolean whole = x0 == minX && y0 == minY && z0 == minZ && x1 == maxX && y1 == maxY && z1 == maxZ;
+                pending.add(whole ? box : new BoundingBox3d(
+                    x0 - offsetX, y0 - offsetY, z0 - offsetZ, x1 - offsetX, y1 - offsetY, z1 - offsetZ));
+            });
         }
     }
 }

@@ -11,6 +11,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
@@ -20,7 +22,8 @@ import java.util.function.Predicate;
 
 /**
  * Create's entity collision of a contraption on a straddling body runs once per piece
- * ({@link IplContraptionCollision}): entities of the piece's level, blocks of the piece.
+ * ({@link IplContraptionCollision}): entities of the piece's level, blocks of the piece, a block
+ * lying across an aperture cut at its plane.
  */
 @Pseudo
 @Mixin(targets = "com.simibubi.create.content.contraptions.ContraptionCollider", remap = false)
@@ -54,5 +57,13 @@ public abstract class ContraptionColliderPiecesMixin {
     )
     private static boolean ipl$hideOtherPieces(Contraption contraption, BlockPos pos, Operation<Boolean> original) {
         return original.call(contraption, pos) || IplContraptionCollision.hides(pos);
+    }
+
+    @WrapOperation(
+        method = "getPotentiallyCollidedShapes",
+        at = @At(value = "INVOKE", target = "Lnet/minecraft/world/phys/shapes/VoxelShape;forAllBoxes(Lnet/minecraft/world/phys/shapes/Shapes$DoubleLineConsumer;)V")
+    )
+    private static void ipl$cutAtAperture(VoxelShape shape, Shapes.DoubleLineConsumer out, Operation<Void> original) {
+        original.call(shape, IplContraptionCollision.cut(out));
     }
 }

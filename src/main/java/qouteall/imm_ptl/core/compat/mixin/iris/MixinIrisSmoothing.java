@@ -17,8 +17,9 @@ import qouteall.imm_ptl.core.compat.iris_compatibility.IrisViewContexts;
  */
 @Mixin(value = {SmoothedFloat.class, SmoothFloat.class}, remap = false)
 public class MixinIrisSmoothing implements IrisViewContexts.Temporal {
-    @Shadow private float accumulator;
-    @Shadow private boolean hasInitialValue;
+    // A mixin with several targets may only shadow members with remap = false set on the annotation itself.
+    @Shadow(remap = false) private float accumulator;
+    @Shadow(remap = false) private boolean hasInitialValue;
     @Unique private final IrisViewContexts.Binding ip_binding = new IrisViewContexts.Binding();
 
     @Inject(method = "update", at = @At("HEAD"), cancellable = true, require = 0)

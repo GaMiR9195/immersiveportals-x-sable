@@ -3,6 +3,7 @@ package qouteall.imm_ptl.core.render;
 import com.mojang.blaze3d.vertex.PoseStack;
 import de.nick1st.imm_ptl.events.ClientCleanupEvent;
 import de.nick1st.imm_ptl.events.DimensionEvents;
+import ipl.sable.SableBridge;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
@@ -67,6 +68,8 @@ public class CrossPortalEntityRenderer {
     
     /** Whether the entity being drawn has its own cut, set up in {@link #beforeRenderingEntity}. */
     private static boolean isEntityCut = false;
+    /** Nesting of draws of the first-person camera entity seen from outside ({@link #isDrawnFromOutside}). */
+    private static int seenFromOutside = 0;
     
     public static void init() {
         NeoForge.EVENT_BUS.addListener(IPGlobal.PostClientTickEvent.class, e -> CrossPortalEntityRenderer.refreshPortals());
@@ -402,6 +405,28 @@ public class CrossPortalEntityRenderer {
         matrixStack.translate(-anchor.x, -anchor.y, -anchor.z);
     }
     
+    /**
+     * Whether a draw of {@code entity} shows the first-person camera entity from outside: in a
+     * portal view, or as its projection beyond a portal. The camera counts as third person during
+     * such a draw ({@code MixinOptions_SeenFromOutside}).
+     */
+    public static boolean isDrawnFromOutside(Entity entity) {
+        return entity == client.getCameraEntity() && (PortalRendering.isRendering() || isRenderingEntityProjection)
+            && client.options.getCameraType().isFirstPerson();
+    }
+    
+    public static void beginDrawFromOutside() {
+        seenFromOutside++;
+    }
+    
+    public static void endDrawFromOutside() {
+        seenFromOutside--;
+    }
+    
+    public static boolean isCameraEntitySeenFromOutside() {
+        return seenFromOutside > 0;
+    }
+    
     public static boolean shouldRenderPlayerDefault() {
         if (!IPGlobal.renderYourselfInPortal) {
             return false;
@@ -477,12 +502,13 @@ public class CrossPortalEntityRenderer {
         return distanceToCamera > 1 || PortalRendering.isRenderingOddNumberOfMirrors();
     }
     
+    /** Where the entity's eyes are drawn; an entity living in a ship's plot is drawn where its ship is. */
     public static Vec3 getRenderingCameraPos(Entity entity) {
         if (entity instanceof LocalPlayer) {
             return RenderStates.originalPlayerPos.add(
                 McHelper.getEyeOffset(entity)
             );
         }
-        return entity.getEyePosition(RenderStates.getPartialTick());
+        return SableBridge.clientDrawnPoint(entity, entity.getEyePosition(RenderStates.getPartialTick()));
     }
 }

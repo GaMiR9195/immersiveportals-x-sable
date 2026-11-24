@@ -95,6 +95,12 @@ public final class IplFlywheelFallback {
     private static final Set<Entity> VETOED_ENTITIES = ConcurrentHashMap.newKeySet();
     private static final Set<Entity> RETURNING_ENTITIES = Collections.newSetFromMap(new WeakHashMap<>());
     private static final Map<Entity, Long> ENTITY_LAST_WANTED = new WeakHashMap<>();
+    /**
+     * Contraptions refused while their structure had not arrived. A contraption entering a level
+     * other than the player's gets its structure after it joins: nothing queued it again, so it
+     * stayed invisible until its level was reloaded.
+     */
+    private static final Set<Entity> AWAITING_STRUCTURE = ConcurrentHashMap.newKeySet();
 
     /** Whether Flywheel must refuse {@code be} now ({@code FlywheelStorageVetoMixin}). */
     public static boolean isVetoed(BlockEntity be) {
@@ -104,6 +110,14 @@ public final class IplFlywheelFallback {
     /** Whether Flywheel must refuse the visual of contraption {@code entity} now. */
     public static boolean isVetoed(Entity entity) {
         return VETOED_ENTITIES.contains(entity);
+    }
+
+    /** Whether Flywheel must refuse contraption {@code entity} now: handed to its renderer, or without its structure yet. */
+    public static boolean refuses(Entity entity) {
+        if (isVetoed(entity)) return true;
+        if (!IplContraptions.isHollow(entity)) return false;
+        AWAITING_STRUCTURE.add(entity);
+        return true;
     }
 
     /** Whether Create's renderer draws contraption {@code entity} this frame instead of Flywheel. */
@@ -150,6 +164,15 @@ public final class IplFlywheelFallback {
             VETOED_ENTITIES.remove(entity);
             ENTITY_LAST_WANTED.remove(entity);
             RETURNING_ENTITIES.add(entity);
+        }
+        if (!AWAITING_STRUCTURE.isEmpty()) {
+            for (Entity entity : AWAITING_STRUCTURE) {
+                if (entity.isRemoved()) AWAITING_STRUCTURE.remove(entity);
+                else if (entity.level() == level && !IplContraptions.isHollow(entity)) {
+                    AWAITING_STRUCTURE.remove(entity);
+                    if (!VETOED_ENTITIES.contains(entity)) RETURNING_ENTITIES.add(entity);
+                }
+            }
         }
         RETURNING_ENTITIES.removeIf(entity -> entity.isRemoved() || IplContraptions.isHollow(entity)
             || entity.level() == level && record.containsKey(entity));

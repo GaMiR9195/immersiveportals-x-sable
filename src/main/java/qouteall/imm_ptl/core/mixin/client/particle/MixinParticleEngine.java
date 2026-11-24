@@ -24,7 +24,7 @@ public class MixinParticleEngine implements IEParticleManager {
     @Shadow
     protected ClientLevel level;
     
-    // quad particles are drawn by ParticleTeleportation, cut at openings and at the exit of a portal view
+    // particles are drawn by ParticleTeleportation, cut at openings and at the exit of a portal view
     @WrapWithCondition(
         method = "render(Lnet/minecraft/client/renderer/LightTexture;Lnet/minecraft/client/Camera;FLnet/minecraft/client/renderer/culling/Frustum;Ljava/util/function/Predicate;)V",
         at = @At(

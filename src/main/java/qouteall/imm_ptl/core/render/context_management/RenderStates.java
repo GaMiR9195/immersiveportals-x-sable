@@ -4,7 +4,6 @@ import com.mojang.logging.LogUtils;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.PlayerInfo;
-import net.minecraft.client.particle.Particle;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
@@ -24,7 +23,6 @@ import qouteall.imm_ptl.core.block_manipulation.BlockManipulationClient;
 import qouteall.imm_ptl.core.ducks.IEEntity;
 import qouteall.imm_ptl.core.ducks.IEGameRenderer;
 import qouteall.imm_ptl.core.miscellaneous.ClientPerformanceMonitor;
-import qouteall.imm_ptl.core.mixin.client.particle.IEParticle;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.portal.animation.StableClientTimer;
 import qouteall.imm_ptl.core.render.CrossPortalEntityRenderer;
@@ -235,18 +233,6 @@ public class RenderStates {
             return true;
         }
         return renderedDimensions.contains(dimensionType);
-    }
-    
-    public static boolean shouldRenderParticle(Particle particle) {
-        if (((IEParticle) particle).portal_getWorld() != Minecraft.getInstance().level) {
-            return false;
-        }
-        if (PortalRendering.isRendering()) {
-            Portal renderingPortal = PortalRendering.getRenderingPortal();
-            Vec3 particlePos = particle.getBoundingBox().getCenter();
-            return renderingPortal.isOnDestinationSide(particlePos, 0.5);
-        }
-        return true;
     }
     
     public static void setPartialTick(float partialTick_) {

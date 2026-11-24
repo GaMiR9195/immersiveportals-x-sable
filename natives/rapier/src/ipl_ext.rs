@@ -146,19 +146,23 @@ impl IplPieces {
     }
 
     /// Piece of a contact point (`plot`) on a block of a kinematic contraption mounted on the
-    /// body: the block's label, except for a block lying across the aperture of an edge of that
-    /// piece (its centre `centre` within [`MOUNTED_BLOCK_RADIUS`] of the plane, inside the
-    /// rectangle), whose points belong to the side of the plane they are on. Same rule as
-    /// `IplContraptionShape.split` on the Java side.
+    /// body: the block's label, moved through every aperture rectangle its centre passed since
+    /// the labels were made (from `old`, its centre then, to `centre`, both plot coordinates),
+    /// except for a block lying across the aperture of an edge of that piece (its centre within
+    /// [`MOUNTED_BLOCK_RADIUS`] of the plane, inside the rectangle), whose points belong to the
+    /// side of the plane they are on. Same rule as `IplContraptionShape.split` on the Java side;
+    /// a turning contraption changes piece within the step instead of at the next label push.
     pub fn classify_mounted(
         &self,
         label: u8,
+        old: Option<DVec3>,
         centre: DVec3,
         plot: DVec3,
         in_parent: impl Fn(u8, DVec3) -> Option<DVec3>,
     ) -> u8 {
+        let piece = old.map_or(label, |old| self.crossed(label, old, centre, &in_parent));
         for e in &self.edges {
-            if label != e.parent && label != e.child {
+            if piece != e.parent && piece != e.child {
                 continue;
             }
             let (Some(c), Some(p)) = (in_parent(e.parent, centre), in_parent(e.parent, plot)) else {
@@ -173,28 +177,19 @@ impl IplPieces {
             }
             return if (p - e.origin).dot(e.normal) >= 0.0 { e.parent } else { e.child };
         }
-        label
+        piece
     }
 
-    /// Classifies the body's OWN surface witness, not the midpoint between colliders.
-    /// `in_parent` maps any plot point to an edge's current parent frame. The observed
-    /// centre segment supplies membership between label updates; no prediction distance
-    /// or portal slab limits a piece that already crossed the finite aperture.
-    pub fn classify(&self, plot: DVec3, in_parent: impl Fn(u8, DVec3) -> Option<DVec3>) -> u8 {
-        let voxel = plot.floor();
-        self.classify_voxel(plot, voxel.as_ivec3(), in_parent)
-    }
-
-    /// The dispatcher knows the material voxel even when its surface witness lies exactly
-    /// on an integer edge, or a collision shape extends outside the nominal block cube.
-    pub fn classify_voxel(
+    /// Piece of material labelled `label` whose centre was at `old` when the labels were made
+    /// and is at `centre` now (plot coordinates), after the aperture rectangles it passed since,
+    /// in the order it passed them.
+    fn crossed(
         &self,
-        plot: DVec3,
-        voxel: rapier3d::glamx::IVec3,
-        in_parent: impl Fn(u8, DVec3) -> Option<DVec3>,
+        label: u8,
+        old: DVec3,
+        centre: DVec3,
+        in_parent: &impl Fn(u8, DVec3) -> Option<DVec3>,
     ) -> u8 {
-        let label = self.label(voxel.x, voxel.y, voxel.z);
-        let centre = voxel.as_dvec3() + DVec3::splat(0.5);
         let mut piece = label;
         let mut after = -1.0;
         // Order by observed crossing time, not session/node allocation order. This also
@@ -208,7 +203,7 @@ impl IplPieces {
                 let Some(p) = in_parent(e.parent, centre) else {
                     continue;
                 };
-                let old = centre - e.plot_origin;
+                let old = old - e.plot_origin;
                 let now = p - e.origin;
                 let s0 = old.dot(e.plot_normal);
                 let s1 = now.dot(e.normal);
@@ -239,6 +234,29 @@ impl IplPieces {
             after = t;
             piece = target;
         }
+        piece
+    }
+
+    /// Classifies the body's OWN surface witness, not the midpoint between colliders.
+    /// `in_parent` maps any plot point to an edge's current parent frame. The observed
+    /// centre segment supplies membership between label updates; no prediction distance
+    /// or portal slab limits a piece that already crossed the finite aperture.
+    pub fn classify(&self, plot: DVec3, in_parent: impl Fn(u8, DVec3) -> Option<DVec3>) -> u8 {
+        let voxel = plot.floor();
+        self.classify_voxel(plot, voxel.as_ivec3(), in_parent)
+    }
+
+    /// The dispatcher knows the material voxel even when its surface witness lies exactly
+    /// on an integer edge, or a collision shape extends outside the nominal block cube.
+    pub fn classify_voxel(
+        &self,
+        plot: DVec3,
+        voxel: rapier3d::glamx::IVec3,
+        in_parent: impl Fn(u8, DVec3) -> Option<DVec3>,
+    ) -> u8 {
+        let label = self.label(voxel.x, voxel.y, voxel.z);
+        let centre = voxel.as_dvec3() + DVec3::splat(0.5);
+        let piece = self.crossed(label, centre, centre, &in_parent);
         for e in &self.edges {
             if piece != e.parent && piece != e.child {
                 continue;
@@ -411,6 +429,11 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setPieceEdges<'lo
     };
     let edges = ipl_parse_edges(&values);
     let scene = unsafe { &*(scene_handle as *const PhysicsScene) };
+    // Simulation before scene data, the order solver hooks take them in.
+    let sim_data = scene
+        .sim_data
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sable_data = scene
         .sable_data
         .write()
@@ -425,7 +448,19 @@ pub extern "system" fn Java_ipl_sable_natives_IplRapierNatives_setPieceEdges<'lo
     let changed = pieces.dirty_contacts || pieces.edges != edges;
     pieces.edges = edges;
     pieces.dirty_contacts = false;
+    // The labels were made now: so were those of the contraptions on the body.
+    let mounted = info.mounted.clone();
+    for id in mounted {
+        if let Some(contraption) = sable_data.level_colliders.get_mut(&id) {
+            contraption.label_pose = sim_data
+                .collider_set
+                .get(contraption.collider)
+                .and_then(|c| c.position_wrt_parent())
+                .copied();
+        }
+    }
     drop(sable_data);
+    drop(sim_data);
     if changed {
         invalidate_piece_contacts(scene, body_id as LevelColliderID);
     }

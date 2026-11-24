@@ -31,6 +31,8 @@ public class CrossPortalViewRendering {
     
     /** Reused for the camera of the current frame; render thread only. */
     private static final Camera PROBE_CAMERA = new Camera();
+    /** Frame the probe was set up for: camera mods run on it once per frame, not per query. */
+    private static long probeFrame = Long.MIN_VALUE;
     
     private CrossPortalViewRendering() {}
     
@@ -81,6 +83,10 @@ public class CrossPortalViewRendering {
     }
     
     private static Camera setupLocalCamera(Entity cameraEntity, float partialTick) {
+        if (probeFrame == RenderStates.renderStartNanoTime && PROBE_CAMERA.getEntity() == cameraEntity) {
+            return PROBE_CAMERA;
+        }
+        probeFrame = RenderStates.renderStartNanoTime;
         IECamera mainCamera = (IECamera) client.gameRenderer.getMainCamera();
         ((IECamera) PROBE_CAMERA).ip_setCameraY(mainCamera.ip_getCameraY(), mainCamera.ip_getLastCameraY());
         PROBE_CAMERA.setup(client.level, cameraEntity, isThirdPerson(), isFrontView(), partialTick);

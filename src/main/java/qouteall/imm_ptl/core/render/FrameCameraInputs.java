@@ -22,7 +22,9 @@ import java.util.function.DoubleSupplier;
  * the results and the other views replay them:
  * <ul>
  *   <li>camera angles: the yaw and pitch offsets and the roll the listeners produced;</li>
- *   <li>FOV and the final projection, for portal passes that see the view's bobbing unscaled.</li>
+ *   <li>FOV and the final projection, for portal passes that see the view's bobbing unscaled;</li>
+ *   <li>the camera itself: a portal pass takes the view's camera instead of setting up its own,
+ *   so mods hooked into {@code Camera.setup} run once per frame, for the player's view.</li>
  * </ul>
  * Renders from other mods' cameras ({@link IplForeignPerspective}) are left alone.
  * Render thread only.
@@ -37,6 +39,9 @@ public final class FrameCameraInputs {
     private static float pitchOffset;
     private static float roll;
     
+    /** The player's view camera once set up this frame. */
+    private static @Nullable Camera viewCamera;
+    
     private static double fov = Double.NaN;
     private static @Nullable Matrix4f projection;
     
@@ -47,6 +52,19 @@ public final class FrameCameraInputs {
         viewDone = false;
         fov = Double.NaN;
         projection = null;
+        viewCamera = null;
+    }
+    
+    /** {@code Camera.setup} of {@code camera} finished; the view's camera is kept for the portal passes. */
+    public static void onSetUp(Camera camera) {
+        if (isRecordingView() && camera == Minecraft.getInstance().gameRenderer.getMainCamera()) {
+            viewCamera = camera;
+        }
+    }
+    
+    /** The camera a portal pass's {@code camera} takes instead of being set up, or null to set it up. */
+    public static @Nullable Camera mirroredView(Camera camera) {
+        return viewCamera != null && camera != viewCamera && isReplayingPass() ? viewCamera : null;
     }
     
     /** {@code GameRenderer.renderLevel} begins; {@code depth} is 1 when it is not nested. */

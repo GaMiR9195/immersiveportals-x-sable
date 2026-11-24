@@ -23,10 +23,14 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.fml.ModList;
 import org.jetbrains.annotations.Nullable;
+import qouteall.imm_ptl.core.portal.Portal;
+import qouteall.imm_ptl.core.render.context_management.PortalRendering;
 import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.ArrayList;
@@ -150,7 +154,7 @@ public final class IplContraptionRender {
     /** Contraptions of {@code level} that Flywheel must hand to their renderer this frame. */
     static Set<Entity> wantedByRenderer(ClientLevel level) {
         Set<Entity> wanted = Collections.newSetFromMap(new IdentityHashMap<>());
-        if (!IplContraptions.CREATE) return wanted;
+        if (!IplContraptions.any()) return wanted;
         for (Map.Entry<SubLevel, List<Entity>> body : contraptionsIn(level).entrySet()) {
             if (!(body.getKey() instanceof ClientSubLevel sub)) continue;
             if (IplParentDimSync.isSuppressedSuccessor(sub)) {
@@ -178,6 +182,42 @@ public final class IplContraptionRender {
         return IplOpenings.anyNear(level, world.toMojang(), NEAR_OPENING);
     }
 
+    // ------------------------------------------------------------------ culling
+
+    /**
+     * Visibility test of an entity's draw, given the dispatcher's result. Sable tests an entity of
+     * a body by a small box around its position and a portal view by that position's side of the
+     * view's exit; for a contraption that position is its anchor: sails in view were culled with
+     * their anchor off screen, and a contraption whose anchor lay just behind an exit was missing
+     * from the whole view. A contraption is tested by the box of everything it covers or sweeps
+     * ({@link IplContraptions#reach}) at its body's render pose; the view's clip cuts the rest.
+     */
+    public static boolean inView(Entity entity, Frustum frustum, boolean visible) {
+        if (visible || !IplContraptions.isContraption(entity)) return visible;
+        AABB reach = IplContraptions.isHollow(entity) ? null : worldReach(entity);
+        return reach != null && frustum.isVisible(reach) && beyondViewExit(reach);
+    }
+
+    @Nullable
+    private static AABB worldReach(Entity entity) {
+        ClientSubLevel sub = bodyOf(entity);
+        double[] r = sub == null ? null : IplContraptions.reach(entity);
+        if (r == null) return null;
+        return new BoundingBox3d(r[0], r[1], r[2], r[3], r[4], r[5]).transform(sub.renderPose()).toMojang();
+    }
+
+    /** Whether part of {@code box} is in front of the exit of the portal view being drawn (always outside one). */
+    private static boolean beyondViewExit(AABB box) {
+        if (!PortalRendering.isRendering()) return true;
+        Portal portal = PortalRendering.getRenderingPortal();
+        for (int i = 0; i < 8; i++) {
+            Vec3 corner = new Vec3((i & 1) == 0 ? box.minX : box.maxX, (i & 2) == 0 ? box.minY : box.maxY,
+                (i & 4) == 0 ? box.minZ : box.maxZ);
+            if (portal.isOnDestinationSide(corner, -0.01)) return true;
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------ drawing
 
     /** The entity pass of the contraption's own level: the body's native piece. */
@@ -202,7 +242,7 @@ public final class IplContraptionRender {
      */
     public static void drawProjections(List<IplClientProjections.StraddleProjection> projections, LevelRenderer renderer,
                                        Camera camera, float partialTick, MultiBufferSource.BufferSource source) {
-        if (!IplContraptions.CREATE) return;
+        if (!IplContraptions.any()) return;
         Vec3 cam = camera.getPosition();
         for (IplClientProjections.StraddleProjection projection : projections) {
             List<Entity> contraptions = contraptionsOf(projection.sub());

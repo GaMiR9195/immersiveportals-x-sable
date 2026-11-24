@@ -77,6 +77,9 @@ pub struct ActiveLevelColliderInfo {
     /// Kinematic contraption: piece of each of its blocks that is not native, by contraption-local
     /// block position (`setContraptionLabels`).
     pub contraption_labels: HashMap<(i32, i32, i32), u8>,
+    /// Kinematic contraption: its place on the body's rigid body when the body's labels were
+    /// made (`setPieceEdges`); the start of the crossings its blocks make within a step.
+    pub label_pose: Option<rapier3d::math::Pose>,
 }
 
 impl ChunkAccess for ActiveLevelColliderInfo {
@@ -115,6 +118,7 @@ impl ActiveLevelColliderInfo {
             mounted: Vec::new(),
             image_links: HashMap::new(),
             contraption_labels: HashMap::new(),
+            label_pose: None,
         }
     }
 

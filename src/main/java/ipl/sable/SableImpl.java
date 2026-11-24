@@ -5,6 +5,7 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.mixinterface.entity.entity_sublevel_collision.EntityMovementExtension;
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.entity_collision.SubLevelEntityCollision;
@@ -41,6 +42,11 @@ import qouteall.q_misc_util.my_util.DQuaternion;
 final class SableImpl {
 
     private SableImpl() {}
+
+    static Vec3 clientDrawnPoint(Entity entity, Vec3 point) {
+        ClientSubLevel sub = Sable.HELPER.getContainingClient(entity);
+        return sub == null ? point : sub.renderPose().transformPosition(point);
+    }
 
     @Nullable
     static BlockState lookupNonAirSubLevelBlockAt(Level world, Vec3 worldPos) {

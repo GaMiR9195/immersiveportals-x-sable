@@ -6,6 +6,7 @@ import com.simibubi.create.content.contraptions.ControlledContraptionEntity;
 import com.simibubi.create.content.contraptions.IControlContraption;
 import ipl.sable.mixin.ContraptionColliderInvoker;
 import ipl.sable.mixin.ControlledContraptionEntityAccessor;
+import ipl.sable.transit.IplContraptionKind;
 import ipl.sable.transit.IplContraptionShape;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
@@ -20,8 +21,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 
-/** Create-facing side of {@link ipl.sable.transit.IplContraptions}; loaded only with Create. */
-public final class IplCreateContraptions {
+/** Create's contraptions as an {@link IplContraptionKind}; loaded only with Create. */
+public final class IplCreateContraptions implements IplContraptionKind {
+
+    public static final IplContraptionKind KIND = new IplCreateContraptions();
 
     /** How far from its anchor a contraption that is not controlled by a block looks for its holder. */
     private static final int HOLDER_SEARCH = 2;
@@ -37,18 +40,21 @@ public final class IplCreateContraptions {
 
     private IplCreateContraptions() {}
 
-    public static boolean isContraption(Entity entity) {
+    @Override
+    public boolean owns(Entity entity) {
         return entity instanceof AbstractContraptionEntity;
     }
 
-    public static boolean isHollow(Entity entity) {
-        return entity instanceof AbstractContraptionEntity c && c.getContraption() == null;
+    @Override
+    public boolean isHollow(Entity entity) {
+        return ((AbstractContraptionEntity) entity).getContraption() == null;
     }
 
-    /** The contraption at {@code partialTick} in its own level's frame (the plot of its body), or null. */
+    @Override
     @Nullable
-    public static IplContraptionShape shape(Entity entity, float partialTick) {
-        if (!(entity instanceof AbstractContraptionEntity c) || c.getContraption() == null) return null;
+    public IplContraptionShape shape(Entity entity, float partialTick) {
+        AbstractContraptionEntity c = (AbstractContraptionEntity) entity;
+        if (c.getContraption() == null) return null;
         BlockPos[] blocks = blocksOf(c.getContraption()).positions();
         if (blocks.length == 0) return null;
         // toGlobalVector is affine: the image of the origin and of the unit axes is the whole transform.
@@ -56,23 +62,18 @@ public final class IplCreateContraptions {
         Vec3 ex = c.toGlobalVector(new Vec3(1, 0, 0), partialTick).subtract(o);
         Vec3 ey = c.toGlobalVector(new Vec3(0, 1, 0), partialTick).subtract(o);
         Vec3 ez = c.toGlobalVector(new Vec3(0, 0, 1), partialTick).subtract(o);
-        double[] centres = new double[blocks.length * 3];
-        for (int i = 0; i < blocks.length; i++) {
-            double lx = blocks[i].getX() + 0.5, ly = blocks[i].getY() + 0.5, lz = blocks[i].getZ() + 0.5;
-            centres[i * 3] = o.x + ex.x * lx + ey.x * ly + ez.x * lz;
-            centres[i * 3 + 1] = o.y + ex.y * lx + ey.y * ly + ez.y * lz;
-            centres[i * 3 + 2] = o.z + ex.z * lx + ey.z * ly + ez.z * lz;
-        }
+        double[] frame = {o.x, o.y, o.z, ex.x, ex.y, ex.z, ey.x, ey.y, ey.z, ez.x, ez.y, ez.z};
         Vec3 anchor = o.add(ex.add(ey).add(ez).scale(0.5));
         BlockPos holder = holderOf(c, anchor);
-        double[] sweep = c instanceof ControlledContraptionEntity controlled && controlled.getRotationAxis() != null
-            ? sweepAround(anchor, centres) : null;
-        return new IplContraptionShape(entity, holder.getX() + 0.5, holder.getY() + 0.5, holder.getZ() + 0.5,
-            blocks, centres, sweep);
+        double[] sweepCentre = c instanceof ControlledContraptionEntity controlled && controlled.getRotationAxis() != null
+            ? new double[]{anchor.x, anchor.y, anchor.z} : null;
+        return IplContraptionShape.of(entity, holder.getX() + 0.5, holder.getY() + 0.5, holder.getZ() + 0.5,
+            blocks, frame, sweepCentre);
     }
 
-    public static void collideEntities(Entity entity) {
-        if (entity instanceof AbstractContraptionEntity contraption) ContraptionColliderInvoker.ipl$collideEntities(contraption);
+    @Override
+    public void collideEntities(Entity entity) {
+        ContraptionColliderInvoker.ipl$collideEntities((AbstractContraptionEntity) entity);
     }
 
     /**
@@ -80,7 +81,8 @@ public final class IplCreateContraptions {
      * before the contraption enters its new level: clients get the controller from its spawn data
      * only, and one left behind made the client hang the contraption on a block of the old plot.
      */
-    public static boolean shiftController(Entity entity, int dx, int dz) {
+    @Override
+    public boolean shiftController(Entity entity, int dx, int dz) {
         if (!(entity instanceof ControlledContraptionEntity) || dx == 0 && dz == 0) return false;
         ControlledContraptionEntityAccessor access = (ControlledContraptionEntityAccessor) entity;
         BlockPos controller = access.ipl$controllerPos();
@@ -90,7 +92,8 @@ public final class IplCreateContraptions {
     }
 
     /** A moved controlled contraption is attached to its controller, which drives it again at once. */
-    public static boolean attachController(Entity entity) {
+    @Override
+    public boolean attachController(Entity entity) {
         if (!(entity instanceof ControlledContraptionEntity contraption)) return false;
         BlockPos controller = ((ControlledContraptionEntityAccessor) entity).ipl$controllerPos();
         if (controller == null
@@ -99,14 +102,12 @@ public final class IplCreateContraptions {
         return true;
     }
 
-    /**
-     * Box {@code [minX, minY, minZ, maxX, maxY, maxZ]} in its level's frame around everything the
-     * contraption covers, in any angle a bearing turns it to: a sphere around its anchor block,
-     * without walking its blocks.
-     */
+    /** A sphere around the anchor block holding every block in any angle, without walking the blocks. */
+    @Override
     @Nullable
-    public static double[] reach(Entity entity) {
-        if (!(entity instanceof AbstractContraptionEntity c) || c.getContraption() == null) return null;
+    public double[] reach(Entity entity) {
+        AbstractContraptionEntity c = (AbstractContraptionEntity) entity;
+        if (c.getContraption() == null) return null;
         Blocks blocks = blocksOf(c.getContraption());
         if (blocks.positions().length == 0) return null;
         Vec3 o = c.toGlobalVector(ANCHOR_CENTRE, 1.0f);
@@ -154,14 +155,5 @@ public final class IplCreateContraptions {
             }
         }
         return best;
-    }
-
-    /** Sphere around the rotation centre that holds every block in any rotation. */
-    private static double[] sweepAround(Vec3 centre, double[] centres) {
-        double r = 0.0;
-        for (int i = 0; i < centres.length; i += 3) {
-            r = Math.max(r, centre.distanceToSqr(centres[i], centres[i + 1], centres[i + 2]));
-        }
-        return new double[]{centre.x, centre.y, centre.z, Math.sqrt(r) + BLOCK_CORNER};
     }
 }

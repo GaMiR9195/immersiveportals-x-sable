@@ -15,7 +15,6 @@ import qouteall.imm_ptl.core.IPMcHelper;
 import qouteall.imm_ptl.core.mixin.client.particle.IEParticle;
 import qouteall.imm_ptl.core.portal.Portal;
 import qouteall.imm_ptl.core.render.context_management.PortalRendering;
-import qouteall.imm_ptl.core.render.context_management.RenderStates;
 import qouteall.q_misc_util.my_util.Plane;
 
 import java.util.IdentityHashMap;
@@ -30,17 +29,21 @@ import java.util.Map;
  * themselves along a path of their own (portal swirls, enchanting glyphs) are left alone, since
  * their next tick would put them back. Nothing is checked while no portal is near the camera.
  *
- * <p>A quad particle reaching across an opening is drawn on both sides of it: its own level shows
+ * <p>A particle reaching across an opening is drawn on both sides of it: its own level shows
  * the part on its side of the plane, the level beyond shows the part that passed, each cut exactly
  * by the portal plane ({@link ClippedQuadConsumer}), and in a portal view also by the plane of
  * that view's exit. It crosses without popping and without half of it missing, the same in every
- * view. Client thread only.
+ * view. This holds for every particle that draws quads into the particle buffer, vanilla or modded;
+ * particles with a renderer of their own ({@code ParticleRenderType.CUSTOM}) are not cut. Client
+ * thread only.
  */
 public final class ParticleTeleportation {
     /** Portals farther than this from the camera are ignored; particles there are barely visible. */
     private static final double RANGE = 64.0;
     /** Extra reach of a particle at an opening, for the motion drawn between two ticks. */
     private static final double OPENING_MARGIN = 0.25;
+    /** Least drawn radius assumed for a particle whose quad size is unknown (modded quads often outgrow their box). */
+    private static final double MIN_UNKNOWN_RADIUS = 1.0;
 
     /** A particle across {@code portal}: in front of its entrance, or ({@code back}) just out of its exit. */
     private record Opening(Portal portal, boolean back) {
@@ -161,30 +164,29 @@ public final class ParticleTeleportation {
     }
 
     /**
-     * Draws a quad particle into the level being rendered and returns false; any other particle is
-     * left to the engine (returns whether it is drawn there). Its own level shows the part on its
+     * Draws a particle into the level being rendered and returns false (the engine draws nothing
+     * itself). Its own level shows the part on its
      * side of an opening it is across, the level beyond the opening shows the part that passed. In
      * a portal view each part is also cut at the plane of that view's exit, so a particle partly out
      * of an exit is drawn up to the plane instead of vanishing until it is half a block away.
      */
     public static boolean render(Particle particle, VertexConsumer consumer, Camera camera, float partialTick) {
-        if (!(particle instanceof SingleQuadParticle quad)) return RenderStates.shouldRenderParticle(particle);
         IEParticle access = (IEParticle) particle;
         ClientLevel current = Minecraft.getInstance().level;
         Opening opening = AT_OPENING.isEmpty() ? null : AT_OPENING.get(particle);
         if (opening != null && opening.portal().isRemoved()) opening = null;
         if (access.portal_getWorld() == current) {
-            draw(quad, access, consumer, camera, partialTick,
+            draw(particle, access, consumer, camera, partialTick,
                 opening == null ? null : new Plane(opening.ownPoint(), opening.ownSide()));
         }
         if (opening != null && current != null && opening.otherLevel() == current) {
-            drawOtherSide(quad, access, opening, current, consumer, camera, partialTick);
+            drawOtherSide(particle, access, opening, current, consumer, camera, partialTick);
         }
         return false;
     }
 
     /** The part of the particle that passed, at its place beyond the opening (light read there). */
-    private static void drawOtherSide(SingleQuadParticle particle, IEParticle access, Opening opening, ClientLevel current,
+    private static void drawOtherSide(Particle particle, IEParticle access, Opening opening, ClientLevel current,
                                       VertexConsumer consumer, Camera camera, float partialTick) {
         double halfHeight = particle.getBoundingBox().getYsize() / 2.0;
         Vec3 pos = particle.getPos();
@@ -206,12 +208,12 @@ public final class ParticleTeleportation {
      * {@code cut} (null: no cut) and, in a portal view, beyond the plane of that view's exit.
      * A plane the quad does not reach costs nothing; a quad wholly behind one is not drawn.
      */
-    private static void draw(SingleQuadParticle particle, IEParticle access, VertexConsumer consumer, Camera camera,
+    private static void draw(Particle particle, IEParticle access, VertexConsumer consumer, Camera camera,
                              float partialTick, @Nullable Plane cut) {
         Vec3 at = new Vec3(Mth.lerp(partialTick, access.ip_getXo(), particle.getPos().x),
             Mth.lerp(partialTick, access.ip_getYo(), particle.getPos().y),
             Mth.lerp(partialTick, access.ip_getZo(), particle.getPos().z));
-        double radius = particle.getQuadSize(partialTick) * Math.sqrt(2.0);
+        double radius = drawnRadius(particle, partialTick);
         Plane view = PortalRendering.isRendering() ? PortalRendering.getRenderingPortal().getInnerClipping() : null;
         view = reached(view, at, radius);
         cut = reached(cut, at, radius);
@@ -272,9 +274,14 @@ public final class ParticleTeleportation {
     private static double reach(Particle particle, IEParticle access, AABB box) {
         double boxRadius = 0.5 * Math.sqrt(box.getXsize() * box.getXsize() + box.getYsize() * box.getYsize()
             + box.getZsize() * box.getZsize());
-        double radius = particle instanceof SingleQuadParticle quad
-            ? Math.max(boxRadius, quad.getQuadSize(1.0f) * Math.sqrt(2.0)) : boxRadius;
-        return radius + velocity(access).length() + OPENING_MARGIN;
+        return Math.max(boxRadius, drawnRadius(particle, 1.0f)) + velocity(access).length() + OPENING_MARGIN;
+    }
+
+    /** How far from its position the particle's quads reach; generous when the particle does not tell. */
+    private static double drawnRadius(Particle particle, float partialTick) {
+        if (particle instanceof SingleQuadParticle quad) return quad.getQuadSize(partialTick) * Math.sqrt(2.0);
+        AABB box = particle.getBoundingBox();
+        return Math.max(MIN_UNKNOWN_RADIUS, Math.max(box.getXsize(), Math.max(box.getYsize(), box.getZsize())) * Math.sqrt(3.0));
     }
 
     private static Vec3 velocity(IEParticle access) {

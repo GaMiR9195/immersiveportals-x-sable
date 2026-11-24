@@ -37,6 +37,15 @@ public abstract class MixinCamera implements IECamera {
     private float eyeHeight;
     @Shadow
     private float eyeHeightOld;
+    @Shadow
+    private boolean initialized;
+    @Shadow
+    private boolean detached;
+    @Shadow
+    private float partialTickTime;
+    
+    @Shadow
+    protected abstract void setRotation(float yRot, float xRot, float roll);
     
     @Shadow
     protected abstract void setPosition(Vec3 vec3d_1);
@@ -56,15 +65,28 @@ public abstract class MixinCamera implements IECamera {
         WorldRenderInfo.adjustCameraPos(this_);
     }
     
-    /** Every camera, vanilla's or a mod's, collides with blocks through portals: {@link PortalCameraClip}. */
+    /**
+     * Every camera, vanilla's or a mod's, collides with blocks through portals: {@link PortalCameraClip}.
+     * The camera of a portal pass is not set up again: it takes the player's view of the frame
+     * ({@link FrameCameraInputs#mirroredView}), so camera mods run once per frame and their state
+     * (shoulder offsets, collision smoothing, hidden or faded own player) stays the player's.
+     */
     @WrapMethod(method = "Lnet/minecraft/client/Camera;setup(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/world/entity/Entity;ZZF)V")
     private void ip_portalAwareSetup(
         BlockGetter area, Entity focusedEntity, boolean thirdPerson,
         boolean inverseView, float partialTick, Operation<Void> original
     ) {
+        Camera self = (Camera) (Object) this;
+        Camera view = FrameCameraInputs.mirroredView(self);
+        if (view != null) {
+            ip_mirror(view, area, focusedEntity, partialTick);
+            WorldRenderInfo.adjustCameraPos(self);
+            return;
+        }
         PortalCameraClip.setup(
             area, focusedEntity, () -> original.call(area, focusedEntity, thirdPerson, inverseView, partialTick)
         );
+        FrameCameraInputs.onSetUp(self);
     }
     
     /** Camera mods' angles are evaluated by the player's view only, see {@link FrameCameraInputs}. */
@@ -134,5 +156,24 @@ public abstract class MixinCamera implements IECamera {
     @Override
     public void portal_setFocusedEntity(Entity arg) {
         entity = arg;
+    }
+    
+    @Override
+    public void ip_mirror(Camera view, BlockGetter area, Entity focusedEntity, float partialTick) {
+        IECamera source = (IECamera) view;
+        initialized = true;
+        level = area;
+        entity = focusedEntity;
+        detached = source.ip_wasSetUpDetached();
+        partialTickTime = partialTick;
+        eyeHeight = source.ip_getCameraY();
+        eyeHeightOld = source.ip_getLastCameraY();
+        setRotation(view.getYRot(), view.getXRot(), view.getRoll());
+        setPosition(view.getPosition());
+    }
+    
+    @Override
+    public boolean ip_wasSetUpDetached() {
+        return detached;
     }
 }

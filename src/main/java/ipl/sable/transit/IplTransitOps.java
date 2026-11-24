@@ -202,6 +202,9 @@ public final class IplTransitOps {
         // the same clean path a world reload takes (which is exactly why a
         // reload fixes dead propellers/wheels). This mirrors moveBlocks: assembly
         // and load both avoid premature onPlace.
+        // Plot translation from source to destination (the same for every chunk).
+        int shiftX = 0;
+        int shiftZ = 0;
         SableAssemblyPlatform.INSTANCE.setIgnoreOnPlace(dstLevel, true);
         try {
             for (PlotChunkHolder srcHolder : src.getLoadedChunks()) {
@@ -212,6 +215,8 @@ public final class IplTransitOps {
                 // so translate the chunk position through plot coordinate spaces.
                 ChunkPos localChunkPos = src.toLocal(srcChunkPos);
                 ChunkPos dstChunkPos = dst.toGlobal(localChunkPos);
+                shiftX = dstChunkPos.getMinBlockX() - srcChunkPos.getMinBlockX();
+                shiftZ = dstChunkPos.getMinBlockZ() - srcChunkPos.getMinBlockZ();
 
                 // Ensure the dst plot has a chunk allocated at the corresponding position.
                 if (dst.getChunkHolder(localChunkPos) == null) {
@@ -321,7 +326,13 @@ public final class IplTransitOps {
         // separate pass so ALL blocks exist before any neighbour update fires
         // (a block updating mid-copy would see half-placed neighbours).
         // Flags 3 (BLOCK_UPDATE | NOTIFY_NEIGHBORS) + recursionLeft 512 match
-        // moveBlocks exactly.
+        // moveBlocks exactly. Create kinetics keep their saved state through it (see IplCreateKinetics).
+        if (IplContraptions.CREATE) {
+            for (Placed p : placed) {
+                BlockEntity be = p.chunk().getBlockEntity(p.pos());
+                if (be != null) IplCreateKinetics.hold(be, shiftX, shiftZ);
+            }
+        }
         for (Placed p : placed) {
             try {
                 SubLevelAssemblyHelper.markAndNotifyBlock(
@@ -366,11 +377,10 @@ public final class IplTransitOps {
             }
         }
 
-        // Kinetic sources restart once their networks are rebuilt (see IplCreateKinetics).
         if (IplContraptions.CREATE) {
             for (Placed p : placed) {
                 BlockEntity be = p.chunk().getBlockEntity(p.pos());
-                if (be != null) IplCreateKinetics.restartSource(be);
+                if (be != null) IplCreateKinetics.release(be);
             }
         }
 

@@ -408,8 +408,7 @@ public final class IplStraddlePoseMap {
                 IplPieceMap.Aperture a = lead == null || child == null ? e.aperture
                     : IplPieceMap.Aperture.of(child.portal)
                         .toPlot(child.parent == null ? lead : child.parent.mapping.mapPose(lead));
-                double s = e.parent == piece ? 1.0 : -1.0; // the normal points to the parent side
-                planes[i] = new LocalHalfSpace(a.ox(), a.oy(), a.oz(), s * a.nx(), s * a.ny(), s * a.nz());
+                planes[i] = LocalHalfSpace.keeping(a, e.parent == piece);
             }
         }
 
@@ -464,6 +463,13 @@ public final class IplStraddlePoseMap {
      */
     public record LocalHalfSpace(double px, double py, double pz,
                                  double nx, double ny, double nz) {
+        /** The plane of {@code aperture} keeping its parent side (its front) or, with false, its child side. */
+        public static LocalHalfSpace keeping(IplPieceMap.Aperture aperture, boolean parentSide) {
+            double s = parentSide ? 1.0 : -1.0; // the aperture normal points to the parent side
+            return new LocalHalfSpace(aperture.ox(), aperture.oy(), aperture.oz(),
+                s * aperture.nx(), s * aperture.ny(), s * aperture.nz());
+        }
+
         /** Signed distance of a plot-local point from the plane; positive = kept side. */
         public double signedDistance(double x, double y, double z) {
             return (x - px) * nx + (y - py) * ny + (z - pz) * nz;
@@ -517,45 +523,6 @@ public final class IplStraddlePoseMap {
             now.position().z() + dz * scale);
         return out;
     }
-
-    /**
-     * Cut one plot-local box with a {@link LocalHalfSpace}, keeping the side the normal
-     * points to; null when the box lies entirely behind the plane.
-     *
-     * <p>Axis-aligned planes cut exactly. Oblique planes cut conservatively: the
-     * behind-most corner is pushed onto the plane along the normal, which is the same
-     * approximation ImmersivePortals' own {@code CollisionHelper.clipBox} uses. The result
-     * is a slightly generous box, never a missing one -- physically the safe direction
-     * for collision.
-     */
-    @Nullable
-    public static BoundingBox3d clipLocalBoxKeeping(
-        double minX, double minY, double minZ,
-        double maxX, double maxY, double maxZ,
-        LocalHalfSpace plane
-    ) {
-        double nx = plane.nx(), ny = plane.ny(), nz = plane.nz();
-        double px = nx > 0 ? minX : maxX;
-        double py = ny > 0 ? minY : maxY;
-        double pz = nz > 0 ? minZ : maxZ;
-        double sx = nx > 0 ? maxX : minX;
-        double sy = ny > 0 ? maxY : minY;
-        double sz = nz > 0 ? maxZ : minZ;
-        double dPushed = plane.signedDistance(px, py, pz);
-        if (dPushed >= 0.0) {
-            return new BoundingBox3d(
-                minX, minY, minZ, maxX, maxY, maxZ);
-        }
-        double dStatic = plane.signedDistance(sx, sy, sz);
-        if (dStatic <= 0.0) return null;
-        px -= dPushed * nx;
-        py -= dPushed * ny;
-        pz -= dPushed * nz;
-        return new BoundingBox3d(
-            Math.min(px, sx), Math.min(py, sy), Math.min(pz, sz),
-            Math.max(px, sx), Math.max(py, sy), Math.max(pz, sz));
-    }
-
 
     /**
      * {@code all} filtered to positions passing {@code keep}. Lookahead advances the

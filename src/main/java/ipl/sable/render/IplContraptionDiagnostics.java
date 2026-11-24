@@ -23,6 +23,8 @@ import java.util.function.Predicate;
  */
 final class IplContraptionDiagnostics {
 
+    /** Walks every entity of each flushed level, so off unless asked for. */
+    static final boolean ENABLED = Boolean.getBoolean("ipl.contraptionDiagnostics");
     private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-contraptions");
     private static final Map<Entity, String> LAST = Collections.synchronizedMap(new WeakHashMap<>());
 
@@ -30,6 +32,7 @@ final class IplContraptionDiagnostics {
 
     /** Flywheel flush of {@code level}: {@code visualized} tells whether Flywheel holds a visual. */
     static void report(ClientLevel level, Predicate<Entity> visualized) {
+        if (!ENABLED) return;
         for (Entity entity : level.entitiesForRendering()) {
             if (!IplContraptions.isContraption(entity)) continue;
             String state = describe(entity, visualized);

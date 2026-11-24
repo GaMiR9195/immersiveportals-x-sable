@@ -139,6 +139,86 @@ impl PhysicsHooks for SablePhysicsHooks {
     }
 }
 
+/// Contact log of contraptions on straddling bodies, on while a file `ipl-debug-mounted` exists in
+/// the game directory: `logs/ipl-natives-mounted.log`, contacts near or behind an aperture only.
+static MOUNTED_DEBUG: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+static MOUNTED_DEBUG_LINES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+const MOUNTED_DEBUG_MAX_LINES: u32 = 20_000;
+
+fn mounted_debug() -> Option<&'static std::sync::Mutex<std::fs::File>> {
+    MOUNTED_DEBUG
+        .get_or_init(|| {
+            if !std::path::Path::new("ipl-debug-mounted").exists() {
+                return None;
+            }
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("logs/ipl-natives-mounted.log")
+                .ok()
+                .map(std::sync::Mutex::new)
+        })
+        .as_ref()
+}
+
+fn log_mounted_skip(reason: &str) {
+    use std::io::Write;
+    let Some(log) = mounted_debug() else {
+        return;
+    };
+    if MOUNTED_DEBUG_LINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= MOUNTED_DEBUG_MAX_LINES {
+        return;
+    }
+    if let Ok(mut file) = log.lock() {
+        let _ = writeln!(file, "skip: {reason}");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_mounted_contact(
+    log: &std::sync::Mutex<std::fs::File>,
+    pieces: &crate::ipl_ext::IplPieces,
+    in_parent: &impl Fn(u8, DVec3) -> Option<DVec3>,
+    own: u8,
+    piece: u8,
+    label: u8,
+    block: rapier3d::glamx::IVec3,
+    old: Option<DVec3>,
+    centre: DVec3,
+    plot: DVec3,
+    info: &crate::ActiveLevelColliderInfo,
+) {
+    use std::io::Write;
+    for e in &pieces.edges {
+        let (Some(p), Some(c)) = (in_parent(e.parent, plot), in_parent(e.parent, centre)) else {
+            continue;
+        };
+        let rel = p - e.origin;
+        if rel.dot(e.normal) > 2.0 || rel.dot(e.axis_w).abs() > e.half_w + 2.0 || rel.dot(e.axis_h).abs() > e.half_h + 2.0 {
+            continue;
+        }
+        if MOUNTED_DEBUG_LINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= MOUNTED_DEBUG_MAX_LINES {
+            return;
+        }
+        let old_side = old.map(|o| (o - e.plot_origin).dot(e.plot_normal));
+        let line = format!(
+            "own={own} piece={piece} kept={} label={label} labels={} block=({},{},{}) edge={}->{} point_side={:.3} centre_side={:.3} old_side={:?} u={:.2}/{:.2} v={:.2}/{:.2}\n",
+            piece == own,
+            info.contraption_labels.len(),
+            block.x, block.y, block.z,
+            e.parent, e.child,
+            rel.dot(e.normal),
+            (c - e.origin).dot(e.normal),
+            old_side,
+            rel.dot(e.axis_w), e.half_w,
+            rel.dot(e.axis_h), e.half_h,
+        );
+        if let Ok(mut file) = log.lock() {
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+}
+
 static IPL_CLIP_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static IPL_CLIP_FIRST_DROP: std::sync::Once = std::sync::Once::new();
 
@@ -284,11 +364,16 @@ impl SablePhysicsHooks {
         body_id: LevelColliderID,
     ) {
         let Some(body) = sable_data.level_colliders.get(&body_id) else {
+            log_mounted_skip("no body collider");
             return;
         };
         let (Some(pieces), Some(com), Some(own_com)) =
             (body.pieces.as_deref(), body.center_of_mass, info.center_of_mass)
         else {
+            // A body without pieces straddles nothing: nothing to clip, nothing to log.
+            if body.pieces.is_some() {
+                log_mounted_skip("no centre of mass");
+            }
             return;
         };
         let own = if handle == info.collider {
@@ -321,6 +406,11 @@ impl SablePhysicsHooks {
         let (Some(frame), Some(pose)) = (pose_of(own), colliders.get(handle).map(|c| *c.position())) else {
             return;
         };
+        let body_wrt = colliders
+            .get(body.collider)
+            .and_then(|c| c.position_wrt_parent())
+            .copied()
+            .unwrap_or(Pose::IDENTITY);
         let first = handle == context.collider1;
         let manifold = &*context.manifold;
         for c in context.solver_contacts.iter_mut() {
@@ -344,11 +434,20 @@ impl SablePhysicsHooks {
                 .get(&(block.x, block.y, block.z))
                 .copied()
                 .unwrap_or(0);
-            let centre_world = pose.transform_point((block.as_dvec3() + DVec3::splat(0.5) - own_com).as_vec3());
+            let local_centre = (block.as_dvec3() + DVec3::splat(0.5) - own_com).as_vec3();
+            let centre_world = pose.transform_point(local_centre);
             let centre = frame.inverse_transform_point(centre_world).as_dvec3() + com;
             let plot = frame.inverse_transform_point(world).as_dvec3() + com;
-            if pieces.classify_mounted(label, centre, plot, &in_parent) != own {
+            // The block centre in the body's plot when the labels were made.
+            let old = info.label_pose.map(|label_pose| {
+                body_wrt.inverse_transform_point(label_pose.transform_point(local_centre)).as_dvec3() + com
+            });
+            let piece = pieces.classify_mounted(label, old, centre, plot, &in_parent);
+            if piece != own {
                 neutralize_contact(c);
+            }
+            if let Some(log) = mounted_debug() {
+                log_mounted_contact(log, pieces, &in_parent, own, piece, label, block, old, centre, plot, info);
             }
         }
     }

@@ -108,6 +108,7 @@
     "client.render.MixinCamera",
     "client.render.MixinBlockGetter_CameraClip",
     "client.render.MixinEntityRenderDispatcher",
+    "client.render.MixinOptions_SeenFromOutside",
     "client.render.MixinEntityRenderer_NameTag",
     "client.render.MixinFrustum_FixDeadLoop",
     "client.render.MixinGameRenderer",

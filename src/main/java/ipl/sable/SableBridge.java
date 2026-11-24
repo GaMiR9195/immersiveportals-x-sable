@@ -374,6 +374,15 @@ public final class SableBridge {
         return SableImpl.clientPlotOwnerDimension(pos);
     }
 
+    /**
+     * CLIENT: where {@code point} of {@code entity} is drawn: through its body's render pose for an
+     * entity living in a ship's plot (contraptions, seats), else unchanged.
+     */
+    public static Vec3 clientDrawnPoint(Entity entity, Vec3 point) {
+        if (!PRESENT) return point;
+        return SableImpl.clientDrawnPoint(entity, point);
+    }
+
     /** Plot identity belongs to a live container plot, never a coordinate threshold. */
     private static boolean isPlotPos(ServerLevel context, BlockPos pos) {
         return SableImpl.isPlotPos(context, pos);

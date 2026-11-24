@@ -1,5 +1,9 @@
 package qouteall.imm_ptl.core.mixin.client.render;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.world.entity.Entity;
@@ -31,4 +35,23 @@ public class MixinEntityRenderDispatcher {
         }
     }
     
+    @WrapMethod(
+        method = "render(Lnet/minecraft/world/entity/Entity;DDDFFLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;I)V"
+    )
+    private void ip_drawSeenFromOutside(
+        Entity entity, double x, double y, double z, float yaw, float partialTick,
+        PoseStack poseStack, MultiBufferSource buffers, int light, Operation<Void> original
+    ) {
+        if (!CrossPortalEntityRenderer.isDrawnFromOutside(entity)) {
+            original.call(entity, x, y, z, yaw, partialTick, poseStack, buffers, light);
+            return;
+        }
+        CrossPortalEntityRenderer.beginDrawFromOutside();
+        try {
+            original.call(entity, x, y, z, yaw, partialTick, poseStack, buffers, light);
+        }
+        finally {
+            CrossPortalEntityRenderer.endDrawFromOutside();
+        }
+    }
 }

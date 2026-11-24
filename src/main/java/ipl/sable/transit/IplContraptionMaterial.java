@@ -8,6 +8,8 @@ import it.unimi.dsi.fastutil.longs.Long2ByteMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import org.jetbrains.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.BitSet;
@@ -28,6 +30,11 @@ import java.util.function.IntPredicate;
  * by the same labels.
  */
 public final class IplContraptionMaterial {
+
+    private static final Logger LOG = LoggerFactory.getLogger("ipl-sable-contraptions");
+    /** Logs what the natives receive (`-Dipl.contraptionDiagnostics=true`). */
+    private static final boolean DIAGNOSTICS = Boolean.getBoolean("ipl.contraptionDiagnostics");
+    private static final java.util.Set<Entity> UNMOUNTED = java.util.Collections.newSetFromMap(new WeakHashMap<>());
 
     /** Native id of a kinematic contraption and the label state last handed to it. */
     private static final class NativeEntry {
@@ -59,7 +66,7 @@ public final class IplContraptionMaterial {
     private IplContraptionMaterial() {}
 
     static List<IplContraptionShape> shapes(ServerSubLevel ship) {
-        if (!IplContraptions.CREATE) return List.of();
+        if (!IplContraptions.any()) return List.of();
         Collection<KinematicContraption> contraptions = ship.getPlot().getContraptions();
         if (contraptions.isEmpty()) return List.of();
         int tick = ship.getLevel().getServer().getTickCount();
@@ -100,9 +107,9 @@ public final class IplContraptionMaterial {
         return out;
     }
 
-    /** Plot boxes holding each contraption of the body ({@code IplCreateContraptions.reach}). */
+    /** Plot boxes holding each contraption of the body ({@link IplContraptionKind#reach}). */
     private static List<double[]> reaches(ServerSubLevel ship) {
-        if (!IplContraptions.CREATE) return List.of();
+        if (!IplContraptions.any()) return List.of();
         Collection<KinematicContraption> contraptions = ship.getPlot().getContraptions();
         if (contraptions.isEmpty()) return List.of();
         List<double[]> out = new ArrayList<>(contraptions.size());
@@ -214,14 +221,25 @@ public final class IplContraptionMaterial {
         NATIVE.remove(contraption);
     }
 
+    private static int shapeSize(Entity entity) {
+        IplContraptionShape shape = IplContraptions.shape(entity, 1.0f);
+        return shape == null ? 0 : shape.blocks.length;
+    }
+
     /** Hands the natives the labels of the body's contraptions, when they changed since the last push. */
     static void pushNatives(ServerSubLevel ship, IplPieceMap map) {
-        if (!IplContraptions.CREATE || !IplRapierNatives.contraptionsSupported()) return;
+        if (!IplContraptions.any() || !IplRapierNatives.contraptionsSupported()) return;
         long revision = map.contraptionRevision();
         for (KinematicContraption contraption : ship.getPlot().getContraptions()) {
             NativeEntry entry = NATIVE.get(contraption);
-            if (entry == null || !(contraption instanceof Entity entity)
-                || entry.map == map && entry.revision == revision) continue;
+            if (!(contraption instanceof Entity entity)) continue;
+            if (entry == null) {
+                if (DIAGNOSTICS && UNMOUNTED.add(entity)) {
+                    LOG.info("[IPL-CONTRAPTION] {} has no native collider on its body: no labels", entity.getUUID());
+                }
+                continue;
+            }
+            if (entry.map == map && entry.revision == revision) continue;
             entry.map = map;
             entry.revision = revision;
             Long2ByteMap labels = map.contraptionLabels(entity.getUUID());
@@ -239,6 +257,10 @@ public final class IplContraptionMaterial {
                 }
             }
             IplRapierNatives.setContraptionLabels(entry.scene, entry.id, blocks, pieces);
+            if (DIAGNOSTICS) {
+                LOG.info("[IPL-CONTRAPTION] labels of {} (native {}): {} of {} blocks out of the native piece",
+                    entity.getUUID(), entry.id, n, shapeSize(entity));
+            }
         }
     }
 }

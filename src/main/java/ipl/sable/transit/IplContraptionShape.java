@@ -31,9 +31,11 @@ public final class IplContraptionShape {
     final double[] centres;
     /** {@code [cx, cy, cz, r]}: the sphere a rotating contraption sweeps; null for translating ones. */
     @Nullable final double[] sweep;
+    /** Local block frame in the plot: origin, then the images of the unit x, y and z axes. */
+    private final double[] frame;
 
-    public IplContraptionShape(Entity entity, double tx, double ty, double tz, BlockPos[] blocks, double[] centres,
-                               @Nullable double[] sweep) {
+    private IplContraptionShape(Entity entity, double tx, double ty, double tz, BlockPos[] blocks, double[] centres,
+                               @Nullable double[] sweep, double[] frame) {
         this.entity = entity;
         this.tx = tx;
         this.ty = ty;
@@ -41,6 +43,42 @@ public final class IplContraptionShape {
         this.blocks = blocks;
         this.centres = centres;
         this.sweep = sweep;
+        this.frame = frame;
+    }
+
+    /** Builds a shape from the contraption's local-to-plot transform ({@code o + ex·x + ey·y + ez·z}). */
+    public static IplContraptionShape of(Entity entity, double tx, double ty, double tz, BlockPos[] blocks,
+                                         double[] frame, @Nullable double[] sweepCentre) {
+        double[] centres = new double[blocks.length * 3];
+        for (int i = 0; i < blocks.length; i++) {
+            double lx = blocks[i].getX() + 0.5, ly = blocks[i].getY() + 0.5, lz = blocks[i].getZ() + 0.5;
+            for (int k = 0; k < 3; k++) {
+                centres[i * 3 + k] = frame[k] + frame[3 + k] * lx + frame[6 + k] * ly + frame[9 + k] * lz;
+            }
+        }
+        double[] sweep = null;
+        if (sweepCentre != null) {
+            double r = 0.0;
+            for (int i = 0; i < centres.length; i += 3) {
+                double dx = centres[i] - sweepCentre[0], dy = centres[i + 1] - sweepCentre[1], dz = centres[i + 2] - sweepCentre[2];
+                r = Math.max(r, dx * dx + dy * dy + dz * dz);
+            }
+            sweep = new double[]{sweepCentre[0], sweepCentre[1], sweepCentre[2], Math.sqrt(r) + BLOCK_RADIUS};
+        }
+        return new IplContraptionShape(entity, tx, ty, tz, blocks, centres, sweep, frame);
+    }
+
+    /** {@code plane} of the plot frame expressed in the contraption's local block frame. */
+    public IplStraddlePoseMap.LocalHalfSpace toLocal(IplStraddlePoseMap.LocalHalfSpace plane) {
+        double mx = plane.nx() * frame[3] + plane.ny() * frame[4] + plane.nz() * frame[5];
+        double my = plane.nx() * frame[6] + plane.ny() * frame[7] + plane.nz() * frame[8];
+        double mz = plane.nx() * frame[9] + plane.ny() * frame[10] + plane.nz() * frame[11];
+        double length = Math.sqrt(mx * mx + my * my + mz * mz);
+        mx /= length;
+        my /= length;
+        mz /= length;
+        double d = plane.signedDistance(frame[0], frame[1], frame[2]) / length;
+        return new IplStraddlePoseMap.LocalHalfSpace(-d * mx, -d * my, -d * mz, mx, my, mz);
     }
 
     public double x(int i) { return centres[i * 3]; }
@@ -70,16 +108,20 @@ public final class IplContraptionShape {
     public Split split(IplPieceMap.Edge[] edges, @Nullable Long2ByteMap labels) {
         int[] pieces = new int[blocks.length];
         int[] across = new int[blocks.length];
+        int[] acrossEdge = new int[blocks.length];
         BitSet nodes = new BitSet();
         List<IplPieceMap.Edge> cut = new ArrayList<>(1);
         for (int i = 0; i < blocks.length; i++) {
             int piece = label(labels, i);
             pieces[i] = piece;
             across[i] = -1;
+            acrossEdge[i] = -1;
             nodes.set(piece);
-            for (IplPieceMap.Edge e : edges) {
+            for (int k = 0; k < edges.length; k++) {
+                IplPieceMap.Edge e = edges[k];
                 if (e.parent != piece && e.child != piece || !liesAcross(e.aperture, i)) continue;
                 across[i] = piece == e.parent ? e.child : e.parent;
+                acrossEdge[i] = k;
                 nodes.set(across[i]);
                 if (!cut.contains(e)) cut.add(e);
                 break;
@@ -88,15 +130,16 @@ public final class IplContraptionShape {
         for (IplPieceMap.Edge e : edges) {
             if (nodes.get(e.parent) && nodes.get(e.child) && !cut.contains(e)) cut.add(e);
         }
-        return new Split(pieces, across, nodes, cut);
+        return new Split(pieces, across, acrossEdge, nodes, cut);
     }
 
     /**
      * {@link #split} of one moment: block {@code i} is in {@code pieces[i]} and, when it lies across
-     * an aperture, also in {@code across[i]} (else -1); {@code cut} holds the edges between pieces
-     * the contraption is in.
+     * the aperture of edge {@code acrossEdge[i]} (an index into the edges split by), also in
+     * {@code across[i]} (both -1 otherwise); {@code cut} holds the edges between pieces the
+     * contraption is in.
      */
-    public record Split(int[] pieces, int[] across, BitSet nodes, List<IplPieceMap.Edge> cut) {
+    public record Split(int[] pieces, int[] across, int[] acrossEdge, BitSet nodes, List<IplPieceMap.Edge> cut) {
 
         public boolean whollyIn(int node) {
             return nodes.cardinality() == 1 && nodes.get(node);

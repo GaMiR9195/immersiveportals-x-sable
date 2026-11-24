@@ -6,7 +6,7 @@ import net.minecraft.world.phys.Vec3;
 /**
  * Passes on only the part of each quad on the kept side of a plane, cut exactly where the quad
  * crosses it. Positions are in the coordinates the particle draws in (relative to the camera).
- * Quads only (what {@code SingleQuadParticle} draws); one instance, reused, client thread only.
+ * Quads only (the mode of the particle buffer); one instance, reused, client thread only.
  */
 final class ClippedQuadConsumer implements VertexConsumer {
     private static final int QUAD = 4;
